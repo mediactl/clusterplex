@@ -5,6 +5,20 @@ kind: Kustomization
 resources:
   - ../../base
 patches:
+  # kind is a throwaway test cluster, so it pins a fixed server identity: the
+  # cluster stays reproducible and rebuilding it does not present a new server
+  # to clients. Set here as an environment variable rather than in the
+  # ConfigMap so the base file stays the documented example.
+  - target:
+      kind: StatefulSet
+      name: plex
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: CLUSTERPLEX_PLEX_MACHINE_IDENTIFIER
+          value: 11111111-2222-3333-4444-555555555555
+
   - target:
       kind: PersistentVolumeClaim
       name: plex-config

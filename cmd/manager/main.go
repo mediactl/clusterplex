@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/superfly/litefs"
 	"github.com/superfly/litefs/fuse"
 	litefshttp "github.com/superfly/litefs/http"
@@ -24,6 +26,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/mediactl/clusterplex/pkg/plexprefs"
 	"github.com/mediactl/clusterplex/pkg/portredirect"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
@@ -59,8 +62,11 @@ func run() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := loadConfig(os.Getenv)
+	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0
+		}
 		logger.Error("invalid configuration", "error", err)
 		return 2
 	}
@@ -90,6 +96,16 @@ func run() int {
 		Grace:   defaultGrace,
 		Redirect: func(ctx context.Context) error {
 			return portredirect.Ensure(ctx, portredirect.ExecRunner{}, cfg.PMSPort, cfg.ProxyPort)
+		},
+		Preferences: func(context.Context) error {
+			changed, err := plexprefs.Apply(cfg.PreferencesFile(), cfg.Preferences)
+			if err != nil {
+				return err
+			}
+			if len(changed) > 0 {
+				logger.Info("applied Plex preferences", "file", cfg.PreferencesFile(), "changed", changed)
+			}
+			return nil
 		},
 		Proxy: &proxy.TCP{
 			Listen:       fmt.Sprintf(":%d", cfg.ProxyPort),

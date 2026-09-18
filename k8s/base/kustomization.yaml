@@ -4,6 +4,7 @@ namespace: media
 resources:
   - namespace.yaml
   - rbac.yaml
+  - configmap.yaml
   - service.yaml
   - pvc.yaml
   - statefulset.yaml

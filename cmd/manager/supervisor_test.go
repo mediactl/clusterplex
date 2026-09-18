@@ -93,3 +93,41 @@ func TestSupervisorRemovesStalePIDFileBeforeStart(t *testing.T) {
 	_, err := os.Stat(pid)
 	assert.True(t, os.IsNotExist(err), "a stale pid file must be removed: Plex refuses to start when it names a live pid")
 }
+
+func TestSupervisorAppliesPreferencesBeforeStartingPlex(t *testing.T) {
+	// Plex reads Preferences.xml once at startup, so a hook that ran after the
+	// process started would have no effect until the next restart.
+	order := filepath.Join(t.TempDir(), "order")
+	sup := &Supervisor{
+		Binary: fakePMS(t, "echo pms >> "+order+"\n"+gracefulPMS),
+		Logger: slog.Default(),
+		Preferences: func(context.Context) error {
+			return os.WriteFile(order, []byte("prefs\n"), 0o600)
+		},
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	assert.Eventually(t, func() bool {
+		b, err := os.ReadFile(order)
+		return err == nil && string(b) == "prefs\npms\n"
+	}, 3*time.Second, 20*time.Millisecond, "preferences must be written before Plex starts")
+}
+
+func TestSupervisorRefusesToStartWhenPreferencesCannotBeApplied(t *testing.T) {
+	// Unlike the port redirect there is no fallback: starting Plex anyway
+	// would run it with settings that silently differ from the declared ones.
+	marker := filepath.Join(t.TempDir(), "started")
+	sup := &Supervisor{
+		Binary:      fakePMS(t, "touch "+marker+"\n"+gracefulPMS),
+		Logger:      slog.Default(),
+		Preferences: func(context.Context) error { return errors.New("read-only file system") },
+	}
+
+	err := sup.Start(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read-only file system")
+	assert.NoFileExists(t, marker, "Plex must not start")
+	assert.NoError(t, sup.Stop(context.Background()), "a failed start leaves nothing to stop")
+}

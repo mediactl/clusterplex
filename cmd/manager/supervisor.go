@@ -35,6 +35,12 @@ type Supervisor struct {
 	// Redirect, when set, runs before Plex starts. A failure is logged, not
 	// fatal: the Service still reaches the proxy port directly.
 	Redirect func(ctx context.Context) error
+	// Preferences, when set, writes Plex's Preferences.xml before each start.
+	// Plex reads that file once at startup, so it has to run first. A failure
+	// is fatal, unlike Redirect: there is no fallback for settings that
+	// silently fail to apply, and starting Plex anyway would run it with a
+	// configuration that differs from the declared one.
+	Preferences func(ctx context.Context) error
 	// Proxy, when set, starts before Plex and stops after it.
 	Proxy *proxy.TCP
 	// OnUnexpectedExit is called when Plex exits without Stop having been called.
@@ -69,6 +75,16 @@ func (s *Supervisor) Start(ctx context.Context) error {
 			return fmt.Errorf("start proxy: %w", err)
 		}
 		s.Logger.Info("proxy listening", "addr", addr.String(), "target", s.Proxy.Target)
+	}
+
+	if s.Preferences != nil {
+		if err := s.Preferences(ctx); err != nil {
+			cancel()
+			if s.Proxy != nil {
+				s.Proxy.Wait()
+			}
+			return fmt.Errorf("apply Plex preferences: %w", err)
+		}
 	}
 
 	s.removeStalePIDFile()

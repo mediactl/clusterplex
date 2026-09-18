@@ -70,7 +70,13 @@ spec:
               mountPath: /var/lib/plexmediaserver
             - name: plex-media
               mountPath: /media
+            - name: config
+              mountPath: /etc/clusterplex
+              readOnly: true
       volumes:
+        - name: config
+          configMap:
+            name: clusterplex-config
         - name: plex-config
           persistentVolumeClaim:
             claimName: plex-config

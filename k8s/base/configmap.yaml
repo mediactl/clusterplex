@@ -1,0 +1,47 @@
+# The manager reads /etc/clusterplex/config.yaml at startup. Flags beat
+# environment variables beat this file, so a value here is the cluster default
+# rather than an override.
+#
+# Changing this ConfigMap updates the mounted file, but the manager only reads
+# it when it starts: roll the StatefulSet to apply a change.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clusterplex-config
+data:
+  config.yaml: |
+    # Plex settings the manager writes into Preferences.xml before each start.
+    # Keys listed here are enforced on every start, so a change made in the
+    # Plex UI is reverted; every other setting is left as Plex wrote it.
+    #
+    # This is a list rather than a map because the config loader lowercases
+    # nested map keys, and Plex preference names are case sensitive.
+    plex:
+      # Pin the server identity so a rebuilt cluster keeps the identity clients
+      # and plex.tv already know. Every pod shares one Preferences.xml, so the
+      # identity is already stable across a failover; pinning it additionally
+      # survives losing the volume.
+      #
+      # Setting this on a server that already has an identity CHANGES it:
+      # clients see a new server and the plex.tv claim is lost. To adopt the
+      # identity you already have rather than replace it, read it first:
+      #
+      #   kubectl exec -n media <leader> -- sh -c \
+      #     'grep -o "MachineIdentifier=\"[^\"]*\"" \
+      #      "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml" | head -1'
+      #
+      # machine-identifier: 9c67996e-8b08-44b9-9c83-a6d317322a2d
+
+      preferences:
+        # Without this Plex names the server after the pod it happens to be
+        # running in, so the name changes on every failover.
+        - name: FriendlyName
+          value: Cluster Plex
+
+        # Other settings worth declaring here, for example:
+        # - name: LogVerbose
+        #   value: "0"
+        # - name: ScheduledLibraryUpdatesEnabled
+        #   value: "1"
+        # - name: allowedNetworks
+        #   value: 10.0.0.0/8

@@ -1,0 +1,118 @@
+diff --git a/db.go b/db.go
+index 94f3b2b..a4b717e 100644
+--- a/db.go
++++ b/db.go
+@@ -1084,25 +1084,25 @@ func (db *DB) WriteDatabaseAt(ctx context.Context, f *os.File, data []byte, offs
+ 		db.pageSize = hdr.PageSize
+ 	}
+ 
+-	// Require that writes are a single page and are page-aligned.
++	// Require that writes are page-aligned and a multiple of page size.
+ 	// This allows us to track per-page checksums and detect errors on commit.
+ 	if offset%int64(db.pageSize) != 0 {
+ 		return fmt.Errorf("database writes must be page-aligned (%d bytes)", db.pageSize)
+-	} else if len(data) != int(db.pageSize) {
+-		return fmt.Errorf("database write must be exactly one page (%d bytes)", db.pageSize)
++	} else if len(data) == 0 || len(data)%int(db.pageSize) != 0 {
++		return fmt.Errorf("database write must be a multiple of page size (%d bytes), got %d", db.pageSize, len(data))
+ 	}
+ 
+-	// Track dirty pages if we are using a rollback journal. This isn't
+-	// necessary with the write-ahead log (WAL) since pages are appended
+-	// instead of overwritten. We can determine the dirty set at commit-time.
+-	pgno := uint32(offset/int64(db.pageSize)) + 1
+-	if db.Mode() == DBModeRollback {
+-		db.dirtyPageSet[pgno] = struct{}{}
+-	}
+-
+-	// Perform write on handle.
+-	if err := db.writeDatabasePage(f, pgno, data, false); err != nil {
+-		return err
++	// Loop over pages and write
++	for i := 0; i < len(data); i += int(db.pageSize) {
++		pgno := uint32((offset+int64(i))/int64(db.pageSize)) + 1
++		if db.Mode() == DBModeRollback {
++			db.dirtyPageSet[pgno] = struct{}{}
++		}
++		
++		chunk := data[i : i+int(db.pageSize)]
++		if err := db.writeDatabasePage(f, pgno, chunk, false); err != nil {
++			return err
++		}
+ 	}
+ 
+ 	return nil
+@@ -1621,13 +1621,21 @@ func (db *DB) CommitWAL(ctx context.Context) (err error) {
+ 	}
+ 
+ 	// Build sorted list of page numbers in current transaction.
+-	pgnos := make([]uint32, 0, len(txFrameOffsets))
+-	for pgno := range txFrameOffsets {
+-		pgnos = append(pgnos, pgno)
++	var pgnos []uint32
++	isSnapshot := prevPos.TXID == 0
++	if isSnapshot {
++		for pgno := uint32(1); pgno <= commit; pgno++ {
++			pgnos = append(pgnos, pgno)
++		}
++	} else {
++		for pgno := range txFrameOffsets {
++			pgnos = append(pgnos, pgno)
++		}
++		sort.Slice(pgnos, func(i, j int) bool { return pgnos[i] < pgnos[j] })
+ 	}
+-	sort.Slice(pgnos, func(i, j int) bool { return pgnos[i] < pgnos[j] })
+ 
+ 	frame := make([]byte, walFrameSize)
++	pageBuf := make([]byte, db.pageSize)
+ 	newWALChksums := make(map[uint32]ltx.Checksum)
+ 	lockPgno := ltx.LockPgno(db.pageSize)
+ 	for _, pgno := range pgnos {
+@@ -1636,23 +1644,38 @@ func (db *DB) CommitWAL(ctx context.Context) (err error) {
+ 			continue
+ 		}
+ 
+-		// Read next frame from the WAL file.
+-		offset := txFrameOffsets[pgno]
+-		if _, err := internal.ReadFullAt(walFile, frame, offset); err != nil {
+-			return fmt.Errorf("read next frame: %w", err)
++		var pageData []byte
++		if isSnapshot {
++			if offset, ok := txFrameOffsets[pgno]; ok {
++				if _, err := internal.ReadFullAt(walFile, pageBuf, offset+WALFrameHeaderSize); err != nil {
++					return fmt.Errorf("read next frame from tx: %w", err)
++				}
++			} else if offset, ok := db.wal.frameOffsets[pgno]; ok {
++				if _, err := internal.ReadFullAt(walFile, pageBuf, offset+WALFrameHeaderSize); err != nil {
++					return fmt.Errorf("read next frame from wal: %w", err)
++				}
++			} else {
++				if _, err := internal.ReadFullAt(dbFile, pageBuf, int64(pgno-1)*int64(db.pageSize)); err != nil {
++					return fmt.Errorf("read next frame from db: %w", err)
++				}
++			}
++			pageData = pageBuf
++		} else {
++			offset := txFrameOffsets[pgno]
++			if _, err := internal.ReadFullAt(walFile, frame, offset); err != nil {
++				return fmt.Errorf("read next frame: %w", err)
++			}
++			pageData = frame[WALFrameHeaderSize:]
+ 		}
+-		pgno := binary.BigEndian.Uint32(frame[0:4])
+ 
+-		// Copy page into LTX file.
+-		if err := enc.EncodePage(ltx.PageHeader{Pgno: pgno}, frame[WALFrameHeaderSize:]); err != nil {
++		if err := enc.EncodePage(ltx.PageHeader{Pgno: pgno}, pageData); err != nil {
+ 			return fmt.Errorf("cannot encode ltx page: pgno=%d err=%w", pgno, err)
+ 		}
+ 
+-		// Update per-page checksum.
+ 		db.chksums.mu.Lock()
+ 		prevPageChksum, _ := db.pageChecksum(pgno, db.PageN(), nil)
+ 		db.chksums.mu.Unlock()
+-		pageChksum := ltx.ChecksumPage(pgno, frame[WALFrameHeaderSize:])
++		pageChksum := ltx.ChecksumPage(pgno, pageData)
+ 		newWALChksums[pgno] = pageChksum
+ 
+ 		TraceLog.Printf("[CommitWALPage(%s)]: pgno=%d chksum=%s prev=%s\n", db.name, pgno, pageChksum, prevPageChksum)

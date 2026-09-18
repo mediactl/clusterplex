@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,9 @@ const (
 	pmsPort   = 32400
 	proxyPort = 32499
 	grpcPort  = 50051
+	prefsFile = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml"
+	// pinnedIdentity is what the kind overlay declares.
+	pinnedIdentity = "11111111-2222-3333-4444-555555555555"
 )
 
 func runCmd(t *testing.T, name string, args ...string) string {
@@ -101,6 +105,17 @@ func listening(procNetTCP string, port int) bool {
 	return false
 }
 
+// derivedIdentity returns ProcessedMachineIdentifier, which is the server ID
+// Plex reports to clients through /identity.
+func derivedIdentity(t *testing.T, prefs string) string {
+	t.Helper()
+	m := regexp.MustCompile(`ProcessedMachineIdentifier="([^"]*)"`).FindStringSubmatch(prefs)
+	if len(m) != 2 {
+		return ""
+	}
+	return m[1]
+}
+
 func TestClusterPlexE2E(t *testing.T) {
 	// StatefulSet volume claims and pod management policy are immutable, so
 	// each run starts from a fresh StatefulSet. The per-pod LiteFS claims and
@@ -109,7 +124,7 @@ func TestClusterPlexE2E(t *testing.T) {
 	runCmd(t, "kubectl", "delete", "statefulset", "plex", "-n", namespace, "--ignore-not-found", "--cascade=foreground", "--wait=true")
 	runCmd(t, "kubectl", "apply", "-k", "../../k8s/overlays/kind")
 	cs := getK8sClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	waitFor(ctx, t, "three running pods", func() (bool, error) {
@@ -186,8 +201,68 @@ func TestClusterPlexE2E(t *testing.T) {
 		assert.True(t, listening(tcp, grpcPort), "%s must accept jobs", workers.Items[i].Name)
 	}
 
+	// A preference declared in the ConfigMap reached Preferences.xml, and the
+	// identity Plex generated for itself survived the merge.
+	waitFor(ctx, t, "declared preferences applied", func() (bool, error) {
+		out, err := tryExecPod(leader, "cat", prefsFile)
+		if err != nil {
+			return false, nil
+		}
+		return strings.Contains(out, `FriendlyName="Cluster Plex"`), nil
+	})
+	prefs := execPod(t, leader, "cat", prefsFile)
+	assert.Contains(t, prefs, `MachineIdentifier="`+pinnedIdentity+`"`, "the declared server identity must be applied")
+
+	// The identity clients actually see is the value Plex derives from the
+	// pinned one. It must not change when leadership moves, or every client
+	// would treat the failover as a different server.
+	before := derivedIdentity(t, prefs)
+	require.NotEmpty(t, before, "Plex must derive an identity from the pinned one")
+	t.Logf("client-visible identity: %s", before)
+
 	// The client-facing Service reaches exactly the leader's proxy port.
-	waitFor(ctx, t, "plex-main endpoint on the leader", func() (bool, error) {
+	waitForServiceEndpoint(ctx, t, cs, leader)
+
+	t.Logf("forcing a failover from %s", leader)
+	runCmd(t, "kubectl", "delete", "pod", "-n", namespace, leader, "--wait=false")
+	var next string
+	waitFor(ctx, t, "a new leader", func() (bool, error) {
+		lease, err := cs.CoordinationV1().Leases(namespace).Get(ctx, leaseName, metav1.GetOptions{})
+		if k8serrors.IsNotFound(err) || err != nil {
+			return false, nil
+		}
+		if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity == leader {
+			return false, nil
+		}
+		next = *lease.Spec.HolderIdentity
+		p, err := cs.CoreV1().Pods(namespace).Get(ctx, next, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		return p.Labels["plex-role"] == "leader" && podReady(p), nil
+	})
+	t.Logf("new leader: %s", next)
+
+	var after string
+	waitFor(ctx, t, "the new leader to serve the same identity", func() (bool, error) {
+		out, err := tryExecPod(next, "cat", prefsFile)
+		if err != nil {
+			return false, nil
+		}
+		after = derivedIdentity(t, out)
+		return after != "", nil
+	})
+	assert.Equal(t, before, after, "the server identity must survive a failover")
+
+	// The Service followed leadership to the new leader's proxy port.
+	waitForServiceEndpoint(ctx, t, cs, next)
+}
+
+// waitForServiceEndpoint blocks until plex-main resolves to exactly pod, on the
+// proxy port. It is what a client connecting to the cluster would reach.
+func waitForServiceEndpoint(ctx context.Context, t *testing.T, cs *kubernetes.Clientset, pod string) {
+	t.Helper()
+	waitFor(ctx, t, "plex-main endpoint on "+pod, func() (bool, error) {
 		slices, err := cs.DiscoveryV1().EndpointSlices(namespace).List(ctx, metav1.ListOptions{LabelSelector: discoveryv1.LabelServiceName + "=plex-main"})
 		if err != nil {
 			return false, err
@@ -206,6 +281,6 @@ func TestClusterPlexE2E(t *testing.T) {
 				}
 			}
 		}
-		return len(ready) == 1 && ready[0] == leader && port == proxyPort, nil
+		return len(ready) == 1 && ready[0] == pod && port == proxyPort, nil
 	})
 }
