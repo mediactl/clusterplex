@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Materialise ./litefs-fork: upstream LiteFS at the pinned tag with the
+# Materialise ./third_party/litefs: upstream LiteFS at the pinned tag with the
 # patches in hack/litefs applied. go.mod points the litefs module at it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DEST="${ROOT}/litefs-fork"
+DEST="${ROOT}/third_party/litefs"
 TAG="${LITEFS_TAG:-v0.5.14}"
 MARKER="${DEST}/.clusterplex-patched"
 
@@ -23,11 +23,12 @@ if [ -d "${DEST}" ]; then
     echo "${TAG}" > "${MARKER}"
     exit 0
   fi
-  echo "litefs-fork exists but does not carry the hack/litefs patches; move it aside and rerun" >&2
+  echo "third_party/litefs exists but does not carry the hack/litefs patches; move it aside and rerun" >&2
   exit 1
 fi
 
-echo "fetching superfly/litefs ${TAG} into litefs-fork" >&2
+echo "fetching superfly/litefs ${TAG} into third_party/litefs" >&2
+mkdir -p "$(dirname "${DEST}")"
 git clone --quiet --depth 1 --branch "${TAG}" https://github.com/superfly/litefs "${DEST}"
 for p in "${ROOT}"/hack/litefs/*.patch; do
   git -C "${DEST}" apply "$p"

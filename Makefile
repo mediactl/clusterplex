@@ -8,8 +8,8 @@ all: build
 
 ##@ Development
 
-.PHONY: litefs-fork
-litefs-fork: ## Materialise ./litefs-fork (upstream $(LITEFS_TAG) + hack/litefs patches)
+.PHONY: litefs
+litefs: ## Materialise ./third_party/litefs (upstream $(LITEFS_TAG) + hack/litefs patches)
 	LITEFS_TAG=$(LITEFS_TAG) hack/litefs/fetch.sh
 
 .PHONY: proto
@@ -22,24 +22,24 @@ fmt: ## gofmt the module
 	go fmt ./...
 
 .PHONY: vet
-vet: litefs-fork ## go vet the module
+vet: litefs ## go vet the module
 	go vet ./...
 
 .PHONY: lint
-lint: litefs-fork ## Run golangci-lint v2
+lint: litefs ## Run golangci-lint v2
 	$(GOLANGCI_LINT) run ./...
 
 .PHONY: tidy
-tidy: litefs-fork ## go mod tidy
+tidy: litefs ## go mod tidy
 	go mod tidy
 
 .PHONY: build
-build: litefs-fork ## Build the manager and shim into bin/
+build: litefs ## Build the manager and shim into bin/
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 
 .PHONY: test
-test: litefs-fork ## Unit tests
+test: litefs ## Unit tests
 	go test ./... -coverprofile cover.out
 
 ##@ Images and clusters

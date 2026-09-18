@@ -78,4 +78,4 @@ require (
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
-replace github.com/superfly/litefs => ./litefs-fork
+replace github.com/superfly/litefs => ./third_party/litefs

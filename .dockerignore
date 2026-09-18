@@ -1,5 +1,5 @@
 .git
 bin/
 dist/
-litefs-fork/
+third_party/litefs/
 cover.out
