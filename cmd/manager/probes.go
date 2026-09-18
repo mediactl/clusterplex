@@ -20,8 +20,13 @@ func (m *Manager) probeHandler() http.Handler {
 	// Readiness: may traffic and jobs be sent to this pod?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		m.mu.RLock()
-		ready := m.isReady
+		ready, orphaned := m.isReady, m.orphaned
 		m.mu.RUnlock()
+		if orphaned != "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("orphaned: " + orphaned))
+			return
+		}
 		if !ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return

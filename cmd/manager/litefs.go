@@ -18,6 +18,10 @@ import (
 // Pod role labels. The client-facing Service selects RoleLeader; the job
 // dispatcher selects RoleWorker. A pod that has just started carries
 // RoleStarting so a label left behind by a crashed leader does not linger.
+// clusterIDCheckInterval is how often a running node re-checks that its
+// LiteFS lineage still matches the cluster's.
+const clusterIDCheckInterval = 15 * time.Second
+
 const (
 	RoleStarting = "starting"
 	RoleLeader   = "leader"
@@ -39,8 +43,14 @@ func (m *Manager) startLiteFS(ctx context.Context) error {
 		return fmt.Errorf("create databases dir: %w", err)
 	}
 
+	leaser := litefsk8s.NewK8sLeaser(m.K8sClient, cfg.Namespace, cfg.LeaseName, cfg.PodName, cfg.AdvertiseURL())
+
+	if err := m.reconcileClusterID(ctx, leaser); err != nil {
+		m.Logger.Error("check LiteFS cluster id", "error", err)
+	}
+
 	store := litefs.NewStore(cfg.LiteFSDir, true)
-	store.Leaser = litefsk8s.NewK8sLeaser(m.K8sClient, cfg.Namespace, cfg.LeaseName, cfg.PodName, cfg.AdvertiseURL())
+	store.Leaser = leaser
 	store.Client = http.NewClient()
 	if err := store.Open(); err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -61,7 +71,87 @@ func (m *Manager) startLiteFS(ctx context.Context) error {
 
 	m.store, m.fsys, m.litefsHTTP = store, fsys, server
 	go m.monitorPrimaryStatus(ctx, store)
+	go m.monitorClusterID(ctx, store, leaser)
 	return nil
+}
+
+// reconcileClusterID compares this node's LiteFS lineage with the cluster's.
+//
+// LiteFS refuses to replicate between nodes whose cluster IDs differ, and
+// nothing reconciles it, so a node that disagrees silently serves whatever it
+// last had. It is not safe to resolve automatically: whichever pod wins the
+// election first stamps its ID on the Lease, so an empty node can make the
+// node holding the real library look like the outlier. Adopting the cluster's
+// lineage discards this node's data, so it happens only when asked. Otherwise
+// the node is marked orphaned, which keeps it out of every Service and out of
+// the election until an operator decides.
+func (m *Manager) reconcileClusterID(ctx context.Context, leaser *litefsk8s.K8sLeaser) error {
+	established, err := leaser.ClusterID(ctx)
+	if err != nil {
+		return err
+	}
+	local, err := litefsk8s.LocalClusterID(m.Config.LiteFSDir)
+	if err != nil {
+		return err
+	}
+	if established == "" || local == "" || established == local {
+		return nil
+	}
+
+	if m.Config.AdoptClusterID {
+		m.Logger.Warn("discarding this node's LiteFS lineage and resnapshotting from the primary",
+			"local", local, "cluster", established)
+		return litefsk8s.AdoptClusterID(m.Config.LiteFSDir)
+	}
+
+	m.Logger.Error("node is orphaned and will not be marked ready", "local", local, "cluster", established)
+	m.setOrphaned(orphanReason(local, established))
+	return nil
+}
+
+// orphanReason explains the state and the remedy in one line, because it
+// surfaces through the readiness probe.
+func orphanReason(local, established string) string {
+	return fmt.Sprintf("this node's LiteFS lineage %s does not match the cluster's %s, so it replicates nothing; "+
+		"confirm which lineage holds the real library, then restart the orphaned nodes with --litefs-adopt-cluster-id",
+		local, established)
+}
+
+// monitorClusterID keeps watching for lineage divergence after startup. The
+// Lease's cluster ID can be established or corrected while this node is
+// already running, and a node that only checked once would keep reporting
+// Ready while replicating nothing.
+func (m *Manager) monitorClusterID(ctx context.Context, store *litefs.Store, leaser *litefsk8s.K8sLeaser) {
+	ticker := time.NewTicker(clusterIDCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		established, err := leaser.ClusterID(ctx)
+		if err != nil {
+			m.Logger.Warn("check cluster id", "error", err)
+			continue
+		}
+		local := store.ClusterID()
+		if established == "" || local == "" || established == local {
+			continue
+		}
+
+		m.mu.RLock()
+		already := m.orphaned != ""
+		m.mu.RUnlock()
+		if already {
+			continue
+		}
+		m.Logger.Error("node became orphaned: its LiteFS lineage no longer matches the cluster",
+			"local", local, "cluster", established)
+		m.setOrphaned(orphanReason(local, established))
+	}
 }
 
 // monitorPrimaryStatus starts Plex when this node becomes primary and exits

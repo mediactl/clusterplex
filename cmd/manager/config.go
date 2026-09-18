@@ -75,6 +75,11 @@ type Config struct {
 	// ProbePort serves the health probes and metrics.
 	ProbePort int
 
+	// AdoptClusterID lets a node whose LiteFS lineage disagrees with the
+	// cluster's throw its own away and resnapshot. Off by default: the node
+	// that disagrees may be the one holding the only good copy.
+	AdoptClusterID bool
+
 	// Preferences are the Plex settings the manager writes into
 	// Preferences.xml before each start. Keys not listed here are left as
 	// Plex last wrote them.
@@ -99,6 +104,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
 	fs.Int("litefs-port", 20202, "LiteFS replication port")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
+	fs.Bool("litefs-adopt-cluster-id", false, "discard this node's LiteFS lineage and resnapshot from the primary (destructive; only when the cluster's lineage is known to be the right one)")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
 	return fs
@@ -156,6 +162,7 @@ func loadConfig(args []string) (Config, error) {
 		WorkerPort:     port("worker-port"),
 		LiteFSPort:     port("litefs-port"),
 		ProbePort:      port("probe-port"),
+		AdoptClusterID: v.GetBool("litefs-adopt-cluster-id"),
 	}
 
 	prefs, err := loadPreferences(v, fs, os.Environ())

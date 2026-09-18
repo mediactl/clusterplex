@@ -51,6 +51,16 @@ type Manager struct {
 	isLeader   bool
 	isReady    bool
 	isStarting bool
+	// orphaned, when set, is why this node's data is not replicating. It keeps
+	// the pod out of every Service and out of the election.
+	orphaned string
+}
+
+// setOrphaned marks this node as holding data that no longer replicates.
+func (m *Manager) setOrphaned(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orphaned = reason
 }
 
 func main() {

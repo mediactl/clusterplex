@@ -2,6 +2,8 @@ package litefsk8s
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -107,4 +109,116 @@ func TestRenewFailsOnceAnotherNodeHoldsTheLease(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.ErrorIs(t, lease.Renew(ctx), litefs.ErrLeaseExpired)
+}
+
+func TestClusterIDIsEmptyUntilAPrimaryEstablishesOne(t *testing.T) {
+	ctx := context.Background()
+	a := newLeaser(fake.NewSimpleClientset(), "plex-0")
+
+	id, err := a.ClusterID(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, id, "an empty cluster must report no ID so the first primary can generate one")
+}
+
+func TestClusterIDSetByOnePrimaryIsVisibleToEveryOtherNode(t *testing.T) {
+	// This is the bug: when the ID lives only on the primary's own disk, every
+	// pod that becomes primary generates a different one and LiteFS then
+	// refuses to replicate between them, permanently.
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+	a, b := newLeaser(cs, "plex-0"), newLeaser(cs, "plex-1")
+	_, err := a.Acquire(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, a.SetClusterID(ctx, "LFSC6C9ACDA447553570"))
+
+	got, err := b.ClusterID(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "LFSC6C9ACDA447553570", got)
+}
+
+func TestSetClusterIDIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	a := newLeaser(fake.NewSimpleClientset(), "plex-0")
+	_, err := a.Acquire(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, a.SetClusterID(ctx, "LFSC6C9ACDA447553570"))
+	require.NoError(t, a.SetClusterID(ctx, "LFSC6C9ACDA447553570"))
+
+	got, err := a.ClusterID(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "LFSC6C9ACDA447553570", got)
+}
+
+func TestSetClusterIDRefusesToReplaceAnEstablishedID(t *testing.T) {
+	// Two pods racing to become primary must not each stamp their own ID.
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+	a, b := newLeaser(cs, "plex-0"), newLeaser(cs, "plex-1")
+	_, err := a.Acquire(ctx)
+	require.NoError(t, err)
+	require.NoError(t, a.SetClusterID(ctx, "LFSC6C9ACDA447553570"))
+
+	err = b.SetClusterID(ctx, "LFSC095D0C926D119E3D")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LFSC6C9ACDA447553570", "the error must name the established ID")
+	got, _ := a.ClusterID(ctx)
+	assert.Equal(t, "LFSC6C9ACDA447553570", got, "the established ID must survive")
+}
+
+func TestReleasingTheLeaseKeepsTheClusterID(t *testing.T) {
+	// Close() clears the primary info. It must not take the cluster ID with
+	// it, or the next primary would generate a fresh one and orphan everyone.
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+	a := newLeaser(cs, "plex-0")
+	lease, err := a.Acquire(ctx)
+	require.NoError(t, err)
+	require.NoError(t, a.SetClusterID(ctx, "LFSC6C9ACDA447553570"))
+
+	require.NoError(t, lease.Close())
+
+	got, err := a.ClusterID(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "LFSC6C9ACDA447553570", got)
+}
+
+func writeLocalClusterID(t *testing.T, dir, id string) string {
+	t.Helper()
+	path := filepath.Join(dir, "clusterid")
+	require.NoError(t, os.WriteFile(path, []byte(id), 0o600))
+	return path
+}
+
+func TestLocalClusterIDReadsWhatLiteFSStored(t *testing.T) {
+	dir := t.TempDir()
+	writeLocalClusterID(t, dir, "LFSC6C9ACDA447553570\n")
+
+	got, err := LocalClusterID(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "LFSC6C9ACDA447553570", got)
+}
+
+func TestLocalClusterIDIsEmptyOnAFreshNode(t *testing.T) {
+	got, err := LocalClusterID(t.TempDir())
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestAdoptClusterIDDiscardsThisNodesLineage(t *testing.T) {
+	// Adopting is destructive: the node throws away its own history and
+	// resnapshots from the primary. It is never automatic, because the node
+	// holding the divergent ID may be the one holding the only good data.
+	dir := t.TempDir()
+	path := writeLocalClusterID(t, dir, "LFSC095D0C926D119E3D")
+
+	require.NoError(t, AdoptClusterID(dir))
+
+	assert.NoFileExists(t, path)
+}
+
+func TestAdoptClusterIDIsANoOpWhenThereIsNothingToDiscard(t *testing.T) {
+	require.NoError(t, AdoptClusterID(t.TempDir()))
 }

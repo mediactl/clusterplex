@@ -4,17 +4,30 @@ package litefsk8s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/superfly/litefs"
 	coordinationv1 "k8s.io/api/coordination/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
-const primaryInfoAnnotation = "litefs/primary-info"
+const (
+	primaryInfoAnnotation = "litefs/primary-info"
+	// clusterIDAnnotation holds the LiteFS cluster ID. It belongs on the Lease
+	// rather than on each node's disk: LiteFS refuses to replicate between
+	// nodes whose cluster IDs differ, so if every new primary minted its own,
+	// any pod that had ever been primary would be orphaned for good.
+	clusterIDAnnotation = "litefs/cluster-id"
+	// clusterIDFile is where LiteFS stores the cluster ID in its data dir.
+	clusterIDFile = "clusterid"
+)
 
 var leaseDurationSeconds int32 = 15
 
@@ -38,12 +51,75 @@ func NewK8sLeaser(clientset kubernetes.Interface, namespace, leaseName, podName,
 	}
 }
 
-func (l *K8sLeaser) Close() error                                  { return nil }
-func (l *K8sLeaser) Type() string                                  { return "kubernetes" }
-func (l *K8sLeaser) Hostname() string                              { return l.podName }
-func (l *K8sLeaser) AdvertiseURL() string                          { return l.advertiseURL }
-func (l *K8sLeaser) ClusterID(ctx context.Context) (string, error) { return "", nil }
+func (l *K8sLeaser) Close() error         { return nil }
+func (l *K8sLeaser) Type() string         { return "kubernetes" }
+func (l *K8sLeaser) Hostname() string     { return l.podName }
+func (l *K8sLeaser) AdvertiseURL() string { return l.advertiseURL }
+
+// ClusterID returns the cluster ID recorded on the Lease, or "" when no
+// primary has established one yet.
+func (l *K8sLeaser) ClusterID(ctx context.Context) (string, error) {
+	lease, err := l.leases().Get(ctx, l.leaseName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("get cluster id: %w", err)
+	}
+	return lease.Annotations[clusterIDAnnotation], nil
+}
+
+// SetClusterID records the cluster ID on the Lease the first time a primary
+// establishes one. It refuses to replace an established ID: when two pods race
+// to become primary they would otherwise each stamp their own, which is the
+// split this annotation exists to prevent. The loser fails here, retries, and
+// then reads the winner's ID.
 func (l *K8sLeaser) SetClusterID(ctx context.Context, clusterID string) error {
+	lease, err := l.leases().Get(ctx, l.leaseName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("set cluster id: %w", err)
+	}
+	switch established := lease.Annotations[clusterIDAnnotation]; {
+	case established == clusterID:
+		return nil
+	case established != "":
+		return fmt.Errorf("cluster id is already established as %s, refusing to replace it with %s", established, clusterID)
+	}
+	if lease.Annotations == nil {
+		lease.Annotations = map[string]string{}
+	}
+	lease.Annotations[clusterIDAnnotation] = clusterID
+	if _, err := l.leases().Update(ctx, lease, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("set cluster id: %w", err)
+	}
+	return nil
+}
+
+// LocalClusterID returns the cluster ID this node has stored on disk, or ""
+// when it has none yet.
+func LocalClusterID(dataDir string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(dataDir, clusterIDFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("read local cluster id: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// AdoptClusterID discards this node's cluster ID so it adopts the cluster's on
+// its next connection to the primary.
+//
+// This is destructive and deliberately never automatic. A node whose cluster
+// ID differs from the Lease's is not necessarily the stale one: whichever pod
+// wins the election first stamps its ID on the Lease, so an empty node can
+// make the node holding the real library look like the outlier. Adopting
+// throws away this node's lineage and resnapshots from the primary, so an
+// operator has to confirm which lineage is authoritative first.
+func AdoptClusterID(dataDir string) error {
+	err := os.Remove(filepath.Join(dataDir, clusterIDFile))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("discard local cluster id: %w", err)
+	}
 	return nil
 }
 
@@ -62,7 +138,7 @@ type leaseClient interface {
 func (l *K8sLeaser) Acquire(ctx context.Context) (litefs.Lease, error) {
 	now := metav1.NowMicro()
 	lease, err := l.leases().Get(ctx, l.leaseName, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		created, err := l.leases().Create(ctx, &coordinationv1.Lease{
 			ObjectMeta: metav1.ObjectMeta{Name: l.leaseName, Annotations: l.annotations()},
 			Spec: coordinationv1.LeaseSpec{
@@ -113,7 +189,7 @@ func (l *K8sLeaser) AcquireExisting(ctx context.Context, leaseID string) (litefs
 // answering with ourselves makes the store replicate from itself.
 func (l *K8sLeaser) PrimaryInfo(ctx context.Context) (litefs.PrimaryInfo, error) {
 	lease, err := l.leases().Get(ctx, l.leaseName, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		return litefs.PrimaryInfo{}, litefs.ErrNoPrimary
 	} else if err != nil {
 		return litefs.PrimaryInfo{}, err
@@ -207,7 +283,7 @@ func (l *K8sLease) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	lease, err := l.leaser.leases().Get(ctx, l.leaser.leaseName, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("release lease: %w", err)

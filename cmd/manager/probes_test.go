@@ -28,3 +28,22 @@ func TestProbesReflectManagerState(t *testing.T) {
 	assert.Equal(t, http.StatusOK, get("/readyz"))
 	assert.Equal(t, http.StatusOK, get("/startupz"))
 }
+
+func TestProbesReportNotReadyWhenThisNodesDataIsOrphaned(t *testing.T) {
+	// A node whose LiteFS cluster ID disagrees with the cluster's replicates
+	// nothing. Reporting Ready would let it serve stale library data and, worse,
+	// win the election and stamp its empty lineage on everyone else.
+	m := &Manager{isReady: true}
+	h := m.probeHandler()
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	m.setOrphaned("local cluster id LFSC1 does not match cluster LFSC2")
+
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Contains(t, rr.Body.String(), "LFSC2", "the probe should say why")
+}

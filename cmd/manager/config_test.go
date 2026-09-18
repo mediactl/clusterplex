@@ -224,3 +224,14 @@ func TestMachineIdentifierAgreeingWithAnExplicitPreferenceIsFine(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id, c.Preferences["MachineIdentifier"])
 }
+
+func TestAdoptClusterIDIsOffByDefaultBecauseItDiscardsData(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig(nil)
+	require.NoError(t, err)
+	assert.False(t, c.AdoptClusterID)
+
+	c, err = loadConfig([]string{"--litefs-adopt-cluster-id"})
+	require.NoError(t, err)
+	assert.True(t, c.AdoptClusterID)
+}
