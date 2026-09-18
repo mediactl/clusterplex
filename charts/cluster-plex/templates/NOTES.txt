@@ -17,6 +17,18 @@ Two things decide whether media throughput actually scales past one node:
 Throughput scales with nodes, not replicas. Proxy pods are spread one per node
 and will stay Pending if asked for more replicas than there are nodes.
 
+{{- if not .Values.proxy.externalURL }}
+
+WARNING: proxy.externalURL is unset, so Plex will advertise its own pod
+addresses to clients. Nothing outside the cluster can reach those, so clients
+will either fail to connect or find a route that bypasses the proxy and its
+media offload entirely. Set it to the address clients actually use.
+{{- end }}
+{{- if not .Values.proxy.tls.secretName }}
+
+WARNING: proxy.tls.secretName is unset, so the proxy speaks plain HTTP. Plex
+clients prefer a secure connection and some will decline a server without one.
+{{- end }}
 {{- if not .Values.plex.machineIdentifier }}
 
 plex.machineIdentifier is unset, so Plex will generate an identity on first

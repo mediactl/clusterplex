@@ -43,6 +43,12 @@ spec:
               value: {{ .Release.Name }}-litefs
             - name: CLUSTERPLEX_FAILOVER_GRACE
               value: {{ .Values.proxy.failoverGrace | quote }}
+            {{- if .Values.proxy.tls.secretName }}
+            - name: CLUSTERPLEX_TLS_CERT
+              value: /etc/clusterplex/tls/tls.crt
+            - name: CLUSTERPLEX_TLS_KEY
+              value: /etc/clusterplex/tls/tls.key
+            {{- end }}
           ports:
             - name: pms
               containerPort: 32400
@@ -61,8 +67,16 @@ spec:
           volumeMounts:
             # Read only: the proxy serves media, it never changes the library.
             - {name: plex-media, mountPath: /media, readOnly: true}
+            {{- if .Values.proxy.tls.secretName }}
+            - {name: tls, mountPath: /etc/clusterplex/tls, readOnly: true}
+            {{- end }}
       volumes:
         - name: plex-media
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-media
             readOnly: true
+        {{- if .Values.proxy.tls.secretName }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.proxy.tls.secretName }}
+        {{- end }}

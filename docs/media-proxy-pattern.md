@@ -125,12 +125,22 @@ single stream does not.
 The ceiling is then the smallest of: storage throughput, the summed interfaces
 of nodes running proxies, and the switch uplink.
 
-Because the deployment controls its own hostname in this design,
-`customCertificateDomain` and `customCertificatePath` are a better fit than
-reusing Plex's own key material: your domain, your DNS, your load balancer,
-using a supported Plex setting. Do not try to intercept `plex.direct` with a
-different certificate; that breaks native clients. Advertise the proxy through
-Plex's custom server access URLs instead.
+## Two things clients need before any of this works
+
+Neither is optional, and both are easy to overlook because the proxy passes its
+own tests without them.
+
+**Plex must advertise the proxy.** Left alone, Plex tells clients its own pod
+addresses, which nothing outside the cluster can reach, so clients either fail
+to connect or find a route that bypasses the proxy and its offload entirely.
+The `customConnections` preference fixes this, and the chart sets it from
+`proxy.externalURL`.
+
+**The proxy must offer TLS.** Plex clients prefer a secure connection and some
+decline a server without one. Serve your own hostname with your own
+certificate rather than intercepting Plex's `plex.direct` name with a different
+one, which is known to break native clients. The chart mounts a Secret and the
+proxy terminates TLS itself.
 
 ## Open questions worth testing
 

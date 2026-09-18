@@ -22,6 +22,18 @@ proxy:
   # THROUGHPUT SCALES WITH NODES, NOT REPLICAS: spreading these across nodes is
   # what raises the ceiling. See docs/media-proxy-pattern.md.
   replicas: 3
+  # The address clients actually reach, for example
+  # https://plex.example.com:32400. Plex advertises this to clients as a custom
+  # connection. Without it Plex advertises its pod addresses, which no client
+  # outside the cluster can reach, so they either fail to connect or find a
+  # path that bypasses the proxy entirely.
+  externalURL: ""
+  tls:
+    # A Secret holding tls.crt and tls.key, served by the proxy. Plex clients
+    # prefer a secure connection, and intercepting Plex's own plex.direct name
+    # with a different certificate breaks native clients, so serve your own
+    # hostname instead and name it in externalURL above.
+    secretName: ""
   # How long a request waits for Plex during a failover before giving up.
   failoverGrace: 30s
   resources: {}

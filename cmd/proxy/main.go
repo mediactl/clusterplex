@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -46,6 +47,8 @@ func run() int {
 	leaseName := env("CLUSTERPLEX_LEASE_NAME", "cluster-plex-litefs")
 	listen := env("CLUSTERPLEX_PROXY_LISTEN", ":32400")
 	probeAddr := env("CLUSTERPLEX_PROBE_LISTEN", ":8080")
+	certFile := env("CLUSTERPLEX_TLS_CERT", "")
+	keyFile := env("CLUSTERPLEX_TLS_KEY", "")
 	waitFor, err := time.ParseDuration(env("CLUSTERPLEX_FAILOVER_GRACE", "30s"))
 	if err != nil {
 		logger.Error("invalid CLUSTERPLEX_FAILOVER_GRACE", "error", err)
@@ -120,8 +123,14 @@ func run() int {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	logger.Info("proxy listening", "addr", listen, "lease", leaseName, "namespace", namespace)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	lis, err := net.Listen("tcp", listen)
+	if err != nil {
+		logger.Error("listen", "addr", listen, "error", err)
+		return 1
+	}
+
+	logger.Info("proxy listening", "addr", listen, "tls", certFile != "", "lease", leaseName, "namespace", namespace)
+	if err := serve(lis, srv, certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("proxy stopped", "error", err)
 		return 1
 	}

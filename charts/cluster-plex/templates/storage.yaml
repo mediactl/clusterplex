@@ -31,3 +31,9 @@ data:
         - name: {{ .name | quote }}
           value: {{ .value | quote }}
         {{- end }}
+        {{- with .Values.proxy.externalURL }}
+        # Tells Plex to advertise the proxy to clients. Without this Plex
+        # offers only addresses that reach it directly, bypassing the proxy.
+        - name: "customConnections"
+          value: {{ . | quote }}
+        {{- end }}
