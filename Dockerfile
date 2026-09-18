@@ -5,6 +5,7 @@ ARG VENDOR="machinectl"
 FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION} AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
+COPY litefs-fork ./litefs-fork
 RUN go mod download
 COPY . .
 RUN go build -o bin/manager ./cmd/manager
