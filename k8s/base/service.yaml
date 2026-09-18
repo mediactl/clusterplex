@@ -1,0 +1,36 @@
+# plex-main is what clients use. It selects only the pod currently running
+# Plex Media Server and lands on the manager's TCP proxy, which forwards to
+# Plex on loopback. See docs/adr/0002.
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-main
+spec:
+  type: LoadBalancer
+  selector:
+    app: plex
+    plex-role: leader
+  ports:
+    - name: pms
+      port: 32400
+      targetPort: proxy
+---
+# plex-workers gives every pod a stable DNS name for LiteFS replication and
+# job dispatch. Addresses are published before readiness so a replica can
+# find the primary while it is still snapshotting.
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-workers
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: plex
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+    - name: litefs
+      port: 20202
+      targetPort: litefs

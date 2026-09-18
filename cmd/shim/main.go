@@ -1,11 +1,20 @@
+// The shim stands in for the Plex helper binaries (transcoder, scanner,
+// commercial skipper, relay). Plex executes it as if it were the real binary;
+// it forwards the invocation to the manager over a unix socket and relays the
+// output and exit status back, so the manager can run the job wherever it
+// likes.
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -15,68 +24,81 @@ import (
 	pb "github.com/mediactl/clusterplex/proto"
 )
 
+const defaultSocket = "/var/run/clusterplex.sock"
+
 func main() {
-	ctx := context.Background()
-	tracer := otel.Tracer("plex-shim")
-	ctx, span := tracer.Start(ctx, "ShimInterceptor")
-	defer span.End()
+	// Plex stops a transcode by signalling the shim; cancelling the context
+	// ends the stream and the manager kills the real process.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-	// Determine WHICH binary Plex is attempting to execute
-	targetBinary := filepath.Base(os.Args[0])
-	args := os.Args[1:]
-
-	conn, err := grpc.DialContext(ctx, "unix:///var/run/clusterplex.sock",
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		os.Exit(1)
+	socket := os.Getenv("CLUSTERPLEX_SOCKET")
+	if socket == "" {
+		socket = defaultSocket
 	}
-	defer conn.Close()
-
-	client := pb.NewManagerClient(conn)
-
-	// Propagate OTel context into gRPC headers map
-	carrier := propagation.MapCarrier{}
-	otel.GetTextMapPropagator().Inject(ctx, carrier)
-
-	req := &pb.ExecRequest{
-		TargetBinary: targetBinary,
-		Args:         args,
-		Env:          getEnvMap(),
-		TraceHeaders: carrier,
-	}
-
-	stream, err := client.ExecuteRemote(ctx, req)
-	if err != nil {
-		os.Exit(1)
-	}
-
-	var exitCode int32 = 1
-	for {
-		logData, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if len(logData.StdoutChunk) > 0 {
-			os.Stdout.Write(logData.StdoutChunk)
-		}
-		if len(logData.StderrChunk) > 0 {
-			os.Stderr.Write(logData.StderrChunk)
-		}
-		if logData.IsFinished {
-			exitCode = logData.ExitCode
-			break
-		}
-	}
-	os.Exit(int(exitCode))
+	code := run(ctx, socket, os.Args[0], os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
-func getEnvMap() map[string]string {
-	envMap := make(map[string]string)
-	for _, e := range os.Environ() {
-		pair := strings.SplitN(e, "=", 2)
-		if len(pair) == 2 {
-			envMap[pair[0]] = pair[1]
+// run asks the manager to execute the binary this shim stands in for, copies
+// the streamed output to stdout and stderr, and returns the exit code to use.
+func run(ctx context.Context, socket, argv0 string, args []string, stdout, stderr io.Writer) int {
+	target := filepath.Base(argv0)
+	ctx, span := otel.Tracer("plex-shim").Start(ctx, "ShimInterceptor")
+	defer span.End()
+
+	conn, err := grpc.NewClient("unix://"+socket, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fail(stderr, target, socket, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	cwd, _ := os.Getwd()
+
+	stream, err := pb.NewManagerClient(conn).ExecuteRemote(ctx, &pb.ExecRequest{
+		TargetBinary: target,
+		Args:         args,
+		Env:          envMap(),
+		TraceHeaders: carrier,
+		Cwd:          cwd,
+	})
+	if err != nil {
+		return fail(stderr, target, socket, err)
+	}
+
+	for {
+		m, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return fail(stderr, target, socket, errors.New("manager closed the stream without an exit status"))
+		}
+		if err != nil {
+			return fail(stderr, target, socket, err)
+		}
+		if len(m.StdoutChunk) > 0 {
+			_, _ = stdout.Write(m.StdoutChunk)
+		}
+		if len(m.StderrChunk) > 0 {
+			_, _ = stderr.Write(m.StderrChunk)
+		}
+		if m.IsFinished {
+			return int(m.ExitCode)
 		}
 	}
-	return envMap
+}
+
+func fail(stderr io.Writer, target, socket string, err error) int {
+	_, _ = fmt.Fprintf(stderr, "clusterplex shim: %s: %v (manager socket %s)\n", target, err, socket)
+	return 1
+}
+
+func envMap() map[string]string {
+	env := make(map[string]string)
+	for _, e := range os.Environ() {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			env[k] = v
+		}
+	}
+	return env
 }

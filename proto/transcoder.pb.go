@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.12
 // 	protoc        v7.36.0
-// source: proto/transcoder.proto
+// source: transcoder.proto
 
 package proto
 
@@ -22,18 +22,21 @@ const (
 )
 
 type ExecRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TargetBinary  string                 `protobuf:"bytes,1,opt,name=target_binary,json=targetBinary,proto3" json:"target_binary,omitempty"`
-	Args          []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
-	Env           map[string]string      `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	TraceHeaders  map[string]string      `protobuf:"bytes,4,rep,name=trace_headers,json=traceHeaders,proto3" json:"trace_headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	TargetBinary string                 `protobuf:"bytes,1,opt,name=target_binary,json=targetBinary,proto3" json:"target_binary,omitempty"`
+	Args         []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
+	Env          map[string]string      `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	TraceHeaders map[string]string      `protobuf:"bytes,4,rep,name=trace_headers,json=traceHeaders,proto3" json:"trace_headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Working directory Plex launched the shim in; the worker runs the real
+	// binary there so relative paths in args resolve identically.
+	Cwd           string `protobuf:"bytes,5,opt,name=cwd,proto3" json:"cwd,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExecRequest) Reset() {
 	*x = ExecRequest{}
-	mi := &file_proto_transcoder_proto_msgTypes[0]
+	mi := &file_transcoder_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -45,7 +48,7 @@ func (x *ExecRequest) String() string {
 func (*ExecRequest) ProtoMessage() {}
 
 func (x *ExecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_transcoder_proto_msgTypes[0]
+	mi := &file_transcoder_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -58,7 +61,7 @@ func (x *ExecRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecRequest.ProtoReflect.Descriptor instead.
 func (*ExecRequest) Descriptor() ([]byte, []int) {
-	return file_proto_transcoder_proto_rawDescGZIP(), []int{0}
+	return file_transcoder_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ExecRequest) GetTargetBinary() string {
@@ -89,6 +92,13 @@ func (x *ExecRequest) GetTraceHeaders() map[string]string {
 	return nil
 }
 
+func (x *ExecRequest) GetCwd() string {
+	if x != nil {
+		return x.Cwd
+	}
+	return ""
+}
+
 type TranscodeLog struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StdoutChunk   []byte                 `protobuf:"bytes,1,opt,name=stdout_chunk,json=stdoutChunk,proto3" json:"stdout_chunk,omitempty"`
@@ -101,7 +111,7 @@ type TranscodeLog struct {
 
 func (x *TranscodeLog) Reset() {
 	*x = TranscodeLog{}
-	mi := &file_proto_transcoder_proto_msgTypes[1]
+	mi := &file_transcoder_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -113,7 +123,7 @@ func (x *TranscodeLog) String() string {
 func (*TranscodeLog) ProtoMessage() {}
 
 func (x *TranscodeLog) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_transcoder_proto_msgTypes[1]
+	mi := &file_transcoder_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -126,7 +136,7 @@ func (x *TranscodeLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscodeLog.ProtoReflect.Descriptor instead.
 func (*TranscodeLog) Descriptor() ([]byte, []int) {
-	return file_proto_transcoder_proto_rawDescGZIP(), []int{1}
+	return file_transcoder_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *TranscodeLog) GetStdoutChunk() []byte {
@@ -157,17 +167,18 @@ func (x *TranscodeLog) GetIsFinished() bool {
 	return false
 }
 
-var File_proto_transcoder_proto protoreflect.FileDescriptor
+var File_transcoder_proto protoreflect.FileDescriptor
 
-const file_proto_transcoder_proto_rawDesc = "" +
+const file_transcoder_proto_rawDesc = "" +
 	"\n" +
-	"\x16proto/transcoder.proto\x12\n" +
-	"transcoder\"\xc3\x02\n" +
+	"\x10transcoder.proto\x12\n" +
+	"transcoder\"\xd5\x02\n" +
 	"\vExecRequest\x12#\n" +
 	"\rtarget_binary\x18\x01 \x01(\tR\ftargetBinary\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x122\n" +
 	"\x03env\x18\x03 \x03(\v2 .transcoder.ExecRequest.EnvEntryR\x03env\x12N\n" +
-	"\rtrace_headers\x18\x04 \x03(\v2).transcoder.ExecRequest.TraceHeadersEntryR\ftraceHeaders\x1a6\n" +
+	"\rtrace_headers\x18\x04 \x03(\v2).transcoder.ExecRequest.TraceHeadersEntryR\ftraceHeaders\x12\x10\n" +
+	"\x03cwd\x18\x05 \x01(\tR\x03cwd\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a?\n" +
@@ -184,25 +195,25 @@ const file_proto_transcoder_proto_rawDesc = "" +
 	"\rExecuteRemote\x12\x17.transcoder.ExecRequest\x1a\x18.transcoder.TranscodeLog0\x01B'Z%github.com/mediactl/clusterplex/protob\x06proto3"
 
 var (
-	file_proto_transcoder_proto_rawDescOnce sync.Once
-	file_proto_transcoder_proto_rawDescData []byte
+	file_transcoder_proto_rawDescOnce sync.Once
+	file_transcoder_proto_rawDescData []byte
 )
 
-func file_proto_transcoder_proto_rawDescGZIP() []byte {
-	file_proto_transcoder_proto_rawDescOnce.Do(func() {
-		file_proto_transcoder_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_transcoder_proto_rawDesc), len(file_proto_transcoder_proto_rawDesc)))
+func file_transcoder_proto_rawDescGZIP() []byte {
+	file_transcoder_proto_rawDescOnce.Do(func() {
+		file_transcoder_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_transcoder_proto_rawDesc), len(file_transcoder_proto_rawDesc)))
 	})
-	return file_proto_transcoder_proto_rawDescData
+	return file_transcoder_proto_rawDescData
 }
 
-var file_proto_transcoder_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
-var file_proto_transcoder_proto_goTypes = []any{
+var file_transcoder_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_transcoder_proto_goTypes = []any{
 	(*ExecRequest)(nil),  // 0: transcoder.ExecRequest
 	(*TranscodeLog)(nil), // 1: transcoder.TranscodeLog
 	nil,                  // 2: transcoder.ExecRequest.EnvEntry
 	nil,                  // 3: transcoder.ExecRequest.TraceHeadersEntry
 }
-var file_proto_transcoder_proto_depIdxs = []int32{
+var file_transcoder_proto_depIdxs = []int32{
 	2, // 0: transcoder.ExecRequest.env:type_name -> transcoder.ExecRequest.EnvEntry
 	3, // 1: transcoder.ExecRequest.trace_headers:type_name -> transcoder.ExecRequest.TraceHeadersEntry
 	0, // 2: transcoder.Manager.ExecuteRemote:input_type -> transcoder.ExecRequest
@@ -214,26 +225,26 @@ var file_proto_transcoder_proto_depIdxs = []int32{
 	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_proto_transcoder_proto_init() }
-func file_proto_transcoder_proto_init() {
-	if File_proto_transcoder_proto != nil {
+func init() { file_transcoder_proto_init() }
+func file_transcoder_proto_init() {
+	if File_transcoder_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_transcoder_proto_rawDesc), len(file_proto_transcoder_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_transcoder_proto_rawDesc), len(file_transcoder_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_transcoder_proto_goTypes,
-		DependencyIndexes: file_proto_transcoder_proto_depIdxs,
-		MessageInfos:      file_proto_transcoder_proto_msgTypes,
+		GoTypes:           file_transcoder_proto_goTypes,
+		DependencyIndexes: file_transcoder_proto_depIdxs,
+		MessageInfos:      file_transcoder_proto_msgTypes,
 	}.Build()
-	File_proto_transcoder_proto = out.File
-	file_proto_transcoder_proto_goTypes = nil
-	file_proto_transcoder_proto_depIdxs = nil
+	File_transcoder_proto = out.File
+	file_transcoder_proto_goTypes = nil
+	file_transcoder_proto_depIdxs = nil
 }

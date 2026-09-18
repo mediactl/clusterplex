@@ -11,6 +11,9 @@ message ExecRequest {
     repeated string args = 2;
     map<string, string> env = 3;
     map<string, string> trace_headers = 4;
+    // Working directory Plex launched the shim in; the worker runs the real
+    // binary there so relative paths in args resolve identically.
+    string cwd = 5;
 }
 
 message TranscodeLog {

@@ -1,17 +1,20 @@
 ARG GO_VERSION=1.27
 ARG VENDOR="machinectl"
 
-# Stage 1: Build the Go Manager and Shim
+# Stage 1: Build the Go manager and shim
 FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION} AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
-COPY litefs-fork ./litefs-fork
+COPY hack/litefs ./hack/litefs
+# Upstream LiteFS at the pinned tag plus our patches; go.mod replaces the
+# module with this directory.
+RUN hack/litefs/fetch.sh
 RUN go mod download
 COPY . .
-RUN go build -o bin/manager ./cmd/manager
-RUN go build -o bin/shim ./cmd/shim
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 
-# Stage 2: Extract Plex and Setup File System
+# Stage 2: Extract Plex and set up the filesystem
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
 ARG TARGETARCH
 ARG VENDOR
@@ -50,9 +53,10 @@ RUN cd rootfs/usr/lib/plexmediaserver && \
 # Prepare empty state directories needed by Plex and LiteFS
 RUN mkdir -p  rootfs/var/lib/litefs rootfs/var/lib/plexmediaserver
 
-# Stage 3: Final Distroless Image
+# Stage 3: Final image
 FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
-RUN apt-get update && apt-get install -y fuse3 ca-certificates && rm -rf /var/lib/apt/lists/*
+# fuse3 for LiteFS; iptables for the port redirect in front of Plex (ADR 0002).
+RUN apt-get update && apt-get install -y fuse3 iptables ca-certificates && rm -rf /var/lib/apt/lists/*
 
 ARG VENDOR
 

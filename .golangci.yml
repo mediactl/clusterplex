@@ -17,4 +17,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - cluster-plex
+        - github.com/mediactl/clusterplex

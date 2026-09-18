@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.36.0
-// source: proto/transcoder.proto
+// source: transcoder.proto
 
 package proto
 
@@ -120,5 +120,5 @@ var Manager_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/transcoder.proto",
+	Metadata: "transcoder.proto",
 }

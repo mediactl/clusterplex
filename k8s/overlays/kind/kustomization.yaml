@@ -1,0 +1,34 @@
+# kind has no ReadWriteMany storage class. Its single node lets several pods
+# share a ReadWriteOnce volume, so the overlay downgrades the shared claims.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: plex-config
+    patch: |-
+      - op: replace
+        path: /spec/accessModes
+        value: [ReadWriteOnce]
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 1Gi
+  - target:
+      kind: PersistentVolumeClaim
+      name: plex-media
+    patch: |-
+      - op: replace
+        path: /spec/accessModes
+        value: [ReadWriteOnce]
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 1Gi
+  - target:
+      kind: StatefulSet
+      name: plex
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 1Gi

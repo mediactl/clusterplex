@@ -1,0 +1,29 @@
+# Plex's state other than its SQLite databases: Preferences.xml (server
+# identity and plex.tv token), Metadata and Media bundles, Codecs, Cache and
+# the transcode temp directory. Every pod mounts it so a new leader inherits
+# the identity and workers can read codecs and write transcode segments.
+# Only the leader writes to it. Point volumeName at an existing NFS or CephFS
+# volume where that is the site convention.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-config
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+---
+# The media library, mounted at the same path in every pod so a worker can
+# open the file the leader named in the transcode arguments.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-media
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Ti

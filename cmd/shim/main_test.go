@@ -1,80 +1,75 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/mediactl/clusterplex/proto"
 )
 
-// MockManager is a simple grpc server to test the shim
-type MockManager struct {
+// recordingManager keeps the last request and answers with fixed output.
+type recordingManager struct {
 	pb.UnimplementedManagerServer
+	mu   sync.Mutex
+	last *pb.ExecRequest
 }
 
-func (m *MockManager) ExecuteRemote(req *pb.ExecRequest, stream pb.Manager_ExecuteRemoteServer) error {
-	stream.Send(&pb.TranscodeLog{
-		StdoutChunk: []byte("hello from mock"),
-		IsFinished:  true,
-		ExitCode:    0,
-	})
-	return nil
+func (m *recordingManager) ExecuteRemote(req *pb.ExecRequest, stream pb.Manager_ExecuteRemoteServer) error {
+	m.mu.Lock()
+	m.last = req
+	m.mu.Unlock()
+	if err := stream.Send(&pb.TranscodeLog{StdoutChunk: []byte("out "), StderrChunk: []byte("err ")}); err != nil {
+		return err
+	}
+	return stream.Send(&pb.TranscodeLog{IsFinished: true, ExitCode: 7})
 }
 
-func TestShimIntegration(t *testing.T) {
-	socketPath := "/tmp/test-cluster-plex.sock"
-	os.Remove(socketPath)
+func startManager(t *testing.T, m pb.ManagerServer) string {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "clusterplex.sock")
+	lis, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	srv := grpc.NewServer()
+	pb.RegisterManagerServer(srv, m)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	return sock
+}
 
-	// 1. Start mock Manager
-	lis, err := net.Listen("unix", socketPath)
-	assert.NoError(t, err)
+func TestRunForwardsInvocationAndReturnsExitCode(t *testing.T) {
+	m := &recordingManager{}
+	sock := startManager(t, m)
+	var stdout, stderr bytes.Buffer
 
-	grpcServer := grpc.NewServer()
-	pb.RegisterManagerServer(grpcServer, &MockManager{})
-	go grpcServer.Serve(lis)
-	defer grpcServer.Stop()
+	code := run(context.Background(), sock, "/usr/lib/plexmediaserver/Plex Transcoder", []string{"-i", "x.mkv"}, &stdout, &stderr)
 
-	// 2. Dial from client
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	assert.Equal(t, 7, code)
+	assert.Equal(t, "out ", stdout.String())
+	assert.Equal(t, "err ", stderr.String())
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NotNil(t, m.last)
+	assert.Equal(t, "Plex Transcoder", m.last.TargetBinary)
+	assert.Equal(t, []string{"-i", "x.mkv"}, m.last.Args)
+	assert.Equal(t, wd, m.last.Cwd)
+	assert.Equal(t, os.Getenv("PATH"), m.last.Env["PATH"])
+}
 
-	conn, err := grpc.DialContext(ctx, "unix://"+socketPath,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	assert.NoError(t, err)
-	defer conn.Close()
+func TestRunFailsLoudlyWhenManagerIsUnreachable(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	sock := filepath.Join(t.TempDir(), "missing.sock")
 
-	client := pb.NewManagerClient(conn)
+	code := run(context.Background(), sock, "Plex Transcoder", nil, &stdout, &stderr)
 
-	// 3. Send request
-	req := &pb.ExecRequest{
-		TargetBinary: "Plex Transcoder",
-		Args:         []string{"-i", "test.mkv"},
-	}
-
-	stream, err := client.ExecuteRemote(ctx, req)
-	assert.NoError(t, err)
-
-	var output []byte
-	for {
-		logData, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		assert.NoError(t, err)
-		output = append(output, logData.StdoutChunk...)
-		if logData.IsFinished {
-			assert.Equal(t, int32(0), logData.ExitCode)
-			break
-		}
-	}
-
-	assert.Equal(t, "hello from mock", string(output))
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr.String(), "missing.sock")
 }
