@@ -1,0 +1,124 @@
+--- a/rust/plex-pg-core/src/platform_backtrace.rs
++++ b/rust/plex-pg-core/src/platform_backtrace.rs
+@@ -62,8 +62,121 @@
+     backtrace(frames.as_mut_ptr(), frames.len() as c_int) as usize
+ }
+ 
++// Frame collection through libgcc's DWARF unwinder.
++//
++// The frame-pointer walk below only works when every frame in the stack keeps
++// %rbp as a frame pointer. Release builds do not: both Plex and this library
++// are compiled with -fomit-frame-pointer, so the walk finds nothing and every
++// backtrace comes out as "[Stack trace unavailable]" — which is exactly the
++// state the crash reports in issues #17 and #26 are stuck in.
++//
++// _Unwind_Backtrace uses the DWARF call-frame information instead, so it does
++// not care about frame pointers. It comes from libgcc_s, which this library
++// already links and ships.
++#[cfg(target_os = "linux")]
++mod dwarf_unwind {
++    use std::os::raw::{c_int, c_void};
++
++    #[repr(C)]
++    pub struct UnwindContext {
++        _opaque: [u8; 0],
++    }
++
++    pub type ReasonCode = c_int;
++    const URC_NO_REASON: ReasonCode = 0;
++    const URC_END_OF_STACK: ReasonCode = 5;
++
++    extern "C" {
++        fn _Unwind_Backtrace(
++            trace: extern "C" fn(*mut UnwindContext, *mut c_void) -> ReasonCode,
++            argument: *mut c_void,
++        ) -> ReasonCode;
++        fn _Unwind_GetIP(ctx: *mut UnwindContext) -> usize;
++    }
++
++    struct Collector {
++        frames: *mut *mut c_void,
++        capacity: usize,
++        len: usize,
++    }
++
++    /// Writes "  raw[nn] 0xADDR" straight to stderr, without allocating or
++    /// taking a lock, so it is safe from a signal handler.
++    ///
++    /// Each frame is emitted as it is found rather than after the walk. The
++    /// walk itself can fault — it runs on a stack that has already been
++    /// corrupted often enough to be worth assuming — and an address printed
++    /// before that is still an address we can resolve by hand.
++    unsafe fn emit_raw_frame(index: usize, ip: usize) {
++        const HEX: &[u8; 16] = b"0123456789abcdef";
++        let mut line = [b' '; 32];
++        let mut at = 0usize;
++        line[at] = b' ';
++        at += 2;
++        line[at] = b'r';
++        line[at + 1] = b'a';
++        line[at + 2] = b'w';
++        line[at + 3] = b'[';
++        at += 4;
++        line[at] = b'0' + ((index / 10) % 10) as u8;
++        line[at + 1] = b'0' + (index % 10) as u8;
++        line[at + 2] = b']';
++        line[at + 3] = b' ';
++        line[at + 4] = b'0';
++        line[at + 5] = b'x';
++        at += 6;
++        for shift in (0..16).rev() {
++            line[at] = HEX[((ip >> (shift * 4)) & 0xf) as usize];
++            at += 1;
++        }
++        line[at] = b'\n';
++        at += 1;
++        libc::write(2, line.as_ptr() as *const c_void, at);
++    }
++
++    extern "C" fn on_frame(ctx: *mut UnwindContext, argument: *mut c_void) -> ReasonCode {
++        unsafe {
++            let collector = &mut *(argument as *mut Collector);
++            if collector.len >= collector.capacity {
++                return URC_END_OF_STACK;
++            }
++            let ip = _Unwind_GetIP(ctx);
++            if ip == 0 {
++                return URC_END_OF_STACK;
++            }
++            emit_raw_frame(collector.len, ip);
++            *collector.frames.add(collector.len) = ip as *mut c_void;
++            collector.len += 1;
++            URC_NO_REASON
++        }
++    }
++
++    /// Fills frames with return addresses, returning how many were collected.
++    pub unsafe fn collect(frames: &mut [*mut c_void]) -> usize {
++        if frames.is_empty() {
++            return 0;
++        }
++        let header = b"  raw frames follow (resolve against /proc/<pid>/maps)\n";
++        libc::write(2, header.as_ptr() as *const c_void, header.len());
++        let mut collector = Collector {
++            frames: frames.as_mut_ptr(),
++            capacity: frames.len(),
++            len: 0,
++        };
++        _Unwind_Backtrace(on_frame, &mut collector as *mut Collector as *mut c_void);
++        collector.len
++    }
++}
++
+ #[cfg(target_os = "linux")]
+ unsafe fn collect_frames(frames: &mut [*mut c_void]) -> usize {
++    // The unwinder first; the frame-pointer walk is kept as a fallback for the
++    // case where there is no call-frame information to unwind with.
++    let unwound = dwarf_unwind::collect(frames);
++    if unwound > 0 {
++        return unwound;
++    }
++
+     let mut depth = 0usize;
+     let mut fp = current_frame_ptr();
+     let mut iterations = 0usize;

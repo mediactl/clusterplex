@@ -34,6 +34,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
     https://github.com/cgnl/plex-postgresql /src \
     && cp -a /src/. /build/ && rm -rf /src
+# Our changes to the shim, applied in filename order. See
+# hack/plex-postgresql/README.md. A patch that no longer applies fails the
+# build rather than being skipped, so a version bump cannot quietly drop one.
+COPY hack/plex-postgresql/*.patch /patches/
+RUN set -e; for p in /patches/*.patch; do \
+      echo "applying $(basename "$p")"; \
+      git apply --verbose -p1 "$p"; \
+    done
 # --with-noop also builds a static no-op binary. It replaces Plex's
 # CrashUploader below: a shell script would not do, because sh inherits
 # LD_PRELOAD and would load the interposer's constructor.
