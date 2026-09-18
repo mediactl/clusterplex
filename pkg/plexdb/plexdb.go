@@ -48,8 +48,18 @@ type Config struct {
 	Database string
 	User     string
 	Password string
-	// Schema is the PostgreSQL schema holding Plex's tables.
+	// Schema is the PostgreSQL schema holding Plex's tables. It is required,
+	// not a convenience: the shim interpolates it into
+	// "SET search_path TO <schema>, public" whatever it holds, so leaving it
+	// empty is a syntax error on every connection rather than a fall back to
+	// the default search path.
 	Schema string
+	// PoolSize and PoolMax size the shim's connection pool. Plex opens 20
+	// sessions to the library per process and every pod runs one, so the
+	// database's own max_connections has to cover PoolMax times the number of
+	// pods.
+	PoolSize int
+	PoolMax  int
 	// SSLMode is libpq's sslmode; "disable" for an in-cluster database.
 	SSLMode string
 }
@@ -65,6 +75,9 @@ func (c Config) Validate() error {
 	}
 	if c.User == "" {
 		missing = append(missing, "user")
+	}
+	if c.Schema == "" {
+		missing = append(missing, "schema")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("postgres %s must be set", strings.Join(missing, ", "))

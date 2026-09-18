@@ -2,9 +2,11 @@ package plexnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -57,7 +59,10 @@ func (b *NFTBlocklist) Set(_ context.Context, addrs []netip.Addr) error {
 		// wholesale avoids tracking what changed.
 		conn.DelChain(chain)
 		if len(addrs) == 0 {
-			if err := conn.Flush(); err != nil {
+			// The lease holder never had a filter, so its first call here asks
+			// to delete a chain that does not exist. Already absent is the
+			// outcome we wanted.
+			if err := ignoreMissing(conn.Flush()); err != nil {
 				return fmt.Errorf("remove egress filter: %w", err)
 			}
 			return nil
@@ -86,6 +91,18 @@ func (b *NFTBlocklist) Set(_ context.Context, addrs []netip.Addr) error {
 		}
 		return nil
 	})
+}
+
+// ignoreMissing swallows "it was not there" on a removal, and nothing else.
+//
+// Anything else has to surface: a removal that failed for another reason means
+// the rule is still installed and we do not know it, so a pod would believe it
+// had given up its route to plex.tv while keeping it.
+func ignoreMissing(err error) error {
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // blockExprs drops packets from Plex's subnet whose destination is in the set.

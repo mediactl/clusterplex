@@ -102,8 +102,18 @@ func TestConfigDoesNotPrintThePassword(t *testing.T) {
 }
 
 func TestConfigReportsWhenItIsIncomplete(t *testing.T) {
-	require.Error(t, Config{Port: 5432, Database: "plex", User: "plex"}.Validate(), "host is required")
-	require.Error(t, Config{Host: "h", Port: 5432, User: "plex"}.Validate(), "database is required")
-	require.Error(t, Config{Host: "h", Port: 5432, Database: "plex"}.Validate(), "user is required")
-	require.NoError(t, Config{Host: "h", Port: 5432, Database: "plex", User: "plex"}.Validate())
+	full := Config{Host: "h", Port: 5432, Database: "plex", User: "plex", Schema: "public"}
+	require.Error(t, Config{Port: 5432, Database: "plex", User: "plex", Schema: "public"}.Validate(), "host is required")
+	require.Error(t, Config{Host: "h", Port: 5432, User: "plex", Schema: "public"}.Validate(), "database is required")
+	require.Error(t, Config{Host: "h", Port: 5432, Database: "plex", Schema: "public"}.Validate(), "user is required")
+	require.NoError(t, full.Validate())
+}
+
+func TestAnEmptySchemaIsRejected(t *testing.T) {
+	// It is not a fallback to the default search path. The shim interpolates it
+	// into "SET search_path TO <schema>, public" whatever it holds, so an empty
+	// one is a syntax error on every connection Plex opens.
+	err := Config{Host: "h", Port: 5432, Database: "plex", User: "plex"}.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema")
 }

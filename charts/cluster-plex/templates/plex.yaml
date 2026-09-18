@@ -61,6 +61,12 @@ spec:
               value: {{ .Values.postgres.database | quote }}
             - name: CLUSTERPLEX_POSTGRES_USER
               value: {{ .Values.postgres.user | quote }}
+            - name: CLUSTERPLEX_POSTGRES_SCHEMA
+              value: {{ required "postgres.schema is required: the shim interpolates it into search_path on every connection" .Values.postgres.schema | quote }}
+            - name: CLUSTERPLEX_POSTGRES_POOL_SIZE
+              value: {{ .Values.postgres.poolSize | quote }}
+            - name: CLUSTERPLEX_POSTGRES_POOL_MAX
+              value: {{ .Values.postgres.poolMax | quote }}
             - name: CLUSTERPLEX_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:

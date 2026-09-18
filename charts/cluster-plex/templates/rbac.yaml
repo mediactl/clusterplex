@@ -16,15 +16,17 @@ metadata:
   name: {{ .Release.Name }}-plex
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
-  # Leader election, and the availability annotation the proxy follows.
+  # Electing the one pod that may talk to plex.tv.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "watch", "list", "create", "update"]
-  # Finding worker pods to dispatch transcodes to. Read only: leadership is
-  # recorded on the Lease, never copied onto pods.
+  # Finding worker pods to dispatch transcodes and maintenance to, and marking
+  # this pod as serving. The annotation says "this pod can do work", which the
+  # Lease cannot express: it names one holder, and in active mode every pod
+  # serves. Leadership itself is still never copied onto a pod.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "watch", "list"]
+    verbs: ["get", "watch", "list", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -32,9 +34,11 @@ metadata:
   name: {{ .Release.Name }}-proxy
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
-  # The proxy only ever reads who is available.
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
+  # The proxy only ever reads who is available, and it reads it from the pods
+  # rather than the Lease: it needs every pod that can serve, not the one that
+  # owns plex.tv.
+  - apiGroups: [""]
+    resources: ["pods"]
     verbs: ["get", "watch", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

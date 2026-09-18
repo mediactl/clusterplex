@@ -1,0 +1,119 @@
+# PostgreSQL for the kind cluster.
+#
+# The chart does not create a database: every pod shares one, and where it
+# lives is an operator decision. This is the throwaway one the kind cluster
+# uses, so `make kind-up` gives something the chart can point at. Do not model
+# a real deployment on it — one replica, no backups, a password in a manifest.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: plex-postgres
+  namespace: media
+stringData:
+  password: plex
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plex-postgres-init
+  namespace: media
+data:
+  # The shim puts Plex's tables in a schema of their own and does not create
+  # it. Without this every connection sets a search_path that resolves to
+  # nothing, and Plex dies partway through its migrations insisting its own
+  # tables do not exist. Runs only on an empty data directory.
+  init.sql: |
+    CREATE SCHEMA IF NOT EXISTS plex AUTHORIZATION plex;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-postgres
+  namespace: media
+spec:
+  selector:
+    app: plex-postgres
+  ports:
+    - port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-postgres
+  namespace: media
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-postgres
+  namespace: media
+spec:
+  replicas: 1
+  strategy:
+    # The volume is ReadWriteOnce and there is one node, so a rolling update
+    # would deadlock waiting for the old pod to release it.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: plex-postgres
+  template:
+    metadata:
+      labels:
+        app: plex-postgres
+    spec:
+      containers:
+        - name: postgres
+          # 15, matching what the shim is developed against: its schema dump is
+          # taken from 15.15, and a dump does not necessarily restore cleanly
+          # into a newer server.
+          image: postgres:15-alpine
+          args:
+            - postgres
+            - -c
+            - shared_buffers=256MB
+            - -c
+            - work_mem=16MB
+            - -c
+            - maintenance_work_mem=128MB
+            # Plex opens 20 sessions per process and the shim pools up to
+            # poolMax per pod, so the default 100 does not go far.
+            - -c
+            - max_connections=400
+          env:
+            - name: POSTGRES_USER
+              value: plex
+            - name: POSTGRES_DB
+              value: plex
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: plex-postgres
+                  key: password
+            # The default is the volume root, which already holds lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, plex, -d, plex]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: plex-postgres
+        - name: init
+          configMap:
+            name: plex-postgres-init

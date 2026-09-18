@@ -94,6 +94,14 @@ postgres:
   port: 5432
   database: plex
   user: plex
+  # Must exist: the shim writes "SET search_path TO <schema>, public" on every
+  # connection whatever this holds, so an empty one is a syntax error rather
+  # than a fall back to the default search path.
+  schema: plex
+  # Plex opens 20 sessions to the library per process and every pod runs one,
+  # so the database's max_connections has to cover poolMax times plex.replicas.
+  poolSize: 50
+  poolMax: 100
   # The password is read from a Secret rather than set here, so it stays out of
   # values and out of the rendered manifests.
   passwordSecret:

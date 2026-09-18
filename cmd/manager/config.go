@@ -125,7 +125,9 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("postgres-database", "plex", "name of the shared Plex library database")
 	fs.String("postgres-user", "plex", "user for the shared Plex library database")
 	fs.String("postgres-password", "", "password for the shared Plex library database")
-	fs.String("postgres-schema", "", "schema holding Plex's tables (default: the search path)")
+	fs.String("postgres-schema", "plex", "schema holding Plex's tables; required, because the shim always interpolates it into search_path")
+	fs.Int("postgres-pool-size", 50, "connections the shim keeps open to the library database")
+	fs.Int("postgres-pool-max", 100, "most connections the shim will open; the database max_connections must cover this times the pod count")
 	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
 	fs.String("plex-mode", plexModeElected, "run Plex on every pod (active) or only on the lease holder (elected); active needs egress control so only one pod reaches plex.tv")
 	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
@@ -194,6 +196,8 @@ func loadConfig(args []string) (Config, error) {
 			User:     v.GetString("postgres-user"),
 			Password: v.GetString("postgres-password"),
 			Schema:   v.GetString("postgres-schema"),
+			PoolSize: v.GetInt("postgres-pool-size"),
+			PoolMax:  v.GetInt("postgres-pool-max"),
 			SSLMode:  v.GetString("postgres-sslmode"),
 		},
 	}

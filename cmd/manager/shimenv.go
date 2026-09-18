@@ -29,10 +29,14 @@ func shimEnv(base []string, cfg Config) []string {
 		"PLEX_PG_DATABASE="+cfg.Postgres.Database,
 		"PLEX_PG_USER="+cfg.Postgres.User,
 		"PLEX_PG_PASSWORD="+cfg.Postgres.Password,
+		// Not optional. The shim interpolates the schema into
+		// "SET search_path TO <schema>, public" whatever it holds, so an empty
+		// one is a syntax error on every connection rather than a fall back to
+		// the default search path. Config validation rejects it.
+		"PLEX_PG_SCHEMA="+cfg.Postgres.Schema,
+		"PLEX_PG_POOL_SIZE="+strconv.Itoa(cfg.Postgres.PoolSize),
+		"PLEX_PG_POOL_MAX="+strconv.Itoa(cfg.Postgres.PoolMax),
 	)
-	if cfg.Postgres.Schema != "" {
-		env = append(env, "PLEX_PG_SCHEMA="+cfg.Postgres.Schema)
-	}
 	return env
 }
 

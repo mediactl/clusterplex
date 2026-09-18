@@ -12,7 +12,10 @@ import (
 )
 
 func pgConfig() plexdb.Config {
-	return plexdb.Config{Host: "postgres", Port: 5432, Database: "plex", User: "plex", Password: "s3cret"}
+	return plexdb.Config{
+		Host: "postgres", Port: 5432, Database: "plex", User: "plex", Password: "s3cret",
+		Schema: "plex", PoolSize: 50, PoolMax: 100,
+	}
 }
 
 func TestShimEnvPreloadsTheInterposerAndPassesTheSameDatabase(t *testing.T) {
@@ -29,11 +32,23 @@ func TestShimEnvPreloadsTheInterposerAndPassesTheSameDatabase(t *testing.T) {
 	assert.Contains(t, env, "PLEX_PG_PASSWORD=s3cret")
 }
 
-func TestShimEnvOmitsTheSchemaWhenThereIsNone(t *testing.T) {
+func TestShimEnvAlwaysPassesASchema(t *testing.T) {
+	// The shim builds "SET search_path TO <schema>, public" unconditionally, so
+	// an absent schema is not a fallback to the default search path: it sends
+	// "SET search_path TO , public", which is a syntax error. Every connection
+	// then fails and Plex dies partway through its migrations, complaining
+	// that its own tables do not exist.
 	env := shimEnv(nil, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
-	for _, e := range env {
-		assert.NotContains(t, e, "PLEX_PG_SCHEMA")
-	}
+	assert.Contains(t, env, "PLEX_PG_SCHEMA=plex")
+}
+
+func TestShimEnvSizesTheConnectionPool(t *testing.T) {
+	// Plex opens 20 sessions to the library per process, and every pod runs
+	// one, so the pool has to be sized deliberately rather than left at
+	// whatever the shim defaults to.
+	env := shimEnv(nil, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
+	assert.Contains(t, env, "PLEX_PG_POOL_SIZE=50")
+	assert.Contains(t, env, "PLEX_PG_POOL_MAX=100")
 }
 
 func TestShimEnvLeavesPlexAloneWhenNoShimIsConfigured(t *testing.T) {
