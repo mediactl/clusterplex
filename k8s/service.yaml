@@ -26,3 +26,6 @@ spec:
     - name: grpc
       port: 50051
       targetPort: 50051
+    - name: litefs
+      port: 20202
+      targetPort: 20202

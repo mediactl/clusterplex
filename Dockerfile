@@ -47,18 +47,17 @@ RUN cd rootfs/usr/lib/plexmediaserver && \
     ln -s /usr/local/bin/shim "Plex Relay"
 
 # Prepare empty state directories needed by Plex and LiteFS
-RUN mkdir -p rootfs/var/run rootfs/var/lib/litefs rootfs/var/lib/plexmediaserver
+RUN mkdir -p  rootfs/var/lib/litefs rootfs/var/lib/plexmediaserver
 
 # Stage 3: Final Distroless Image
-FROM --platform=${BUILDPLATFORM} gcr.io/distroless/cc-debian12
+FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
+RUN apt-get update && apt-get install -y fuse3 ca-certificates && rm -rf /var/lib/apt/lists/*
 
 ARG VENDOR
 
 # Copy LiteFS and Custom Binaries
-COPY --from=flyio/litefs:0.5 /usr/local/bin/litefs /usr/local/bin/litefs
 COPY --from=builder /app/bin/manager /usr/local/bin/manager
 COPY --from=builder /app/bin/shim /usr/local/bin/shim
-COPY litefs.yml /etc/litefs.yml
 
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /
