@@ -1,0 +1,21 @@
+syntax = "proto3";
+package transcoder;
+option go_package = "plex-supervisor/proto";
+
+service Supervisor {
+    rpc ExecuteRemote(ExecRequest) returns (stream TranscodeLog);
+}
+
+message ExecRequest {
+    string target_binary = 1;
+    repeated string args = 2;
+    map<string, string> env = 3;
+    map<string, string> trace_headers = 4;
+}
+
+message TranscodeLog {
+    bytes stdout_chunk = 1;
+    bytes stderr_chunk = 2;
+    int32 exit_code = 3;
+    bool is_finished = 4;
+}
