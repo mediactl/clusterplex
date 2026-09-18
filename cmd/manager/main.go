@@ -51,6 +51,7 @@ type Manager struct {
 	sup       *Supervisor
 	publisher *plexroute.Publisher
 	elector   *lease.Elector
+	egress    *plexnet.EgressGuard
 	// plexAddr reaches Plex inside its network namespace, bypassing the proxy.
 	// Anything asking "is Plex up?" has to use this: in the pod namespace the
 	// proxy holds Plex's port, and it answers whether Plex is running or not.
@@ -143,6 +144,14 @@ func run() int {
 	// Everything that needs to reach Plex directly, rather than through the
 	// proxy, uses this address.
 	m.plexAddr = plexNet.PlexAddrPort().String()
+
+	// Only the lease holder may reach plex.tv. Every pod shares one server
+	// identity, and several holding that connection at once makes the identity
+	// appear to move between addresses, which breaks remote access.
+	m.egress = &plexnet.EgressGuard{
+		Blocklist: plexNet.Blocklist(),
+		Logger:    logger.With("component", "egress"),
+	}
 
 	m.sup = &Supervisor{
 		Binary:       cfg.PMSBinary,

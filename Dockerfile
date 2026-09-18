@@ -10,6 +10,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
 
 # Stage 1b: Build the PostgreSQL shim.
 #
@@ -28,9 +29,11 @@ ENV CARGO_HOME=/usr/local/cargo \
     PATH="/usr/local/cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable --profile minimal
+# The build script addresses /build/rust by absolute path, so the checkout has
+# to land at /build itself rather than in a subdirectory.
 RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
-    https://github.com/cgnl/plex-postgresql /build/src
-WORKDIR /build/src
+    https://github.com/cgnl/plex-postgresql /src \
+    && cp -a /src/. /build/ && rm -rf /src
 RUN sh scripts/docker-build-shim.sh
 
 # Stage 2: Extract Plex and set up the filesystem
@@ -69,28 +72,23 @@ RUN cd rootfs/usr/lib/plexmediaserver && \
     ln -s /usr/local/bin/shim "Plex Commercial Skipper" && \
     ln -s /usr/local/bin/shim "Plex Relay"
 
-# Prepare empty state directories needed by Plex and LiteFS
+# Prepare the empty state directory Plex expects
 RUN mkdir -p rootfs/var/lib/plexmediaserver
 
 # Stage 3: Final image
 FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
-<<<<<<< HEAD
-# fuse3 for LiteFS. Nothing here is needed for the network: the manager builds
-# Plex's namespace, veth pair and masquerade over netlink itself (ADR 0003),
-# which is why iptables is gone.
-RUN apt-get update && apt-get install -y fuse3 ca-certificates && rm -rf /var/lib/apt/lists/*
-=======
-# iptables for the port redirect in front of Plex (ADR 0002). No FUSE any more:
-# the library is in PostgreSQL rather than a replicated file.
-RUN apt-get update && apt-get install -y iptables ca-certificates && rm -rf /var/lib/apt/lists/*
->>>>>>> c371fbe (Move the library from LiteFS to a shared PostgreSQL database)
+# Only certificates. No FUSE, because the library is in PostgreSQL rather than
+# a replicated file, and no iptables, because the manager builds Plex's
+# namespace, veth pair and masquerade over netlink itself (ADR-0003).
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 ARG VENDOR
 
-# Copy LiteFS and Custom Binaries
+# Our binaries
 COPY --from=builder /app/bin/manager /usr/local/bin/manager
 COPY --from=builder /app/bin/shim /usr/local/bin/shim
 COPY --from=builder /app/bin/proxy /usr/local/bin/proxy
+COPY --from=builder /app/bin/maintenance /usr/local/bin/maintenance
 
 # The PostgreSQL shim and the libraries it links. The manager puts this on
 # LD_PRELOAD when it starts Plex, which is what redirects Plex's database calls.

@@ -1,0 +1,45 @@
+{{- if .Values.maintenance.enabled }}
+# Plex's own scheduler is disabled on every pod, because each process runs its
+# own copy with no knowledge of the others and they would all analyse the same
+# media at once. These replace it.
+#
+# Scheduling lives here rather than in the manager on purpose. A failover at
+# 02:00 makes the call fail, and Kubernetes then retries it and shows a failed
+# Job; a timer inside the manager would produce a swallowed error in a
+# goroutine that nobody sees. Changing a schedule is a values change, not a
+# rebuild.
+{{- range $name, $schedule := .Values.maintenance.schedules }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $.Release.Name }}-maintenance-{{ $name }}
+  labels: {{- include "cluster-plex.labels" $ | nindent 4 }}
+spec:
+  schedule: {{ $schedule | quote }}
+  # Maintenance is slow. A run that overruns its next slot should be left to
+  # finish rather than have a second one pile in behind it.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: trigger
+              image: {{ include "cluster-plex.image" $ }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              # The manager fans the work out across pods; this only asks it to.
+              command: ["/usr/local/bin/maintenance"]
+              args:
+                - -endpoint=http://{{ $.Release.Name }}-workers.{{ $.Release.Namespace }}.svc.cluster.local:8080
+                - -task={{ $name }}
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 64Mi}
+{{- end }}
+{{- end }}

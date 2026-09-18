@@ -3,8 +3,9 @@
 // It serves direct-play media itself from shared storage, so those bytes never
 // pass through Plex and aggregate throughput scales with the number of nodes
 // running proxies rather than with one server's network interface. Everything
-// else is forwarded to whichever pod currently runs Plex, which it learns from
-// the Kubernetes Lease.
+// else is forwarded to a pod running Plex, chosen by a consistent hash of the
+// client so that one client keeps landing on one pod: Plex caches state per
+// process and there is no bus to invalidate it.
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -44,8 +46,17 @@ func run() int {
 		logger.Error("POD_NAMESPACE must be set (use the downward API)")
 		return 2
 	}
-	leaseName := env("CLUSTERPLEX_LEASE_NAME", "cluster-plex-plextv")
 	listen := env("CLUSTERPLEX_PROXY_LISTEN", ":32400")
+	plexPort, err := strconv.Atoi(env("CLUSTERPLEX_PMS_PORT", "32400"))
+	if err != nil {
+		logger.Error("invalid CLUSTERPLEX_PMS_PORT", "error", err)
+		return 2
+	}
+	managerPort, err := strconv.Atoi(env("CLUSTERPLEX_PROBE_PORT", "8080"))
+	if err != nil {
+		logger.Error("invalid CLUSTERPLEX_PROBE_PORT", "error", err)
+		return 2
+	}
 	probeAddr := env("CLUSTERPLEX_PROBE_LISTEN", ":8080")
 	certFile := env("CLUSTERPLEX_TLS_CERT", "")
 	keyFile := env("CLUSTERPLEX_TLS_KEY", "")
@@ -64,13 +75,20 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	tracker := &plexroute.Tracker{
-		Client:    client,
-		Namespace: namespace,
-		LeaseName: leaseName,
-		Logger:    logger.With("component", "tracker"),
+	// Membership comes from the pods themselves rather than from the Lease.
+	// The Lease names one holder, which is right for "who talks to plex.tv"
+	// and wrong for "who can serve this request": with Plex on several pods
+	// there are several answers.
+	router := &Router{
+		Tracker: &plexroute.PodTracker{
+			Client:      client,
+			Namespace:   namespace,
+			Port:        plexPort,
+			ManagerPort: managerPort,
+		},
+		Logger: logger.With("component", "router"),
 	}
-	go tracker.Run(ctx)
+	go router.Run(ctx)
 
 	bytesServed := promauto.NewCounter(prometheus.CounterOpts{
 		Name: "clusterplex_proxy_media_bytes_total",
@@ -83,25 +101,28 @@ func run() int {
 
 	// Waiting rather than failing is what turns a failover into a pause for
 	// the client instead of an error.
-	await := func(ctx context.Context) (plexroute.Target, error) {
-		if target, ok := tracker.Current(); ok {
+	await := func(ctx context.Context, sessionKey string) (plexroute.Target, error) {
+		if target, ok := router.Locate(sessionKey); ok {
 			return target, nil
 		}
 		waits.Inc()
-		return tracker.Wait(ctx, waitFor)
+		return router.Wait(ctx, sessionKey, waitFor)
 	}
 
 	handler := &mediaproxy.Handler{
-		Upstream: func(ctx context.Context) (string, error) {
-			target, err := await(ctx)
+		Upstream: func(ctx context.Context, sessionKey string) (string, error) {
+			target, err := await(ctx, sessionKey)
 			if err != nil {
 				return "", err
 			}
 			return "http://" + target.Address, nil
 		},
 		Resolver: &mediaproxy.HTTPResolver{
+			// Media is authorized and resolved by the manager beside the Plex
+			// that owns this client, so a resolve and the request it is for
+			// always reach the same pod.
 			Endpoint: func(ctx context.Context) (string, error) {
-				target, err := await(ctx)
+				target, err := await(ctx, "")
 				if err != nil {
 					return "", err
 				}
@@ -113,7 +134,7 @@ func run() int {
 		OnBytesServed: func(n int64) { bytesServed.Add(float64(n)) },
 	}
 
-	go serveProbes(ctx, logger, probeAddr, tracker)
+	go serveProbes(ctx, logger, probeAddr, router)
 
 	srv := &http.Server{Addr: listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -129,7 +150,7 @@ func run() int {
 		return 1
 	}
 
-	logger.Info("proxy listening", "addr", listen, "tls", certFile != "", "lease", leaseName, "namespace", namespace)
+	logger.Info("proxy listening", "addr", listen, "tls", certFile != "", "namespace", namespace)
 	if err := serve(lis, srv, certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("proxy stopped", "error", err)
 		return 1
@@ -139,14 +160,14 @@ func run() int {
 
 // serveProbes reports readiness. A proxy that cannot see a Plex is taken out
 // of the load balancer rather than accepting connections it could only stall.
-func serveProbes(ctx context.Context, logger *slog.Logger, addr string, tracker *plexroute.Tracker) {
+func serveProbes(ctx context.Context, logger *slog.Logger, addr string, router *Router) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		target, ok := tracker.Current()
+		target, ok := router.Locate("")
 		if !ok {
 			http.Error(w, "no Plex Media Server is available", http.StatusServiceUnavailable)
 			return

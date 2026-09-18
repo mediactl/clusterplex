@@ -11,6 +11,7 @@ func (m *Manager) probeHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	m.registerResolve(mux)
+	m.registerMaintenance(mux)
 
 	// Liveness: is the manager itself responsive?
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) {

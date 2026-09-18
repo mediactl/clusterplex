@@ -40,7 +40,11 @@ type Resolver interface {
 type Handler struct {
 	// Upstream returns the base URL of the Plex to forward to, waiting for one
 	// to become available if a failover is in progress.
-	Upstream func(ctx context.Context) (string, error)
+	//
+	// sessionKey identifies the client, so that an implementation serving
+	// several Plex instances can keep one client on one of them. It is empty
+	// for requests that carry nothing to identify a client.
+	Upstream func(ctx context.Context, sessionKey string) (string, error)
 	Resolver Resolver
 	Timeout  time.Duration
 	Logger   *slog.Logger
@@ -123,7 +127,7 @@ func (h *Handler) serveMedia(ctx context.Context, w http.ResponseWriter, r *http
 // forward proxies the request to Plex, waiting for one if a failover is in
 // progress so that a transition is a pause rather than an error.
 func (h *Handler) forward(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	base, err := h.Upstream(ctx)
+	base, err := h.Upstream(ctx, SessionKey(r))
 	if err != nil || base == "" {
 		h.log().Warn("no Plex available for request", "path", r.URL.Path, "error", err)
 		http.Error(w, "Plex Media Server is not available", http.StatusServiceUnavailable)

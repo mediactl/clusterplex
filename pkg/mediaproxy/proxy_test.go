@@ -48,7 +48,7 @@ func (s *stubResolver) Resolve(_ context.Context, partID, _ string, _ http.Heade
 func newProxy(t *testing.T, upstream string, r Resolver) *Handler {
 	t.Helper()
 	return &Handler{
-		Upstream: func(context.Context) (string, error) { return upstream, nil },
+		Upstream: func(context.Context, string) (string, error) { return upstream, nil },
 		Resolver: r,
 		Timeout:  2 * time.Second,
 	}
@@ -143,7 +143,7 @@ func TestRequestsWaitForPlexInsteadOfFailingDuringAFailover(t *testing.T) {
 
 	ready := make(chan struct{})
 	h := &Handler{
-		Upstream: func(ctx context.Context) (string, error) {
+		Upstream: func(ctx context.Context, _ string) (string, error) {
 			<-ready
 			return plex.URL, nil
 		},
@@ -170,7 +170,7 @@ func TestRequestsWaitForPlexInsteadOfFailingDuringAFailover(t *testing.T) {
 
 func TestRequestsGiveUpWithServiceUnavailableWhenNoPlexAppears(t *testing.T) {
 	h := &Handler{
-		Upstream: func(context.Context) (string, error) { return "", ErrNoUpstream },
+		Upstream: func(context.Context, string) (string, error) { return "", ErrNoUpstream },
 		Resolver: &stubResolver{},
 		Timeout:  100 * time.Millisecond,
 	}

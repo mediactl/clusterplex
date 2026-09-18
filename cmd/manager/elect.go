@@ -39,10 +39,10 @@ const (
 // one owner is the connection to plex.tv, because every pod shares one server
 // identity. That is what the lease decides.
 //
-// Until egress from the pods that do not hold that lease is actually
-// constrained, running Plex everywhere would have every pod opening its own
-// connection to plex.tv under the same identity. So the default is still to
-// run Plex only on the lease holder.
+// Pods that do not hold the lease have their route to plex.tv filtered, so
+// running Plex on all of them no longer means several connections under one
+// identity. The default is still one pod, because that path has been exercised
+// and active mode has not.
 func (m *Manager) runPlex(ctx context.Context) {
 	if err := m.updatePodRole(ctx, RoleStarting); err != nil {
 		m.Logger.Error("update pod role label", "error", err)
@@ -60,6 +60,7 @@ func (m *Manager) runPlex(ctx context.Context) {
 		// Every pod serves. The lease still elects the plex.tv owner, which
 		// the egress rules will follow once they exist.
 		m.markReady(ctx, RoleWorker)
+		m.applyEgress(ctx, false)
 		m.start(ctx)
 		go m.holdPlexTVLease(ctx, elector)
 		return
@@ -73,12 +74,14 @@ func (m *Manager) runElected(ctx context.Context, elector *lease.Elector) {
 		switch err := elector.Acquire(ctx); {
 		case errors.Is(err, lease.ErrHeldByAnother):
 			m.markReady(ctx, RoleWorker)
+			m.applyEgress(ctx, false)
 		case err != nil:
 			m.Logger.Error("acquire lease", "error", err)
 		default:
 			m.Logger.Info("became the active Plex", "lease", m.Config.LeaseName)
 			m.markReady(ctx, RoleLeader)
 			m.Metrics.LeaderStatus.Set(1)
+			m.applyEgress(ctx, true)
 			m.start(ctx)
 			m.holdUntilLost(ctx, elector)
 			// Losing the lease means another pod is taking over. Exit so the
@@ -93,6 +96,21 @@ func (m *Manager) runElected(ctx context.Context, elector *lease.Elector) {
 			return
 		case <-time.After(acquireInterval):
 		}
+	}
+}
+
+// applyEgress opens or closes this pod's route to Plex's own services.
+//
+// The lease decides who may hold the connection to plex.tv: every pod shares
+// one server identity, and several pods holding it at once makes that identity
+// appear to move between addresses. A pod that is not the holder can still
+// serve media and reach metadata providers; it just cannot reach plex.tv.
+func (m *Manager) applyEgress(ctx context.Context, holdsLease bool) {
+	if m.egress == nil {
+		return
+	}
+	if err := m.egress.Apply(ctx, holdsLease); err != nil {
+		m.Logger.Error("apply egress policy", "holds_lease", holdsLease, "error", err)
 	}
 }
 
@@ -126,8 +144,10 @@ func (m *Manager) holdPlexTVLease(ctx context.Context, elector *lease.Elector) {
 		}
 		if err := elector.Acquire(ctx); err == nil {
 			m.Metrics.LeaderStatus.Set(1)
+			m.applyEgress(ctx, true)
 			m.holdUntilLost(ctx, elector)
 			m.Metrics.LeaderStatus.Set(0)
+			m.applyEgress(ctx, false)
 		}
 	}
 }
@@ -168,6 +188,12 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 		m.Logger.Error("advertise Plex availability", "error", err)
 		return
 	}
+	// Also record it on the pod itself. The maintenance fan-out needs the set
+	// of pods that can do work, which the Lease cannot express: it names one
+	// holder, and in active mode every pod is serving.
+	if err := m.markServingPlex(ctx, true); err != nil {
+		m.Logger.Error("mark this pod as serving Plex", "error", err)
+	}
 	m.Logger.Info("advertised this pod as a routable Plex", "address", m.Config.PMSAddr())
 }
 
@@ -178,6 +204,9 @@ func (m *Manager) withdraw(ctx context.Context) {
 	}
 	if err := m.publisher.Clear(ctx); err != nil {
 		m.Logger.Error("withdraw Plex availability", "error", err)
+	}
+	if err := m.markServingPlex(ctx, false); err != nil {
+		m.Logger.Error("mark this pod as no longer serving Plex", "error", err)
 	}
 }
 
