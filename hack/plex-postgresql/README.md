@@ -48,3 +48,58 @@ first place.
 
 The patch is kept because it costs nothing, falls back cleanly, and would start
 producing frames if Plex ever ships unwind tables.
+
+## 0002 — intern declared types so lookups cannot read freed memory
+
+A genuine use-after-free on the hottest path in the shim.
+
+`rust_decltype_cache_lookup` and `rust_decltype_cache_lookup_alias` take a read
+lock on a `HashMap<String, CString>`, return a raw pointer into the stored
+`CString`, and release the lock on the way out. The caller then reads those
+bytes with no lock held.
+
+`rust_decltype_cache_insert` used `HashMap::insert`, which drops the previous
+value for a key and frees its buffer. So re-inserting a key freed bytes that
+another thread was part way through reading. Every column access does a
+lookup, so the window is wide open.
+
+The values are now interned with `Box::leak`, and an insert that would change
+a value leaves the old allocation alone instead of freeing it. Nothing can
+free bytes a reader still holds. It costs one allocation per column, and only
+a value that actually changes leaks anything.
+
+The sibling `OID_TABLE_CACHE` is fine as it stands: it inserts with
+`entry().or_insert()`, so a stored value is never replaced or dropped.
+
+**This did not fix the crash.** It is a real bug on the same code path and
+worth carrying, but Plex still dies in `column_type` reading
+`SELECT version FROM schema_migrations`. So there is at least one more
+unsynchronised access, and this one was not it.
+
+## What is known about the remaining crash
+
+- It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
+  and it presents as both SIGSEGV and a `DB::Exception` thrown out of Plex's
+  SQLite layer, which is what reading recycled memory looks like.
+- It is always in `column_type`, on a 446-row result.
+- Two threads interleave in the `[EXC_CONTEXT]` ring: one iterating
+  `schema_migrations`, one writing `statistics_bandwidth`. Different statements
+  and different database handles.
+- The result-clearing path is *not* the culprit. `rust_stmt_clear_result` takes
+  no lock itself, but every caller holds the statement mutex, and there is no C
+  caller — the tree is pure Rust with legacy headers.
+- `column_type_impl` reads `pg_stmt.result`, `cached_result` and `pg_sql`, and
+  may call `ensure_pg_result_for_metadata`, all *before* taking the statement
+  mutex. `ensure_pg_result_for_metadata` then mutates the statement unlocked.
+  That is a real race, but it needs a null result to trigger and ours is not
+  null, so it is not this crash.
+- `column_type_impl` resolves the statement with `pg_find_any_stmt` and uses
+  the pointer without taking a reference, so a concurrent last-unref would free
+  the statement underneath it. Unverified, and the most promising lead.
+- Statement mutexes are `std::sync::Mutex`, which is **not** recursive, so any
+  fix that adds a lock has to check every caller first. Connection mutexes are
+  pthread recursive; the two are easy to confuse.
+
+None of the shim's own knobs avoid it: `DISABLE_STREAMING`, `DISABLE_POOL`,
+`POOL_SIZE=1`, `DISABLE_STMT_CACHE`, `DISABLE_QUERY_CACHE` and
+`DISABLE_PREPARED` were each tried.
