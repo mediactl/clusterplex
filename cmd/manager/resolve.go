@@ -95,10 +95,6 @@ func (h *resolveHandler) authorize(r *http.Request, path string) (bool, error) {
 func (m *Manager) registerResolve(mux *http.ServeMux) {
 	mux.Handle(mediaproxy.ResolvePath, &resolveHandler{
 		PMSBase: fmt.Sprintf("http://127.0.0.1:%d", m.Config.PMSPort),
-		DB: &plexdb.DB{
-			Runner: plexdb.ExecRunner{},
-			SQLite: m.Config.SQLiteBinary,
-			Path:   m.Config.LibraryDB(),
-		},
+		DB:      m.DB,
 	})
 }

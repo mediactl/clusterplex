@@ -5,15 +5,33 @@ ARG VENDOR="machinectl"
 FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION} AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
-COPY hack/litefs ./hack/litefs
-# Upstream LiteFS at the pinned tag plus our patches; go.mod replaces the
-# module with this directory.
-RUN hack/litefs/fetch.sh
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
+
+# Stage 1b: Build the PostgreSQL shim.
+#
+# This is the library that makes Plex talk to PostgreSQL instead of its own
+# SQLite file. It interposes on Plex's SQLite symbols, so it has to be built
+# against the same musl Plex bundles, which is why the base is pinned to Alpine
+# 3.15 rather than something current. Upstream publishes no Linux binaries, so
+# there is nothing to download instead.
+FROM --platform=${BUILDPLATFORM} alpine:3.15 AS shim
+ARG PLEX_PG_REF=v1.3.17
+RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
+WORKDIR /build
+ENV CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_TARGET_DIR=/build/target \
+    PATH="/usr/local/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal
+RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
+    https://github.com/cgnl/plex-postgresql /build/src
+WORKDIR /build/src
+RUN sh scripts/docker-build-shim.sh
 
 # Stage 2: Extract Plex and set up the filesystem
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
@@ -52,14 +70,20 @@ RUN cd rootfs/usr/lib/plexmediaserver && \
     ln -s /usr/local/bin/shim "Plex Relay"
 
 # Prepare empty state directories needed by Plex and LiteFS
-RUN mkdir -p  rootfs/var/lib/litefs rootfs/var/lib/plexmediaserver
+RUN mkdir -p rootfs/var/lib/plexmediaserver
 
 # Stage 3: Final image
 FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
+<<<<<<< HEAD
 # fuse3 for LiteFS. Nothing here is needed for the network: the manager builds
 # Plex's namespace, veth pair and masquerade over netlink itself (ADR 0003),
 # which is why iptables is gone.
 RUN apt-get update && apt-get install -y fuse3 ca-certificates && rm -rf /var/lib/apt/lists/*
+=======
+# iptables for the port redirect in front of Plex (ADR 0002). No FUSE any more:
+# the library is in PostgreSQL rather than a replicated file.
+RUN apt-get update && apt-get install -y iptables ca-certificates && rm -rf /var/lib/apt/lists/*
+>>>>>>> c371fbe (Move the library from LiteFS to a shared PostgreSQL database)
 
 ARG VENDOR
 
@@ -67,6 +91,10 @@ ARG VENDOR
 COPY --from=builder /app/bin/manager /usr/local/bin/manager
 COPY --from=builder /app/bin/shim /usr/local/bin/shim
 COPY --from=builder /app/bin/proxy /usr/local/bin/proxy
+
+# The PostgreSQL shim and the libraries it links. The manager puts this on
+# LD_PRELOAD when it starts Plex, which is what redirects Plex's database calls.
+COPY --from=shim /libs/ /usr/local/lib/plex-postgresql/
 
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /

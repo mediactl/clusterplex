@@ -7,5 +7,3 @@ cover.out
 /cluster-plex/cluster-plex
 .superpowers/
 
-# Materialised by hack/litefs/fetch.sh (make litefs); never committed.
-/third_party/litefs/

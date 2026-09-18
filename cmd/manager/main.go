@@ -1,7 +1,12 @@
-// The manager runs in every Plex pod. It embeds LiteFS to replicate Plex's
-// SQLite databases, elects one pod to run Plex Media Server, fronts that
-// server with a TCP proxy, and turns the other pods into workers that run
-// transcodes the leader hands them.
+// The manager runs in every Plex pod. It gives Plex its own network namespace,
+// supervises it, fronts it with a TCP proxy, answers the media proxy's
+// questions about the library, and runs the helper binaries the shim
+// intercepts.
+//
+// The library itself lives in PostgreSQL, shared by every pod, so there is no
+// database to replicate and no primary to elect. The lease that remains elects
+// the one pod allowed to hold the connection to plex.tv, because every pod
+// shares a single server identity.
 package main
 
 import (
@@ -17,15 +22,16 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
-	"github.com/superfly/litefs"
-	"github.com/superfly/litefs/fuse"
-	litefshttp "github.com/superfly/litefs/http"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/mediactl/clusterplex/pkg/lease"
+	"github.com/mediactl/clusterplex/pkg/plexdb"
 	"github.com/mediactl/clusterplex/pkg/plexnet"
 	"github.com/mediactl/clusterplex/pkg/plexprefs"
 	"github.com/mediactl/clusterplex/pkg/plexroute"
@@ -40,33 +46,21 @@ type Manager struct {
 	Tracer    trace.Tracer
 	Metrics   *telemetry.Metrics
 	K8sClient kubernetes.Interface
+	DB        *plexdb.DB
 
 	sup       *Supervisor
 	publisher *plexroute.Publisher
+	elector   *lease.Elector
 	// plexAddr reaches Plex inside its network namespace, bypassing the proxy.
 	// Anything asking "is Plex up?" has to use this: in the pod namespace the
 	// proxy holds Plex's port, and it answers whether Plex is running or not.
 	plexAddr     string
-	store        *litefs.Store
-	fsys         *fuse.FileSystem
-	litefsHTTP   *litefshttp.Server
 	shimServer   *grpc.Server
 	workerServer *grpc.Server
 
 	mu         sync.RWMutex
-	isLeader   bool
 	isReady    bool
 	isStarting bool
-	// orphaned, when set, is why this node's data is not replicating. It keeps
-	// the pod out of every Service and out of the election.
-	orphaned string
-}
-
-// setOrphaned marks this node as holding data that no longer replicates.
-func (m *Manager) setOrphaned(reason string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.orphaned = reason
 }
 
 func main() {
@@ -97,12 +91,28 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	pool, err := plexdb.Open(ctx, cfg.Postgres)
+	if err != nil {
+		logger.Error("connect to the library database", "database", cfg.Postgres.String(), "error", err)
+		return 1
+	}
+	defer pool.Close()
+	logger.Info("library database configured", "database", cfg.Postgres.String())
+
+	if err := checkShim(cfg); err != nil {
+		// Without it Plex quietly uses its own SQLite file, which would look
+		// like an empty library rather than a failure.
+		logger.Error("the PostgreSQL shim is not available", "error", err)
+		return 1
+	}
+
 	m := &Manager{
 		Config:     cfg,
 		Logger:     logger,
 		Tracer:     tracer,
 		Metrics:    metrics,
 		K8sClient:  k8sClient,
+		DB:         &plexdb.DB{Querier: pool},
 		isStarting: true,
 	}
 	m.publisher = &plexroute.Publisher{
@@ -137,11 +147,13 @@ func run() int {
 	m.sup = &Supervisor{
 		Binary:       cfg.PMSBinary,
 		PIDFile:      cfg.PIDFile(),
+		Env:          shimEnv(os.Environ(), cfg),
 		Logger:       logger.With("component", "supervisor"),
 		Grace:        defaultGrace,
 		StartProcess: plexNet.StartProcess,
 		Preferences: func(context.Context) error {
-			changed, err := plexprefs.Apply(cfg.PreferencesFile(), cfg.Preferences)
+			prefs := m.enforcedPreferences()
+			changed, err := plexprefs.Apply(cfg.PreferencesFile(), prefs)
 			if err != nil {
 				return err
 			}
@@ -161,10 +173,10 @@ func run() int {
 			OnConnChange: func(delta int) { metrics.ProxyConnections.Add(float64(delta)) },
 		},
 		OnUnexpectedExit: func(err error) {
-			// LiteFS state lives in this process; the cleanest recovery is a
-			// fresh container, which re-runs the election.
-			logger.Error("exiting so the pod restarts and re-elects", "error", err)
-			m.shutdownLiteFS()
+			// A fresh container is the cleanest recovery, and it re-runs the
+			// election rather than leaving a half torn down pod advertised.
+			logger.Error("exiting so the pod restarts", "error", err)
+			m.shutdown(context.Background())
 			os.Exit(1)
 		},
 	}
@@ -174,20 +186,13 @@ func run() int {
 		logger.Error("start job listeners", "error", err)
 		return 1
 	}
-	if err := m.startLiteFS(ctx); err != nil {
-		logger.Error("start LiteFS", "error", err)
-		return 1
-	}
+	m.runPlex(ctx)
 
 	<-ctx.Done()
 	logger.Info("shutting down")
-	m.withdraw(context.Background())
 	stopCtx, cancel := context.WithTimeout(context.Background(), defaultGrace+5*time.Second)
 	defer cancel()
-	if err := m.sup.Stop(stopCtx); err != nil {
-		logger.Error("stop Plex Media Server", "error", err)
-	}
-	m.shutdownLiteFS()
+	m.shutdown(stopCtx)
 	return 0
 }
 
@@ -198,6 +203,12 @@ func (m *Manager) serveProbes() {
 	if err := srv.ListenAndServe(); err != nil {
 		m.Logger.Error("probe server stopped", "error", err)
 	}
+}
+
+// patchPod applies a strategic merge patch to this pod.
+func (m *Manager) patchPod(ctx context.Context, payload []byte) (any, error) {
+	return m.K8sClient.CoreV1().Pods(m.Config.Namespace).
+		Patch(ctx, m.Config.PodName, types.StrategicMergePatchType, payload, metav1.PatchOptions{})
 }
 
 func newK8sClient() (kubernetes.Interface, error) {

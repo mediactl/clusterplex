@@ -1,5 +1,4 @@
 .git
 bin/
 dist/
-third_party/litefs/
 cover.out

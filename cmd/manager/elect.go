@@ -1,0 +1,220 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"strconv"
+	"time"
+
+	"github.com/mediactl/clusterplex/pkg/lease"
+	"github.com/mediactl/clusterplex/pkg/plexprefs"
+	"github.com/mediactl/clusterplex/pkg/plexroute"
+)
+
+// Pod role labels, kept for observability only. Nothing routes on them: the
+// Lease is the single source of truth and the proxy follows it directly.
+const (
+	RoleStarting = "starting"
+	RoleLeader   = "leader"
+	RoleWorker   = "worker"
+)
+
+const (
+	// renewInterval is how often the holder extends its lease. It has to be
+	// comfortably shorter than the lease duration.
+	renewInterval = 5 * time.Second
+	// acquireInterval is how often a pod that is not the holder tries again.
+	acquireInterval = 2 * time.Second
+	// pmsStartTimeout bounds how long we wait for Plex to bind its port before
+	// giving up on advertising this pod.
+	pmsStartTimeout = 5 * time.Minute
+)
+
+// runPlex starts Plex on this pod and keeps it running.
+//
+// With the library in PostgreSQL every pod reads and writes the same database,
+// so there is no primary to elect and nothing to replicate. What still needs
+// one owner is the connection to plex.tv, because every pod shares one server
+// identity. That is what the lease decides.
+//
+// Until egress from the pods that do not hold that lease is actually
+// constrained, running Plex everywhere would have every pod opening its own
+// connection to plex.tv under the same identity. So the default is still to
+// run Plex only on the lease holder.
+func (m *Manager) runPlex(ctx context.Context) {
+	if err := m.updatePodRole(ctx, RoleStarting); err != nil {
+		m.Logger.Error("update pod role label", "error", err)
+	}
+
+	elector := &lease.Elector{
+		Client:    m.K8sClient,
+		Namespace: m.Config.Namespace,
+		Name:      m.Config.LeaseName,
+		Identity:  m.Config.PodName,
+	}
+	m.elector = elector
+
+	if m.Config.PlexMode == plexModeActive {
+		// Every pod serves. The lease still elects the plex.tv owner, which
+		// the egress rules will follow once they exist.
+		m.markReady(ctx, RoleWorker)
+		m.start(ctx)
+		go m.holdPlexTVLease(ctx, elector)
+		return
+	}
+	go m.runElected(ctx, elector)
+}
+
+// runElected keeps trying to become the holder, and runs Plex only while it is.
+func (m *Manager) runElected(ctx context.Context, elector *lease.Elector) {
+	for {
+		switch err := elector.Acquire(ctx); {
+		case errors.Is(err, lease.ErrHeldByAnother):
+			m.markReady(ctx, RoleWorker)
+		case err != nil:
+			m.Logger.Error("acquire lease", "error", err)
+		default:
+			m.Logger.Info("became the active Plex", "lease", m.Config.LeaseName)
+			m.markReady(ctx, RoleLeader)
+			m.Metrics.LeaderStatus.Set(1)
+			m.start(ctx)
+			m.holdUntilLost(ctx, elector)
+			// Losing the lease means another pod is taking over. Exit so the
+			// container comes back clean rather than half torn down.
+			m.Logger.Warn("lost the lease; restarting as a standby")
+			m.shutdown(ctx)
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(acquireInterval):
+		}
+	}
+}
+
+// holdUntilLost renews the lease until it is lost or the context ends.
+func (m *Manager) holdUntilLost(ctx context.Context, elector *lease.Elector) {
+	ticker := time.NewTicker(renewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := elector.Renew(ctx); err != nil {
+			m.Logger.Warn("lease renewal failed", "error", err)
+			return
+		}
+	}
+}
+
+// holdPlexTVLease competes for the plex.tv owner lease without gating Plex on
+// it, which is what active mode needs.
+func (m *Manager) holdPlexTVLease(ctx context.Context, elector *lease.Elector) {
+	ticker := time.NewTicker(acquireInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := elector.Acquire(ctx); err == nil {
+			m.Metrics.LeaderStatus.Set(1)
+			m.holdUntilLost(ctx, elector)
+			m.Metrics.LeaderStatus.Set(0)
+		}
+	}
+}
+
+// start brings up Plex and advertises this pod once it is accepting.
+func (m *Manager) start(ctx context.Context) {
+	if err := m.sup.Start(ctx); err != nil {
+		m.Logger.Error("start Plex Media Server", "error", err)
+		return
+	}
+	go m.advertiseWhenAccepting(ctx)
+}
+
+func (m *Manager) markReady(ctx context.Context, role string) {
+	m.mu.Lock()
+	already := !m.isStarting
+	m.isStarting, m.isReady = false, true
+	m.mu.Unlock()
+	if already {
+		return
+	}
+	if err := m.updatePodRole(ctx, role); err != nil {
+		m.Logger.Error("update pod role label", "error", err)
+	}
+}
+
+// advertiseWhenAccepting publishes this pod as routable only once its port
+// actually accepts a connection. Plex needs seconds to bind, and advertising
+// earlier sends clients to a closed port.
+func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
+	local := net.JoinHostPort("127.0.0.1", strconv.Itoa(m.Config.PMSPort))
+	if err := plexroute.WaitListening(ctx, local, pmsStartTimeout); err != nil {
+		m.Logger.Error("Plex never started accepting connections; not advertising this pod", "error", err)
+		return
+	}
+	manager := net.JoinHostPort(m.Config.PodDNS(), strconv.Itoa(m.Config.ProbePort))
+	if err := m.publisher.Publish(ctx, m.Config.PMSAddr(), "http://"+manager); err != nil {
+		m.Logger.Error("advertise Plex availability", "error", err)
+		return
+	}
+	m.Logger.Info("advertised this pod as a routable Plex", "address", m.Config.PMSAddr())
+}
+
+// withdraw stops traffic being routed here before Plex goes away.
+func (m *Manager) withdraw(ctx context.Context) {
+	if m.publisher == nil {
+		return
+	}
+	if err := m.publisher.Clear(ctx); err != nil {
+		m.Logger.Error("withdraw Plex availability", "error", err)
+	}
+}
+
+// shutdown withdraws this pod, stops Plex and releases the lease.
+func (m *Manager) shutdown(ctx context.Context) {
+	m.withdraw(ctx)
+	if err := m.sup.Stop(ctx); err != nil {
+		m.Logger.Error("stop Plex Media Server", "error", err)
+	}
+	if m.elector != nil {
+		if err := m.elector.Release(ctx); err != nil {
+			m.Logger.Error("release lease", "error", err)
+		}
+	}
+	m.Metrics.LeaderStatus.Set(0)
+}
+
+// enforcedPreferences are the settings the manager writes into Plex's
+// configuration on every start, on top of whatever the operator declared.
+func (m *Manager) enforcedPreferences() map[string]string {
+	prefs := map[string]string{}
+	for k, v := range m.Config.Preferences {
+		prefs[k] = v
+	}
+	if m.Config.ButlerTasks == butlerBySupervisor {
+		// Each Plex process runs its own maintenance scheduler with no
+		// knowledge of the others, so several pods would analyse the same
+		// media and hit the same rate-limited providers at once.
+		for k, v := range plexprefs.DisabledButlerTasks() {
+			prefs[k] = v
+		}
+	}
+	return prefs
+}
+
+func (m *Manager) updatePodRole(ctx context.Context, role string) error {
+	payload := []byte(fmt.Sprintf(`{"metadata":{"labels":{"plex-role":"%s"}}}`, role))
+	_, err := m.patchPod(ctx, payload)
+	return err
+}

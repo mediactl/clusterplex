@@ -39,6 +39,21 @@ const (
 	machineIDKey = "plex.machine-identifier"
 	// defaultConfigFile is read when --config is not given. It is optional.
 	defaultConfigFile = "/etc/clusterplex/config.yaml"
+
+	// butlerBySupervisor disables Plex's internal maintenance scheduler on
+	// every pod, so the work can be scheduled once and handed to one pod at a
+	// time rather than every pod doing all of it.
+	butlerBySupervisor = "supervisor"
+	// butlerInternal leaves Plex running its own scheduler, which is only safe
+	// when exactly one Plex process exists.
+	butlerInternal = "internal"
+
+	// plexModeElected runs Plex only on the pod holding the lease.
+	plexModeElected = "elected"
+	// plexModeActive runs Plex on every pod. It needs egress from the pods
+	// that do not hold the lease to be constrained first, or every pod opens
+	// its own connection to plex.tv under the same server identity.
+	plexModeActive = "active"
 )
 
 // Config is the manager's runtime configuration. Every field can be set by a
@@ -55,16 +70,27 @@ type Config struct {
 	// PlexDir is Plex's own state directory ("Plex Media Server" under the
 	// application support dir).
 	PlexDir string
-	// LiteFSDir is where LiteFS keeps its transaction files.
-	LiteFSDir string
+	// Postgres is the library database, shared by every pod. It replaces the
+	// per-pod replicated SQLite file, so there is no database primary to elect
+	// and no local database state to keep.
+	Postgres plexdb.Config
+	// ButlerTasks decides who runs Plex's background maintenance. "supervisor"
+	// disables Plex's internal scheduler on every pod so the work can be
+	// scheduled once and handed out; "internal" leaves Plex to run its own,
+	// which is only safe with a single Plex process.
+	ButlerTasks string
+	// PlexMode is whether Plex runs on every pod ("active") or only on the
+	// lease holder ("elected").
+	PlexMode string
+	// ShimLibrary is the interposer preloaded into Plex so its database calls
+	// reach PostgreSQL. Empty leaves Plex on its own SQLite file.
+	ShimLibrary string
 	// Socket is the unix socket the shim dials.
 	Socket string
 	// LeaseName is the Kubernetes Lease used for leader election.
 	LeaseName string
 	// WorkersService is the headless Service that gives pods stable DNS names.
 	WorkersService string
-	// SQLiteBinary is Plex's bundled SQLite, used to read the library.
-	SQLiteBinary string
 
 	// PMSPort is where Plex listens inside its own network namespace, and
 	// where the manager's proxy listens in the pod namespace. Plex offers no
@@ -76,15 +102,8 @@ type Config struct {
 	PlexSubnet netip.Prefix
 	// WorkerPort is the gRPC port on which a worker accepts jobs.
 	WorkerPort int
-	// LiteFSPort is the replication port between LiteFS nodes.
-	LiteFSPort int
 	// ProbePort serves the health probes and metrics.
 	ProbePort int
-
-	// AdoptClusterID lets a node whose LiteFS lineage disagrees with the
-	// cluster's throw its own away and resnapshot. Off by default: the node
-	// that disagrees may be the one holding the only good copy.
-	AdoptClusterID bool
 
 	// Preferences are the Plex settings the manager writes into
 	// Preferences.xml before each start. Keys not listed here are left as
@@ -101,17 +120,23 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("pms-binary", "/usr/lib/plexmediaserver/Plex Media Server", "Plex Media Server executable")
 	fs.String("bin-dir", "/usr/lib/plexmediaserver", "directory holding the real Plex helper binaries")
 	fs.String("plex-dir", "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server", "Plex state directory")
-	fs.String("litefs-dir", "/var/lib/litefs", "directory for LiteFS transaction files")
 	fs.String("socket", "/var/run/clusterplex.sock", "unix socket the shim dials")
-	fs.String("lease-name", "cluster-plex-litefs", "Kubernetes Lease used for leader election")
+	fs.String("lease-name", "cluster-plex-plextv", "Kubernetes Lease electing the pod that talks to plex.tv")
 	fs.String("workers-service", "plex-workers", "headless Service giving pods stable DNS names")
 	fs.Int("pms-port", 32400, "port Plex Media Server listens on")
 	fs.String("plex-subnet", "169.254.1.0/30", "point-to-point subnet joining the pod to Plex's network namespace")
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
-	fs.Int("litefs-port", 20202, "LiteFS replication port")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
-	fs.String("sqlite-binary", plexdb.DefaultSQLite, "Plex's bundled SQLite binary, used to read the library database")
-	fs.Bool("litefs-adopt-cluster-id", false, "discard this node's LiteFS lineage and resnapshot from the primary (destructive; only when the cluster's lineage is known to be the right one)")
+	fs.String("postgres-host", "", "host of the shared Plex library database")
+	fs.Int("postgres-port", 5432, "port of the shared Plex library database")
+	fs.String("postgres-database", "plex", "name of the shared Plex library database")
+	fs.String("postgres-user", "plex", "user for the shared Plex library database")
+	fs.String("postgres-password", "", "password for the shared Plex library database")
+	fs.String("postgres-schema", "", "schema holding Plex's tables (default: the search path)")
+	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
+	fs.String("butler-tasks", butlerBySupervisor, "who runs Plex's background maintenance: supervisor (disables Plex's own scheduler on every pod) or internal (only safe with a single Plex)")
+	fs.String("plex-mode", plexModeElected, "run Plex on every pod (active) or only on the lease holder (elected); active needs egress control so only one pod reaches plex.tv")
+	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
 	return fs
@@ -160,16 +185,38 @@ func loadConfig(args []string) (Config, error) {
 		PMSBinary:      v.GetString("pms-binary"),
 		BinDir:         v.GetString("bin-dir"),
 		PlexDir:        v.GetString("plex-dir"),
-		LiteFSDir:      v.GetString("litefs-dir"),
 		Socket:         v.GetString("socket"),
 		LeaseName:      v.GetString("lease-name"),
 		WorkersService: v.GetString("workers-service"),
-		SQLiteBinary:   v.GetString("sqlite-binary"),
 		PMSPort:        port("pms-port"),
 		WorkerPort:     port("worker-port"),
-		LiteFSPort:     port("litefs-port"),
 		ProbePort:      port("probe-port"),
-		AdoptClusterID: v.GetBool("litefs-adopt-cluster-id"),
+		ButlerTasks:    v.GetString("butler-tasks"),
+		PlexMode:       v.GetString("plex-mode"),
+		ShimLibrary:    v.GetString("shim-library"),
+		Postgres: plexdb.Config{
+			Host:     v.GetString("postgres-host"),
+			Port:     port("postgres-port"),
+			Database: v.GetString("postgres-database"),
+			User:     v.GetString("postgres-user"),
+			Password: v.GetString("postgres-password"),
+			Schema:   v.GetString("postgres-schema"),
+			SSLMode:  v.GetString("postgres-sslmode"),
+		},
+	}
+	if c.ButlerTasks != butlerBySupervisor && c.ButlerTasks != butlerInternal {
+		errs = append(errs, fmt.Errorf("butler-tasks: %q must be %s or %s", c.ButlerTasks, butlerBySupervisor, butlerInternal))
+	}
+	if c.PlexMode != plexModeElected && c.PlexMode != plexModeActive {
+		errs = append(errs, fmt.Errorf("plex-mode: %q must be %s or %s", c.PlexMode, plexModeElected, plexModeActive))
+	}
+	if c.PlexMode == plexModeActive && c.ButlerTasks == butlerInternal {
+		// Every pod would run its own maintenance scheduler against one shared
+		// library, so the work multiplies by the number of pods.
+		errs = append(errs, errors.New("plex-mode active requires butler-tasks supervisor"))
+	}
+	if err := c.Postgres.Validate(); err != nil {
+		errs = append(errs, err)
 	}
 
 	if subnet, perr := netip.ParsePrefix(v.GetString("plex-subnet")); perr != nil {
@@ -279,21 +326,14 @@ func (c Config) PodDNS() string {
 // PMSAddr is how other pods reach this node's Plex Media Server.
 func (c Config) PMSAddr() string { return fmt.Sprintf("%s:%d", c.PodDNS(), c.PMSPort) }
 
-// AdvertiseURL is the LiteFS replication endpoint other nodes connect to.
-func (c Config) AdvertiseURL() string { return fmt.Sprintf("http://%s:%d", c.PodDNS(), c.LiteFSPort) }
-
-// LibraryDB is Plex's main library database, inside the LiteFS mount.
-func (c Config) LibraryDB() string {
-	return filepath.Join(c.DatabasesDir(), "com.plexapp.plugins.library.db")
-}
-
 // PIDFile is where Plex records its pid.
 func (c Config) PIDFile() string { return filepath.Join(c.PlexDir, "plexmediaserver.pid") }
 
 // PreferencesFile is Plex's settings file.
 func (c Config) PreferencesFile() string { return filepath.Join(c.PlexDir, "Preferences.xml") }
 
-// DatabasesDir is the directory LiteFS mounts over: Plex's SQLite databases.
+// DatabasesDir is where Plex keeps database files it still writes locally,
+// such as its blob cache. The library itself is in PostgreSQL.
 func (c Config) DatabasesDir() string {
 	return filepath.Join(c.PlexDir, "Plug-in Support", "Databases")
 }

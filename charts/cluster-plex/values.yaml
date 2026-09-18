@@ -54,6 +54,22 @@ storage:
     accessMode: ReadWriteMany
     storageClass: ""
   # LiteFS transaction files. Per pod, never shared.
-  litefs:
-    size: 10Gi
-    storageClass: ""
+
+# The Plex library. This is an external database the chart does not create:
+# every pod reads and writes it, which is what removes the need to replicate
+# anything or elect a database primary.
+#
+# Two things to know before adopting it. Library search returns nothing, because
+# the shim translates Plex's full-text MATCH into a constant false predicate.
+# And title ordering follows PostgreSQL's default collation, because Plex's
+# naturalsort collation has no equivalent here.
+postgres:
+  host: ""
+  port: 5432
+  database: plex
+  user: plex
+  # The password is read from a Secret rather than set here, so it stays out of
+  # values and out of the rendered manifests.
+  passwordSecret:
+    name: ""
+    key: password

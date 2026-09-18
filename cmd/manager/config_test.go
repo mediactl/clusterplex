@@ -9,11 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// podIdentity sets the downward-API variables every test needs.
+// podIdentity sets the minimum a manager needs to start: who this pod is, and
+// where the shared library lives.
 func podIdentity(t *testing.T) {
 	t.Helper()
 	t.Setenv("POD_NAME", "plex-0")
 	t.Setenv("POD_NAMESPACE", "media")
+	t.Setenv("CLUSTERPLEX_POSTGRES_HOST", "postgres")
 }
 
 func writeConfig(t *testing.T, body string) string {
@@ -33,16 +35,44 @@ func TestConfigDefaults(t *testing.T) {
 	assert.Equal(t, 32400, c.PMSPort)
 	assert.Equal(t, "169.254.1.0/30", c.PlexSubnet.String())
 	assert.Equal(t, 50051, c.WorkerPort)
-	assert.Equal(t, 20202, c.LiteFSPort)
 	assert.Equal(t, "/var/run/clusterplex.sock", c.Socket)
-	assert.Equal(t, "/var/lib/litefs", c.LiteFSDir)
 	assert.Equal(t, "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server", c.PlexDir)
 	assert.Equal(t, "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/plexmediaserver.pid", c.PIDFile())
-	assert.Equal(t, "cluster-plex-litefs", c.LeaseName)
+	assert.Equal(t, "cluster-plex-plextv", c.LeaseName)
 	assert.Equal(t, "plex-workers", c.WorkersService)
 	assert.Equal(t, "plex-0.plex-workers.media.svc.cluster.local:32400", c.PMSAddr())
-	assert.Equal(t, "http://plex-0.plex-workers.media.svc.cluster.local:20202", c.AdvertiseURL())
 	assert.Empty(t, c.Preferences)
+
+	// The library is shared, so Plex's own scheduler is off by default and
+	// Plex runs on one pod until egress control makes active mode safe.
+	assert.Equal(t, butlerBySupervisor, c.ButlerTasks)
+	assert.Equal(t, plexModeElected, c.PlexMode)
+	assert.Equal(t, 5432, c.Postgres.Port)
+	assert.Equal(t, "plex", c.Postgres.Database)
+	assert.Equal(t, "plex", c.Postgres.User)
+}
+
+func TestConfigRequiresALibraryDatabase(t *testing.T) {
+	// There is no local database any more, so a missing host is fatal rather
+	// than something discovered on the first query.
+	t.Setenv("POD_NAME", "plex-0")
+	t.Setenv("POD_NAMESPACE", "media")
+	t.Setenv("CLUSTERPLEX_POSTGRES_HOST", "")
+
+	_, err := loadConfig(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "host")
+}
+
+func TestActiveModeRefusesToLeavePlexRunningItsOwnScheduler(t *testing.T) {
+	podIdentity(t)
+	_, err := loadConfig([]string{
+		"--postgres-host", "postgres",
+		"--plex-mode", plexModeActive,
+		"--butler-tasks", butlerInternal,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "butler-tasks")
 }
 
 func TestConfigKeepsWorkingWithTheExistingEnvironmentVariableNames(t *testing.T) {
@@ -78,7 +108,7 @@ plex:
 
 func TestConfigPrecedenceIsFlagThenEnvThenFile(t *testing.T) {
 	podIdentity(t)
-	path := writeConfig(t, "probe-port: 1111\nworker-port: 2222\nlitefs-port: 3333\n")
+	path := writeConfig(t, "probe-port: 1111\nworker-port: 2222\npostgres-port: 3333\n")
 	t.Setenv("CLUSTERPLEX_PROBE_PORT", "4444")
 	t.Setenv("CLUSTERPLEX_WORKER_PORT", "5555")
 
@@ -87,7 +117,7 @@ func TestConfigPrecedenceIsFlagThenEnvThenFile(t *testing.T) {
 
 	assert.Equal(t, 6666, c.ProbePort, "flag wins")
 	assert.Equal(t, 5555, c.WorkerPort, "env beats file")
-	assert.Equal(t, 3333, c.LiteFSPort, "file beats default")
+	assert.Equal(t, 3333, c.Postgres.Port, "file beats default")
 }
 
 func TestPreferencesComeFromFileEnvAndFlags(t *testing.T) {
@@ -225,15 +255,18 @@ func TestMachineIdentifierAgreeingWithAnExplicitPreferenceIsFine(t *testing.T) {
 	assert.Equal(t, id, c.Preferences["MachineIdentifier"])
 }
 
-func TestAdoptClusterIDIsOffByDefaultBecauseItDiscardsData(t *testing.T) {
+func TestPostgresSettingsComeFromTheEnvironmentLikeEverythingElse(t *testing.T) {
 	podIdentity(t)
+	t.Setenv("CLUSTERPLEX_POSTGRES_HOST", "db.media.svc")
+	t.Setenv("CLUSTERPLEX_POSTGRES_PASSWORD", "s3cret")
+	t.Setenv("CLUSTERPLEX_POSTGRES_DATABASE", "plexlib")
+
 	c, err := loadConfig(nil)
 	require.NoError(t, err)
-	assert.False(t, c.AdoptClusterID)
 
-	c, err = loadConfig([]string{"--litefs-adopt-cluster-id"})
-	require.NoError(t, err)
-	assert.True(t, c.AdoptClusterID)
+	assert.Equal(t, "db.media.svc", c.Postgres.Host)
+	assert.Equal(t, "plexlib", c.Postgres.Database)
+	assert.Equal(t, "s3cret", c.Postgres.Password)
 }
 
 // The link is link-local and invisible outside the pod, but it still has to

@@ -30,6 +30,11 @@ type Supervisor struct {
 	// process; on a persistent volume the file outlives the container and
 	// container pids repeat, so it is removed before every start.
 	PIDFile string
+	// Env is the environment Plex is started with. Nil inherits this
+	// process's own. It carries the preload that redirects Plex's database
+	// calls to PostgreSQL, so getting it wrong means Plex silently falls back
+	// to its own SQLite file.
+	Env []string
 	// Grace is how long Plex gets after SIGTERM before it is killed.
 	Grace time.Duration
 	// StartProcess, when set, starts Plex in place of cmd.Start(), so it can
@@ -83,6 +88,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 	s.removeStalePIDFile()
 	cmd := exec.Command(s.Binary)
+	cmd.Env = s.Env
 	cmd.Stdout = &lineLogger{log: s.Logger, source: "pms-stdout"}
 	cmd.Stderr = &lineLogger{log: s.Logger, source: "pms-stderr"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

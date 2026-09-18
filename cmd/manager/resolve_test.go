@@ -13,9 +13,21 @@ import (
 	"github.com/mediactl/clusterplex/pkg/plexdb"
 )
 
-type stubRunner struct{ out string }
+// stubRow returns a fixed file path, standing in for the library database.
+type stubRow struct{ file string }
 
-func (s stubRunner) Run(context.Context, string, ...string) (string, error) { return s.out, nil }
+func (s stubRow) Scan(dest ...any) error {
+	if p, ok := dest[0].(*string); ok {
+		*p = s.file
+	}
+	return nil
+}
+
+type stubQuerier struct{ row stubRow }
+
+func (s stubQuerier) QueryRow(context.Context, string, ...any) plexdb.Row {
+	return s.row
+}
 
 // fakePlex answers the authorization probe with a fixed status and records it.
 func fakePlex(t *testing.T, status int, seen *http.Request) *httptest.Server {
@@ -34,7 +46,7 @@ func resolve(t *testing.T, status int, token string) (*httptest.ResponseRecorder
 	plex := fakePlex(t, status, &seen)
 	h := &resolveHandler{
 		PMSBase: plex.URL,
-		DB:      &plexdb.DB{Runner: stubRunner{out: "/media/Movies/Test.mp4\n"}, Path: "/db"},
+		DB:      &plexdb.DB{Querier: stubQuerier{row: stubRow{file: "/media/Movies/Test.mp4"}}},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/internal/resolve?part=1&path=%2Flibrary%2Fparts%2F1%2F17%2Ffile.mp4", nil)
 	if token != "" {
@@ -67,7 +79,7 @@ func TestResolveRefusesWhateverPlexRefuses(t *testing.T) {
 }
 
 func TestResolveRejectsAMalformedRequest(t *testing.T) {
-	h := &resolveHandler{DB: &plexdb.DB{Runner: stubRunner{}, Path: "/db"}}
+	h := &resolveHandler{DB: &plexdb.DB{Querier: stubQuerier{}}}
 	for _, q := range []string{"?part=1", "?path=/library/parts/1/1/file.mp4", "?part=1&path=relative"} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/internal/resolve"+q, nil))

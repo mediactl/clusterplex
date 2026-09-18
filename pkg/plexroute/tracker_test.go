@@ -15,7 +15,7 @@ import (
 
 const (
 	ns    = "media"
-	name  = "cluster-plex-litefs"
+	name  = "cluster-plex-plextv"
 	addr2 = "plex-2.plex-workers.media.svc.cluster.local:32400"
 )
 

@@ -1,7 +1,6 @@
 GOBIN ?= $(shell go env GOPATH)/bin
 GOLANGCI_LINT ?= $(GOBIN)/golangci-lint-v2
 IMG ?= ghcr.io/mediactl/cluster-plex:dev
-LITEFS_TAG ?= v0.5.14
 NETNS_TEST_BIN ?= $(CURDIR)/bin/plexnet.test
 
 .PHONY: all
@@ -9,9 +8,6 @@ all: build
 
 ##@ Development
 
-.PHONY: litefs
-litefs: ## Materialise ./third_party/litefs (upstream $(LITEFS_TAG) + hack/litefs patches)
-	LITEFS_TAG=$(LITEFS_TAG) hack/litefs/fetch.sh
 
 .PHONY: proto
 proto: ## Regenerate the gRPC bindings from proto/transcoder.proto
@@ -23,29 +19,29 @@ fmt: ## gofmt the module
 	go fmt ./...
 
 .PHONY: vet
-vet: litefs ## go vet the module
+vet: ## go vet the module
 	go vet ./...
 
 .PHONY: lint
-lint: litefs ## Run golangci-lint v2
+lint: ## Run golangci-lint v2
 	$(GOLANGCI_LINT) run ./...
 
 .PHONY: tidy
-tidy: litefs ## go mod tidy
+tidy: ## go mod tidy
 	go mod tidy
 
 .PHONY: build
-build: litefs ## Build the manager and shim into bin/
+build: ## Build the manager and shim into bin/
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
 
 .PHONY: test
-test: litefs ## Unit tests
+test: ## Unit tests
 	go test ./... -coverprofile cover.out
 
 .PHONY: test-netns
-test-netns: litefs ## pkg/plexnet against real network namespaces
+test-netns: ## pkg/plexnet against real network namespaces
 	# Provisioning a namespace needs CAP_SYS_ADMIN. unshare gives it over the
 	# namespaces it creates without needing actual root, and keeps the test's
 	# veth pairs and nftables rules off the developer's own network.

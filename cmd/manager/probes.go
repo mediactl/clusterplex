@@ -21,13 +21,8 @@ func (m *Manager) probeHandler() http.Handler {
 	// Readiness: may traffic and jobs be sent to this pod?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		m.mu.RLock()
-		ready, orphaned := m.isReady, m.orphaned
+		ready := m.isReady
 		m.mu.RUnlock()
-		if orphaned != "" {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("orphaned: " + orphaned))
-			return
-		}
 		if !ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -36,7 +31,7 @@ func (m *Manager) probeHandler() http.Handler {
 		_, _ = w.Write([]byte("ready"))
 	})
 
-	// Startup: has LiteFS settled into a role?
+	// Startup: has this pod settled into a role?
 	mux.HandleFunc("/startupz", func(w http.ResponseWriter, _ *http.Request) {
 		m.mu.RLock()
 		starting := m.isStarting

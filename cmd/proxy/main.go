@@ -44,7 +44,7 @@ func run() int {
 		logger.Error("POD_NAMESPACE must be set (use the downward API)")
 		return 2
 	}
-	leaseName := env("CLUSTERPLEX_LEASE_NAME", "cluster-plex-litefs")
+	leaseName := env("CLUSTERPLEX_LEASE_NAME", "cluster-plex-plextv")
 	listen := env("CLUSTERPLEX_PROXY_LISTEN", ":32400")
 	probeAddr := env("CLUSTERPLEX_PROBE_LISTEN", ":8080")
 	certFile := env("CLUSTERPLEX_TLS_CERT", "")
