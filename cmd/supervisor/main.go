@@ -18,7 +18,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
-	"plex-supervisor/pkg/telemetry"
+	"github.com/mediactl/clusterplex/pkg/telemetry"
 )
 
 // Supervisor holds injected dependencies

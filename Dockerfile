@@ -1,5 +1,8 @@
+ARG GO_VERSION=1.27
+ARG VENDOR="machinectl"
+
 # Stage 1: Build the Go Supervisor and Shim
-FROM --platform=${BUILDPLATFORM} golang:1.21 AS builder
+FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION} AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -8,15 +11,24 @@ RUN go build -o bin/supervisor ./cmd/supervisor
 RUN go build -o bin/shim ./cmd/shim
 
 # Stage 2: Extract Plex and Setup File System
-FROM --platform=${BUILDPLATFORM} ubuntu:22.04 AS extractor
+FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
 ARG TARGETARCH
 ARG VENDOR
-ARG VERSION="1.43.4.10903-e5521bd8c"
-RUN apt-get update && apt-get install -y wget xz-utils ca-certificates
+ARG VERSION
 
 WORKDIR /plex-build
-RUN wget "https://downloads.plex.tv/plex-media-server-new/${VERSION}/debian/plexmediaserver_${VERSION}_${TARGETARCH}.deb" -O plex.deb && \
-    dpkg-deb -x plex.deb rootfs && \
+
+RUN \
+  echo "**** install dependencies ****" && \
+  apt-get update && apt-get install -y wget xz-utils ca-certificates jq && \
+  echo "**** install plex ****" && \
+  if [ -z ${VERSION+x} ]; then \
+    VERSION=$(wget -qO - 'https://plex.tv/api/downloads/5.json' \
+    | jq -r '.computer.Linux.version'); \
+  fi && \
+  wget "https://downloads.plex.tv/plex-media-server-new/${VERSION}/debian/plexmediaserver_${VERSION}_${TARGETARCH}.deb" -O \
+    plex.deb && \
+  dpkg-deb -x plex.deb rootfs && \
     rm plex.deb
 
 # Hijack binaries and setup symlinks
@@ -39,6 +51,8 @@ RUN mkdir -p rootfs/var/run rootfs/var/lib/litefs rootfs/var/lib/plexmediaserver
 
 # Stage 3: Final Distroless Image
 FROM --platform=${BUILDPLATFORM} gcr.io/distroless/cc-debian12
+
+ARG VENDOR
 
 # Copy LiteFS and Custom Binaries
 COPY --from=flyio/litefs:0.5 /usr/local/bin/litefs /usr/local/bin/litefs

@@ -1,6 +1,6 @@
 syntax = "proto3";
 package transcoder;
-option go_package = "plex-supervisor/proto";
+option go_package = "github.com/mediactl/clusterplex/proto";
 
 service Supervisor {
     rpc ExecuteRemote(ExecRequest) returns (stream TranscodeLog);

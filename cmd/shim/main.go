@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "plex-supervisor/proto"
+	pb "github.com/mediactl/clusterplex/proto"
 )
 
 func main() {
