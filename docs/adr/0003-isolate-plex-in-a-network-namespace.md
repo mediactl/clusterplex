@@ -91,6 +91,24 @@ the other way:
   CAP_SYS_ADMIN, which is a strictly larger ask than the REDIRECT's
   CAP_NET_ADMIN.
 
+## Amendment, same day: the premise moved, the decision did not
+
+This was written while the library still lived in LiteFS, and its argument for
+accepting a privileged pod was that the cost was already paid: "The pod *is*
+privileged, for FUSE."
+
+That is no longer true. The library moved to PostgreSQL, LiteFS is gone and
+nothing mounts a filesystem any more, so FUSE no longer justifies anything.
+
+The decision stands regardless, but on its own footing rather than on a
+borrowed one: creating a network namespace needs CAP_SYS_ADMIN and wiring it
+needs CAP_NET_ADMIN, and the pod is privileged for that reason alone now. The
+honest reading is that this ADR made the pod's privilege its own requirement
+instead of inheriting it, which is a real cost it should be judged on.
+
+The revisit condition is unchanged and now the only one: if the pod should stop
+being privileged, this is what stands in the way.
+
 ## Action Items
 
 1. [x] `pkg/plexnet`: namespace, veth, addresses, routes and masquerade over netlink.
