@@ -94,8 +94,33 @@ unsynchronised access, and this one was not it.
   That is a real race, but it needs a null result to trigger and ours is not
   null, so it is not this crash.
 - `column_type_impl` resolves the statement with `pg_find_any_stmt` and uses
-  the pointer without taking a reference, so a concurrent last-unref would free
-  the statement underneath it. Unverified, and the most promising lead.
+  the pointer without taking a reference — `rust_stmt_find_any` returns the raw
+  pointer and drops the registry lock without touching `ref_count`, so
+  `pg_stmt_free`'s "refuse to free while referenced" guard cannot protect it.
+  **Ruled out for this crash**: the statement it dies on is never freed. Grep
+  the log for the crashing `stmt=` pointer and there is no matching
+  `pg_stmt_free` or `pg_stmt_unref` at all. Still a latent bug, just not this
+  one.
+- **Ruled out: a shared `PGconn`.** libpq forbids using one connection from two
+  threads, but the two threads run on different ones —
+  `STEP READ/WRITE ... exec_conn=` shows a distinct connection per thread.
+- **Ruled out: two threads on one statement.** Summarising the phase ring by
+  thread and statement shows the crashing thread owns its statement
+  exclusively, alternating `column_type` and `column_text`; the other thread is
+  on entirely different statements.
+
+So the corruption is not on the statement, the connection or the statement's
+lifetime. It has to be global state that both threads reach. The declared-type
+cache was one such, and it was genuinely broken, but fixing it was not enough —
+so look for the next thing that hands a raw pointer out of a shared structure
+and then releases the lock. The pattern to grep for is a function returning
+`*const c_char` that takes a lock, calls `.as_ptr()` on something it does not
+own, and returns.
+
+Two that were checked and are fine: `OID_TABLE_CACHE` inserts with
+`entry().or_insert()` so values are never replaced, and a `HashMap` rehash
+moves the `CString` struct but not the heap buffer `as_ptr()` points at;
+`rust_query_cache_release` only decrements a refcount and frees nothing.
 - Statement mutexes are `std::sync::Mutex`, which is **not** recursive, so any
   fix that adds a lock has to check every caller first. Connection mutexes are
   pthread recursive; the two are easy to confuse.
