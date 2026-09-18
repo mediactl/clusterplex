@@ -43,7 +43,13 @@ RUN sh scripts/docker-build-shim.sh --with-noop
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
 ARG TARGETARCH
 ARG VENDOR
-ARG VERSION
+# Pinned, not latest. The PostgreSQL shim carries a schema dump taken from a
+# particular Plex, and a server newer than that dump decides its full-text
+# tables need rebuilding. It then issues CREATE VIRTUAL TABLE ... USING fts4
+# with Plex's own collating tokenizer, which the shim's translator cannot
+# parse, and Plex dies with an uncaught soci exception a fraction of a second
+# after starting. This is the version the dump matches.
+ARG VERSION=1.43.0.10492-121068a07
 
 WORKDIR /plex-build
 

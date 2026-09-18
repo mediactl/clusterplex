@@ -100,6 +100,48 @@ func TestPlexRunsUnderTheSubreaperWhenOneIsConfigured(t *testing.T) {
 	assert.Equal(t, []string{"/bin/sh", plex}, got.Args, "and Plex is what it launches")
 }
 
+func TestTheStateDirectoriesPlexExpectsAreCreatedBeforeItStarts(t *testing.T) {
+	// Plex stats these rather than creating them, and an absent one is an
+	// uncaught boost::filesystem exception rather than a handled error. On a
+	// fresh volume none of them exist.
+	dir := t.TempDir()
+	sup := &Supervisor{
+		Binary:       fakePMS(t, gracefulPMS),
+		StateDir:     dir,
+		Logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		StartProcess: func(c *exec.Cmd) error { return c.Start() },
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	for _, name := range plexStateDirs {
+		assert.DirExists(t, filepath.Join(dir, name))
+	}
+}
+
+func TestExistingStateDirectoriesAreLeftAlone(t *testing.T) {
+	// The directory is a persistent volume carrying a real library, so this
+	// runs on every start against data that must not be disturbed.
+	dir := t.TempDir()
+	metadata := filepath.Join(dir, "Metadata")
+	require.NoError(t, os.MkdirAll(metadata, 0o755))
+	keep := filepath.Join(metadata, "keep")
+	require.NoError(t, os.WriteFile(keep, []byte("library"), 0o644))
+
+	sup := &Supervisor{
+		Binary:       fakePMS(t, gracefulPMS),
+		StateDir:     dir,
+		Logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		StartProcess: func(c *exec.Cmd) error { return c.Start() },
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	body, err := os.ReadFile(keep)
+	require.NoError(t, err)
+	assert.Equal(t, "library", string(body))
+}
+
 func TestPlexRunsDirectlyWhenNoSubreaperIsConfigured(t *testing.T) {
 	var got *exec.Cmd
 	sup := &Supervisor{

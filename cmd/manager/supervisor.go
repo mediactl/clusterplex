@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -33,7 +34,10 @@ type Supervisor struct {
 	// on a loop. The subreaper sets PR_SET_CHILD_SUBREAPER, so the replacement
 	// is reparented to it instead, and it waits for the last descendant.
 	Subreaper string
-	Logger    *slog.Logger
+	// StateDir is Plex's state directory. The directories under it that Plex
+	// expects to find are created before each start; see plexStateDirs.
+	StateDir string
+	Logger   *slog.Logger
 	// PIDFile is Plex's pid file. Plex refuses to start when it names a live
 	// process; on a persistent volume the file outlives the container and
 	// container pids repeat, so it is removed before every start.
@@ -95,6 +99,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 
 	s.removeStalePIDFile()
+	s.ensureStateDirs()
 	cmd := exec.Command(s.Binary)
 	if s.Subreaper != "" {
 		cmd = exec.Command(s.Subreaper, s.Binary)
@@ -126,6 +131,29 @@ func (s *Supervisor) startProcess(cmd *exec.Cmd) error {
 		return s.StartProcess(cmd)
 	}
 	return cmd.Start()
+}
+
+// plexStateDirs are the directories Plex expects to find under its state
+// directory. It stats them rather than creating them, and an absent one raises
+// a boost::filesystem exception that nothing catches, so Plex dies within a
+// second of starting. On a fresh volume none of them exist.
+var plexStateDirs = []string{"Plug-ins", "Metadata", "Cache", "Logs", "Crash Reports"}
+
+// ensureStateDirs creates those directories, leaving any that exist untouched.
+// It runs on every start, against a volume that may hold a real library, so it
+// only ever adds.
+func (s *Supervisor) ensureStateDirs() {
+	if s.StateDir == "" {
+		return
+	}
+	for _, name := range plexStateDirs {
+		path := filepath.Join(s.StateDir, name)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			// Not fatal here: Plex reports the one it actually wanted, which is
+			// more useful than guessing which of these mattered.
+			s.Logger.Error("create Plex state directory", "path", path, "error", err)
+		}
+	}
 }
 
 func (s *Supervisor) removeStalePIDFile() {
