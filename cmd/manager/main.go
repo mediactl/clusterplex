@@ -161,7 +161,7 @@ func run() int {
 		Grace:        defaultGrace,
 		StartProcess: plexNet.StartProcess,
 		Preferences: func(context.Context) error {
-			prefs := m.enforcedPreferences()
+			prefs := m.Config.EnforcedPreferences()
 			changed, err := plexprefs.Apply(cfg.PreferencesFile(), prefs)
 			if err != nil {
 				return err

@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mediactl/clusterplex/pkg/plexprefs"
 )
 
 // podIdentity sets the minimum a manager needs to start: who this pod is, and
@@ -45,7 +47,6 @@ func TestConfigDefaults(t *testing.T) {
 
 	// The library is shared, so Plex's own scheduler is off by default and
 	// Plex runs on one pod until egress control makes active mode safe.
-	assert.Equal(t, butlerBySupervisor, c.ButlerTasks)
 	assert.Equal(t, plexModeElected, c.PlexMode)
 	assert.Equal(t, 5432, c.Postgres.Port)
 	assert.Equal(t, "plex", c.Postgres.Database)
@@ -64,15 +65,65 @@ func TestConfigRequiresALibraryDatabase(t *testing.T) {
 	assert.Contains(t, err.Error(), "host")
 }
 
-func TestActiveModeRefusesToLeavePlexRunningItsOwnScheduler(t *testing.T) {
+func TestPlexNeverRunsItsOwnScheduler(t *testing.T) {
+	// Not a setting: every pod runs its own copy of the scheduler with no
+	// knowledge of the others, so there is no mode in which leaving it on is
+	// right. There is deliberately no flag to turn it back on.
 	podIdentity(t)
-	_, err := loadConfig([]string{
+	c, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-mode", plexModeActive})
+	require.NoError(t, err)
+
+	for _, task := range plexprefs.ButlerTasks {
+		assert.Equal(t, "0", c.EnforcedPreferences()[task], task)
+	}
+}
+
+func TestTheExternalURLIsWhatPlexAdvertises(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig([]string{
 		"--postgres-host", "postgres",
-		"--plex-mode", plexModeActive,
-		"--butler-tasks", butlerInternal,
+		"--plex-external-url", "https://plex.example.com:443",
 	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://plex.example.com:443", c.EnforcedPreferences()["customConnections"])
+}
+
+func TestConfigRefusesAdvertisingAnAddressThatIsNotAURL(t *testing.T) {
+	// It goes straight to clients, which simply fail to connect, so a typo
+	// here is otherwise only visible as "remote access does not work".
+	podIdentity(t)
+	_, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-external-url", "plex.example.com"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "butler-tasks")
+	assert.Contains(t, err.Error(), "plex-external-url")
+}
+
+func TestUPnPAndRemoteAccessPublishingAreForcedOff(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig([]string{"--postgres-host", "postgres"})
+	require.NoError(t, err)
+
+	prefs := c.EnforcedPreferences()
+	assert.Equal(t, "0", prefs["PublishServerOnPlexOnlineKey"])
+	assert.Equal(t, "1", prefs["ManualPortMappingMode"])
+}
+
+func TestAForcedSettingCannotBeDeclaredAsAPreference(t *testing.T) {
+	podIdentity(t)
+	_, err := loadConfig([]string{"--plex-preference", "PublishServerOnPlexOnlineKey=1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PublishServerOnPlexOnlineKey")
+}
+
+func TestOperatorPreferencesCannotOverrideTheForcedOnes(t *testing.T) {
+	// Belt and braces: even if one slipped past validation, the manager's own
+	// values are applied last.
+	podIdentity(t)
+	c, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-preference", "FriendlyName=Cluster Plex"})
+	require.NoError(t, err)
+
+	prefs := c.EnforcedPreferences()
+	assert.Equal(t, "Cluster Plex", prefs["FriendlyName"])
+	assert.Equal(t, "0", prefs["ButlerTaskAnalyzeMedia"])
 }
 
 func TestConfigKeepsWorkingWithTheExistingEnvironmentVariableNames(t *testing.T) {
@@ -167,9 +218,9 @@ plex:
 
 func TestPreferenceValuesMayContainEqualsSigns(t *testing.T) {
 	podIdentity(t)
-	c, err := loadConfig([]string{"--plex-preference", "customConnections=http://a/?x=1"})
+	c, err := loadConfig([]string{"--plex-preference", "FriendlyName=a=b"})
 	require.NoError(t, err)
-	assert.Equal(t, "http://a/?x=1", c.Preferences["customConnections"])
+	assert.Equal(t, "a=b", c.Preferences["FriendlyName"])
 }
 
 func TestConfigRejectsAPreferenceThatWouldOverwriteTheServerIdentity(t *testing.T) {

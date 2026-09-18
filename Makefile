@@ -31,7 +31,7 @@ tidy: ## go mod tidy
 	go mod tidy
 
 .PHONY: build
-build: ## Build the manager and shim into bin/
+build: ## Build the manager, shim, proxy and maintenance trigger into bin/
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
@@ -53,7 +53,7 @@ test-netns: ## pkg/plexnet against real network namespaces
 ##@ Images and clusters
 
 .PHONY: docker-build
-docker-build: ## Build the image (the Dockerfile fetches LiteFS itself)
+docker-build: ## Build the image (the Dockerfile builds the PostgreSQL shim itself)
 	docker build -f Dockerfile -t $(IMG) .
 
 .PHONY: helm-lint

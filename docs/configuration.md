@@ -110,6 +110,29 @@ attribute names are rejected, as is a `MachineIdentifier` that is not a UUID.
 All of these fail at startup rather than at the first leader election, so a
 typo never reaches Plex.
 
+### Settings the architecture fixes
+
+Some settings have exactly one correct value here, and the wrong one fails as
+something else entirely — as mysterious load, or as remote access that simply
+does not work. Those are written by the manager on every start and **refused as
+configuration**: declaring one fails startup with a message naming what to set
+instead. They are not defaults to be overridden.
+
+| Setting | Value | Why it is not yours to choose |
+| --- | --- | --- |
+| `ButlerTask*` (11 of them) | `0` | Each Plex process runs its own copy of the scheduler with no knowledge of the others, so every pod would analyse the same media and hit the same rate-limited providers at once. The work is scheduled as Kubernetes CronJobs instead and handed to one pod per library. |
+| `PublishServerOnPlexOnlineKey` | `0` | Every pod runs under one server identity. If each published itself, the last to check in would own the plex.tv record and clients would be handed a pod that only sometimes answers. |
+| `ManualPortMappingMode` | `1` | Disables UPnP and NAT-PMP. Otherwise Plex asks the router to forward a port straight to a pod address, routing around the proxy and the load balancer together. |
+| `customConnections` | `plex-external-url` | It has to match the address the proxy actually serves, which only that setting knows. |
+
+Turning one of these back on in the Plex web interface does not survive a
+restart, which is deliberate: a single pod quietly re-enabling its own scheduler
+would show up as unexplained load rather than as an error.
+
+Remote-access publishing being off does not stop remote clients connecting.
+plex.tv still hands out `customConnections`; what stops is Plex probing its own
+public address and trying to map a port for it.
+
 ### Setting the friendly name
 
 Worth calling out, because it is specific to running Plex this way. With no
@@ -133,15 +156,18 @@ advertisement is never the answer for external access, so set the address
 explicitly:
 
 ```yaml
-plex:
-  preferences:
-    - name: customConnections
-      value: https://plex.example.com:443
+plex-external-url: https://plex.example.com:443
 ```
 
-Use the address clients actually reach — the `plex-main` LoadBalancer, or
-whatever ingress sits in front of it. Plex treats this as an additional
-connection rather than a replacement, so it is additive and safe to set.
+or, in the chart, `proxy.externalURL`. The manager writes it into
+`Preferences.xml` as `customConnections` on every start. It is a setting of its
+own rather than a preference because it has to agree with what the proxy
+actually serves; declaring `customConnections` directly is refused. Plex treats
+it as an additional connection rather than a replacement, so it is additive and
+safe to set.
+
+Use the address clients actually reach — the LoadBalancer in front of the proxy,
+or whatever ingress sits in front of that.
 
 Note that GDM discovery (UDP 32410-32414) does not cross the link either.
 Broadcast discovery already did not work across pod networking, so nothing that

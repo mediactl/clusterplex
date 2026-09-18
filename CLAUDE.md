@@ -1,66 +1,82 @@
 # Cluster Plex
 
-Plex Media Server on Kubernetes, as a StatefulSet where one pod runs the server
-and the rest do work for it. LiteFS replicates Plex's SQLite databases so any
-pod can take over; a shim replaces Plex's helper binaries so transcodes run on
-other pods.
+Plex Media Server on Kubernetes, scaled horizontally. The library lives in a
+shared PostgreSQL database that every pod reads and writes, a proxy tier serves
+the media bytes so aggregate bandwidth is not capped by one node's interface,
+and a shim replaces Plex's helper binaries so transcodes run on other pods.
 
-Go module `github.com/mediactl/clusterplex`. One image, two binaries.
+Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 
 ## Read before designing anything
 
-- `docs/media-proxy-pattern.md` — the direction of travel: a dedicated proxy
-  service that serves media bytes itself so aggregate bandwidth scales past one
-  node's interface, coordinated through the Lease rather than pod labels.
-- `docs/adr/0001-litefs-over-mvsqlite.md` — why LiteFS and not a multi-writer
-  SQLite. Plex cannot run as several coordinated instances; that constraint
-  shapes everything else.
+- `docs/media-proxy-pattern.md` — the proxy tier: why it serves bytes itself,
+  and how sessions are pinned to pods.
+- `docs/configuration.md` — the config system, the Plex preferences an operator
+  may set, and the ones this architecture fixes.
 - `docs/adr/0003-isolate-plex-in-a-network-namespace.md` — why Plex runs in its
   own network namespace, and why the proxy can therefore hold 32400 itself.
   Supersedes `0002`, which is kept for why the proxy is L4 and for the 32401
   discovery.
-- `docs/configuration.md` — the config system and how Plex preferences are
-  managed.
+- `docs/adr/0001-litefs-over-mvsqlite.md` — **historical**. It is why LiteFS was
+  chosen over mvsqlite, and why Plex cannot run as several coordinated instances
+  on replicated SQLite. The library has since moved to PostgreSQL, which is what
+  made active mode possible; read it for the reasoning, not the current design.
 
 ## Layout
 
 | Path | Owns |
 | --- | --- |
-| `cmd/manager/` | Runs in every pod: LiteFS, leader election, the Plex supervisor, the job listeners |
+| `cmd/manager/` | Runs in every pod: leader election, the Plex supervisor, the maintenance fan-out, the job listeners |
+| `cmd/proxy/` | The media proxy clients connect to |
 | `cmd/shim/` | Stands in for Plex's helper binaries and forwards each invocation to the manager |
-| `pkg/litefsk8s/` | LiteFS leader election on a Kubernetes Lease |
+| `cmd/maintenance/` | What a CronJob runs to ask the manager to distribute one task |
+| `pkg/plexdb/` | The shared PostgreSQL library database |
+| `pkg/lease/` | Leader election on a Kubernetes Lease |
+| `pkg/maintenance/` | The task catalogue and the fan-out across pods |
+| `pkg/hashring/` | Consistent hashing, for both the fan-out and session pinning |
+| `pkg/mediaproxy/`, `pkg/proxy/`, `pkg/plexroute/` | Serving media, the L4 proxy, and finding the pods to send traffic to |
+| `pkg/plexnet/` | Plex's network namespace and the plex.tv egress filter |
+| `pkg/plexprefs/` | Merging settings into Plex's `Preferences.xml` |
 | `pkg/remoteexec/` | Running helper binaries locally or on a worker pod |
-| `pkg/plexprefs/` | Merging declared settings into Plex's `Preferences.xml` |
-| `pkg/proxy/`, `pkg/plexnet/` | The L4 proxy in front of Plex, and the network namespace Plex is confined to |
-| `third_party/litefs/` | Upstream LiteFS plus our patches. **Materialised, never committed** |
 
 ## Invariants
 
-- **One pod runs Plex.** The Lease decides which. Losing it exits the process so
-  the pod restarts clean.
+- **The library is PostgreSQL and every pod shares it.** There is no database
+  primary to elect and nothing to replicate.
+- **One pod talks to plex.tv.** The Lease decides which. Every pod runs under
+  one server identity, so several pods publishing at once makes that identity
+  appear to move between addresses. Pods that do not hold the Lease have their
+  route to plex.tv dropped in nftables.
 - **The Lease is the only source of truth for leadership.** Do not reintroduce a
   derived copy such as a pod label; a cache can disagree, and one did.
+- **`plex-mode` decides how many pods run Plex, not who owns plex.tv.**
+  `elected` runs it on the Lease holder only; `active` runs it everywhere. The
+  default is `elected` because that is the path that has been exercised.
 - **Plex's `Preferences.xml` is merged, never regenerated.** It holds the server
   identity and the plex.tv token, which cannot be reconstructed.
-- **LiteFS lineage is never resolved automatically.** See the cluster ID gotcha
-  below; guessing wrong destroys data.
-- **Plex's state directory is shared, LiteFS's is per pod.** The first carries
-  identity and metadata; the second is a replica and must not be shared.
+- **Settings the architecture depends on are forced, not defaulted.** The Butler
+  schedulers, `PublishServerOnPlexOnlineKey`, `ManualPortMappingMode` and
+  `customConnections` are written on every start and *refused* as configuration.
+  See `pkg/plexprefs/required.go` and the table in `docs/configuration.md`.
+- **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
+  CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
+  failover is a failed Job that retries and shows up in `kubectl`.
 
 ## Commands
 
 ```bash
-make litefs        # materialise third_party/litefs (upstream tag + hack/litefs patches)
-make build         # manager and shim into bin/
+make build         # manager, shim, proxy and maintenance into bin/
 make test          # unit tests
+make test-netns    # pkg/plexnet against real network namespaces (needs unshare)
 make lint          # golangci-lint v2
-make docker-build  # the image; it runs the litefs fetch itself
+make docker-build  # the image; it builds the PostgreSQL shim itself
+make helm-lint     # lint and render the chart
 make kind-up kind-load deploy-kind
 make e2e           # deploys the kind overlay and runs the end-to-end test
 ```
 
 The end-to-end test is behind the `e2e` build tag so `go test ./...` stays
-hermetic.
+hermetic. The nftables blocklist is only covered by `make test-netns`.
 
 ## Gotchas found the hard way
 
@@ -78,19 +94,20 @@ hermetic.
   retires whenever it likes — so Plex would be killed at random. `pkg/plexnet`
   rejects it rather than letting it be set.
 - **Plex advertises `169.254.1.2` to plex.tv,** because that is the only address
-  it can see. Use `customConnections` for an address clients can reach; see
-  `docs/configuration.md`.
+  it can see. Set `plex-external-url` (chart: `proxy.externalURL`) for an
+  address clients can reach; see `docs/configuration.md`.
 - **`ProcessedMachineIdentifier` is what clients see as the server ID.** Plex
   derives it from `MachineIdentifier` with a salt you cannot reproduce, and
   **never recomputes it**. Change the UUID without deleting the derived value
   and clients keep seeing the old server forever.
-- **The LiteFS cluster ID must live on the Lease.** It used to be generated per
-  node, so every pod that became primary minted its own and LiteFS then refused
-  to replicate between them, permanently and silently. Worse: a node that
-  disagrees is not necessarily the stale one, because whichever pod wins the
-  election first stamps its lineage. Resolving that automatically already
-  destroyed a replica's data once. It is an operator decision, behind
-  `--litefs-adopt-cluster-id`.
+- **The PostgreSQL shim is lossy in two known ways.** Library search returns
+  nothing, because it translates Plex's full-text `MATCH` into a constant false
+  predicate; and title ordering follows PostgreSQL's default collation, because
+  Plex's `naturalsort` collation has no equivalent. Both are upstream, in
+  `cgnl/plex-postgresql`.
+- **The shim must be built against the musl Plex bundles,** which is why its
+  Dockerfile stage is pinned to Alpine 3.15 rather than something current.
+  Upstream publishes no Linux binaries.
 - **Viper lowercases nested map keys.** `FriendlyName` silently becomes
   `friendlyname`, and Plex preference names are case sensitive. Preferences are
   a list of name/value pairs for that reason.

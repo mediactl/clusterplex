@@ -44,6 +44,15 @@ spec:
               value: {{ .Release.Name }}-plextv
             - name: CLUSTERPLEX_WORKERS_SERVICE
               value: {{ .Release.Name }}-workers
+            - name: CLUSTERPLEX_PLEX_MODE
+              value: {{ include "cluster-plex.plexMode" . }}
+            {{- with .Values.proxy.externalURL }}
+            # Plex advertises this to clients. The manager forces it into
+            # Preferences.xml on every start; it is not an operator preference,
+            # because it has to agree with what the proxy actually serves.
+            - name: CLUSTERPLEX_PLEX_EXTERNAL_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: CLUSTERPLEX_POSTGRES_HOST
               value: {{ required "postgres.host is required: the library lives in PostgreSQL" .Values.postgres.host | quote }}
             - name: CLUSTERPLEX_POSTGRES_PORT

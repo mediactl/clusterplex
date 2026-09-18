@@ -60,10 +60,26 @@ type attr struct {
 	Value string
 }
 
-// Validate reports whether every key may be written to Preferences.xml. It is
-// called at configuration load so a bad key fails startup rather than the
-// first leader election.
+// Validate reports whether an operator may declare every key. It is called at
+// configuration load so a bad key fails startup rather than the first leader
+// election. It is stricter than what Apply will write: settings this
+// architecture fixes are written by the manager but refused here, because an
+// operator declaring one is a misunderstanding worth failing on rather than a
+// value to silently overwrite.
 func Validate(values map[string]string) error {
+	errs := []error{writable(values)}
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if forced := forcedBy(name); forced != "" {
+			errs = append(errs, fmt.Errorf("preference %q is set by the manager and cannot be declared: %s", name, forced))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// writable reports whether every key can go into the file at all, whoever set
+// it. Apply uses this rather than Validate because the manager writes the
+// forced settings that Validate exists to refuse.
+func writable(values map[string]string) error {
 	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		switch source := derivedFrom[name]; {
@@ -83,7 +99,7 @@ func Validate(values map[string]string) error {
 // agrees, so a restart that changes no setting leaves the file alone. A file
 // that cannot be parsed is reported and left untouched.
 func Apply(path string, values map[string]string) ([]string, error) {
-	if err := Validate(values); err != nil {
+	if err := writable(values); err != nil {
 		return nil, err
 	}
 

@@ -24,8 +24,8 @@ spec:
       port: 32400
       targetPort: pms
 ---
-# Stable DNS for the Plex pods: LiteFS replication, transcode dispatch, and the
-# addresses the proxy is told to use.
+# Stable DNS for the Plex pods: transcode dispatch, the maintenance fan-out,
+# and the addresses the proxy is told to use.
 apiVersion: v1
 kind: Service
 metadata:
@@ -33,7 +33,8 @@ metadata:
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 spec:
   clusterIP: None
-  # A replica must be able to find the primary while it is still snapshotting.
+  # The maintenance fan-out and the transcode dispatch both need to reach a pod
+  # that is starting up, not only one that has finished.
   publishNotReadyAddresses: true
   selector:
     app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
@@ -42,8 +43,6 @@ spec:
   ports:
     - name: grpc
       port: 50051
-    - name: litefs
-      port: 20202
     - name: probes
       port: 8080
     - name: pms

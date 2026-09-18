@@ -28,3 +28,19 @@ render if it is overridden.
 {{- end -}}
 Local
 {{- end -}}
+
+{{/*
+Whether Plex runs on every pod (active) or only on the lease holder (elected).
+
+Active mode depends on the egress rules that keep every pod but one away from
+plex.tv, because all of them share one server identity. Those rules are applied
+by the manager itself, so this is safe to set — but elected is the default,
+because it is the path that has actually been run.
+*/}}
+{{- define "cluster-plex.plexMode" -}}
+{{- $mode := default "elected" .Values.plex.mode -}}
+{{- if not (has $mode (list "elected" "active")) -}}
+{{- fail (printf "plex.mode must be elected or active, got %q" $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}

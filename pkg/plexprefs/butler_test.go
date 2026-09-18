@@ -17,9 +17,10 @@ func TestDisabledButlerTasksTurnsEveryBackgroundJobOff(t *testing.T) {
 }
 
 func TestDisabledButlerTasksNamesAreValidPreferences(t *testing.T) {
-	// A typo here would be rejected at startup rather than silently leaving a
-	// scheduler running on every pod.
-	require.NoError(t, Validate(DisabledButlerTasks()))
+	// A typo here would silently leave a scheduler running on every pod. It is
+	// writable rather than Validate because Validate refuses these names: the
+	// manager writes them, an operator may not declare them.
+	require.NoError(t, writable(DisabledButlerTasks()))
 }
 
 func TestApplyTurnsOffASchedulerAPodHadEnabled(t *testing.T) {

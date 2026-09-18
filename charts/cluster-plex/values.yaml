@@ -4,14 +4,27 @@ image:
   pullPolicy: IfNotPresent
 
 plex:
-  # Pods that may run Plex. Only one does at a time; the rest replicate the
-  # databases and run transcodes.
+  # Pods that may run Plex. In elected mode only one runs it at a time and the
+  # rest run transcodes; in active mode all of them serve.
   replicas: 3
+  # "elected" runs Plex on the lease holder only. "active" runs it on every
+  # pod, which the shared PostgreSQL library makes possible and the egress
+  # rules make safe — only the lease holder reaches plex.tv, because all the
+  # pods share one server identity. Elected is the default because it is the
+  # path that has actually been run.
+  mode: elected
   # Pin the server identity so a rebuilt cluster keeps the identity clients
   # already know. Setting this on a server that already has one CHANGES it.
   machineIdentifier: ""
-  # Plex settings enforced on every start. A list, not a map: the config loader
-  # lowercases nested map keys and Plex names are case sensitive.
+  # Settings an operator chooses, applied on every start. A list, not a map:
+  # the config loader lowercases nested map keys and Plex names are case
+  # sensitive.
+  #
+  # The settings this architecture depends on are NOT configurable here and the
+  # manager will refuse to start if one is declared: the Butler schedulers (off,
+  # replaced by the CronJobs below), remote-access publishing and automatic port
+  # mapping (off, so no pod publishes itself to plex.tv or punches a hole to a
+  # pod address), and customConnections (set from proxy.externalURL).
   preferences:
     - name: FriendlyName
       value: Cluster Plex
@@ -23,10 +36,10 @@ proxy:
   # what raises the ceiling. See docs/media-proxy-pattern.md.
   replicas: 3
   # The address clients actually reach, for example
-  # https://plex.example.com:32400. Plex advertises this to clients as a custom
-  # connection. Without it Plex advertises its pod addresses, which no client
-  # outside the cluster can reach, so they either fail to connect or find a
-  # path that bypasses the proxy entirely.
+  # https://plex.example.com:32400. The manager forces this into Plex's
+  # Preferences.xml as customConnections on every start. Without it Plex
+  # advertises only the link-local address inside its own network namespace,
+  # which no client can reach.
   externalURL: ""
   tls:
     # A Secret holding tls.crt and tls.key, served by the proxy. Plex clients
@@ -53,7 +66,6 @@ storage:
     size: 1Ti
     accessMode: ReadWriteMany
     storageClass: ""
-  # LiteFS transaction files. Per pod, never shared.
 
 # Plex's background maintenance. Its own scheduler is disabled on every pod,
 # because each process runs its own copy with no knowledge of the others, so

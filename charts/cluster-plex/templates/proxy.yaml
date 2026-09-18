@@ -39,8 +39,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: CLUSTERPLEX_LEASE_NAME
-              value: {{ .Release.Name }}-litefs
             - name: CLUSTERPLEX_FAILOVER_GRACE
               value: {{ .Values.proxy.failoverGrace | quote }}
             {{- if .Values.proxy.tls.secretName }}

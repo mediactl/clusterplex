@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,14 +42,6 @@ const (
 	// defaultConfigFile is read when --config is not given. It is optional.
 	defaultConfigFile = "/etc/clusterplex/config.yaml"
 
-	// butlerBySupervisor disables Plex's internal maintenance scheduler on
-	// every pod, so the work can be scheduled once and handed to one pod at a
-	// time rather than every pod doing all of it.
-	butlerBySupervisor = "supervisor"
-	// butlerInternal leaves Plex running its own scheduler, which is only safe
-	// when exactly one Plex process exists.
-	butlerInternal = "internal"
-
 	// plexModeElected runs Plex only on the pod holding the lease.
 	plexModeElected = "elected"
 	// plexModeActive runs Plex on every pod. It needs egress from the pods
@@ -74,14 +68,13 @@ type Config struct {
 	// per-pod replicated SQLite file, so there is no database primary to elect
 	// and no local database state to keep.
 	Postgres plexdb.Config
-	// ButlerTasks decides who runs Plex's background maintenance. "supervisor"
-	// disables Plex's internal scheduler on every pod so the work can be
-	// scheduled once and handed out; "internal" leaves Plex to run its own,
-	// which is only safe with a single Plex process.
-	ButlerTasks string
 	// PlexMode is whether Plex runs on every pod ("active") or only on the
 	// lease holder ("elected").
 	PlexMode string
+	// ExternalURL is the address clients reach the proxy on. Plex advertises
+	// it as a custom connection; without it Plex offers only the link-local
+	// address inside its own namespace, which no client can reach.
+	ExternalURL string
 	// ShimLibrary is the interposer preloaded into Plex so its database calls
 	// reach PostgreSQL. Empty leaves Plex on its own SQLite file.
 	ShimLibrary string
@@ -134,8 +127,8 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("postgres-password", "", "password for the shared Plex library database")
 	fs.String("postgres-schema", "", "schema holding Plex's tables (default: the search path)")
 	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
-	fs.String("butler-tasks", butlerBySupervisor, "who runs Plex's background maintenance: supervisor (disables Plex's own scheduler on every pod) or internal (only safe with a single Plex)")
 	fs.String("plex-mode", plexModeElected, "run Plex on every pod (active) or only on the lease holder (elected); active needs egress control so only one pod reaches plex.tv")
+	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
@@ -191,8 +184,8 @@ func loadConfig(args []string) (Config, error) {
 		PMSPort:        port("pms-port"),
 		WorkerPort:     port("worker-port"),
 		ProbePort:      port("probe-port"),
-		ButlerTasks:    v.GetString("butler-tasks"),
 		PlexMode:       v.GetString("plex-mode"),
+		ExternalURL:    strings.TrimSpace(v.GetString("plex-external-url")),
 		ShimLibrary:    v.GetString("shim-library"),
 		Postgres: plexdb.Config{
 			Host:     v.GetString("postgres-host"),
@@ -204,16 +197,11 @@ func loadConfig(args []string) (Config, error) {
 			SSLMode:  v.GetString("postgres-sslmode"),
 		},
 	}
-	if c.ButlerTasks != butlerBySupervisor && c.ButlerTasks != butlerInternal {
-		errs = append(errs, fmt.Errorf("butler-tasks: %q must be %s or %s", c.ButlerTasks, butlerBySupervisor, butlerInternal))
-	}
 	if c.PlexMode != plexModeElected && c.PlexMode != plexModeActive {
 		errs = append(errs, fmt.Errorf("plex-mode: %q must be %s or %s", c.PlexMode, plexModeElected, plexModeActive))
 	}
-	if c.PlexMode == plexModeActive && c.ButlerTasks == butlerInternal {
-		// Every pod would run its own maintenance scheduler against one shared
-		// library, so the work multiplies by the number of pods.
-		errs = append(errs, errors.New("plex-mode active requires butler-tasks supervisor"))
+	if err := validateExternalURL(c.ExternalURL); err != nil {
+		errs = append(errs, err)
 	}
 	if err := c.Postgres.Validate(); err != nil {
 		errs = append(errs, err)
@@ -316,6 +304,37 @@ func loadPreferences(v *viper.Viper, fs *pflag.FlagSet, environ []string) (map[s
 		errs = append(errs, err)
 	}
 	return prefs, errors.Join(errs...)
+}
+
+// validateExternalURL rejects an address Plex would advertise to clients but
+// clients could not use. Plex hands the string over unexamined, so a bad one
+// surfaces only as clients failing to connect.
+func validateExternalURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("plex-external-url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("plex-external-url: %q needs an http:// or https:// scheme", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("plex-external-url: %q has no host", raw)
+	}
+	return nil
+}
+
+// EnforcedPreferences is everything written into Preferences.xml on every
+// start: what the operator declared, with the settings this architecture fixes
+// applied over the top. The order matters — the forced ones win — though
+// declaring one is refused at load, so it should never come to that.
+func (c Config) EnforcedPreferences() map[string]string {
+	prefs := make(map[string]string, len(c.Preferences))
+	maps.Copy(prefs, c.Preferences)
+	maps.Copy(prefs, plexprefs.Enforced(c.ExternalURL))
+	return prefs
 }
 
 // PodDNS is this pod's stable name through the headless Service.

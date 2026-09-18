@@ -26,14 +26,13 @@ data:
       {{- with .Values.plex.machineIdentifier }}
       machine-identifier: {{ . | quote }}
       {{- end }}
+      # Only the settings an operator chooses. The ones this architecture
+      # depends on — the Butler schedulers, remote-access publishing, port
+      # mapping and the advertised connection — are written by the manager on
+      # every start and refused here, because each has one correct value and a
+      # wrong one fails as something else entirely.
       preferences:
         {{- range .Values.plex.preferences }}
         - name: {{ .name | quote }}
           value: {{ .value | quote }}
-        {{- end }}
-        {{- with .Values.proxy.externalURL }}
-        # Tells Plex to advertise the proxy to clients. Without this Plex
-        # offers only addresses that reach it directly, bypassing the proxy.
-        - name: "customConnections"
-          value: {{ . | quote }}
         {{- end }}

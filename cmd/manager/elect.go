@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/lease"
-	"github.com/mediactl/clusterplex/pkg/plexprefs"
 	"github.com/mediactl/clusterplex/pkg/plexroute"
 )
 
@@ -222,24 +221,6 @@ func (m *Manager) shutdown(ctx context.Context) {
 		}
 	}
 	m.Metrics.LeaderStatus.Set(0)
-}
-
-// enforcedPreferences are the settings the manager writes into Plex's
-// configuration on every start, on top of whatever the operator declared.
-func (m *Manager) enforcedPreferences() map[string]string {
-	prefs := map[string]string{}
-	for k, v := range m.Config.Preferences {
-		prefs[k] = v
-	}
-	if m.Config.ButlerTasks == butlerBySupervisor {
-		// Each Plex process runs its own maintenance scheduler with no
-		// knowledge of the others, so several pods would analyse the same
-		// media and hit the same rate-limited providers at once.
-		for k, v := range plexprefs.DisabledButlerTasks() {
-			prefs[k] = v
-		}
-	}
-	return prefs
 }
 
 func (m *Manager) updatePodRole(ctx context.Context, role string) error {
