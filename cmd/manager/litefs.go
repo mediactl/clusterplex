@@ -25,6 +25,7 @@ func (s *Manager) startLiteFS(ctx context.Context) error {
 	
 	advertiseURL := fmt.Sprintf("http://%s.plex-workers.%s.svc.cluster.local:20202", s.PodName, s.Namespace)
 	store.Leaser = litefsk8s.NewK8sLeaser(s.K8sClient, s.Namespace, "cluster-plex-litefs", s.PodName, advertiseURL)
+	store.Client = http.NewClient()
 
 	if err := store.Open(); err != nil {
 		return fmt.Errorf("open store: %w", err)
