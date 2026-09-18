@@ -11,6 +11,15 @@ import (
 // Plex's bundled SQLite rather than configured.
 const ShimLibrary = "/usr/local/lib/plex-postgresql/db_interpose_pg.so"
 
+// ShimLibDir holds the interposer and the libpq it links. It has to precede
+// Plex's own library directory on the search path, or Plex's bundled libraries
+// win and the shim resolves against the wrong ones.
+const ShimLibDir = "/usr/local/lib/plex-postgresql"
+
+// Subreaper wraps Plex so its re-exec does not look like an exit. See
+// Supervisor.Subreaper.
+const Subreaper = "/usr/local/bin/subreaper"
+
 // shimEnv returns the environment Plex is started with: this process's own,
 // plus the preload and the database settings the shim reads.
 //
@@ -24,6 +33,13 @@ func shimEnv(base []string, cfg Config) []string {
 	env := append([]string(nil), base...)
 	env = append(env,
 		"LD_PRELOAD="+cfg.ShimLibrary,
+		"LD_LIBRARY_PATH="+ShimLibDir+":/usr/lib/plexmediaserver/lib:/usr/lib/plexmediaserver",
+		// Plex's bundled musl and boost::locale reject glibc-style locale
+		// names such as en_US.UTF-8 and abort with invalid_charset_error.
+		// C.utf8 is the one they accept.
+		"LANG=C.utf8",
+		"LC_ALL=C.utf8",
+		"LC_CTYPE=C.utf8",
 		"PLEX_PG_HOST="+cfg.Postgres.Host,
 		"PLEX_PG_PORT="+strconv.Itoa(cfg.Postgres.Port),
 		"PLEX_PG_DATABASE="+cfg.Postgres.Database,

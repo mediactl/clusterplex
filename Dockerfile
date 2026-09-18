@@ -34,7 +34,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
     https://github.com/cgnl/plex-postgresql /src \
     && cp -a /src/. /build/ && rm -rf /src
-RUN sh scripts/docker-build-shim.sh
+# --with-noop also builds a static no-op binary. It replaces Plex's
+# CrashUploader below: a shell script would not do, because sh inherits
+# LD_PRELOAD and would load the interposer's constructor.
+RUN sh scripts/docker-build-shim.sh --with-noop
 
 # Stage 2: Extract Plex and set up the filesystem
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
@@ -94,8 +97,28 @@ COPY --from=builder /app/bin/maintenance /usr/local/bin/maintenance
 # LD_PRELOAD when it starts Plex, which is what redirects Plex's database calls.
 COPY --from=shim /libs/ /usr/local/lib/plex-postgresql/
 
+# The subreaper adopts Plex's re-exec so it is not mistaken for an exit.
+COPY --from=shim /libs/subreaper /usr/local/bin/subreaper
+
+# The schema the shim expects to find already loaded. Plex does not create it:
+# it runs migrations against a database that is meant to be there already, so
+# without this it dies partway through insisting its own tables do not exist.
+COPY --from=shim /build/schema/plex_schema.sql /build/schema/sqlite_schema.sql \
+     /build/schema/sqlite_column_types.sql /build/schema/pg_compat_functions.sql \
+     /build/schema/seed_data.sql /usr/local/lib/plex-postgresql/
+
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /
+
+# After the Plex filesystem, because both of these live inside it.
+#
+# The shim is built against musl and asks for it by its Alpine soname, which is
+# not what Plex calls its bundled copy. And Plex's CrashUploader is replaced by
+# a no-op: it runs on every exit, cannot work here, and its failure raises
+# SIGCHLD in a process that has the interposer loaded.
+RUN ln -sf /usr/lib/plexmediaserver/lib/libc.so \
+      "/usr/local/lib/plex-postgresql/libc.musl-$(uname -m).so.1"
+COPY --from=shim /libs/noop /usr/lib/plexmediaserver/CrashUploader
 
 # Set environment variables commonly required by Plex
 ENV DEBIAN_FRONTEND="noninteractive" \
@@ -103,7 +126,7 @@ ENV DEBIAN_FRONTEND="noninteractive" \
     PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR="/var/lib/plexmediaserver/Library/Application Support" \
     PLEX_MEDIA_SERVER_HOME="/usr/lib/plexmediaserver" \
     PLEX_MEDIA_SERVER_MAX_PLUGIN_PROCS="6" \
-    LD_LIBRARY_PATH="/usr/lib/plexmediaserver" \
+    LD_LIBRARY_PATH="/usr/local/lib/plex-postgresql:/usr/lib/plexmediaserver/lib:/usr/lib/plexmediaserver" \
     PLEX_MEDIA_SERVER_INFO_VENDOR="Docker" \
     PLEX_MEDIA_SERVER_INFO_DEVICE="Docker Container (${VENDOR})"
 

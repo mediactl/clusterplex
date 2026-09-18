@@ -78,6 +78,42 @@ func TestSupervisorStartsPlexThroughStartProcessWhenOneIsSet(t *testing.T) {
 	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
 }
 
+func TestPlexRunsUnderTheSubreaperWhenOneIsConfigured(t *testing.T) {
+	// Plex re-execs itself through vfork. The original process exits cleanly
+	// and the replacement is reparented away, so a supervisor watching only
+	// the process it started sees a healthy exit and restarts the pod, on a
+	// loop. The subreaper claims the descendants and stays alive until the
+	// last one is gone.
+	var got *exec.Cmd
+	plex := fakePMS(t, gracefulPMS)
+	sup := &Supervisor{
+		Binary:       plex,
+		Subreaper:    "/bin/sh",
+		Logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		StartProcess: func(c *exec.Cmd) error { got = c; return c.Start() },
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	require.NotNil(t, got)
+	assert.Equal(t, "/bin/sh", got.Path, "the subreaper is what we launch")
+	assert.Equal(t, []string{"/bin/sh", plex}, got.Args, "and Plex is what it launches")
+}
+
+func TestPlexRunsDirectlyWhenNoSubreaperIsConfigured(t *testing.T) {
+	var got *exec.Cmd
+	sup := &Supervisor{
+		Binary:       fakePMS(t, gracefulPMS),
+		Logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		StartProcess: func(c *exec.Cmd) error { got = c; return c.Start() },
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	require.NotNil(t, got)
+	assert.Equal(t, sup.Binary, got.Path)
+}
+
 // Unlike the old port redirect there is no fallback. Plex binds 32400 itself,
 // and in the pod namespace that is the proxy's port: starting it outside its
 // own namespace means an immediate "Address in use" with the reason only in

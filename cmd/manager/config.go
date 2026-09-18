@@ -78,6 +78,9 @@ type Config struct {
 	// ShimLibrary is the interposer preloaded into Plex so its database calls
 	// reach PostgreSQL. Empty leaves Plex on its own SQLite file.
 	ShimLibrary string
+	// SubreaperBinary wraps Plex so its re-exec is not mistaken for an exit.
+	// Empty starts Plex directly. See Supervisor.Subreaper.
+	SubreaperBinary string
 	// Socket is the unix socket the shim dials.
 	Socket string
 	// LeaseName is the Kubernetes Lease used for leader election.
@@ -132,6 +135,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("plex-mode", plexModeElected, "run Plex on every pod (active) or only on the lease holder (elected); active needs egress control so only one pod reaches plex.tv")
 	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
+	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
 	return fs
@@ -175,20 +179,21 @@ func loadConfig(args []string) (Config, error) {
 	}
 
 	c := Config{
-		PodName:        v.GetString("pod-name"),
-		Namespace:      v.GetString("pod-namespace"),
-		PMSBinary:      v.GetString("pms-binary"),
-		BinDir:         v.GetString("bin-dir"),
-		PlexDir:        v.GetString("plex-dir"),
-		Socket:         v.GetString("socket"),
-		LeaseName:      v.GetString("lease-name"),
-		WorkersService: v.GetString("workers-service"),
-		PMSPort:        port("pms-port"),
-		WorkerPort:     port("worker-port"),
-		ProbePort:      port("probe-port"),
-		PlexMode:       v.GetString("plex-mode"),
-		ExternalURL:    strings.TrimSpace(v.GetString("plex-external-url")),
-		ShimLibrary:    v.GetString("shim-library"),
+		PodName:         v.GetString("pod-name"),
+		Namespace:       v.GetString("pod-namespace"),
+		PMSBinary:       v.GetString("pms-binary"),
+		BinDir:          v.GetString("bin-dir"),
+		PlexDir:         v.GetString("plex-dir"),
+		Socket:          v.GetString("socket"),
+		LeaseName:       v.GetString("lease-name"),
+		WorkersService:  v.GetString("workers-service"),
+		PMSPort:         port("pms-port"),
+		WorkerPort:      port("worker-port"),
+		ProbePort:       port("probe-port"),
+		PlexMode:        v.GetString("plex-mode"),
+		ExternalURL:     strings.TrimSpace(v.GetString("plex-external-url")),
+		ShimLibrary:     v.GetString("shim-library"),
+		SubreaperBinary: v.GetString("plex-subreaper"),
 		Postgres: plexdb.Config{
 			Host:     v.GetString("postgres-host"),
 			Port:     port("postgres-port"),

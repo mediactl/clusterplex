@@ -155,6 +155,7 @@ func run() int {
 
 	m.sup = &Supervisor{
 		Binary:       cfg.PMSBinary,
+		Subreaper:    cfg.SubreaperBinary,
 		PIDFile:      cfg.PIDFile(),
 		Env:          shimEnv(os.Environ(), cfg),
 		Logger:       logger.With("component", "supervisor"),

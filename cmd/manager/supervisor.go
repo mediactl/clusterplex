@@ -25,7 +25,15 @@ const (
 // and an orderly stop that lets Plex flush its databases.
 type Supervisor struct {
 	Binary string
-	Logger *slog.Logger
+	// Subreaper, when set, is run in place of Plex and given Plex to run.
+	//
+	// Plex re-execs itself through vfork. The process we started then exits
+	// cleanly and its replacement is reparented to pid 1, so a supervisor
+	// watching only what it launched sees a healthy exit and restarts the pod,
+	// on a loop. The subreaper sets PR_SET_CHILD_SUBREAPER, so the replacement
+	// is reparented to it instead, and it waits for the last descendant.
+	Subreaper string
+	Logger    *slog.Logger
 	// PIDFile is Plex's pid file. Plex refuses to start when it names a live
 	// process; on a persistent volume the file outlives the container and
 	// container pids repeat, so it is removed before every start.
@@ -88,6 +96,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 	s.removeStalePIDFile()
 	cmd := exec.Command(s.Binary)
+	if s.Subreaper != "" {
+		cmd = exec.Command(s.Subreaper, s.Binary)
+	}
 	cmd.Env = s.Env
 	cmd.Stdout = &lineLogger{log: s.Logger, source: "pms-stdout"}
 	cmd.Stderr = &lineLogger{log: s.Logger, source: "pms-stderr"}
