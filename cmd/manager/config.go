@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
+	"github.com/mediactl/clusterplex/pkg/plexdb"
 	"github.com/mediactl/clusterplex/pkg/plexprefs"
 )
 
@@ -61,6 +62,8 @@ type Config struct {
 	LeaseName string
 	// WorkersService is the headless Service that gives pods stable DNS names.
 	WorkersService string
+	// SQLiteBinary is Plex's bundled SQLite, used to read the library.
+	SQLiteBinary string
 
 	// PMSPort is where Plex listens; Plex offers no way to change it.
 	PMSPort int
@@ -104,6 +107,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
 	fs.Int("litefs-port", 20202, "LiteFS replication port")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
+	fs.String("sqlite-binary", plexdb.DefaultSQLite, "Plex's bundled SQLite binary, used to read the library database")
 	fs.Bool("litefs-adopt-cluster-id", false, "discard this node's LiteFS lineage and resnapshot from the primary (destructive; only when the cluster's lineage is known to be the right one)")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
@@ -157,6 +161,7 @@ func loadConfig(args []string) (Config, error) {
 		Socket:         v.GetString("socket"),
 		LeaseName:      v.GetString("lease-name"),
 		WorkersService: v.GetString("workers-service"),
+		SQLiteBinary:   v.GetString("sqlite-binary"),
 		PMSPort:        port("pms-port"),
 		ProxyPort:      port("proxy-port"),
 		WorkerPort:     port("worker-port"),
@@ -268,6 +273,11 @@ func (c Config) PMSAddr() string { return fmt.Sprintf("%s:%d", c.PodDNS(), c.PMS
 
 // AdvertiseURL is the LiteFS replication endpoint other nodes connect to.
 func (c Config) AdvertiseURL() string { return fmt.Sprintf("http://%s:%d", c.PodDNS(), c.LiteFSPort) }
+
+// LibraryDB is Plex's main library database, inside the LiteFS mount.
+func (c Config) LibraryDB() string {
+	return filepath.Join(c.DatabasesDir(), "com.plexapp.plugins.library.db")
+}
 
 // PIDFile is where Plex records its pid.
 func (c Config) PIDFile() string { return filepath.Join(c.PlexDir, "plexmediaserver.pid") }

@@ -13,6 +13,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
 
 # Stage 2: Extract Plex and set up the filesystem
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
@@ -63,6 +64,7 @@ ARG VENDOR
 # Copy LiteFS and Custom Binaries
 COPY --from=builder /app/bin/manager /usr/local/bin/manager
 COPY --from=builder /app/bin/shim /usr/local/bin/shim
+COPY --from=builder /app/bin/proxy /usr/local/bin/proxy
 
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /

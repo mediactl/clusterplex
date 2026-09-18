@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-proxy
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.proxy.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      labels:
+        {{- include "cluster-plex.labels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+    spec:
+      serviceAccountName: {{ .Release.Name }}-proxy
+      # Throughput comes from nodes, not replicas: each pod serves media over
+      # its own node's interface, so stacking them on one node adds nothing.
+      # Spreading is enforced rather than preferred for that reason.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: proxy
+      containers:
+        - name: proxy
+          image: {{ include "cluster-plex.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/proxy"]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLUSTERPLEX_LEASE_NAME
+              value: {{ .Release.Name }}-litefs
+            - name: CLUSTERPLEX_FAILOVER_GRACE
+              value: {{ .Values.proxy.failoverGrace | quote }}
+          ports:
+            - name: pms
+              containerPort: 32400
+            - name: probes
+              containerPort: 8080
+          livenessProbe:
+            httpGet: {path: /livez, port: probes}
+          # Not ready until it knows where Plex is, so a proxy that cannot see
+          # one leaves the load balancer instead of stalling connections.
+          readinessProbe:
+            httpGet: {path: /readyz, port: probes}
+            periodSeconds: 5
+          {{- with .Values.proxy.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # Read only: the proxy serves media, it never changes the library.
+            - {name: plex-media, mountPath: /media, readOnly: true}
+      volumes:
+        - name: plex-media
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-media
+            readOnly: true

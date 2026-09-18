@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/superfly/litefs"
@@ -13,11 +15,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/mediactl/clusterplex/pkg/litefsk8s"
+	"github.com/mediactl/clusterplex/pkg/plexroute"
 )
 
 // Pod role labels. The client-facing Service selects RoleLeader; the job
 // dispatcher selects RoleWorker. A pod that has just started carries
 // RoleStarting so a label left behind by a crashed leader does not linger.
+// pmsStartTimeout bounds how long we wait for Plex to bind its port before
+// giving up on advertising this pod.
+const pmsStartTimeout = 5 * time.Minute
+
 // clusterIDCheckInterval is how often a running node re-checks that its
 // LiteFS lineage still matches the cluster's.
 const clusterIDCheckInterval = 15 * time.Second
@@ -73,6 +80,34 @@ func (m *Manager) startLiteFS(ctx context.Context) error {
 	go m.monitorPrimaryStatus(ctx, store)
 	go m.monitorClusterID(ctx, store, leaser)
 	return nil
+}
+
+// advertiseWhenAccepting publishes this pod as the routable Plex only once its
+// port actually accepts a connection. Holding the Lease means this pod should
+// run Plex; it says nothing about whether Plex has finished starting, and
+// advertising too early sends clients to a closed port.
+func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
+	local := net.JoinHostPort("127.0.0.1", strconv.Itoa(m.Config.PMSPort))
+	if err := plexroute.WaitListening(ctx, local, pmsStartTimeout); err != nil {
+		m.Logger.Error("Plex never started accepting connections; not advertising this pod", "error", err)
+		return
+	}
+	manager := net.JoinHostPort(m.Config.PodDNS(), strconv.Itoa(m.Config.ProbePort))
+	if err := m.publisher.Publish(ctx, m.Config.PMSAddr(), "http://"+manager); err != nil {
+		m.Logger.Error("advertise Plex availability", "error", err)
+		return
+	}
+	m.Logger.Info("advertised this pod as the routable Plex", "address", m.Config.PMSAddr())
+}
+
+// withdraw stops traffic being routed here before Plex goes away.
+func (m *Manager) withdraw(ctx context.Context) {
+	if m.publisher == nil {
+		return
+	}
+	if err := m.publisher.Clear(ctx); err != nil {
+		m.Logger.Error("withdraw Plex availability", "error", err)
+	}
 }
 
 // reconcileClusterID compares this node's LiteFS lineage with the cluster's.
@@ -180,6 +215,8 @@ func (m *Manager) monitorPrimaryStatus(ctx context.Context, store *litefs.Store)
 			m.isLeader, m.isStarting, m.isReady = true, false, true
 			if err := m.sup.Start(ctx); err != nil {
 				m.Logger.Error("start Plex Media Server", "error", err)
+			} else {
+				go m.advertiseWhenAccepting(ctx)
 			}
 		case !isPrimary && m.isLeader:
 			m.Logger.Warn("LiteFS lost primary status; stopping Plex Media Server and restarting as a replica")
@@ -202,6 +239,7 @@ func (m *Manager) monitorPrimaryStatus(ctx context.Context, store *litefs.Store)
 // restartAsReplica stops Plex and exits so the container comes back as a
 // clean replica; LiteFS's in-process state does not survive a demotion.
 func (m *Manager) restartAsReplica(ctx context.Context) {
+	m.withdraw(ctx)
 	if err := m.sup.Stop(ctx); err != nil {
 		m.Logger.Error("stop Plex Media Server", "error", err)
 	}

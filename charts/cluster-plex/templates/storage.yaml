@@ -1,0 +1,33 @@
+{{- range $name, $spec := dict "config" .Values.storage.config "media" .Values.storage.media }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels: {{- include "cluster-plex.labels" $ | nindent 4 }}
+spec:
+  accessModes:
+    - {{ $spec.accessMode }}
+  {{- with $spec.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $spec.size }}
+---
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    plex:
+      {{- with .Values.plex.machineIdentifier }}
+      machine-identifier: {{ . | quote }}
+      {{- end }}
+      preferences:
+        {{- range .Values.plex.preferences }}
+        - name: {{ .name | quote }}
+          value: {{ .value | quote }}
+        {{- end }}

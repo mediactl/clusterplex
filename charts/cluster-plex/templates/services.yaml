@@ -1,0 +1,50 @@
+# The only Service clients use. It selects proxy pods, never Plex pods: which
+# pod runs Plex is recorded on the Lease and followed by the proxy, so it never
+# needs to be expressed as a label selector.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+  {{- with .Values.proxy.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: {{ include "cluster-plex.externalTrafficPolicy" . }}
+  {{- with .Values.proxy.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - name: pms
+      port: 32400
+      targetPort: pms
+---
+# Stable DNS for the Plex pods: LiteFS replication, transcode dispatch, and the
+# addresses the proxy is told to use.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-workers
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # A replica must be able to find the primary while it is still snapshotting.
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: plex
+  ports:
+    - name: grpc
+      port: 50051
+    - name: litefs
+      port: 20202
+    - name: probes
+      port: 8080
+    - name: pms
+      port: 32400

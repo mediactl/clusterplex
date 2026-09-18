@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.plex.replicas }}
+  serviceName: {{ .Release.Name }}-workers
+  # No pod depends on another's ordinal; the Lease decides who runs Plex.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: plex
+  template:
+    metadata:
+      labels:
+        {{- include "cluster-plex.labels" . | nindent 8 }}
+        app.kubernetes.io/component: plex
+    spec:
+      serviceAccountName: {{ .Release.Name }}-plex
+      # Long enough for Plex to flush its databases on SIGTERM.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: plex
+          image: {{ include "cluster-plex.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # FUSE needs /dev/fuse and CAP_SYS_ADMIN; the port redirect in
+            # front of Plex needs CAP_NET_ADMIN.
+            privileged: true
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLUSTERPLEX_LEASE_NAME
+              value: {{ .Release.Name }}-litefs
+            - name: CLUSTERPLEX_WORKERS_SERVICE
+              value: {{ .Release.Name }}-workers
+          ports:
+            - name: pms
+              containerPort: 32400
+            - name: proxy
+              containerPort: 32499
+            - name: grpc
+              containerPort: 50051
+            - name: litefs
+              containerPort: 20202
+            - name: probes
+              containerPort: 8080
+          livenessProbe:
+            httpGet: {path: /livez, port: probes}
+          readinessProbe:
+            httpGet: {path: /readyz, port: probes}
+          startupProbe:
+            httpGet: {path: /startupz, port: probes}
+            failureThreshold: 30
+            periodSeconds: 10
+          {{- with .Values.plex.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - {name: litefs-data, mountPath: /var/lib/litefs}
+            - {name: plex-config, mountPath: /var/lib/plexmediaserver}
+            - {name: plex-media, mountPath: /media}
+            - {name: config, mountPath: /etc/clusterplex, readOnly: true}
+      volumes:
+        - name: plex-config
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-config
+        - name: plex-media
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-media
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: litefs-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.storage.litefs.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.litefs.size }}

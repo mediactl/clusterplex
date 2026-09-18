@@ -1,0 +1,25 @@
+{{ .Release.Name }} is installed.
+
+Clients connect to the proxy Service, never to Plex directly:
+
+    kubectl get svc -n {{ .Release.Namespace }} {{ .Release.Name }}
+
+Two things decide whether media throughput actually scales past one node:
+
+  1. The proxy Service uses externalTrafficPolicy: Local, which this chart
+     enforces. Traffic must enter through a node that is running a proxy pod.
+
+  2. Your router must install more than one next hop for the service address.
+     Cilium advertises it from every node running a proxy, but a router that
+     keeps a single best path will send everything to one node. On FRR-based
+     gear this means raising maximum-paths.
+
+Throughput scales with nodes, not replicas. Proxy pods are spread one per node
+and will stay Pending if asked for more replicas than there are nodes.
+
+{{- if not .Values.plex.machineIdentifier }}
+
+plex.machineIdentifier is unset, so Plex will generate an identity on first
+start. Pin it if you want a rebuilt cluster to keep the identity clients
+already know. Setting it on a server that already has one changes it.
+{{- end }}

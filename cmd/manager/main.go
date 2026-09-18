@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mediactl/clusterplex/pkg/plexprefs"
+	"github.com/mediactl/clusterplex/pkg/plexroute"
 	"github.com/mediactl/clusterplex/pkg/portredirect"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
@@ -41,6 +42,7 @@ type Manager struct {
 	K8sClient kubernetes.Interface
 
 	sup          *Supervisor
+	publisher    *plexroute.Publisher
 	store        *litefs.Store
 	fsys         *fuse.FileSystem
 	litefsHTTP   *litefshttp.Server
@@ -99,6 +101,9 @@ func run() int {
 		K8sClient:  k8sClient,
 		isStarting: true,
 	}
+	m.publisher = &plexroute.Publisher{
+		Client: k8sClient, Namespace: cfg.Namespace, LeaseName: cfg.LeaseName, Pod: cfg.PodName,
+	}
 	m.sup = &Supervisor{
 		Binary:  cfg.PMSBinary,
 		PIDFile: cfg.PIDFile(),
@@ -144,6 +149,7 @@ func run() int {
 
 	<-ctx.Done()
 	logger.Info("shutting down")
+	m.withdraw(context.Background())
 	stopCtx, cancel := context.WithTimeout(context.Background(), defaultGrace+5*time.Second)
 	defer cancel()
 	if err := m.sup.Stop(stopCtx); err != nil {

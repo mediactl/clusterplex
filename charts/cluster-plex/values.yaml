@@ -1,0 +1,47 @@
+image:
+  repository: ghcr.io/mediactl/cluster-plex
+  tag: dev
+  pullPolicy: IfNotPresent
+
+plex:
+  # Pods that may run Plex. Only one does at a time; the rest replicate the
+  # databases and run transcodes.
+  replicas: 3
+  # Pin the server identity so a rebuilt cluster keeps the identity clients
+  # already know. Setting this on a server that already has one CHANGES it.
+  machineIdentifier: ""
+  # Plex settings enforced on every start. A list, not a map: the config loader
+  # lowercases nested map keys and Plex names are case sensitive.
+  preferences:
+    - name: FriendlyName
+      value: Cluster Plex
+  resources: {}
+
+proxy:
+  # The only thing clients connect to. Media bytes are served from here, so
+  # THROUGHPUT SCALES WITH NODES, NOT REPLICAS: spreading these across nodes is
+  # what raises the ceiling. See docs/media-proxy-pattern.md.
+  replicas: 3
+  # How long a request waits for Plex during a failover before giving up.
+  failoverGrace: 30s
+  resources: {}
+  service:
+    # Empty asks for whatever the load balancer implementation assigns.
+    loadBalancerIP: ""
+    annotations: {}
+
+storage:
+  # Plex's own state: identity, metadata, codecs. Every pod mounts it.
+  config:
+    size: 50Gi
+    accessMode: ReadWriteMany
+    storageClass: ""
+  # The media library, at the same path in every pod.
+  media:
+    size: 1Ti
+    accessMode: ReadWriteMany
+    storageClass: ""
+  # LiteFS transaction files. Per pod, never shared.
+  litefs:
+    size: 10Gi
+    storageClass: ""

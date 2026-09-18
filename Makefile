@@ -37,6 +37,7 @@ tidy: litefs ## go mod tidy
 build: litefs ## Build the manager and shim into bin/
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
 
 .PHONY: test
 test: litefs ## Unit tests
@@ -47,6 +48,11 @@ test: litefs ## Unit tests
 .PHONY: docker-build
 docker-build: ## Build the image (the Dockerfile fetches LiteFS itself)
 	docker build -f Dockerfile -t $(IMG) .
+
+.PHONY: helm-lint
+helm-lint: ## Lint and render the Helm chart
+	helm lint charts/cluster-plex
+	helm template cluster-plex charts/cluster-plex >/dev/null
 
 .PHONY: manifests
 manifests: ## Render the base manifests
