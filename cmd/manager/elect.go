@@ -29,6 +29,10 @@ const (
 	// pmsStartTimeout bounds how long we wait for Plex to bind its port before
 	// giving up on advertising this pod.
 	pmsStartTimeout = 5 * time.Minute
+	// healthInterval is how often Plex is asked whether it is still serving,
+	// once it has started. Frequent enough that a stalled Plex leaves the load
+	// balancer quickly, rare enough to be free.
+	healthInterval = 10 * time.Second
 )
 
 // runPlex starts Plex on this pod and keeps it running.
@@ -151,8 +155,19 @@ func (m *Manager) holdPlexTVLease(ctx context.Context, elector *lease.Elector) {
 	}
 }
 
+// setRunsPlex records that this pod serves Plex, so its readiness answers for
+// Plex rather than for the manager alone.
+func (m *Manager) setRunsPlex(runs bool) {
+	m.mu.Lock()
+	m.runsPlex = runs
+	m.mu.Unlock()
+}
+
 // start brings up Plex and advertises this pod once it is accepting.
 func (m *Manager) start(ctx context.Context) {
+	// Before the start, not after: from here on this pod's readiness answers
+	// for Plex, and a failed start must not leave it claiming otherwise.
+	m.setRunsPlex(true)
 	if err := m.sup.Start(ctx); err != nil {
 		m.Logger.Error("start Plex Media Server", "error", err)
 		return
@@ -173,13 +188,17 @@ func (m *Manager) markReady(ctx context.Context, role string) {
 	}
 }
 
-// advertiseWhenAccepting publishes this pod as routable only once its port
-// actually accepts a connection. Plex needs seconds to bind, and advertising
-// earlier sends clients to a closed port.
+// advertiseWhenAccepting publishes this pod as routable only once Plex is
+// answering requests, not merely once its port is open.
+//
+// Plex binds the port within a second and then answers 503 to everything until
+// it has finished starting, so accepting a connection proves nothing. Worse, it
+// can abort part way through and stay exactly there: port open, every request
+// 503, indefinitely. Advertising on the port alone sends clients to a server
+// that will never answer them.
 func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
-	local := net.JoinHostPort("127.0.0.1", strconv.Itoa(m.Config.PMSPort))
-	if err := plexroute.WaitListening(ctx, local, pmsStartTimeout); err != nil {
-		m.Logger.Error("Plex never started accepting connections; not advertising this pod", "error", err)
+	if err := plexroute.WaitServing(ctx, m.plexURL(), pmsStartTimeout); err != nil {
+		m.Logger.Error("Plex never started serving; not advertising this pod", "error", err)
 		return
 	}
 	manager := net.JoinHostPort(m.Config.PodDNS(), strconv.Itoa(m.Config.ProbePort))
@@ -194,6 +213,57 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 		m.Logger.Error("mark this pod as serving Plex", "error", err)
 	}
 	m.Logger.Info("advertised this pod as a routable Plex", "address", m.Config.PMSAddr())
+	go m.watchPlexHealth(ctx)
+}
+
+// plexURL reaches Plex inside its own network namespace. It must not go
+// through the pod's own port: the proxy holds that and answers whether Plex is
+// up or not, so a health check aimed there grades the proxy.
+func (m *Manager) plexURL() string { return "http://" + m.plexAddr }
+
+// watchPlexHealth withdraws this pod when Plex stops answering.
+//
+// Starting is not the only time Plex can stop serving while holding its port,
+// and the supervisor cannot see it: Plex is wrapped in a subreaper that stays
+// alive as long as any descendant does, so a Plex that has aborted its main
+// loop still looks like a running process. Without this the pod keeps its
+// readiness and its serving annotation forever.
+func (m *Manager) watchPlexHealth(ctx context.Context) {
+	ticker := time.NewTicker(healthInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		err := plexroute.Serving(ctx, m.plexURL())
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			m.setPlexServing(ctx, true)
+			continue
+		}
+		m.Logger.Error("Plex is no longer serving; withdrawing this pod", "error", err)
+		m.setPlexServing(ctx, false)
+	}
+}
+
+// setPlexServing records whether traffic should come here, in both the places
+// that decide it: this pod's readiness, and the annotation the proxy and the
+// maintenance fan-out read.
+func (m *Manager) setPlexServing(ctx context.Context, serving bool) {
+	m.mu.Lock()
+	changed := m.plexServing != serving
+	m.plexServing = serving
+	m.mu.Unlock()
+	if !changed {
+		return
+	}
+	if err := m.markServingPlex(ctx, serving); err != nil {
+		m.Logger.Error("update the serving annotation", "serving", serving, "error", err)
+	}
 }
 
 // withdraw stops traffic being routed here before Plex goes away.

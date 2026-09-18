@@ -22,7 +22,11 @@ func (m *Manager) probeHandler() http.Handler {
 	// Readiness: may traffic and jobs be sent to this pod?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		m.mu.RLock()
-		ready := m.isReady
+		// A pod that serves Plex is only ready when Plex is answering. Plex
+		// holds its port from the moment it starts and 503s everything until
+		// it has finished, and it can abort and stay that way, so having a
+		// role is not evidence that this pod can serve.
+		ready := m.isReady && (!m.runsPlex || m.plexServing)
 		m.mu.RUnlock()
 		if !ready {
 			w.WriteHeader(http.StatusServiceUnavailable)

@@ -62,6 +62,13 @@ type Manager struct {
 	mu         sync.RWMutex
 	isReady    bool
 	isStarting bool
+	// runsPlex is whether this pod is one that serves Plex, as opposed to a
+	// worker that only takes transcode jobs. A worker is ready as soon as it
+	// has a role; a pod serving Plex is not ready until Plex answers.
+	runsPlex bool
+	// plexServing is whether Plex last answered a request. It starts false, so
+	// winning the election is never on its own enough to take traffic.
+	plexServing bool
 }
 
 func main() {
