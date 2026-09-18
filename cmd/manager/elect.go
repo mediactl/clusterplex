@@ -168,6 +168,15 @@ func (m *Manager) start(ctx context.Context) {
 	// Before the start, not after: from here on this pod's readiness answers
 	// for Plex, and a failed start must not leave it claiming otherwise.
 	m.setRunsPlex(true)
+	// The databases have to be ready before Plex opens them, and the shadow is
+	// rebuilt on every start rather than kept, because the shim writes DDL to
+	// it as it runs and a kept one drifts from what PostgreSQL holds.
+	if err := m.prepareDatabases(ctx); err != nil {
+		// Fatal: Plex against a half-prepared database fails much later and
+		// much less clearly, part way through its own migrations.
+		m.Logger.Error("prepare the library and shadow databases", "error", err)
+		return
+	}
 	if err := m.sup.Start(ctx); err != nil {
 		m.Logger.Error("start Plex Media Server", "error", err)
 		return

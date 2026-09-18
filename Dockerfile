@@ -117,9 +117,11 @@ COPY --from=shim /libs/subreaper /usr/local/bin/subreaper
 # The schema the shim expects to find already loaded. Plex does not create it:
 # it runs migrations against a database that is meant to be there already, so
 # without this it dies partway through insisting its own tables do not exist.
-COPY --from=shim /build/schema/plex_schema.sql /build/schema/sqlite_schema.sql \
-     /build/schema/sqlite_column_types.sql /build/schema/pg_compat_functions.sql \
-     /build/schema/seed_data.sql /usr/local/lib/plex-postgresql/
+#
+# Taken from our vendored copy rather than the upstream checkout, so that the
+# files the manager loads are the ones pkg/plexboot's tests check — above all
+# that they all use the same schema name the shim has compiled in.
+COPY hack/plex-postgresql/schema/ /usr/local/lib/plex-postgresql/
 
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /

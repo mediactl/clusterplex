@@ -47,6 +47,9 @@ type Manager struct {
 	Metrics   *telemetry.Metrics
 	K8sClient kubernetes.Interface
 	DB        *plexdb.DB
+	// pool is the same connection, unwrapped, for the bootstrap: it needs to
+	// run statements and multi-row queries rather than single-row lookups.
+	pool *plexdb.Pool
 
 	sup       *Supervisor
 	publisher *plexroute.Publisher
@@ -121,6 +124,7 @@ func run() int {
 		Metrics:    metrics,
 		K8sClient:  k8sClient,
 		DB:         &plexdb.DB{Querier: pool},
+		pool:       pool,
 		isStarting: true,
 	}
 	m.publisher = &plexroute.Publisher{
