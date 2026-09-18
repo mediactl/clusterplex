@@ -8,4 +8,4 @@ lease:
     url: "http://consul-server.media.svc.cluster.local:8500"
     key: "litefs/plex"
 exec:
-  - cmd: "/usr/local/bin/supervisor"
+  - cmd: "/usr/local/bin/manager"

@@ -15,7 +15,7 @@ type Metrics struct {
 
 func InitTelemetry() (trace.Tracer, *Metrics) {
 	// Initialize OpenTelemetry Tracer (Assuming a configured OTel Exporter)
-	tracer := otel.Tracer("plex-supervisor")
+	tracer := otel.Tracer("clusterplex")
 
 	metrics := &Metrics{
 		ActiveJobs: promauto.NewGauge(prometheus.GaugeOpts{
@@ -27,7 +27,7 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Help: "Total jobs intercepted and routed",
 		}, []string{"binary_type"}),
 		LeaderStatus: promauto.NewGauge(prometheus.GaugeOpts{
-			Name: "plex_supervisor_is_leader",
+			Name: "plex_manager_is_leader",
 			Help: "1 if this node is the active Plex leader, 0 otherwise",
 		}),
 	}

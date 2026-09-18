@@ -19,27 +19,27 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Supervisor_ExecuteRemote_FullMethodName = "/transcoder.Supervisor/ExecuteRemote"
+	Manager_ExecuteRemote_FullMethodName = "/transcoder.Manager/ExecuteRemote"
 )
 
-// SupervisorClient is the client API for Supervisor service.
+// ManagerClient is the client API for Manager service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type SupervisorClient interface {
+type ManagerClient interface {
 	ExecuteRemote(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TranscodeLog], error)
 }
 
-type supervisorClient struct {
+type managerClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewSupervisorClient(cc grpc.ClientConnInterface) SupervisorClient {
-	return &supervisorClient{cc}
+func NewManagerClient(cc grpc.ClientConnInterface) ManagerClient {
+	return &managerClient{cc}
 }
 
-func (c *supervisorClient) ExecuteRemote(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TranscodeLog], error) {
+func (c *managerClient) ExecuteRemote(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TranscodeLog], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Supervisor_ServiceDesc.Streams[0], Supervisor_ExecuteRemote_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Manager_ServiceDesc.Streams[0], Manager_ExecuteRemote_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -54,69 +54,69 @@ func (c *supervisorClient) ExecuteRemote(ctx context.Context, in *ExecRequest, o
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Supervisor_ExecuteRemoteClient = grpc.ServerStreamingClient[TranscodeLog]
+type Manager_ExecuteRemoteClient = grpc.ServerStreamingClient[TranscodeLog]
 
-// SupervisorServer is the server API for Supervisor service.
-// All implementations must embed UnimplementedSupervisorServer
+// ManagerServer is the server API for Manager service.
+// All implementations must embed UnimplementedManagerServer
 // for forward compatibility.
-type SupervisorServer interface {
+type ManagerServer interface {
 	ExecuteRemote(*ExecRequest, grpc.ServerStreamingServer[TranscodeLog]) error
-	mustEmbedUnimplementedSupervisorServer()
+	mustEmbedUnimplementedManagerServer()
 }
 
-// UnimplementedSupervisorServer must be embedded to have
+// UnimplementedManagerServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedSupervisorServer struct{}
+type UnimplementedManagerServer struct{}
 
-func (UnimplementedSupervisorServer) ExecuteRemote(*ExecRequest, grpc.ServerStreamingServer[TranscodeLog]) error {
+func (UnimplementedManagerServer) ExecuteRemote(*ExecRequest, grpc.ServerStreamingServer[TranscodeLog]) error {
 	return status.Error(codes.Unimplemented, "method ExecuteRemote not implemented")
 }
-func (UnimplementedSupervisorServer) mustEmbedUnimplementedSupervisorServer() {}
-func (UnimplementedSupervisorServer) testEmbeddedByValue()                    {}
+func (UnimplementedManagerServer) mustEmbedUnimplementedManagerServer() {}
+func (UnimplementedManagerServer) testEmbeddedByValue()                 {}
 
-// UnsafeSupervisorServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to SupervisorServer will
+// UnsafeManagerServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ManagerServer will
 // result in compilation errors.
-type UnsafeSupervisorServer interface {
-	mustEmbedUnimplementedSupervisorServer()
+type UnsafeManagerServer interface {
+	mustEmbedUnimplementedManagerServer()
 }
 
-func RegisterSupervisorServer(s grpc.ServiceRegistrar, srv SupervisorServer) {
-	// If the following call panics, it indicates UnimplementedSupervisorServer was
+func RegisterManagerServer(s grpc.ServiceRegistrar, srv ManagerServer) {
+	// If the following call panics, it indicates UnimplementedManagerServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&Supervisor_ServiceDesc, srv)
+	s.RegisterService(&Manager_ServiceDesc, srv)
 }
 
-func _Supervisor_ExecuteRemote_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _Manager_ExecuteRemote_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(ExecRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(SupervisorServer).ExecuteRemote(m, &grpc.GenericServerStream[ExecRequest, TranscodeLog]{ServerStream: stream})
+	return srv.(ManagerServer).ExecuteRemote(m, &grpc.GenericServerStream[ExecRequest, TranscodeLog]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Supervisor_ExecuteRemoteServer = grpc.ServerStreamingServer[TranscodeLog]
+type Manager_ExecuteRemoteServer = grpc.ServerStreamingServer[TranscodeLog]
 
-// Supervisor_ServiceDesc is the grpc.ServiceDesc for Supervisor service.
+// Manager_ServiceDesc is the grpc.ServiceDesc for Manager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var Supervisor_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "transcoder.Supervisor",
-	HandlerType: (*SupervisorServer)(nil),
+var Manager_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "transcoder.Manager",
+	HandlerType: (*ManagerServer)(nil),
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "ExecuteRemote",
-			Handler:       _Supervisor_ExecuteRemote_Handler,
+			Handler:       _Manager_ExecuteRemote_Handler,
 			ServerStreams: true,
 		},
 	},

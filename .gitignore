@@ -1,0 +1,9 @@
+bin/
+dist/
+*.test
+cover.out
+.env
+.data/
+/cluster-plex/cluster-plex
+.superpowers/
+

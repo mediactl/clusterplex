@@ -2,7 +2,7 @@ syntax = "proto3";
 package transcoder;
 option go_package = "github.com/mediactl/clusterplex/proto";
 
-service Supervisor {
+service Manager {
     rpc ExecuteRemote(ExecRequest) returns (stream TranscodeLog);
 }
 

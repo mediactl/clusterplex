@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: plex-supervisor-sa
+  name: clusterplex-sa
   namespace: media
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: plex-supervisor-role
+  name: clusterplex-role
   namespace: media
 rules:
   - apiGroups: ["coordination.k8s.io"]
@@ -20,12 +20,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: plex-supervisor-binding
+  name: clusterplex-binding
   namespace: media
 subjects:
   - kind: ServiceAccount
-    name: plex-supervisor-sa
+    name: clusterplex-sa
 roleRef:
   kind: Role
-  name: plex-supervisor-role
+  name: clusterplex-role
   apiGroup: rbac.authorization.k8s.io

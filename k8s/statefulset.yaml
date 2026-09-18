@@ -14,14 +14,14 @@ spec:
       labels:
         app: plex
     spec:
-      serviceAccountName: plex-supervisor-sa
+      serviceAccountName: clusterplex-sa
       securityContext:
         # FUSE mounts require elevated privileges in containers
         capabilities:
           add: ["SYS_ADMIN"]
       containers:
         - name: plex
-          image: your-repo/plex-supervisor:latest
+          image: ghcr.io/mediactl/clusterplex:latest
           env:
             - name: POD_NAME
               valueFrom:

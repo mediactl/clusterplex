@@ -25,14 +25,14 @@ func main() {
 	targetBinary := filepath.Base(os.Args[0])
 	args := os.Args[1:]
 
-	conn, err := grpc.DialContext(ctx, "unix:///var/run/plex-supervisor.sock",
+	conn, err := grpc.DialContext(ctx, "unix:///var/run/clusterplex.sock",
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	client := pb.NewSupervisorClient(conn)
+	client := pb.NewManagerClient(conn)
 
 	// Propagate OTel context into gRPC headers map
 	carrier := propagation.MapCarrier{}

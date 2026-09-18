@@ -15,14 +15,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	"github.com/mediactl/clusterplex/pkg/telemetry"
 )
 
-// Supervisor holds injected dependencies
-type Supervisor struct {
+// Manager holds injected dependencies
+type Manager struct {
 	Logger    *slog.Logger
 	Tracer    trace.Tracer
 	Metrics   *telemetry.Metrics
@@ -45,11 +46,19 @@ func main() {
 
 	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
-		logger.Error("Failed to load K8s config", slog.Any("error", err))
-		os.Exit(1)
+		kubeconfig := os.Getenv("KUBECONFIG")
+		if kubeconfig == "" {
+			kubeconfig = os.ExpandEnv("$HOME/.kube/config")
+		}
+		var buildErr error
+		k8sConfig, buildErr = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if buildErr != nil {
+			logger.Error("Failed to load K8s config", slog.Any("error", buildErr))
+			os.Exit(1)
+		}
 	}
 
-	sup := &Supervisor{
+	sup := &Manager{
 		Logger:     logger,
 		Tracer:     tracer,
 		Metrics:    metrics,
@@ -67,11 +76,11 @@ func main() {
 }
 
 // startHTTPServer sets up the standard K8s probes and Prometheus endpoints
-func (s *Supervisor) startHTTPServer() {
+func (s *Manager) startHTTPServer() {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 
-	// Liveness: Is the supervisor daemon deadlocked?
+	// Liveness: Is the manager daemon deadlocked?
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -106,13 +115,13 @@ func (s *Supervisor) startHTTPServer() {
 	http.ListenAndServe(":8080", mux)
 }
 
-func (s *Supervisor) runLeaderElection(ctx context.Context) {
+func (s *Manager) runLeaderElection(ctx context.Context) {
 	s.Logger.InfoContext(ctx, "Starting Kubernetes Lease Leader Election")
 
 	// The Lease API (coordination.k8s.io) is the modern standard for K8s leader election
 	lock := &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
-			Name:      "plex-supervisor-lock",
+			Name:      "cluster-plex-lock",
 			Namespace: s.Namespace,
 		},
 		Client: s.K8sClient.CoordinationV1(),

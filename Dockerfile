@@ -1,13 +1,13 @@
 ARG GO_VERSION=1.27
 ARG VENDOR="machinectl"
 
-# Stage 1: Build the Go Supervisor and Shim
+# Stage 1: Build the Go Manager and Shim
 FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION} AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o bin/supervisor ./cmd/supervisor
+RUN go build -o bin/manager ./cmd/manager
 RUN go build -o bin/shim ./cmd/shim
 
 # Stage 2: Extract Plex and Setup File System
@@ -56,7 +56,7 @@ ARG VENDOR
 
 # Copy LiteFS and Custom Binaries
 COPY --from=flyio/litefs:0.5 /usr/local/bin/litefs /usr/local/bin/litefs
-COPY --from=builder /app/bin/supervisor /usr/local/bin/supervisor
+COPY --from=builder /app/bin/manager /usr/local/bin/manager
 COPY --from=builder /app/bin/shim /usr/local/bin/shim
 COPY litefs.yml /etc/litefs.yml
 
@@ -73,5 +73,5 @@ ENV DEBIAN_FRONTEND="noninteractive" \
     PLEX_MEDIA_SERVER_INFO_VENDOR="Docker" \
     PLEX_MEDIA_SERVER_INFO_DEVICE="Docker Container (${VENDOR})"
 
-# Start Supervisor
-ENTRYPOINT ["/usr/local/bin/supervisor"]
+# Start Manager
+ENTRYPOINT ["/usr/local/bin/manager"]

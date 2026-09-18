@@ -179,10 +179,9 @@ const file_proto_transcoder_proto_rawDesc = "" +
 	"\fstderr_chunk\x18\x02 \x01(\fR\vstderrChunk\x12\x1b\n" +
 	"\texit_code\x18\x03 \x01(\x05R\bexitCode\x12\x1f\n" +
 	"\vis_finished\x18\x04 \x01(\bR\n" +
-	"isFinished2R\n" +
-	"\n" +
-	"Supervisor\x12D\n" +
-	"\rExecuteRemote\x12\x17.transcoder.ExecRequest\x1a\x18.transcoder.TranscodeLog0\x01B\x17Z\x15plex-supervisor/protob\x06proto3"
+	"isFinished2O\n" +
+	"\aManager\x12D\n" +
+	"\rExecuteRemote\x12\x17.transcoder.ExecRequest\x1a\x18.transcoder.TranscodeLog0\x01B'Z%github.com/mediactl/clusterplex/protob\x06proto3"
 
 var (
 	file_proto_transcoder_proto_rawDescOnce sync.Once
@@ -206,8 +205,8 @@ var file_proto_transcoder_proto_goTypes = []any{
 var file_proto_transcoder_proto_depIdxs = []int32{
 	2, // 0: transcoder.ExecRequest.env:type_name -> transcoder.ExecRequest.EnvEntry
 	3, // 1: transcoder.ExecRequest.trace_headers:type_name -> transcoder.ExecRequest.TraceHeadersEntry
-	0, // 2: transcoder.Supervisor.ExecuteRemote:input_type -> transcoder.ExecRequest
-	1, // 3: transcoder.Supervisor.ExecuteRemote:output_type -> transcoder.TranscodeLog
+	0, // 2: transcoder.Manager.ExecuteRemote:input_type -> transcoder.ExecRequest
+	1, // 3: transcoder.Manager.ExecuteRemote:output_type -> transcoder.TranscodeLog
 	3, // [3:4] is the sub-list for method output_type
 	2, // [2:3] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
