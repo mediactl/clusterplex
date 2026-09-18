@@ -23,9 +23,10 @@ spec:
           image: ghcr.io/mediactl/cluster-plex:dev
           imagePullPolicy: IfNotPresent
           securityContext:
-            # FUSE needs /dev/fuse plus CAP_SYS_ADMIN and the port redirect
-            # needs CAP_NET_ADMIN; privileged is the only mode that provides
-            # the device without a device plugin.
+            # FUSE needs /dev/fuse plus CAP_SYS_ADMIN, and Plex's network
+            # namespace needs CAP_SYS_ADMIN to create and CAP_NET_ADMIN to
+            # wire up; privileged is the only mode that provides the device
+            # without a device plugin.
             privileged: true
           env:
             - name: POD_NAME
@@ -41,8 +42,10 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
           ports:
+            # The proxy holds Plex's own port in the pod namespace; Plex binds
+            # it inside its namespace, where nothing else competes for it.
             - name: proxy
-              containerPort: 32499
+              containerPort: 32400
             - name: grpc
               containerPort: 50051
             - name: litefs

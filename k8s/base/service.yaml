@@ -1,6 +1,6 @@
 # plex-main is what clients use. It selects only the pod currently running
-# Plex Media Server and lands on the manager's TCP proxy, which forwards to
-# Plex on loopback. See docs/adr/0002.
+# Plex Media Server and lands on the manager's TCP proxy, which forwards over
+# a veth pair into the network namespace Plex runs in. See docs/adr/0003.
 apiVersion: v1
 kind: Service
 metadata:

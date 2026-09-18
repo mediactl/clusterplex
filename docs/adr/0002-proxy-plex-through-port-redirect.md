@@ -1,8 +1,16 @@
 # ADR-0002: Put the manager's TCP proxy in front of Plex with a nat REDIRECT
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0003](0003-isolate-plex-in-a-network-namespace.md)
 **Date:** 2026-09-18
 **Deciders:** cluster-plex maintainers
+
+> The REDIRECT described here was replaced by giving Plex its own network
+> namespace — the alternative this ADR considered and rejected below. What
+> changed is not the analysis but its premise: the pod is privileged for FUSE
+> anyway, so the NET_ADMIN and `ip_forward` costs named here were already paid.
+> The rest of this document is kept as written, because the reasoning still
+> explains why the proxy exists and because the 32401 discovery below is worth
+> not rediscovering.
 
 ## Context
 

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,7 +19,7 @@ import (
 
 const (
 	// envPrefix turns a configuration key into an environment variable:
-	// proxy-port becomes CLUSTERPLEX_PROXY_PORT.
+	// probe-port becomes CLUSTERPLEX_PROBE_PORT.
 	envPrefix = "CLUSTERPLEX"
 	// prefEnvPrefix introduces a single Plex preference. Everything after it
 	// is the preference name, taken verbatim: Plex names are case sensitive,
@@ -65,12 +66,14 @@ type Config struct {
 	// SQLiteBinary is Plex's bundled SQLite, used to read the library.
 	SQLiteBinary string
 
-	// PMSPort is where Plex listens; Plex offers no way to change it.
+	// PMSPort is where Plex listens inside its own network namespace, and
+	// where the manager's proxy listens in the pod namespace. Plex offers no
+	// way to change it.
 	PMSPort int
-	// ProxyPort is where the manager's TCP proxy listens in front of Plex.
-	// Plex itself binds 32400 and 32401 and exits if either is taken, so the
-	// default sits well away from them.
-	ProxyPort int
+	// PlexSubnet is the point-to-point link joining the pod namespace to
+	// Plex's. Nothing outside the pod sees it, but it still must not collide
+	// with a route the pod already has, so it stays configurable.
+	PlexSubnet netip.Prefix
 	// WorkerPort is the gRPC port on which a worker accepts jobs.
 	WorkerPort int
 	// LiteFSPort is the replication port between LiteFS nodes.
@@ -103,7 +106,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("lease-name", "cluster-plex-litefs", "Kubernetes Lease used for leader election")
 	fs.String("workers-service", "plex-workers", "headless Service giving pods stable DNS names")
 	fs.Int("pms-port", 32400, "port Plex Media Server listens on")
-	fs.Int("proxy-port", 32499, "port the manager's TCP proxy listens on")
+	fs.String("plex-subnet", "169.254.1.0/30", "point-to-point subnet joining the pod to Plex's network namespace")
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
 	fs.Int("litefs-port", 20202, "LiteFS replication port")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
@@ -163,11 +166,16 @@ func loadConfig(args []string) (Config, error) {
 		WorkersService: v.GetString("workers-service"),
 		SQLiteBinary:   v.GetString("sqlite-binary"),
 		PMSPort:        port("pms-port"),
-		ProxyPort:      port("proxy-port"),
 		WorkerPort:     port("worker-port"),
 		LiteFSPort:     port("litefs-port"),
 		ProbePort:      port("probe-port"),
 		AdoptClusterID: v.GetBool("litefs-adopt-cluster-id"),
+	}
+
+	if subnet, perr := netip.ParsePrefix(v.GetString("plex-subnet")); perr != nil {
+		errs = append(errs, fmt.Errorf("plex-subnet: %w", perr))
+	} else {
+		c.PlexSubnet = subnet
 	}
 
 	prefs, err := loadPreferences(v, fs, os.Environ())

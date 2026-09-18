@@ -56,8 +56,10 @@ RUN mkdir -p  rootfs/var/lib/litefs rootfs/var/lib/plexmediaserver
 
 # Stage 3: Final image
 FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
-# fuse3 for LiteFS; iptables for the port redirect in front of Plex (ADR 0002).
-RUN apt-get update && apt-get install -y fuse3 iptables ca-certificates && rm -rf /var/lib/apt/lists/*
+# fuse3 for LiteFS. Nothing here is needed for the network: the manager builds
+# Plex's namespace, veth pair and masquerade over netlink itself (ADR 0003),
+# which is why iptables is gone.
+RUN apt-get update && apt-get install -y fuse3 ca-certificates && rm -rf /var/lib/apt/lists/*
 
 ARG VENDOR
 

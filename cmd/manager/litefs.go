@@ -87,8 +87,11 @@ func (m *Manager) startLiteFS(ctx context.Context) error {
 // run Plex; it says nothing about whether Plex has finished starting, and
 // advertising too early sends clients to a closed port.
 func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
-	local := net.JoinHostPort("127.0.0.1", strconv.Itoa(m.Config.PMSPort))
-	if err := plexroute.WaitListening(ctx, local, pmsStartTimeout); err != nil {
+	// Probe Plex inside its namespace, not on loopback. The proxy holds Plex's
+	// port in the pod namespace and starts before Plex does, so a loopback
+	// probe would succeed immediately and advertise this pod while Plex was
+	// still starting — the exact failure this function exists to prevent.
+	if err := plexroute.WaitListening(ctx, m.plexAddr, pmsStartTimeout); err != nil {
 		m.Logger.Error("Plex never started accepting connections; not advertising this pod", "error", err)
 		return
 	}

@@ -8,14 +8,14 @@ The manager reads its settings from three places. Later sources win:
 
 Run `manager --help` for the full list of flags. Every flag has an environment
 variable: replace the dashes with underscores and prefix it with
-`CLUSTERPLEX_`, so `--proxy-port` reads `CLUSTERPLEX_PROXY_PORT`. The two
+`CLUSTERPLEX_`, so `--probe-port` reads `CLUSTERPLEX_PROBE_PORT`. The two
 exceptions are `--pod-name` and `--pod-namespace`, which read the unprefixed
 `POD_NAME` and `POD_NAMESPACE` that the downward API sets.
 
 A small example:
 
 ```yaml
-proxy-port: 32499
+probe-port: 8080
 plex-dir: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server
 
 plex:
@@ -116,6 +116,50 @@ Worth calling out, because it is specific to running Plex this way. With no
 `FriendlyName` set, Plex names the server after its hostname, which in a
 StatefulSet is the pod name. The displayed name would then change every time
 leadership moved. The shipped ConfigMap sets it for that reason.
+
+### Advertising an address clients can use
+
+Plex runs in a network namespace of its own ([ADR-0003](adr/0003-isolate-plex-in-a-network-namespace.md)),
+where the only addresses it can see are `lo` and its end of the link to the pod,
+`169.254.1.2`. Plex enumerates its interfaces and publishes what it finds to
+plex.tv, so that link-local address is what it advertises, and no client can
+reach it.
+
+This changes less than it sounds. Before the namespace, Plex advertised
+`podIP:32400`, which is equally unusable from outside the cluster; anything
+in-cluster that follows the advertisement still lands on the manager's proxy,
+which holds 32400 in the pod namespace. What it does mean is that Plex's own
+advertisement is never the answer for external access, so set the address
+explicitly:
+
+```yaml
+plex:
+  preferences:
+    - name: customConnections
+      value: https://plex.example.com:443
+```
+
+Use the address clients actually reach — the `plex-main` LoadBalancer, or
+whatever ingress sits in front of it. Plex treats this as an additional
+connection rather than a replacement, so it is additive and safe to set.
+
+Note that GDM discovery (UDP 32410-32414) does not cross the link either.
+Broadcast discovery already did not work across pod networking, so nothing that
+worked before stops working.
+
+### Changing the link subnet
+
+`--plex-subnet` sets the point-to-point link joining the pod to Plex's
+namespace, and defaults to `169.254.1.0/30`. Nothing outside the pod ever sees
+it, so the only reason to change it is a collision with a route the pod already
+has:
+
+```yaml
+plex-subnet: 10.255.0.0/30
+```
+
+It must be IPv4 and hold at least two addresses, so `/30` or wider. The first
+usable address is the pod side, the second is Plex.
 
 ## Applying a change
 

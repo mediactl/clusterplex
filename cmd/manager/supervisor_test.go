@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -61,20 +62,40 @@ func TestSupervisorReportsUnexpectedExit(t *testing.T) {
 	}
 }
 
-func TestSupervisorStartsPlexEvenWhenRedirectFails(t *testing.T) {
+func TestSupervisorStartsPlexThroughStartProcessWhenOneIsSet(t *testing.T) {
 	var logs bytes.Buffer
-	called := false
+	var got *exec.Cmd
 	sup := &Supervisor{
-		Binary:   fakePMS(t, gracefulPMS),
-		Logger:   slog.New(slog.NewTextHandler(&logs, nil)),
-		Redirect: func(context.Context) error { called = true; return errors.New("iptables: not permitted") },
+		Binary:       fakePMS(t, gracefulPMS),
+		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+		StartProcess: func(c *exec.Cmd) error { got = c; return c.Start() },
 	}
 	require.NoError(t, sup.Start(context.Background()))
 	defer func() { _ = sup.Stop(context.Background()) }()
 
-	assert.True(t, called)
+	require.NotNil(t, got, "Plex must be started through the seam, not directly")
+	assert.Equal(t, sup.Binary, got.Path)
 	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
-	assert.Contains(t, logs.String(), "not permitted")
+}
+
+// Unlike the old port redirect there is no fallback. Plex binds 32400 itself,
+// and in the pod namespace that is the proxy's port: starting it outside its
+// own namespace means an immediate "Address in use" with the reason only in
+// Plex's log.
+func TestSupervisorRefusesToStartPlexOutsideItsNetworkNamespace(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	sup := &Supervisor{
+		Binary:       fakePMS(t, "touch "+marker+"\n"+gracefulPMS),
+		Logger:       slog.Default(),
+		StartProcess: func(*exec.Cmd) error { return errors.New("operation not permitted") },
+	}
+
+	err := sup.Start(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not permitted")
+	assert.NoFileExists(t, marker, "Plex must not start in the pod namespace")
+	assert.NoError(t, sup.Stop(context.Background()), "a failed start leaves nothing to stop")
 }
 
 func TestSupervisorStopIsSafeBeforeStart(t *testing.T) {

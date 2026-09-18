@@ -29,9 +29,14 @@ const (
 	namespace = "media"
 	leaseName = "cluster-plex-litefs"
 	pmsPort   = 32400
-	proxyPort = 32499
 	grpcPort  = 50051
-	prefsFile = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml"
+	// retiredProxyPort is where the proxy used to sit, back when Plex held
+	// 32400 in the pod namespace. Nothing should listen on it any more.
+	retiredProxyPort = 32499
+	prefsFile        = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml"
+	// pidFile is how the test finds Plex's process, and through it the
+	// namespace Plex is running in.
+	pidFile = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/plexmediaserver.pid"
 	// pinnedIdentity is what the kind overlay declares.
 	pinnedIdentity = "11111111-2222-3333-4444-555555555555"
 )
@@ -180,24 +185,54 @@ func TestClusterPlexE2E(t *testing.T) {
 		return ready == 2, nil
 	})
 
-	// The leader runs Plex behind the proxy and accepts jobs.
-	waitFor(ctx, t, "Plex, proxy and worker port listening on the leader", func() (bool, error) {
+	// The leader serves 32400 in the pod namespace and accepts jobs.
+	waitFor(ctx, t, "proxy and worker port listening on the leader", func() (bool, error) {
 		tcp, err := tryExecPod(leader, "cat", "/proc/net/tcp", "/proc/net/tcp6")
 		if err != nil {
 			t.Logf("exec into %s not ready yet: %v", leader, err)
 			return false, nil
 		}
-		return listening(tcp, pmsPort) && listening(tcp, proxyPort) && listening(tcp, grpcPort), nil
+		return listening(tcp, pmsPort) && listening(tcp, grpcPort), nil
 	})
-	rules := execPod(t, leader, "iptables", "-t", "nat", "-S", "PREROUTING")
-	assert.Contains(t, rules, fmt.Sprintf("--dport %d -j REDIRECT --to-ports %d", pmsPort, proxyPort))
 
-	// Workers do not run Plex but do accept jobs.
+	// Plex runs in a network namespace of its own. Checking this matters
+	// precisely because the assertion above cannot: 32400 is listening in the
+	// pod namespace either way, and the whole point of the change is which
+	// process is holding it. See docs/adr/0003.
+	plexPID := strings.TrimSpace(execPod(t, leader, "cat", pidFile))
+	require.NotEmpty(t, plexPID, "Plex must have written its pid file")
+	plexNetNS := strings.TrimSpace(execPod(t, leader, "readlink", "/proc/"+plexPID+"/ns/net"))
+	managerNetNS := strings.TrimSpace(execPod(t, leader, "readlink", "/proc/1/ns/net"))
+	assert.NotEmpty(t, plexNetNS)
+	assert.NotEqual(t, managerNetNS, plexNetNS, "Plex must not share the pod's network namespace")
+
+	// Plex holds 32400 inside its namespace, and the proxy holds 32400 in the
+	// pod namespace. Two listeners on the same port, which is only possible
+	// because they are in different namespaces.
+	plexTCP := execPod(t, leader, "cat", "/proc/"+plexPID+"/net/tcp")
+	assert.True(t, listening(plexTCP, pmsPort), "Plex must listen on %d inside its namespace", pmsPort)
+
+	podTCP := execPod(t, leader, "cat", "/proc/net/tcp", "/proc/net/tcp6")
+	assert.False(t, listening(podTCP, retiredProxyPort),
+		"nothing should listen on the retired proxy port %d", retiredProxyPort)
+
+	// Egress: the masquerade and the default route are what let Plex reach
+	// plex.tv and the cluster's DNS. Nothing else in this suite exercises
+	// them, and they fail in ways no unit test can see. bash's /dev/tcp is
+	// used because the image deliberately carries no curl.
+	dnsIP := runCmd(t, "kubectl", "get", "svc", "kube-dns", "-n", "kube-system",
+		"-o", "jsonpath={.spec.clusterIP}")
+	out, err := tryExecPod(leader, "nsenter", "-t", plexPID, "-n", "--",
+		"bash", "-c", fmt.Sprintf("exec 3<>/dev/tcp/%s/53 && echo reachable", strings.TrimSpace(dnsIP)))
+	assert.NoError(t, err, "Plex must be able to open a connection out of its namespace")
+	assert.Contains(t, out, "reachable")
+
+	// Workers run neither Plex nor the proxy, but do accept jobs.
 	workers, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "app=plex,plex-role=worker"})
 	require.NoError(t, err)
 	for i := range workers.Items {
 		tcp := execPod(t, workers.Items[i].Name, "cat", "/proc/net/tcp", "/proc/net/tcp6")
-		assert.False(t, listening(tcp, pmsPort), "%s must not run Plex", workers.Items[i].Name)
+		assert.False(t, listening(tcp, pmsPort), "%s must not serve Plex", workers.Items[i].Name)
 		assert.True(t, listening(tcp, grpcPort), "%s must accept jobs", workers.Items[i].Name)
 	}
 
@@ -259,7 +294,8 @@ func TestClusterPlexE2E(t *testing.T) {
 }
 
 // waitForServiceEndpoint blocks until plex-main resolves to exactly pod, on the
-// proxy port. It is what a client connecting to the cluster would reach.
+// port the proxy listens on. It is what a client connecting to the cluster
+// would reach.
 func waitForServiceEndpoint(ctx context.Context, t *testing.T, cs *kubernetes.Clientset, pod string) {
 	t.Helper()
 	waitFor(ctx, t, "plex-main endpoint on "+pod, func() (bool, error) {
@@ -281,6 +317,6 @@ func waitForServiceEndpoint(ctx context.Context, t *testing.T, cs *kubernetes.Cl
 				}
 			}
 		}
-		return len(ready) == 1 && ready[0] == pod && port == proxyPort, nil
+		return len(ready) == 1 && ready[0] == pod && port == pmsPort, nil
 	})
 }

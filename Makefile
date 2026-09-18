@@ -2,6 +2,7 @@ GOBIN ?= $(shell go env GOPATH)/bin
 GOLANGCI_LINT ?= $(GOBIN)/golangci-lint-v2
 IMG ?= ghcr.io/mediactl/cluster-plex:dev
 LITEFS_TAG ?= v0.5.14
+NETNS_TEST_BIN ?= $(CURDIR)/bin/plexnet.test
 
 .PHONY: all
 all: build
@@ -42,6 +43,15 @@ build: litefs ## Build the manager and shim into bin/
 .PHONY: test
 test: litefs ## Unit tests
 	go test ./... -coverprofile cover.out
+
+.PHONY: test-netns
+test-netns: litefs ## pkg/plexnet against real network namespaces
+	# Provisioning a namespace needs CAP_SYS_ADMIN. unshare gives it over the
+	# namespaces it creates without needing actual root, and keeps the test's
+	# veth pairs and nftables rules off the developer's own network.
+	go test -tags netns -c -o $(NETNS_TEST_BIN) ./pkg/plexnet
+	unshare --user --map-root-user --net $(NETNS_TEST_BIN) -test.v
+	rm -f $(NETNS_TEST_BIN)
 
 ##@ Images and clusters
 

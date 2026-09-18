@@ -15,8 +15,10 @@ Go module `github.com/mediactl/clusterplex`. One image, two binaries.
 - `docs/adr/0001-litefs-over-mvsqlite.md` — why LiteFS and not a multi-writer
   SQLite. Plex cannot run as several coordinated instances; that constraint
   shapes everything else.
-- `docs/adr/0002-proxy-plex-through-port-redirect.md` — why a TCP proxy plus a
-  nat REDIRECT rather than an HTTP reverse proxy.
+- `docs/adr/0003-isolate-plex-in-a-network-namespace.md` — why Plex runs in its
+  own network namespace, and why the proxy can therefore hold 32400 itself.
+  Supersedes `0002`, which is kept for why the proxy is L4 and for the 32401
+  discovery.
 - `docs/configuration.md` — the config system and how Plex preferences are
   managed.
 
@@ -29,7 +31,7 @@ Go module `github.com/mediactl/clusterplex`. One image, two binaries.
 | `pkg/litefsk8s/` | LiteFS leader election on a Kubernetes Lease |
 | `pkg/remoteexec/` | Running helper binaries locally or on a worker pod |
 | `pkg/plexprefs/` | Merging declared settings into Plex's `Preferences.xml` |
-| `pkg/proxy/`, `pkg/portredirect/` | The L4 proxy in front of Plex and the rule that steers traffic into it |
+| `pkg/proxy/`, `pkg/plexnet/` | The L4 proxy in front of Plex, and the network namespace Plex is confined to |
 | `third_party/litefs/` | Upstream LiteFS plus our patches. **Materialised, never committed** |
 
 ## Invariants
@@ -64,10 +66,20 @@ hermetic.
 
 - **Plex binds 32400 *and* 32401.** It exits with "Error binding acceptor:
   Address in use" if either is taken, within a tenth of a second and with the
-  reason only in its own log. The proxy therefore defaults to 32499.
-- **Plex has no setting for its listen address or port.** Getting traffic to go
-  through anything else needs a nat REDIRECT, which is why the pod needs
-  `iptables`.
+  reason only in its own log. This no longer collides with the proxy, because
+  Plex binds them inside its own namespace — but it is exactly why provisioning
+  that namespace is fatal on failure rather than best effort. Plex started in
+  the pod namespace lands on the proxy's port and dies this way.
+- **Plex has no setting for its listen address or port.** It is confined with a
+  network namespace rather than steered with a rule; see `pkg/plexnet` and ADR
+  0003. Nothing shells out for it and the image carries no `iptables`.
+- **Never set `Pdeathsig` on a process started in the namespace.** It fires when
+  the *forking thread* exits, and that thread is a temporary one the Go runtime
+  retires whenever it likes — so Plex would be killed at random. `pkg/plexnet`
+  rejects it rather than letting it be set.
+- **Plex advertises `169.254.1.2` to plex.tv,** because that is the only address
+  it can see. Use `customConnections` for an address clients can reach; see
+  `docs/configuration.md`.
 - **`ProcessedMachineIdentifier` is what clients see as the server ID.** Plex
   derives it from `MachineIdentifier` with a salt you cannot reproduce, and
   **never recomputes it**. Change the UUID without deleting the derived value

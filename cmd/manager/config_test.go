@@ -31,7 +31,7 @@ func TestConfigDefaults(t *testing.T) {
 	assert.Equal(t, "/usr/lib/plexmediaserver/Plex Media Server", c.PMSBinary)
 	assert.Equal(t, "/usr/lib/plexmediaserver", c.BinDir)
 	assert.Equal(t, 32400, c.PMSPort)
-	assert.Equal(t, 32499, c.ProxyPort)
+	assert.Equal(t, "169.254.1.0/30", c.PlexSubnet.String())
 	assert.Equal(t, 50051, c.WorkerPort)
 	assert.Equal(t, 20202, c.LiteFSPort)
 	assert.Equal(t, "/var/run/clusterplex.sock", c.Socket)
@@ -47,19 +47,19 @@ func TestConfigDefaults(t *testing.T) {
 
 func TestConfigKeepsWorkingWithTheExistingEnvironmentVariableNames(t *testing.T) {
 	podIdentity(t)
-	t.Setenv("CLUSTERPLEX_PROXY_PORT", "1234")
+	t.Setenv("CLUSTERPLEX_WORKER_PORT", "1234")
 	t.Setenv("CLUSTERPLEX_PMS_BINARY", "/opt/pms")
 
 	c, err := loadConfig(nil)
 	require.NoError(t, err)
-	assert.Equal(t, 1234, c.ProxyPort)
+	assert.Equal(t, 1234, c.WorkerPort)
 	assert.Equal(t, "/opt/pms", c.PMSBinary)
 }
 
 func TestConfigReadsAYAMLFile(t *testing.T) {
 	podIdentity(t)
 	path := writeConfig(t, `
-proxy-port: 4321
+worker-port: 4321
 plex-dir: /srv/plex
 plex:
   preferences:
@@ -71,21 +71,21 @@ plex:
 	c, err := loadConfig([]string{"--config", path})
 	require.NoError(t, err)
 
-	assert.Equal(t, 4321, c.ProxyPort)
+	assert.Equal(t, 4321, c.WorkerPort)
 	assert.Equal(t, "/srv/plex", c.PlexDir)
 	assert.Equal(t, map[string]string{"FriendlyName": "Cluster Plex", "LogVerbose": "1"}, c.Preferences)
 }
 
 func TestConfigPrecedenceIsFlagThenEnvThenFile(t *testing.T) {
 	podIdentity(t)
-	path := writeConfig(t, "proxy-port: 1111\nworker-port: 2222\nlitefs-port: 3333\n")
-	t.Setenv("CLUSTERPLEX_PROXY_PORT", "4444")
+	path := writeConfig(t, "probe-port: 1111\nworker-port: 2222\nlitefs-port: 3333\n")
+	t.Setenv("CLUSTERPLEX_PROBE_PORT", "4444")
 	t.Setenv("CLUSTERPLEX_WORKER_PORT", "5555")
 
-	c, err := loadConfig([]string{"--config", path, "--proxy-port", "6666"})
+	c, err := loadConfig([]string{"--config", path, "--probe-port", "6666"})
 	require.NoError(t, err)
 
-	assert.Equal(t, 6666, c.ProxyPort, "flag wins")
+	assert.Equal(t, 6666, c.ProbePort, "flag wins")
 	assert.Equal(t, 5555, c.WorkerPort, "env beats file")
 	assert.Equal(t, 3333, c.LiteFSPort, "file beats default")
 }
@@ -164,10 +164,10 @@ func TestConfigRejectsAMissingConfigFile(t *testing.T) {
 
 func TestConfigRejectsMalformedPort(t *testing.T) {
 	podIdentity(t)
-	t.Setenv("CLUSTERPLEX_PROXY_PORT", "abc")
+	t.Setenv("CLUSTERPLEX_WORKER_PORT", "abc")
 	_, err := loadConfig(nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "proxy-port")
+	assert.Contains(t, err.Error(), "worker-port")
 }
 
 func TestConfigRequiresPodIdentity(t *testing.T) {
@@ -234,4 +234,20 @@ func TestAdoptClusterIDIsOffByDefaultBecauseItDiscardsData(t *testing.T) {
 	c, err = loadConfig([]string{"--litefs-adopt-cluster-id"})
 	require.NoError(t, err)
 	assert.True(t, c.AdoptClusterID)
+}
+
+// The link is link-local and invisible outside the pod, but it still has to
+// not collide with anything the pod already routes, so it stays configurable.
+func TestPlexSubnetIsConfigurable(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig([]string{"--plex-subnet", "10.255.0.0/30"})
+	require.NoError(t, err)
+	assert.Equal(t, "10.255.0.0/30", c.PlexSubnet.String())
+}
+
+func TestConfigRejectsAPlexSubnetThatIsNotAPrefix(t *testing.T) {
+	podIdentity(t)
+	_, err := loadConfig([]string{"--plex-subnet", "169.254.1.1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plex-subnet")
 }

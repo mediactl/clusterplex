@@ -32,14 +32,14 @@ type Supervisor struct {
 	PIDFile string
 	// Grace is how long Plex gets after SIGTERM before it is killed.
 	Grace time.Duration
-	// Redirect, when set, runs before Plex starts. A failure is logged, not
-	// fatal: the Service still reaches the proxy port directly.
-	Redirect func(ctx context.Context) error
+	// StartProcess, when set, starts Plex in place of cmd.Start(), so it can
+	// be launched inside its own network namespace.
+	StartProcess func(*exec.Cmd) error
 	// Preferences, when set, writes Plex's Preferences.xml before each start.
 	// Plex reads that file once at startup, so it has to run first. A failure
-	// is fatal, unlike Redirect: there is no fallback for settings that
-	// silently fail to apply, and starting Plex anyway would run it with a
-	// configuration that differs from the declared one.
+	// is fatal: there is no fallback for settings that silently fail to apply,
+	// and starting Plex anyway would run it with a configuration that differs
+	// from the declared one.
 	Preferences func(ctx context.Context) error
 	// Proxy, when set, starts before Plex and stops after it.
 	Proxy *proxy.TCP
@@ -59,12 +59,6 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	defer s.mu.Unlock()
 	if s.cmd != nil {
 		return errors.New("plex media server is already running")
-	}
-
-	if s.Redirect != nil {
-		if err := s.Redirect(ctx); err != nil {
-			s.Logger.Error("port redirect failed; Plex is reachable only through the proxy port", "error", err)
-		}
 	}
 
 	pctx, cancel := context.WithCancel(ctx)
@@ -92,7 +86,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	cmd.Stdout = &lineLogger{log: s.Logger, source: "pms-stdout"}
 	cmd.Stderr = &lineLogger{log: s.Logger, source: "pms-stderr"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	if err := s.startProcess(cmd); err != nil {
 		cancel()
 		if s.Proxy != nil {
 			s.Proxy.Wait()
@@ -103,6 +97,18 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.Logger.Info("Plex Media Server started", "pid", cmd.Process.Pid)
 	go s.wait(cmd)
 	return nil
+}
+
+// startProcess launches Plex, through StartProcess when one is set. There is
+// deliberately no fallback if that fails: Plex binds 32400 itself, which in
+// the pod namespace belongs to the proxy, so starting it in the wrong
+// namespace means an immediate "Address in use" with the reason recorded only
+// in Plex's own log.
+func (s *Supervisor) startProcess(cmd *exec.Cmd) error {
+	if s.StartProcess != nil {
+		return s.StartProcess(cmd)
+	}
+	return cmd.Start()
 }
 
 func (s *Supervisor) removeStalePIDFile() {

@@ -27,8 +27,8 @@ spec:
           image: {{ include "cluster-plex.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
-            # FUSE needs /dev/fuse and CAP_SYS_ADMIN; the port redirect in
-            # front of Plex needs CAP_NET_ADMIN.
+            # FUSE needs /dev/fuse and CAP_SYS_ADMIN; Plex's network namespace
+            # needs CAP_SYS_ADMIN to create and CAP_NET_ADMIN to wire up.
             privileged: true
           env:
             - name: POD_NAME
@@ -44,10 +44,11 @@ spec:
             - name: CLUSTERPLEX_WORKERS_SERVICE
               value: {{ .Release.Name }}-workers
           ports:
+            # The manager's proxy holds this port in the pod namespace and
+            # forwards to Plex, which binds it inside its own namespace. There
+            # is no second port: the proxy no longer needs one (ADR-0003).
             - name: pms
               containerPort: 32400
-            - name: proxy
-              containerPort: 32499
             - name: grpc
               containerPort: 50051
             - name: litefs
