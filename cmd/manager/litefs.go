@@ -11,6 +11,8 @@ import (
 	"github.com/superfly/litefs"
 	"github.com/superfly/litefs/fuse"
 	"github.com/superfly/litefs/http"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func (s *Manager) startLiteFS(ctx context.Context) error {
@@ -66,6 +68,9 @@ func (s *Manager) monitorPrimaryStatus(ctx context.Context, store *litefs.Store)
 			if isPrimary && !s.isLeader {
 				// Transition to Leader
 				s.Logger.Info("LiteFS became primary. Starting Plex Media Server.")
+				if err := s.updatePodRole(ctx, "leader"); err != nil {
+					s.Logger.Error("Failed to update pod role label", "error", err)
+				}
 				s.Metrics.LeaderStatus.Set(1)
 				s.isLeader = true
 				s.isStarting = false
@@ -87,10 +92,19 @@ func (s *Manager) monitorPrimaryStatus(ctx context.Context, store *litefs.Store)
 			} else if !isPrimary && s.isStarting {
 			    // Mark as ready worker
 			    s.Logger.Info("LiteFS node running as replica.")
+				if err := s.updatePodRole(ctx, "worker"); err != nil {
+					s.Logger.Error("Failed to update pod role label", "error", err)
+				}
 			    s.isStarting = false
 			    s.isReady = true
 			}
 			s.mu.Unlock()
 		}
 	}
+}
+
+func (s *Manager) updatePodRole(ctx context.Context, role string) error {
+	payload := []byte(fmt.Sprintf(`{"metadata":{"labels":{"plex-role":"%s"}}}`, role))
+	_, err := s.K8sClient.CoreV1().Pods(s.Namespace).Patch(ctx, s.PodName, types.StrategicMergePatchType, payload, metav1.PatchOptions{})
+	return err
 }
