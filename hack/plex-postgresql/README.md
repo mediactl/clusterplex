@@ -230,57 +230,79 @@ be fixed, because that is the order they appear if anyone repeats this.
 With those in place Plex starts, answers `/identity` with a real
 MediaContainer, runs its plug-ins and holds ~35 PostgreSQL connections.
 
-### Still open: Plex dies a few seconds after it starts serving
+### Still open: Plex cannot read plex.tv's answer
 
 Plex reaches the point of answering requests -- `/identity` returns a real
-MediaContainer, `/servers` lists the server, plug-ins are up, ~35 PostgreSQL
-connections are live -- and then throws, uncaught, from a thread that was
-handling a plug-in message. It has appeared as
+MediaContainer, `/servers` lists the server, the plug-ins are up, ~35
+PostgreSQL connections are live -- and then throws, uncaught, from the
+HttpClient thread, moments after a 200 from `plex.tv/api/v2/features`.
 
-- `std::out_of_range: basic_string`, on two threads at once, each just after a
-  200 from the server's own system plug-in on loopback;
-- `std::domain_error: Invalid uuid length`, on the HttpClient thread; and
-- `BadRequestException: HTTP status code 400`, after about seven minutes.
+The chain, end to end:
 
-They look like one defect producing different symptoms depending on which
-string is wrong. The same image without `LD_PRELOAD` runs for hours with every
-plug-in up, so it is the shim.
+1. The server is unclaimed, so Plex asks for features with no token:
+   `GET https://plex.tv/api/v2/features?X-Plex-Token=`.
+2. plex.tv answers 200 with about 5KB of well-formed UTF-8 XML, every
+   `uuid="..."` attribute a proper 36-character UUID. Fetched by hand to be
+   sure; there is nothing wrong with the response.
+3. Plex converts that body through `boost::locale`, which with the shim
+   loaded ends up asking for the **ASCII** charset.
+4. Boost's simple backend refuses ASCII outright, and redirecting it to UTF-8
+   yields something whose uuid attributes no longer parse.
 
-**Ruled out, with the evidence, so nobody repeats them:**
+That single mechanism accounts for every symptom seen, which is why they
+looked unrelated:
 
-- *plex.tv.* The egress filter was verifiably installed 52 seconds before Plex
-  started and it still died. Pointing the names elsewhere is worse than
-  useless: at loopback Plex reaches its own HTTP server and dies on the 400,
-  and at an unroutable address it dies parsing what comes of the timeout.
-- *SQL translation.* `PLEX_PG_VALIDATE_OUTPUT=all` reports no mismatch, and
-  `plex_pg_fallbacks.log` is empty -- nothing fell back to SQLite.
-- *Value lengths.* Tracing every `sqlite3_value_text` beside every
-  `sqlite3_value_bytes` shows them agreeing on the accounts row the crash
-  follows: `copied=13 len=13` for `'Administrator'`, `2`/`2` for the language
-  columns.
-- *The fake-value API.* `PLEX_PG_DISABLE_COLUMN_VALUE=1` does not help, though
-  the phase ring is full of `column_value`/`value_type`/`value_int64`.
-- *The data itself.* `plugins`, `accounts` and `devices` all hold sane values;
-  the identifiers are well-formed UUIDs of the right length.
-- *Everything in the list above this section*, each of which was a real defect
-  and none of which was this one.
+| plex.tv | what Plex does | how it dies |
+| --- | --- | --- |
+| reachable | converts the body | `std::domain_error: Invalid uuid length` |
+| dropped by the egress filter | converts what came of the timeout | `std::out_of_range: basic_string` |
+| answered by Plex itself (loopback) | **no body to convert** | survives; dies after ~7 min on the 400 |
+| reachable, no charset redirect | refuses the charset | `invalid_charset_error: ... ASCII` |
 
-`PLEX_PG_DISABLE_SHIM_INIT=1` is **not** a useful control: the shim still
-interposes `sqlite3_open` while declining to redirect, so Plex cannot reach any
-database at all and dies of that instead.
+The bottom row is what the ASCII-to-UTF-8 redirect above was added for. It
+moves the failure rather than fixing it, which means the redirect is not the
+answer and the question is upstream of it: **why does Plex ask boost for ASCII
+only when the shim is loaded?** The same image without `LD_PRELOAD` never
+reaches `create_simple_converter` at all.
 
-**Where to look next.** The SQL and the values are right, so the next suspect
-is the rest of the interposed surface -- `syscall`, `clone`, `fork`, `prctl`,
-`setsid`, `daemon`, `pthread_setname_np`, `sigaction`, `setsockopt`,
-`__cxa_throw`. Two of that set have already turned out to be broken (`vfork`
-and `boost::locale::util::create_simple_converter`), both by getting an ABI
-wrong, which makes the rest worth auditing the same way: check each declared
-signature against the real one, and remember that anything returning a class
-type takes a hidden result pointer in RDI.
+The likeliest explanation, untested: `boost::locale` prefers its ICU backend
+and falls back to the simple one when ICU is not registered. Registration
+happens in `libboost_locale.so`'s static initialisers, and `LD_PRELOAD`
+changes initialisation order. If the shim causes boost::locale to initialise
+before ICU has registered, every later conversion goes to the simple backend,
+which is the only backend that cannot do ASCII. Worth checking before anything
+else: instrument or breakpoint the backend selection, with and without the
+shim, and compare.
 
-A version script that exports only the symbols the shim means to interpose
-would also be worth having, and would let the set be bisected by rebuilding
-rather than by reasoning.
+**Ruled out, with the evidence, so nobody repeats them:** the SQL translation
+(`PLEX_PG_VALIDATE_OUTPUT=all` reports no mismatch and the fallback log is
+empty); the value lengths (every `value_text` traced beside its `value_bytes`,
+agreeing exactly on the row the crash follows); the fake-value API
+(`PLEX_PG_DISABLE_COLUMN_VALUE=1` changes nothing); the data (`plugins`,
+`accounts` and `devices` all hold well-formed values); stale state on the
+volume (a wiped `Library` and a dropped schema behave identically); and the
+preferences this architecture forces, which the working configuration has
+too. `PLEX_PG_DISABLE_SHIM_INIT=1` is **not** a valid control: the shim still
+interposes `sqlite3_open` while declining to redirect, so Plex cannot reach
+any database and dies of that instead.
+
+### The configuration that does work
+
+Plex comes up and serves -- `1/1`, no crashes, PostgreSQL behind it -- with
+plex.tv resolved to loopback, so there is never a body to convert:
+
+```sh
+kubectl -n media patch statefulset cp --type=json -p \
+  '[{"op":"add","path":"/spec/template/spec/hostAliases","value":
+     [{"ip":"127.0.0.1","hostnames":["plex.tv","clients.plex.tv","my.plexapp.com"]}]}]'
+```
+
+It is a diagnostic, not a deployment. Plex is then talking to its own HTTP
+server, which answers 400, and after about seven minutes one of those 400s
+kills it with `BadRequestException`. Nothing can claim the server or reach it
+remotely either. It is written down because it is the only configuration in
+which the rest of this can be exercised -- and because it is what proves the
+shim itself now carries Plex through migrations, plug-in startup and serving.
 
 ## Races fixed in the fork
 
