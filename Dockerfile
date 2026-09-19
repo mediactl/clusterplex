@@ -100,10 +100,17 @@ RUN mkdir -p rootfs/var/lib/plexmediaserver
 
 # Stage 3: Final image
 FROM --platform=${BUILDPLATFORM} debian:bookworm-slim
-# Only certificates. No FUSE, because the library is in PostgreSQL rather than
-# a replicated file, and no iptables, because the manager builds Plex's
-# namespace, veth pair and masquerade over netlink itself (ADR-0003).
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# No FUSE, because the library is in PostgreSQL rather than a replicated file,
+# and no iptables, because the manager builds Plex's namespace, veth pair and
+# masquerade over netlink itself (ADR-0003).
+#
+# The rest are what upstream's own runtime installs, because we run upstream's
+# initialisation script rather than reimplementing it: bash for the script,
+# psql and sqlite3 for the databases it prepares, python3 for the helpers it
+# may reach for.
+RUN apt-get update && apt-get install -y \
+      ca-certificates bash postgresql-client sqlite3 python3 \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG VENDOR
 
@@ -124,10 +131,19 @@ COPY --from=shim /libs/subreaper /usr/local/bin/subreaper
 # it runs migrations against a database that is meant to be there already, so
 # without this it dies partway through insisting its own tables do not exist.
 #
-# Taken from our vendored copy rather than the upstream checkout, so that the
-# files the manager loads are the ones pkg/plexboot's tests check — above all
-# that they all use the same schema name the shim has compiled in.
+# Taken from our vendored copy rather than the upstream checkout, so a change
+# to them is reviewable rather than arriving with a version bump.
 COPY hack/plex-postgresql/schema/ /usr/local/lib/plex-postgresql/
+
+# Upstream's own initialisation, run verbatim rather than reimplemented. It
+# prepares the schema, the shadow databases and the directories Plex expects,
+# and it is an s6 init script — it sets things up and exits without starting
+# Plex, which is exactly the half we want.
+#
+# migrate_lib.sh is deliberately NOT copied. The script offers to migrate a
+# SQLite library it finds into PostgreSQL, and one of the places it looks is
+# our own live database. Without the library that path cannot run.
+COPY hack/plex-postgresql/docker-entrypoint.sh /usr/local/lib/plex-postgresql/
 
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /
@@ -141,6 +157,11 @@ COPY --from=extractor /plex-build/rootfs /
 RUN ln -sf /usr/lib/plexmediaserver/lib/libc.so \
       "/usr/local/lib/plex-postgresql/libc.musl-$(uname -m).so.1"
 COPY --from=shim /libs/noop /usr/lib/plexmediaserver/CrashUploader
+
+# Upstream's script addresses Plex's state as /config, the way the images it
+# was written for do. Ours lives under /var/lib/plexmediaserver, so it is
+# reachable by both names and the script needs no edits.
+RUN ln -sfn /var/lib/plexmediaserver /config
 
 # Set environment variables commonly required by Plex
 ENV DEBIAN_FRONTEND="noninteractive" \

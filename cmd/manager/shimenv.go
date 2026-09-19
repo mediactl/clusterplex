@@ -40,19 +40,31 @@ func shimEnv(base []string, cfg Config) []string {
 		"LANG=C.utf8",
 		"LC_ALL=C.utf8",
 		"LC_CTYPE=C.utf8",
-		"PLEX_PG_HOST="+cfg.Postgres.Host,
-		"PLEX_PG_PORT="+strconv.Itoa(cfg.Postgres.Port),
-		"PLEX_PG_DATABASE="+cfg.Postgres.Database,
-		"PLEX_PG_USER="+cfg.Postgres.User,
-		"PLEX_PG_PASSWORD="+cfg.Postgres.Password,
+	)
+	return append(env, pgEnv(cfg)...)
+}
+
+// pgEnv returns only the database settings, for things that are not Plex.
+//
+// The preload and library path above belong to Plex alone: they put a
+// musl-linked libgcc ahead of the system one, which is right for Plex and
+// fatal for an ordinary glibc program. Handing them to the initialisation
+// script segfaults bash before it runs a line.
+func pgEnv(cfg Config) []string {
+	env := []string{
+		"PLEX_PG_HOST=" + cfg.Postgres.Host,
+		"PLEX_PG_PORT=" + strconv.Itoa(cfg.Postgres.Port),
+		"PLEX_PG_DATABASE=" + cfg.Postgres.Database,
+		"PLEX_PG_USER=" + cfg.Postgres.User,
+		"PLEX_PG_PASSWORD=" + cfg.Postgres.Password,
 		// Not optional. The shim interpolates the schema into
 		// "SET search_path TO <schema>, public" whatever it holds, so an empty
 		// one is a syntax error on every connection rather than a fall back to
 		// the default search path. Config validation rejects it.
-		"PLEX_PG_SCHEMA="+cfg.Postgres.Schema,
-		"PLEX_PG_POOL_SIZE="+strconv.Itoa(cfg.Postgres.PoolSize),
-		"PLEX_PG_POOL_MAX="+strconv.Itoa(cfg.Postgres.PoolMax),
-	)
+		"PLEX_PG_SCHEMA=" + cfg.Postgres.Schema,
+		"PLEX_PG_POOL_SIZE=" + strconv.Itoa(cfg.Postgres.PoolSize),
+		"PLEX_PG_POOL_MAX=" + strconv.Itoa(cfg.Postgres.PoolMax),
+	}
 	return env
 }
 

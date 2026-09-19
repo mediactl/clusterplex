@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/mediactl/clusterplex/pkg/plexboot"
 )
 
 // Pool adapts a pgx connection pool to Querier. It exists so the rest of the
@@ -89,36 +86,4 @@ func (p *Pool) Strings(ctx context.Context, sql string, args ...any) ([]string, 
 		out = append(out, s)
 	}
 	return out, rows.Err()
-}
-
-// Session runs fn against a single connection held for its duration.
-//
-// The schema is a pg_dump, which opens by setting search_path and several
-// timeouts and then depends on them for everything that follows. Run through
-// the pool, each statement can land on a different connection and lose all of
-// that, which surfaces as "no schema has been selected to create in".
-func (p *Pool) Session(ctx context.Context, fn func(plexboot.Session) error) error {
-	conn, err := p.pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	return fn(&session{conn: conn})
-}
-
-// session is one held connection.
-type session struct{ conn *pgxpool.Conn }
-
-func (s *session) Exec(ctx context.Context, sql string, args ...any) error {
-	_, err := s.conn.Exec(ctx, sql, args...)
-	return err
-}
-
-// CopyFrom streams a dump's COPY block over the copy protocol, because its
-// rows are tab-separated values rather than SQL.
-func (s *session) CopyFrom(ctx context.Context, sql, data string) error {
-	if _, err := s.conn.Conn().PgConn().CopyFrom(ctx, strings.NewReader(data), sql); err != nil {
-		return fmt.Errorf("copy into %s: %w", sql, err)
-	}
-	return nil
 }

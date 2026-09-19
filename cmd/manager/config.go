@@ -81,12 +81,9 @@ type Config struct {
 	// SubreaperBinary wraps Plex so its re-exec is not mistaken for an exit.
 	// Empty starts Plex directly. See Supervisor.Subreaper.
 	SubreaperBinary string
-	// SchemaDir holds the SQL the bootstrap loads: the library schema for
-	// PostgreSQL and the SQLite schema the shadow databases are built from.
-	SchemaDir string
-	// SQLiteBinary builds the shadow databases. It must be Plex's own build,
-	// which carries the collations and virtual tables a stock one lacks.
-	SQLiteBinary string
+	// InitScript prepares the databases before Plex starts. It is upstream's
+	// own, run rather than reimplemented; see cmd/manager/bootstrap.go.
+	InitScript string
 	// Socket is the unix socket the shim dials.
 	Socket string
 	// LeaseName is the Kubernetes Lease used for leader election.
@@ -142,8 +139,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
-	fs.String("schema-dir", SchemaDir, "directory holding the SQL the library and shadow databases are built from")
-	fs.String("sqlite-binary", PlexSQLite, "Plex's own SQLite, used to build the shadow databases")
+	fs.String("init-script", InitScript, "upstream's initialisation script, run before Plex starts")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
 	return fs
@@ -202,8 +198,7 @@ func loadConfig(args []string) (Config, error) {
 		ExternalURL:     strings.TrimSpace(v.GetString("plex-external-url")),
 		ShimLibrary:     v.GetString("shim-library"),
 		SubreaperBinary: v.GetString("plex-subreaper"),
-		SchemaDir:       v.GetString("schema-dir"),
-		SQLiteBinary:    v.GetString("sqlite-binary"),
+		InitScript:      v.GetString("init-script"),
 		Postgres: plexdb.Config{
 			Host:     v.GetString("postgres-host"),
 			Port:     port("postgres-port"),
