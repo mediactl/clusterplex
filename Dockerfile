@@ -20,38 +20,35 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/m
 # 3.15 rather than something current. Upstream publishes no Linux binaries, so
 # there is nothing to download instead.
 FROM --platform=${BUILDPLATFORM} alpine:3.15 AS shim
-ARG PLEX_PG_REF=v1.2.0
+# Our fork, not cgnl/plex-postgresql. Upstream's shim races with itself as soon
+# as Plex uses it from more than one thread, which it does on every boot, and
+# the maintainer has not answered a pull request since April 2026. Fixes go to
+# the fork and come back here as a tag; see hack/plex-postgresql/README.md.
+ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
+ARG PLEX_PG_REF=v1.3.17-clusterplex.8
 RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
 WORKDIR /build
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_TARGET_DIR=/build/target \
     PATH="/usr/local/cargo/bin:${PATH}"
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable --profile minimal
+# Downloaded and run in two steps, not piped: in a pipeline the exit status is
+# the shell's, so a failed download used to install nothing and still succeed,
+# surfacing four layers later as "cargo: not found". The version check makes
+# the failure land here instead.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
+    && sh /tmp/rustup.sh -y --default-toolchain stable --profile minimal \
+    && rm -f /tmp/rustup.sh \
+    && cargo --version
 # The build script addresses /build/rust by absolute path, so the checkout has
 # to land at /build itself rather than in a subdirectory.
 RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
-    https://github.com/cgnl/plex-postgresql /src \
+    ${PLEX_PG_REPO} /src \
     && cp -a /src/. /build/ && rm -rf /src
-# Our changes to the shim, applied in filename order. See
-# hack/plex-postgresql/README.md. A patch that no longer applies fails the
-# build rather than being skipped, so a version bump cannot quietly drop one.
-COPY hack/plex-postgresql/ /patches/
-RUN set -e; for p in /patches/*.patch; do \
-      [ -e "$p" ] || continue; \
-      echo "applying $(basename "$p")"; \
-      git apply --verbose -p1 "$p"; \
-    done
 # --with-noop also builds a static no-op binary. It replaces Plex's
 # CrashUploader below: a shell script would not do, because sh inherits
 # LD_PRELOAD and would load the interposer's constructor.
 RUN sh scripts/docker-build-shim.sh --with-noop
-# The subreaper is ours: only some releases of the shim ship one, and the
-# manager depends on it in all of them. Static, so it needs nothing from the
-# final image. See hack/plex-postgresql/subreaper.c.
-COPY hack/plex-postgresql/subreaper.c /tmp/subreaper.c
-RUN gcc -static -O2 -Wall -o /libs/subreaper /tmp/subreaper.c
 
 # Stage 2: Extract Plex and set up the filesystem
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
@@ -138,12 +135,18 @@ COPY hack/plex-postgresql/schema/ /usr/local/lib/plex-postgresql/
 # Upstream's own initialisation, run verbatim rather than reimplemented. It
 # prepares the schema, the shadow databases and the directories Plex expects,
 # and it is an s6 init script — it sets things up and exits without starting
-# Plex, which is exactly the half we want.
+# Plex, which is exactly the half we want. seed_shadow_table_from_pg.py is the
+# helper it calls to copy `preferences` into the shadow.
+#
+# This is the standalone init, the one upstream's own non-linuxserver image
+# runs, which is the flavour ours matches.
 #
 # migrate_lib.sh is deliberately NOT copied. The script offers to migrate a
 # SQLite library it finds into PostgreSQL, and one of the places it looks is
-# our own live database. Without the library that path cannot run.
-COPY hack/plex-postgresql/docker-entrypoint.sh /usr/local/lib/plex-postgresql/
+# our own live database. The init guards every call to it with a file test, so
+# leaving it out disables that path rather than breaking the script.
+COPY hack/plex-postgresql/standalone-entrypoint.sh /usr/local/lib/plex-postgresql/
+COPY hack/plex-postgresql/seed_shadow_table_from_pg.py /usr/local/lib/plex-postgresql/
 
 # Copy the extracted Plex root filesystem over
 COPY --from=extractor /plex-build/rootfs /
@@ -157,6 +160,20 @@ COPY --from=extractor /plex-build/rootfs /
 RUN ln -sf /usr/lib/plexmediaserver/lib/libc.so \
       "/usr/local/lib/plex-postgresql/libc.musl-$(uname -m).so.1"
 COPY --from=shim /libs/noop /usr/lib/plexmediaserver/CrashUploader
+
+# Plex drops privilege to this user when it spawns a plug-in, and the plug-in
+# manager thread dies in the middle of the spawn if the lookup fails: the
+# process appears, nothing is logged after "Plugin: setting environment
+# variable: 'PYTHONPATH=...'", no plug-in ever reports its port and the server
+# answers 503 for ever.
+#
+# plexinc/pms-docker creates the user; the .deb creates it in a postinst that
+# `dpkg-deb -x` does not run, so extracting the package leaves no trace of it.
+# Same uid and gid as the upstream image, so a volume written by one is
+# readable by the other.
+RUN groupadd --system --gid 1000 plex \
+    && useradd --system --uid 1000 --gid plex --home-dir /config \
+      --shell /bin/false plex
 
 # Upstream's script addresses Plex's state as /config, the way the images it
 # was written for do. Ours lives under /var/lib/plexmediaserver, so it is

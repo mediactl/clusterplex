@@ -18,7 +18,7 @@ import (
 //
 // It is written as an s6 init script, so it sets up and exits without starting
 // Plex, which is the half we want.
-const InitScript = "/usr/local/lib/plex-postgresql/docker-entrypoint.sh"
+const InitScript = "/usr/local/lib/plex-postgresql/standalone-entrypoint.sh"
 
 // prepareDatabases runs that script and waits for it.
 //

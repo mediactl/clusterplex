@@ -1,48 +1,136 @@
-# Patches to the PostgreSQL shim
+# The PostgreSQL shim
 
-Upstream is `cgnl/plex-postgresql`, pinned in the Dockerfile. The image builds
-the shim from source, so we carry local changes as patches here rather than
-forking, the way `hack/litefs` used to. They are applied in filename order and
-the build fails if one does not apply, so a version bump cannot silently drop
-a fix.
-
-Anything here is a candidate to send upstream. Bear in mind that the last
+The image builds the shim from source, from **our fork**,
+[`mediactl/plex-postgresql`](https://github.com/mediactl/plex-postgresql),
+pinned in the Dockerfile by tag. Upstream is `cgnl/plex-postgresql`; the last
 maintainer commit was 1 April 2026 and open pull requests have gone unanswered,
-so assume we carry these ourselves.
+so assume we carry everything ourselves.
 
-## Which upstream release to build
+Fixes go to the fork with a test, and come back here as a tag. There is no
+patch stack any more — it was replaced by the fork once the fixes stopped being
+one-liners, and `0002` below is in the fork instead, in a better form.
 
-`v1.2.0`, pinned in the Dockerfile, because it is the last one that works.
+This directory holds what the image needs beside the shim — the vendored schema
+dumps and upstream's init script — and the notes below, which are the record of
+what has been established about the shim's behaviour. Read them before spending
+a day on something already ruled out.
 
-Running the published images against a fresh `postgres:15-alpine`, one per
-release: `v1.2.0` comes up healthy and answers `/identity` with a real
-MediaContainer. `v1.3.0` — the very next release — crashlooped 272 times in
-five minutes, and `v1.3.17` does the same. So the regression landed in
-`v1.3.0`.
+To work on the shim: clone the fork, change it, `cargo test --lib` in
+`rust/plex-pg-core`, tag, and bump `PLEX_PG_REF`. `PLEX_PG_REPO` is an
+`ARG` too, so a branch can be tried without editing the Dockerfile.
 
-Two things that are *not* the cause, both checked rather than assumed. Plex
-version: `v1.3.0` ships the same 1.43.0 its own dump was taken from and still
-fails. And the declared-type use-after-free that 0002 fixes is present in
-`v1.2.0` too — it is long-standing and latent, not the regression.
+## Which upstream release to build, and why not an older one
 
-Moving back a release means a few differences to carry:
+`v1.3.17`, pinned in the Dockerfile. It is the first published release whose
+image actually loads the shim.
 
-- `v1.2.0` ships no `seed_data.sql`, so the loader skips a seed file this
-  release does not have rather than treating it as fatal.
-- It does not build a `subreaper`, which the manager depends on, so we build
-  our own from `subreaper.c` here.
-- Its schema files differ from `v1.3.17`'s, so the vendored copy under
-  `schema/` is `v1.2.0`'s.
+`Dockerfile.standalone` injects the shim by rewriting the s6 run script, and
+until `v1.3.17` its patterns were written for the **linuxserver** image — user
+`abc`, binary path in double quotes. `plexinc/pms-docker` ends its run script
+with
 
-**Our image still crashes on `v1.2.0` while upstream's does not.** That is a
-separate problem and it is ours: built with the patches removed entirely, so
-that the shim is byte-identical to upstream's, our image still fails. The
-difference is in how we run Plex, not in the shim. What remains untested
-between the two: the base image and how Plex is packaged (they build on
-`plexinc/pms-docker`, we extract the `.deb` onto `debian:bookworm-slim`), the
-network namespace we put Plex in, and that we build the shadow with Plex's own
-SQLite and rebuild it on every start where `v1.2.0` builds it once with the
-system `sqlite3`.
+```sh
+exec s6-setuidgid plex /usr/lib/plexmediaserver/Plex\ Media\ Server
+```
+
+— user `plex`, path escaped rather than quoted. Neither pattern matched,
+neither substitution failed, and the image shipped with no `LD_PRELOAD` at all.
+The init script noticed at runtime and only warned:
+
+```
+PostgreSQL shim library found: /usr/local/lib/plex-postgresql/db_interpose_pg.so
+WARNING: Plex run script missing LD_PRELOAD - shim may not load!
+```
+
+`v1.3.17` adds a third pattern matching the `plexinc` form, and its image does
+start Plex through `plex-with-shim.sh`. Reading the last line of
+`/etc/services.d/plex/run` out of each published image:
+
+| tag | last line of the run script | shim |
+| --- | --- | --- |
+| `v1.0.0` | `... plex /usr/lib/plexmediaserver/Plex\ Media\ Server` | no |
+| `v1.2.0` | `... plex /usr/lib/plexmediaserver/Plex\ Media\ Server` | no |
+| `v1.3.0` | `... plex /usr/lib/plexmediaserver/Plex\ Media\ Server` | no |
+| `v1.3.17` | `... plex /usr/local/lib/plex-postgresql/plex-with-shim.sh` | yes |
+| `latest` | `... plex /usr/local/lib/plex-postgresql/plex-with-shim.sh` | yes |
+
+**This is what invalidated the release bisect that once pinned us to `v1.2.0`.**
+Running one published image per release against a fresh `postgres:15-alpine`
+compared releases that never loaded the shim against releases that did.
+`v1.2.0` "came up healthy" because it was running Plex on its ordinary SQLite
+file: its container had a 1MB `com.plexapp.plugins.library.db` with a live WAL
+and **zero** connections in `pg_stat_activity`. Check it that way before
+trusting any future comparison — a healthy container proves nothing on its own.
+
+So `v1.3.17` is not merely newer. It is the only published configuration in
+which upstream exercises their own interposer.
+
+To get a reference out of an older tag, replace its entrypoint with one that
+repairs the injection before handing over to s6: write a wrapper exporting
+`LD_PRELOAD` and `LD_LIBRARY_PATH` and exec'ing the real binary, point the run
+script at it, then `exec /init`. Done that way, `v1.2.0` gets through session
+capture and dies on the first forward migration — the failure described in the
+next section.
+
+What `v1.3.17` gives us beyond the injection: it builds the `subreaper` the
+manager depends on, so `subreaper.c` is no longer carried here; it ships
+`seed_data.sql` and `seed_shadow_table_from_pg.py`, which seeds the shadow's
+`preferences` table from PostgreSQL; and its two schema dumps agree with each
+other about `metadata_items.user_square_art_url`, where `v1.2.0`'s did not.
+
+## The dump does not record one of the migrations it already contains
+
+This is what stopped Plex booting, and it is a data bug in `plex_schema.sql`.
+
+The dump's `metadata_items` already has `user_square_art_url`, the column
+migration `202510021115` adds. Its `schema_migrations` block — 445 rows — does
+not list `202510021115`. Plex reads that table to decide what is left to apply,
+finds the migration outstanding, and sets out to run it.
+
+To run a migration Plex captures all twenty of its library sessions. In our
+cluster it captured nineteen and stopped:
+
+```
+Running migrations. (EPG 0)
+Captured session 0.
+...
+Captured session 18.
+```
+
+The twentieth belonged to Plex's statistics thread, which had started
+concurrently, prepared `SELECT ... FROM statistics_bandwidth`, and blocked
+inside the shim between `sqlite3_bind_parameter_index` and the bind that
+follows it. It never gave the session back. Every thread in the process ends up
+in `futex_wait`, PostgreSQL shows no active query and no ungranted lock, and
+Plex answers 503 forever with nothing further in either log.
+
+On plain SQLite the same migration simply adds the column a second time and
+succeeds, which is why upstream has not noticed: every published image before
+`v1.3.17` ran Plex that way, so nothing they shipped could have hit it.
+
+The fix is at the end of `schema/plex_schema.sql`: one idempotent `INSERT`
+recording `202510021115` as applied, with the three null columns a stock Plex
+1.43.0.10492 writes when it runs the migration itself. That list came from a
+published image running Plex on SQLite, whose `schema_migrations` differs from
+the dump's by exactly this one row.
+
+`pkg/plexdb/schema_test.go` guards it, so re-vendoring a dump that carries the
+column without the row fails the build rather than hanging a pod.
+
+### Still inconsistent between the two dumps
+
+`sqlite_schema.sql` still trails `plex_schema.sql`. Comparing column sets at
+`v1.3.17`, the shadow is missing `metadata_items.subtype` and
+`media_stream_settings.created_at`/`updated_at`. (`search_vector`, `title_fts`
+and `schema_migrations.id` are PostgreSQL-only by design, and `v1.3.17` closed
+the `user_square_art_url` gap that `v1.2.0` had.) Recording the migration means
+Plex will not add the rest to the shadow either, so a query naming one of those
+columns may fail to prepare against it. Left alone deliberately — no failure
+has been observed from it yet, and one change at a time.
+
+Re-run the comparison after any re-vendoring: parse `CREATE TABLE plex.<name>`
+out of `plex_schema.sql` and the quoted column names out of `sqlite_schema.sql`,
+and diff the sets per table.
 
 ## 0001 — collect backtraces with the DWARF unwinder (removed)
 
@@ -98,32 +186,108 @@ first place.
 The patch is kept because it costs nothing, falls back cleanly, and would start
 producing frames if Plex ever ships unwind tables.
 
-## 0002 — intern declared types so lookups cannot read freed memory
+## What it took to get Plex to start
 
-A genuine use-after-free on the hottest path in the shim.
+Eight defects, each hiding the next. They are listed in the order they had to
+be fixed, because that is the order they appear if anyone repeats this.
 
-`rust_decltype_cache_lookup` and `rust_decltype_cache_lookup_alias` take a read
-lock on a `HashMap<String, CString>`, return a raw pointer into the stored
-`CString`, and release the lock on the way out. The caller then reads those
-bytes with no lock held.
+1. **The dump did not record migration `202510021115`** though it already had
+   the column. Plex set out to re-apply it — see the section above.
+2. **The worker delegation slot** was shared between callers, so a prepare
+   delegated to the 8MB worker could have its completion cleared by the next
+   caller. This was the hang in "Running migrations".
+3. **Passthrough metadata calls answered from PostgreSQL.** Plex keeps its
+   statistics in an in-memory database the shim does not redirect;
+   `last_insert_rowid` answered from the shim's global PostgreSQL row id, so
+   Plex's insert-then-read loop never converged and retried once a second for
+   ever.
+4. **SIGCHLD was forced to SIG_IGN**, so `wait()` failed with ECHILD and Plex
+   could not manage the Python processes its plug-ins run in. It reached
+   "Media provider refresh complete" and stopped. Disabled from our side with
+   `PLEX_PG_DISABLE_SIGCHLD_IGNORE=1`; we run Plex under a subreaper and its
+   CrashUploader is a no-op, so we never needed it.
+5. **`vfork` was interposed.** A vfork child runs on the parent's stack with
+   the parent's thread suspended and must never return from the frame that
+   called vfork — which is exactly what an interposer makes it do. The plug-in
+   process started and ran; the parent came back to a clobbered stack and died
+   with an instruction pointer outside every loaded module.
+6. **`boost::locale::util::create_simple_converter` was interposed with the
+   wrong ABI.** It returns a class type, so RDI is the hidden result pointer
+   and the encoding arrives in RSI; declared as `fn(*mut u8) -> *mut c_void`
+   the wrapper handed Boost its own return slot as the encoding name. It was
+   also the only C++ symbol the shim exported, shadowing Plex's own
+   ICU-backed `libboost_locale.so`. Replaced by an assembly hook that does
+   what AArch64 has always done: redirect the ASCII charset to UTF-8.
+7. **The init script stripped the dashes out of the machine identifier**
+   (`tr -d '-'`), leaving 32 bare hex characters where Plex parses a UUID:
+   `std::domain_error: Invalid uuid length`. Fixed in our vendored copy.
+8. **The worker thread did not block signals.** A library thread must never be
+   a candidate for the process's asynchronous signals; Plex handles its own on
+   a dedicated `sigwait` thread, and when the kernel picked ours instead it
+   treated the signal as fatal — `Received unexpected async signal 17`,
+   moments after the server started answering requests.
 
-`rust_decltype_cache_insert` used `HashMap::insert`, which drops the previous
-value for a key and frees its buffer. So re-inserting a key freed bytes that
-another thread was part way through reading. Every column access does a
-lookup, so the window is wide open.
+With those in place Plex starts, answers `/identity` with a real
+MediaContainer, runs its plug-ins and holds ~35 PostgreSQL connections.
 
-The values are now interned with `Box::leak`, and an insert that would change
-a value leaves the old allocation alone instead of freeing it. Nothing can
-free bytes a reader still holds. It costs one allocation per column, and only
-a value that actually changes leaks anything.
+### Still open: Plex crashes when it talks to plex.tv
 
-The sibling `OID_TABLE_CACHE` is fine as it stands: it inserts with
-`entry().or_insert()`, so a stored value is never replaced or dropped.
+`std::domain_error: Invalid uuid length`, thrown on the HttpClient thread
+immediately after a 200 from `plex.tv/api/v2/features`, a second or two after
+the server starts serving. It does not happen without the shim, and it does
+not happen when plex.tv is unreachable — which is how the cluster currently
+runs, with a `hostAliases` entry pointing plex.tv at loopback.
 
-**This did not fix the crash.** It is a real bug on the same code path and
-worth carrying, but Plex still dies in `column_type` reading
-`SELECT version FROM schema_migrations`. So there is at least one more
-unsynchronised access, and this one was not it.
+That is a diagnostic, not a fix: claiming a server and remote access both need
+plex.tv. Whatever Plex reads back is either mis-stored or mis-returned through
+the shim; the next step is to find which column round-trips wrong, since
+nothing in the shim touches HTTP.
+
+## Races fixed in the fork
+
+All of these are reachable from the overlap that happens on every boot: Plex
+runs its migration check and its statistics fixups on different threads at the
+same time, both through the shim. Together they presented as Plex hanging in
+"Running migrations" — 503 to everything, every thread in `futex_wait`,
+PostgreSQL showing no active query and no ungranted lock — or, when the timing
+shifted, as a crash in the fixup thread instead.
+
+- **The worker delegation slot.** A prepare on a small stack is delegated to
+  the shim's 8MB worker thread through one global `worker_request`. The caller
+  waits for its answer on `worker_cond_response` with `worker_mutex` released,
+  which is exactly when a second caller can take that mutex and overwrite the
+  slot — clearing a `work_done` its owner has not read yet. The owner then
+  waits for a response that has already been signalled, or reads the other
+  caller's statement. Serialised end to end now; the regression test strands
+  8 of 8 callers without the fix and passes 1600 delegations in 0.06s with it.
+- **`rust_worker_init` was not idempotent**, so two threads finding no worker
+  both created one: two workers on a single request slot, and the first thread
+  handle orphaned where cleanup could never join it.
+- **The declared-type cache replaced published entries.** Lookups return a
+  pointer into the stored `CString` and then drop the read guard; those
+  pointers reach Plex as `sqlite3_column_decltype()` results and stay live
+  until the statement is finalized. Replacing freed them underneath a reader.
+  First publication now wins. (This is what the old `0002` patch fixed by
+  interning with `Box::leak`; `or_insert` is the better answer and leaks
+  nothing.)
+- **The TLS key used its own value as a success flag**, but `pthread_key_t` is
+  an index and 0 is an ordinary key — on glibc, the first one handed out. A
+  failed `pthread_key_create` therefore looked like key 0, and the per-thread
+  reentrancy guards silently became process-wide.
+- **Pool slots could be claimed after the reaper had sampled them**, handing
+  out a connection that was being `PQfinish`ed. Claims re-read the connection
+  pointer under the claim.
+- **`rust_stmt_cache_lookup` returned a borrowed pointer** after dropping the
+  cache mutex. Callers hold that name across `PQprepare` and `PQexecPrepared`,
+  during which another thread on the same pooled connection can re-prepare,
+  evict or drop the entry. The name is copied into thread-local storage now,
+  which keeps the `const char *` ABI and gives callers a lifetime they can
+  rely on.
+
+The pattern in all six: something hands a raw pointer out of a shared
+structure, or shares a single slot, and then releases the lock. When looking
+for the next one, grep for a function that takes a lock, calls `.as_ptr()` on
+something it does not own, and returns.
 
 ## What is known about the remaining crash
 
@@ -170,6 +334,7 @@ Two that were checked and are fine: `OID_TABLE_CACHE` inserts with
 `entry().or_insert()` so values are never replaced, and a `HashMap` rehash
 moves the `CString` struct but not the heap buffer `as_ptr()` points at;
 `rust_query_cache_release` only decrements a refcount and frees nothing.
+
 - Statement mutexes are `std::sync::Mutex`, which is **not** recursive, so any
   fix that adds a lock has to check every caller first. Connection mutexes are
   pthread recursive; the two are easy to confuse.
@@ -180,25 +345,29 @@ and `LEAK_STMTS` were each tried. The last is worth noting: it makes the shim
 never free a statement, which rules out statement lifetime as the cause even
 though the logs put a `pg_stmt_free` immediately before one of the crashes.
 
-## It is not our build
+## "It is not our build" — withdrawn
 
-Upstream's own published image fails the same way, which is the one result
-worth keeping from all of this.
+This section used to say that upstream's own image failed the same way and so
+the shim was broken for everyone. That reading was wrong, and it is left here
+corrected rather than deleted because it sent the investigation the wrong way
+for a long time.
 
-`ghcr.io/cgnl/plex-postgresql-plexinc:latest`, run with its own entrypoint
-against a fresh `postgres:15-alpine` and nothing of ours involved, loads the
-same 62 tables and then crashes **80 times in two minutes** with
+What was observed is real: `ghcr.io/cgnl/plex-postgresql-plexinc:latest`, run
+with its own entrypoint against a fresh `postgres:15-alpine`, crashes **80
+times in two minutes** with
 
     libc++abi: terminating with uncaught exception of type
       soci::soci_error: sqlite3_statement_backend::loadOne: not an error
 
-and never serves a request. Its container stays up only because s6 restarts
-Plex underneath it; Docker marks it unhealthy. It also ships Plex 1.43.4,
-which is newer than the 1.43.0 its own schema dump was taken from.
+and never serves a request, staying "Up" only because s6 restarts Plex
+underneath it.
 
-So the shim does not currently work on a fresh install, for anyone. Our
-bootstrap, image assembly and patches are not the cause, and reproducing it
-takes one `docker run` — which is worth attaching to
+What it does not show is anything about the shim. That container was running
+Plex on its own SQLite file — see the first section — so the crash is stock
+Plex choking on the SQLite database the init script pre-seeds, not the
+interposer. Nothing there implicates or exonerates our build.
+
+It is still worth reporting, alongside the `sed` that never matches, on
 [#17](https://github.com/cgnl/plex-postgresql/issues/17) and
 [#26](https://github.com/cgnl/plex-postgresql/issues/26), neither of which has
 a maintainer response.
