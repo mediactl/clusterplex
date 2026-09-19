@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -72,4 +73,44 @@ func TestCheckShimPassesWhenTheInterposerIsPresent(t *testing.T) {
 
 func TestCheckShimIsSatisfiedWhenNoShimIsConfigured(t *testing.T) {
 	require.NoError(t, checkShim(Config{}))
+}
+
+func TestShimEnvLeavesSIGCHLDAloneSoPlexCanStartItsPlugIns(t *testing.T) {
+	// The shim sets SIGCHLD to SIG_IGN by default, to keep Plex's
+	// CrashUploader from raising it on every exit. With SIGCHLD ignored the
+	// kernel reaps children itself and wait() fails with ECHILD, so Plex
+	// cannot manage the Python processes its plug-ins run in: the System
+	// bundle never reports its port, every /:/plugins request answers 503 and
+	// the server never finishes starting. It gets as far as "Media provider
+	// refresh complete" and stops there, which reads like a hang rather than a
+	// misconfiguration.
+	//
+	// We do not need what it buys. Plex runs under our own subreaper, which is
+	// what absorbs the vfork re-exec, and its CrashUploader is replaced by a
+	// no-op binary.
+	env := shimEnv(nil, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
+
+	assert.Contains(t, env, "PLEX_PG_DISABLE_SIGCHLD_IGNORE=1")
+}
+
+func TestShimEnvSetsNoLocaleBecausePlexCannotParseOne(t *testing.T) {
+	// Plex's bundled boost::locale takes the charset from the locale name and
+	// does not recognise the one in "C.utf8". It falls back to ASCII, which
+	// its own build rejects, and dies while loading translations:
+	//
+	//	libc++abi: terminating with uncaught exception of type
+	//	  boost::locale::conv::invalid_charset_error:
+	//	  Invalid or unsupported charset:Invalid simple encoding ASCII
+	//
+	// With no locale set at all it picks its own and runs. That is what the
+	// image Plex ships in does, and it is what we do: the variables were added
+	// here to stop it rejecting a glibc-style en_US.UTF-8 that nothing sets
+	// any more.
+	env := shimEnv(nil, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
+
+	for _, v := range env {
+		name, _, _ := strings.Cut(v, "=")
+		assert.NotContains(t, []string{"LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE"}, name,
+			"Plex picks its own locale; naming one crashes it")
+	}
 }

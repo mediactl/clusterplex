@@ -34,12 +34,28 @@ func shimEnv(base []string, cfg Config) []string {
 	env = append(env,
 		"LD_PRELOAD="+cfg.ShimLibrary,
 		"LD_LIBRARY_PATH="+ShimLibDir+":/usr/lib/plexmediaserver/lib:/usr/lib/plexmediaserver",
-		// Plex's bundled musl and boost::locale reject glibc-style locale
-		// names such as en_US.UTF-8 and abort with invalid_charset_error.
-		// C.utf8 is the one they accept.
-		"LANG=C.utf8",
-		"LC_ALL=C.utf8",
-		"LC_CTYPE=C.utf8",
+		// No locale is set on purpose. Plex's bundled boost::locale takes the
+		// charset from the locale name, does not recognise the one in
+		// "C.utf8", falls back to ASCII, and dies loading its translations:
+		//
+		//	boost::locale::conv::invalid_charset_error:
+		//	  Invalid or unsupported charset:Invalid simple encoding ASCII
+		//
+		// Left to choose for itself it runs, which is what the image Plex
+		// ships in does. These were set here to stop it rejecting a
+		// glibc-style en_US.UTF-8 that nothing sets any more.
+		//
+		// The shim otherwise sets SIGCHLD to SIG_IGN, so that Plex's
+		// CrashUploader cannot raise it on every exit. Ignoring SIGCHLD makes
+		// the kernel reap children itself and wait() fail with ECHILD, which
+		// leaves Plex unable to manage the Python processes its plug-ins run
+		// in: the System bundle never reports its port and the server answers
+		// 503 for ever, having logged nothing worse than "Media provider
+		// refresh complete".
+		//
+		// We do not need it. Plex runs under our own subreaper, which is what
+		// absorbs the vfork re-exec, and its CrashUploader is a no-op binary.
+		"PLEX_PG_DISABLE_SIGCHLD_IGNORE=1",
 	)
 	return append(env, pgEnv(cfg)...)
 }
