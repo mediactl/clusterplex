@@ -126,5 +126,30 @@ moves the `CString` struct but not the heap buffer `as_ptr()` points at;
   pthread recursive; the two are easy to confuse.
 
 None of the shim's own knobs avoid it: `DISABLE_STREAMING`, `DISABLE_POOL`,
-`POOL_SIZE=1`, `DISABLE_STMT_CACHE`, `DISABLE_QUERY_CACHE` and
-`DISABLE_PREPARED` were each tried.
+`POOL_SIZE=1`, `DISABLE_STMT_CACHE`, `DISABLE_QUERY_CACHE`, `DISABLE_PREPARED`
+and `LEAK_STMTS` were each tried. The last is worth noting: it makes the shim
+never free a statement, which rules out statement lifetime as the cause even
+though the logs put a `pg_stmt_free` immediately before one of the crashes.
+
+## It is not our build
+
+Upstream's own published image fails the same way, which is the one result
+worth keeping from all of this.
+
+`ghcr.io/cgnl/plex-postgresql-plexinc:latest`, run with its own entrypoint
+against a fresh `postgres:15-alpine` and nothing of ours involved, loads the
+same 62 tables and then crashes **80 times in two minutes** with
+
+    libc++abi: terminating with uncaught exception of type
+      soci::soci_error: sqlite3_statement_backend::loadOne: not an error
+
+and never serves a request. Its container stays up only because s6 restarts
+Plex underneath it; Docker marks it unhealthy. It also ships Plex 1.43.4,
+which is newer than the 1.43.0 its own schema dump was taken from.
+
+So the shim does not currently work on a fresh install, for anyone. Our
+bootstrap, image assembly and patches are not the cause, and reproducing it
+takes one `docker run` — which is worth attaching to
+[#17](https://github.com/cgnl/plex-postgresql/issues/17) and
+[#26](https://github.com/cgnl/plex-postgresql/issues/26), neither of which has
+a maintainer response.
