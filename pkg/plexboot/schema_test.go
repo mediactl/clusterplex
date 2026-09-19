@@ -59,10 +59,16 @@ func TestTheDumpQualifiesEverythingWithOneSchema(t *testing.T) {
 	assert.Equal(t, []string{Schema}, names, "the dump must use exactly one schema")
 }
 
-func TestEverySeedFileIsVendored(t *testing.T) {
-	// Prepare reads these by name. A missing one fails at runtime, in a pod,
-	// against an empty database.
-	for _, name := range append(seedFiles, "sqlite_schema.sql") {
+func TestTheSchemaFilesTheLoadCannotDoWithoutAreVendored(t *testing.T) {
+	// Not every seed file: the set varies by release, and v1.2.0 ships no
+	// seed_data.sql, which the loader skips. These four are the ones without
+	// which there is no schema to speak of.
+	for _, name := range []string{
+		"plex_schema.sql",
+		"sqlite_schema.sql",
+		"sqlite_column_types.sql",
+		"pg_compat_functions.sql",
+	} {
 		_, err := os.Stat(filepath.Join(schemaDir, name))
 		assert.NoError(t, err, name)
 	}

@@ -729,11 +729,11 @@ SET default_table_access_method = heap;
 
 CREATE TABLE plex.accounts (
     id integer NOT NULL,
-    name text,
+    name character varying(255),
     created_at bigint,
     updated_at bigint,
-    default_audio_language text,
-    default_subtitle_language text,
+    default_audio_language character varying(255),
+    default_subtitle_language character varying(255),
     auto_select_subtitle integer DEFAULT 1,
     auto_select_audio integer DEFAULT 1
 );
@@ -766,8 +766,8 @@ ALTER SEQUENCE plex.accounts_id_seq OWNED BY plex.accounts.id;
 CREATE TABLE plex.activities (
     id integer NOT NULL,
     parent_id integer,
-    type text,
-    title text,
+    type character varying(255),
+    title character varying(255),
     subtitle text,
     scheduled_at bigint,
     started_at bigint,
@@ -803,9 +803,9 @@ ALTER SEQUENCE plex.activities_id_seq OWNED BY plex.activities.id;
 CREATE TABLE plex.blobs (
     id integer NOT NULL,
     blob bytea,
-    linked_type text,
+    linked_type character varying(255),
     linked_id integer,
-    linked_guid text,
+    linked_guid character varying(255),
     created_at bigint,
     blob_type integer
 );
@@ -839,14 +839,14 @@ ALTER SEQUENCE plex.blobs_id_seq OWNED BY plex.blobs.id;
 
 CREATE TABLE plex.custom_channels (
     id integer NOT NULL,
-    name text,
+    name character varying(255),
     description text,
     playlist_id integer,
     start_time bigint,
     ordering integer,
     visibility integer,
     displayed_on integer,
-    content_rating text
+    content_rating character varying(255)
 );
 
 
@@ -876,11 +876,11 @@ ALTER SEQUENCE plex.custom_channels_id_seq OWNED BY plex.custom_channels.id;
 
 CREATE TABLE plex.devices (
     id integer NOT NULL,
-    identifier text,
-    name text,
+    identifier character varying(255),
+    name character varying(255),
     created_at bigint,
     updated_at bigint,
-    platform text
+    platform character varying(255)
 );
 
 
@@ -946,7 +946,7 @@ ALTER SEQUENCE plex.directories_id_seq OWNED BY plex.directories.id;
 CREATE TABLE plex.download_queue_items (
     id integer NOT NULL,
     queue_id integer,
-    key text,
+    key character varying(255),
     "order" integer,
     status integer,
     decision_params text,
@@ -986,7 +986,7 @@ ALTER SEQUENCE plex.download_queue_items_id_seq OWNED BY plex.download_queue_ite
 CREATE TABLE plex.download_queues (
     id integer NOT NULL,
     owner integer,
-    client_identifier text,
+    client_identifier character varying(255),
     extra_data text
 );
 
@@ -1020,9 +1020,9 @@ CREATE TABLE plex.external_metadata_items (
     external_metadata_source_id integer,
     library_section_id integer,
     metadata_type integer,
-    guid text,
-    title text,
-    parent_title text,
+    guid character varying(255),
+    title character varying(255),
+    parent_title character varying(255),
     year integer,
     added_at integer,
     updated_at integer,
@@ -1037,8 +1037,8 @@ CREATE TABLE plex.external_metadata_items (
 CREATE TABLE plex.external_metadata_sources (
     id integer NOT NULL,
     uri text,
-    source_title text,
-    user_title text,
+    source_title character varying(255),
+    user_title character varying(255),
     online integer
 );
 
@@ -1072,19 +1072,19 @@ CREATE TABLE plex.metadata_items (
     library_section_id integer,
     parent_id integer,
     metadata_type integer,
-    guid text,
+    guid character varying(255),
     media_item_count integer,
-    title text,
-    title_sort text,
-    original_title text,
-    studio text,
+    title character varying(255),
+    title_sort character varying(255),
+    original_title character varying(255),
+    studio character varying(255),
     rating double precision,
     rating_count integer,
     tagline text,
     summary text,
     trivia text,
     quotes text,
-    content_rating text,
+    content_rating character varying(255),
     content_rating_age integer,
     index integer,
     absolute_index integer,
@@ -1108,15 +1108,15 @@ CREATE TABLE plex.metadata_items (
     created_at bigint,
     updated_at bigint,
     deleted_at bigint,
-    tags_country text,
+    tags_country character varying(255),
     extra_data text,
-    hash text,
+    hash character varying(255),
     audience_rating double precision,
     changed_at bigint DEFAULT 0,
     resources_changed_at bigint DEFAULT 0,
     remote integer,
-    edition_title text,
-    slug text,
+    edition_title character varying(255),
+    slug character varying(255),
     user_clear_logo_url text,
     user_square_art_url text,
     is_adult integer,
@@ -1167,7 +1167,7 @@ CREATE TABLE plex.tags (
     updated_at bigint,
     tag_value integer,
     extra_data text,
-    key text,
+    key character varying(255),
     parent_id integer,
     search_vector tsvector
 );
@@ -1201,9 +1201,9 @@ CREATE VIEW plex.fts4_tag_titles_icu AS
 
 CREATE TABLE plex.hub_templates (
     id integer NOT NULL,
-    section text,
-    identifier text,
-    title text,
+    section character varying(255),
+    identifier character varying(255),
+    title character varying(255),
     home_visibility integer,
     recommended_visibility integer,
     "order" double precision,
@@ -1270,12 +1270,12 @@ ALTER SEQUENCE plex.library_section_permissions_id_seq OWNED BY plex.library_sec
 CREATE TABLE plex.library_sections (
     id integer NOT NULL,
     library_id bigint,
-    name text,
-    name_sort text,
+    name character varying(255),
+    name_sort character varying(255),
     section_type integer,
-    language text,
-    agent text,
-    scanner text,
+    language character varying(255),
+    agent character varying(255),
+    scanner character varying(255),
     user_thumb_url text,
     user_art_url text,
     user_theme_music_url text,
@@ -1287,7 +1287,7 @@ CREATE TABLE plex.library_sections (
     user_fields text,
     query_xml text,
     query_type integer,
-    uuid text,
+    uuid character varying(255),
     changed_at bigint DEFAULT 0,
     content_changed_at bigint DEFAULT 0,
     metadata_agent_provider_group_id integer
@@ -1322,7 +1322,7 @@ CREATE TABLE plex.locatables (
     id integer NOT NULL,
     location_id integer NOT NULL,
     locatable_id integer NOT NULL,
-    locatable_type text NOT NULL,
+    locatable_type character varying(255) NOT NULL,
     created_at bigint,
     updated_at bigint,
     extra_data text,
@@ -1357,7 +1357,7 @@ ALTER SEQUENCE plex.locatables_id_seq OWNED BY plex.locatables.id;
 CREATE TABLE plex.location_places (
     id integer NOT NULL,
     location_id integer,
-    guid text NOT NULL
+    guid character varying(255) NOT NULL
 );
 
 
@@ -1462,7 +1462,7 @@ CREATE TABLE plex.maintenance_control (
 
 CREATE TABLE plex.media_grabs (
     id integer NOT NULL,
-    uuid text,
+    uuid character varying(255),
     status integer,
     error integer,
     metadata_item_id integer,
@@ -1542,14 +1542,14 @@ CREATE TABLE plex.media_items (
     size bigint,
     duration integer,
     bitrate integer,
-    container text,
-    video_codec text,
-    audio_codec text,
+    container character varying(255),
+    video_codec character varying(255),
+    audio_codec character varying(255),
     display_aspect_ratio double precision,
     frames_per_second double precision,
     audio_channels integer,
     interlaced integer,
-    source text,
+    source character varying(255),
     hints text,
     display_offset integer,
     settings text,
@@ -1564,7 +1564,7 @@ CREATE TABLE plex.media_items (
     channel_id integer,
     begins_at bigint,
     ends_at bigint,
-    color_trc text
+    color_trc character varying(255)
 );
 
 
@@ -1633,8 +1633,8 @@ CREATE TABLE plex.media_parts (
     id integer NOT NULL,
     media_item_id integer,
     directory_id integer,
-    hash text,
-    open_subtitle_hash text,
+    hash character varying(255),
+    open_subtitle_hash character varying(255),
     file text,
     index integer,
     size bigint,
@@ -1676,10 +1676,10 @@ CREATE TABLE plex.media_provider_resources (
     type integer,
     status integer,
     state integer,
-    identifier text,
-    protocol text,
+    identifier character varying(255),
+    protocol character varying(255),
     uri text,
-    uuid text,
+    uuid character varying(255),
     extra_data text,
     last_seen_at bigint,
     created_at bigint,
@@ -1751,8 +1751,8 @@ CREATE TABLE plex.media_streams (
     stream_type_id integer,
     media_item_id integer,
     url text,
-    codec text,
-    language text,
+    codec character varying(255),
+    language character varying(255),
     created_at bigint,
     updated_at bigint,
     index integer,
@@ -1861,8 +1861,8 @@ ALTER SEQUENCE plex.metadata_agent_provider_group_items_id_seq OWNED BY plex.met
 
 CREATE TABLE plex.metadata_agent_provider_groups (
     id integer NOT NULL,
-    title text,
-    primary_identifier text,
+    title character varying(255),
+    primary_identifier character varying(255),
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL,
     extra_data text
@@ -1895,11 +1895,11 @@ ALTER SEQUENCE plex.metadata_agent_provider_groups_id_seq OWNED BY plex.metadata
 
 CREATE TABLE plex.metadata_agent_providers (
     id integer NOT NULL,
-    identifier text,
-    title text,
+    identifier character varying(255),
+    title character varying(255),
     uri text,
     agent_type integer,
-    metadata_types text,
+    metadata_types character varying(255),
     online integer,
     created_at bigint NOT NULL,
     updated_at bigint NOT NULL,
@@ -1999,7 +1999,7 @@ CREATE TABLE plex.metadata_item_clusters (
     id integer NOT NULL,
     zoom_level integer,
     library_section_id integer,
-    title text,
+    title character varying(255),
     count integer,
     starts_at bigint,
     ends_at bigint,
@@ -2037,7 +2037,7 @@ CREATE TABLE plex.metadata_item_setting_markers (
     metadata_item_setting_id integer NOT NULL,
     start_time_offset integer NOT NULL,
     end_time_offset integer,
-    title text,
+    title character varying(255),
     created_at bigint,
     updated_at bigint,
     extra_data text
@@ -2071,7 +2071,7 @@ ALTER SEQUENCE plex.metadata_item_setting_markers_id_seq OWNED BY plex.metadata_
 CREATE TABLE plex.metadata_item_settings (
     id integer NOT NULL,
     account_id integer,
-    guid text,
+    guid character varying(255),
     rating double precision,
     view_offset integer,
     view_count integer,
@@ -2113,17 +2113,17 @@ ALTER SEQUENCE plex.metadata_item_settings_id_seq OWNED BY plex.metadata_item_se
 CREATE TABLE plex.metadata_item_views (
     id integer NOT NULL,
     account_id integer,
-    guid text,
+    guid character varying(255),
     metadata_type integer,
     library_section_id integer,
-    grandparent_title text,
+    grandparent_title character varying(255),
     parent_index integer,
-    parent_title text,
+    parent_title character varying(255),
     index integer,
-    title text,
+    title character varying(255),
     thumb_url text,
     viewed_at bigint,
-    grandparent_guid text,
+    grandparent_guid character varying(255),
     originally_available_at bigint,
     device_id integer,
     view_type integer DEFAULT 0
@@ -2212,7 +2212,7 @@ ALTER SEQUENCE plex.metadata_relations_id_seq OWNED BY plex.metadata_relations.i
 
 CREATE TABLE plex.metadata_subscription_desired_items (
     sub_id integer,
-    remote_id text
+    remote_id character varying(255)
 );
 
 
@@ -2297,7 +2297,7 @@ ALTER SEQUENCE plex.play_queue_items_id_seq OWNED BY plex.play_queue_items.id;
 
 CREATE TABLE plex.play_queues (
     id integer NOT NULL,
-    client_identifier text,
+    client_identifier character varying(255),
     account_id integer,
     playlist_id integer,
     sync_item_id integer,
@@ -2346,8 +2346,8 @@ ALTER SEQUENCE plex.play_queues_id_seq OWNED BY plex.play_queues.id;
 CREATE TABLE plex.plugin_prefixes (
     id integer NOT NULL,
     plugin_id integer,
-    name text,
-    prefix text,
+    name character varying(255),
+    prefix character varying(255),
     art_url text,
     thumb_url text,
     titlebar_url text,
@@ -2383,7 +2383,7 @@ ALTER SEQUENCE plex.plugin_prefixes_id_seq OWNED BY plex.plugin_prefixes.id;
 
 CREATE TABLE plex.plugins (
     id integer NOT NULL,
-    identifier text,
+    identifier character varying(255),
     framework_version integer,
     access_count integer,
     installed_at bigint,
@@ -2418,7 +2418,7 @@ ALTER SEQUENCE plex.plugins_id_seq OWNED BY plex.plugins.id;
 
 CREATE TABLE plex.preferences (
     id integer NOT NULL,
-    name text,
+    name character varying(255),
     value text
 );
 
@@ -2451,7 +2451,7 @@ CREATE TABLE plex.remote_id_translation (
     id integer NOT NULL,
     type integer,
     local_id integer,
-    remote_id text
+    remote_id character varying(255)
 );
 
 
@@ -2480,7 +2480,7 @@ ALTER SEQUENCE plex.remote_id_translation_id_seq OWNED BY plex.remote_id_transla
 --
 
 CREATE TABLE plex.schema_migrations (
-    version text NOT NULL,
+    version character varying(255) NOT NULL,
     rollback_sql text,
     optimize_on_rollback integer,
     min_version text,
@@ -2738,8 +2738,8 @@ ALTER SEQUENCE plex.versioned_metadata_items_id_seq OWNED BY plex.versioned_meta
 CREATE TABLE plex.view_settings (
     id integer NOT NULL,
     account_id integer,
-    client_type text,
-    view_group text,
+    client_type character varying(255),
+    view_group character varying(255),
     view_id integer,
     sort_id integer,
     sort_asc integer,

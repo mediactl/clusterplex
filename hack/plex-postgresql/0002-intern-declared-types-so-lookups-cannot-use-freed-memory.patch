@@ -1,11 +1,6 @@
 --- a/rust/plex-pg-core/src/db_interpose_helpers/type_cache.rs
 +++ b/rust/plex-pg-core/src/db_interpose_helpers/type_cache.rs
-@@ -3,11 +3,27 @@
-     SQLITE_INTEGER_CONST, SQLITE_TEXT_CONST,
- };
- use std::collections::HashMap;
--use std::ffi::CString;
-+use std::ffi::{CStr, CString};
+@@ -7,7 +7,19 @@
  use std::os::raw::{c_char, c_int, c_uint};
  use std::sync::{LazyLock, RwLock};
  
@@ -20,17 +15,13 @@
 +/// was mid-read: a use-after-free on the hot path, since every column access
 +/// does a lookup.
 +///
-+/// It reads as a stale decltype or a segfault depending on what lands in the
-+/// freed allocation, which is why the crash moves around and why it shows up
-+/// as both SIGSEGV and a type error thrown out of Plex's SQLite layer.
-+///
 +/// Leaking is the cheap fix and costs almost nothing: entries are one per
 +/// column, and only a value that actually changes leaks anything at all.
 +static DECLTYPE_CACHE: LazyLock<RwLock<HashMap<String, &'static CStr>>> =
      LazyLock::new(|| RwLock::new(HashMap::new()));
  static OID_TABLE_CACHE: LazyLock<RwLock<HashMap<u32, CString>>> =
      LazyLock::new(|| RwLock::new(HashMap::new()));
-@@ -39,7 +55,16 @@
+@@ -43,7 +55,16 @@
          Ok(guard) => guard,
          Err(poisoned) => poisoned.into_inner(),
      };
@@ -47,22 +38,4 @@
 +    cache.insert(key_str.to_string(), interned);
      1
  }
- 
-@@ -150,7 +175,7 @@
-         return existing.as_ptr();
-     }
- 
--    let mut best_match: Option<(&String, &CString)> = None;
-+    let mut best_match: Option<(&String, &'static CStr)> = None;
-     for (key, value) in cache.iter() {
-         if !alias_matches_cache_key(alias_str, key) {
-             continue;
-@@ -160,7 +185,7 @@
-             None => true,
-         };
-         if should_replace {
--            best_match = Some((key, value));
-+            best_match = Some((key, *value));
-         }
-     }
  

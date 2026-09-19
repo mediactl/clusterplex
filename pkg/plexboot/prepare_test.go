@@ -151,6 +151,20 @@ func TestAStatementThatFailsDoesNotAbortTheLoad(t *testing.T) {
 	assert.Contains(t, strings.Join(db.execs, "\n"), "-- seed", "the load continued past the failure")
 }
 
+func TestASeedFileThatThisReleaseDoesNotShipIsSkipped(t *testing.T) {
+	// The set of files varies by release: v1.2.0 has no seed_data.sql at all.
+	// Treating an absent one as fatal would tie us to a single upstream
+	// version for no reason.
+	db := &fakeDB{tables: 0, loadedTables: len(requiredTables)}
+	var calls []shadowCall
+	b := newBootstrap(db, &calls)
+	sql := b.SQL.(fstest.MapFS)
+	delete(sql, "seed_data.sql")
+
+	require.NoError(t, b.Prepare(t.Context()))
+	assert.Contains(t, strings.Join(db.execs, "\n"), "CREATE SCHEMA plex", "the rest still loaded")
+}
+
 func TestTheTrigramExtensionIsCreatedBeforeTheSchema(t *testing.T) {
 	// The dump builds GIN trigram indexes. Without the extension those
 	// statements fail and the indexes are quietly missing, which shows up as

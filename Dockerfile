@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/m
 # 3.15 rather than something current. Upstream publishes no Linux binaries, so
 # there is nothing to download instead.
 FROM --platform=${BUILDPLATFORM} alpine:3.15 AS shim
-ARG PLEX_PG_REF=v1.3.17
+ARG PLEX_PG_REF=v1.2.0
 RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
 WORKDIR /build
 ENV CARGO_HOME=/usr/local/cargo \
@@ -37,8 +37,9 @@ RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
 # Our changes to the shim, applied in filename order. See
 # hack/plex-postgresql/README.md. A patch that no longer applies fails the
 # build rather than being skipped, so a version bump cannot quietly drop one.
-COPY hack/plex-postgresql/*.patch /patches/
+COPY hack/plex-postgresql/ /patches/
 RUN set -e; for p in /patches/*.patch; do \
+      [ -e "$p" ] || continue; \
       echo "applying $(basename "$p")"; \
       git apply --verbose -p1 "$p"; \
     done
@@ -46,6 +47,11 @@ RUN set -e; for p in /patches/*.patch; do \
 # CrashUploader below: a shell script would not do, because sh inherits
 # LD_PRELOAD and would load the interposer's constructor.
 RUN sh scripts/docker-build-shim.sh --with-noop
+# The subreaper is ours: only some releases of the shim ship one, and the
+# manager depends on it in all of them. Static, so it needs nothing from the
+# final image. See hack/plex-postgresql/subreaper.c.
+COPY hack/plex-postgresql/subreaper.c /tmp/subreaper.c
+RUN gcc -static -O2 -Wall -o /libs/subreaper /tmp/subreaper.c
 
 # Stage 2: Extract Plex and set up the filesystem
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor

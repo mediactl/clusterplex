@@ -10,7 +10,56 @@ Anything here is a candidate to send upstream. Bear in mind that the last
 maintainer commit was 1 April 2026 and open pull requests have gone unanswered,
 so assume we carry these ourselves.
 
-## 0001 — collect backtraces with the DWARF unwinder
+## Which upstream release to build
+
+`v1.2.0`, pinned in the Dockerfile, because it is the last one that works.
+
+Running the published images against a fresh `postgres:15-alpine`, one per
+release: `v1.2.0` comes up healthy and answers `/identity` with a real
+MediaContainer. `v1.3.0` — the very next release — crashlooped 272 times in
+five minutes, and `v1.3.17` does the same. So the regression landed in
+`v1.3.0`.
+
+Two things that are *not* the cause, both checked rather than assumed. Plex
+version: `v1.3.0` ships the same 1.43.0 its own dump was taken from and still
+fails. And the declared-type use-after-free that 0002 fixes is present in
+`v1.2.0` too — it is long-standing and latent, not the regression.
+
+Moving back a release means a few differences to carry:
+
+- `v1.2.0` ships no `seed_data.sql`, so the loader skips a seed file this
+  release does not have rather than treating it as fatal.
+- It does not build a `subreaper`, which the manager depends on, so we build
+  our own from `subreaper.c` here.
+- Its schema files differ from `v1.3.17`'s, so the vendored copy under
+  `schema/` is `v1.2.0`'s.
+
+**Our image still crashes on `v1.2.0` while upstream's does not.** That is a
+separate problem and it is ours: built with the patches removed entirely, so
+that the shim is byte-identical to upstream's, our image still fails. The
+difference is in how we run Plex, not in the shim. What remains untested
+between the two: the base image and how Plex is packaged (they build on
+`plexinc/pms-docker`, we extract the `.deb` onto `debian:bookworm-slim`), the
+network namespace we put Plex in, and that we build the shadow with Plex's own
+SQLite and rebuild it on every start where `v1.2.0` builds it once with the
+system `sqlite3`.
+
+## 0001 — collect backtraces with the DWARF unwinder (removed)
+
+Removed, not merely unhelpful. It replaced `collect_frames` with
+`_Unwind_Backtrace`, which produced no frames because nothing in the process
+carries unwind information — and `platform_print_backtrace` is called from
+ordinary paths as well as fatal ones (`first_execute/connection.rs`,
+`step_write_utils/connection.rs`, `ring_tracker.rs`), so it was running the
+unwinder during normal operation. It was not the cause of our crash, which was
+tested by removing it, but running an unwinder that cannot work on live code
+paths is not something to keep for a diagnostic that never produced output.
+
+The finding it leaves behind is the useful part: **stack-based debugging is not
+available in this process**, which is why upstream's crash reports all say
+"stack trace unavailable" and why this cannot be chased with a backtrace.
+
+## 0001 — what it was
 
 The shim prints a backtrace when it catches a fatal exception, but on Linux it
 collected frames by walking the `%rbp` chain. Release builds are compiled with

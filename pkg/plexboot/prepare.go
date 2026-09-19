@@ -168,6 +168,12 @@ func (b *Bootstrap) load(ctx context.Context, s Session) ([]failed, error) {
 	var pending []failed
 	for _, name := range seedFiles {
 		body, err := fs.ReadFile(b.SQL, name)
+		if errors.Is(err, fs.ErrNotExist) {
+			// The file set varies between upstream releases — v1.2.0 ships no
+			// seed_data.sql — so an absent one is not an error.
+			b.Logger.Debug("this release ships no such schema file", "file", name)
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", name, err)
 		}
