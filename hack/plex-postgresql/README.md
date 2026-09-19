@@ -230,18 +230,57 @@ be fixed, because that is the order they appear if anyone repeats this.
 With those in place Plex starts, answers `/identity` with a real
 MediaContainer, runs its plug-ins and holds ~35 PostgreSQL connections.
 
-### Still open: Plex crashes when it talks to plex.tv
+### Still open: Plex dies a few seconds after it starts serving
 
-`std::domain_error: Invalid uuid length`, thrown on the HttpClient thread
-immediately after a 200 from `plex.tv/api/v2/features`, a second or two after
-the server starts serving. It does not happen without the shim, and it does
-not happen when plex.tv is unreachable — which is how the cluster currently
-runs, with a `hostAliases` entry pointing plex.tv at loopback.
+Plex reaches the point of answering requests -- `/identity` returns a real
+MediaContainer, `/servers` lists the server, plug-ins are up, ~35 PostgreSQL
+connections are live -- and then throws, uncaught, from a thread that was
+handling a plug-in message. It has appeared as
 
-That is a diagnostic, not a fix: claiming a server and remote access both need
-plex.tv. Whatever Plex reads back is either mis-stored or mis-returned through
-the shim; the next step is to find which column round-trips wrong, since
-nothing in the shim touches HTTP.
+- `std::out_of_range: basic_string`, on two threads at once, each just after a
+  200 from the server's own system plug-in on loopback;
+- `std::domain_error: Invalid uuid length`, on the HttpClient thread; and
+- `BadRequestException: HTTP status code 400`, after about seven minutes.
+
+They look like one defect producing different symptoms depending on which
+string is wrong. The same image without `LD_PRELOAD` runs for hours with every
+plug-in up, so it is the shim.
+
+**Ruled out, with the evidence, so nobody repeats them:**
+
+- *plex.tv.* The egress filter was verifiably installed 52 seconds before Plex
+  started and it still died. Pointing the names elsewhere is worse than
+  useless: at loopback Plex reaches its own HTTP server and dies on the 400,
+  and at an unroutable address it dies parsing what comes of the timeout.
+- *SQL translation.* `PLEX_PG_VALIDATE_OUTPUT=all` reports no mismatch, and
+  `plex_pg_fallbacks.log` is empty -- nothing fell back to SQLite.
+- *Value lengths.* Tracing every `sqlite3_value_text` beside every
+  `sqlite3_value_bytes` shows them agreeing on the accounts row the crash
+  follows: `copied=13 len=13` for `'Administrator'`, `2`/`2` for the language
+  columns.
+- *The fake-value API.* `PLEX_PG_DISABLE_COLUMN_VALUE=1` does not help, though
+  the phase ring is full of `column_value`/`value_type`/`value_int64`.
+- *The data itself.* `plugins`, `accounts` and `devices` all hold sane values;
+  the identifiers are well-formed UUIDs of the right length.
+- *Everything in the list above this section*, each of which was a real defect
+  and none of which was this one.
+
+`PLEX_PG_DISABLE_SHIM_INIT=1` is **not** a useful control: the shim still
+interposes `sqlite3_open` while declining to redirect, so Plex cannot reach any
+database at all and dies of that instead.
+
+**Where to look next.** The SQL and the values are right, so the next suspect
+is the rest of the interposed surface -- `syscall`, `clone`, `fork`, `prctl`,
+`setsid`, `daemon`, `pthread_setname_np`, `sigaction`, `setsockopt`,
+`__cxa_throw`. Two of that set have already turned out to be broken (`vfork`
+and `boost::locale::util::create_simple_converter`), both by getting an ABI
+wrong, which makes the rest worth auditing the same way: check each declared
+signature against the real one, and remember that anything returning a class
+type takes a hidden result pointer in RDI.
+
+A version script that exports only the symbols the shim means to interpose
+would also be worth having, and would let the set be bisected by rebuilding
+rather than by reasoning.
 
 ## Races fixed in the fork
 
