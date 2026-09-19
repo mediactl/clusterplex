@@ -71,6 +71,14 @@ type Config struct {
 	// PlexMode is whether Plex runs on every pod ("active") or only on the
 	// lease holder ("elected").
 	PlexMode string
+	// BlockPlexTV keeps every pod away from Plex's own services, the lease
+	// holder included.
+	//
+	// For a cluster that is not meant to be published, or one being kept off
+	// plex.tv while something is investigated. The packets are dropped, which
+	// reads to Plex as an ordinary outage and it serves regardless, but
+	// nothing can claim the server or serve remotely while this is set.
+	BlockPlexTV bool
 	// ExternalURL is the address clients reach the proxy on. Plex advertises
 	// it as a custom connection; without it Plex offers only the link-local
 	// address inside its own namespace, which no client can reach.
@@ -136,6 +144,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("postgres-pool-max", 100, "most connections the shim will open; the database max_connections must cover this times the pod count")
 	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
 	fs.String("plex-mode", plexModeElected, "run Plex on every pod (active) or only on the lease holder (elected); active needs egress control so only one pod reaches plex.tv")
+	fs.Bool("block-plex-tv", false, "keep every pod away from plex.tv, the lease holder included; Plex still serves but cannot be claimed or reached remotely")
 	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
@@ -195,6 +204,7 @@ func loadConfig(args []string) (Config, error) {
 		WorkerPort:      port("worker-port"),
 		ProbePort:       port("probe-port"),
 		PlexMode:        v.GetString("plex-mode"),
+		BlockPlexTV:     v.GetBool("block-plex-tv"),
 		ExternalURL:     strings.TrimSpace(v.GetString("plex-external-url")),
 		ShimLibrary:     v.GetString("shim-library"),
 		SubreaperBinary: v.GetString("plex-subreaper"),

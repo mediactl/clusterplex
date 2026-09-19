@@ -143,3 +143,30 @@ func TestDefaultHostsCoverPlexsOwnServices(t *testing.T) {
 	assert.Contains(t, DefaultBlockedHosts, "plex.tv")
 	assert.Contains(t, DefaultBlockedHosts, "pubsub.plex.tv")
 }
+
+func TestEgressGuardBlocksTheLeaderTooWhenNobodyMayReachPlexTV(t *testing.T) {
+	// An operator needs to be able to keep every pod away from plex.tv, lease
+	// holder included: a cluster that is not meant to be published, or one
+	// being kept off it while something is investigated.
+	//
+	// Packets are dropped, which is the case Plex is built for -- a server
+	// that cannot reach plex.tv still serves. Pointing the names elsewhere
+	// instead does not work: at loopback Plex reaches its own HTTP server and
+	// dies on the 400 it gets back, and at an unroutable address it dies
+	// parsing what comes of the timeout.
+	//
+	// This is a deliberate degradation -- no claiming, no remote access -- so
+	// it is off unless asked for.
+	spy := &fakeBlocklist{}
+	g := &EgressGuard{
+		Blocklist: spy,
+		BlockAll:  true,
+		Resolve: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("198.51.100.7")}, nil
+		},
+	}
+
+	require.NoError(t, g.Apply(context.Background(), true))
+
+	assert.NotEmpty(t, spy.current, "the lease holder must be blocked as well")
+}

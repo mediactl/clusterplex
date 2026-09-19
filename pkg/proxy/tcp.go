@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +28,9 @@ type TCP struct {
 	lis  net.Listener
 	wg   sync.WaitGroup
 	done chan struct{}
+	// down records whether upstream was unreachable last time we dialled, so
+	// an outage is reported once rather than once per connection.
+	down atomic.Bool
 }
 
 // Start binds Listen and serves until ctx is cancelled. It returns the bound
@@ -83,8 +87,16 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 	d := net.Dialer{Timeout: timeout}
 	upstream, err := d.DialContext(ctx, "tcp", p.Target)
 	if err != nil {
-		p.log().Warn("proxy upstream dial failed", "target", p.Target, "error", err)
+		// Plex is unreachable whenever it is restarting, and everything that
+		// dials it -- every client, every health poll -- arrives here. Report
+		// the outage, not each connection that notices it.
+		if !p.down.Swap(true) {
+			p.log().Warn("proxy upstream is unreachable", "target", p.Target, "error", err)
+		}
 		return
+	}
+	if p.down.Swap(false) {
+		p.log().Info("proxy upstream is reachable again", "target", p.Target)
 	}
 	defer func() { _ = upstream.Close() }()
 

@@ -57,14 +57,15 @@ func (b *NFTBlocklist) Set(_ context.Context, addrs []netip.Addr) error {
 		}
 		// Rebuild rather than reconcile: the set is small and replacing it
 		// wholesale avoids tracking what changed.
+		//
+		// The teardown gets its own flush. Sharing one with the rebuild means
+		// the first install -- where there is no chain to tear down yet --
+		// fails the whole batch on the delete.
 		conn.DelChain(chain)
+		if err := ignoreMissing(conn.Flush()); err != nil {
+			return fmt.Errorf("remove egress filter: %w", err)
+		}
 		if len(addrs) == 0 {
-			// The lease holder never had a filter, so its first call here asks
-			// to delete a chain that does not exist. Already absent is the
-			// outcome we wanted.
-			if err := ignoreMissing(conn.Flush()); err != nil {
-				return fmt.Errorf("remove egress filter: %w", err)
-			}
 			return nil
 		}
 

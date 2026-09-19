@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
@@ -237,4 +238,42 @@ func TestProvisioningTwiceFailsCleanlyRatherThanLeavingDebris(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count, "only the first network's link may remain")
+}
+
+func TestBlockingAddressesWorksTheFirstTimeThereIsNoFilterYet(t *testing.T) {
+	// The chain is torn down and rebuilt on every change, and the teardown
+	// used to share a flush with the rebuild. On the very first install there
+	// is no chain to tear down, so the whole batch failed:
+	//
+	//	install egress filter: conn.Receive: netlink receive:
+	//	  no such file or directory
+	//
+	// Nothing caught it, because the lease holder is the only pod that ever
+	// had an empty set and every other pod started from one it had installed
+	// itself. Blocking the lease holder too -- which is how a cluster runs
+	// while Plex cannot survive talking to plex.tv -- goes straight down this
+	// path.
+	net := provision(t)
+	block := net.Blocklist()
+
+	err := net.Do(func() error {
+		return block.Set(context.Background(), []netip.Addr{
+			netip.MustParseAddr("198.51.100.7"),
+		})
+	})
+	require.NoError(t, err, "the first install has no chain to replace")
+
+	// And again, now that there is one to replace.
+	err = net.Do(func() error {
+		return block.Set(context.Background(), []netip.Addr{
+			netip.MustParseAddr("198.51.100.8"),
+		})
+	})
+	require.NoError(t, err)
+
+	// Removing it is still fine.
+	err = net.Do(func() error {
+		return block.Set(context.Background(), nil)
+	})
+	require.NoError(t, err)
 }

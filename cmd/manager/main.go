@@ -161,6 +161,7 @@ func run() int {
 	// appear to move between addresses, which breaks remote access.
 	m.egress = &plexnet.EgressGuard{
 		Blocklist: plexNet.Blocklist(),
+		BlockAll:  cfg.BlockPlexTV,
 		Logger:    logger.With("component", "egress"),
 	}
 

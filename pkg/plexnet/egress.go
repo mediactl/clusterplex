@@ -40,7 +40,17 @@ type Blocklist interface {
 // cannot talk to plex.tv still serve.
 type EgressGuard struct {
 	// Hosts to block; DefaultBlockedHosts when empty.
-	Hosts     []string
+	Hosts []string
+	// BlockAll keeps every pod away from these names, the lease holder
+	// included, rather than only the pods that do not hold it.
+	//
+	// For when nothing should reach plex.tv at all: a cluster that is not
+	// meant to be published, or one being kept off it while something is
+	// investigated. Plex is built to run without it -- the packets are
+	// dropped, which reads to Plex as an ordinary outage -- but nothing can
+	// claim the server or serve remotely while it is set, so it is not the
+	// default.
+	BlockAll  bool
 	Blocklist Blocklist
 	// Resolve looks a hostname up; net.DefaultResolver when nil.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
@@ -74,9 +84,13 @@ func (g *EgressGuard) Apply(ctx context.Context, holdsLease bool) error {
 	g.applied, g.valid = want, true
 	g.mu.Unlock()
 
-	if len(want) == 0 {
+	switch {
+	case len(want) == 0:
 		g.log().Info("this pod holds the plex.tv lease; egress is open")
-	} else {
+	case g.BlockAll:
+		g.log().Info("no pod may reach Plex's own services; blocking them here too",
+			"addresses", len(want))
+	default:
 		g.log().Info("this pod does not hold the plex.tv lease; blocking Plex's own services",
 			"addresses", len(want))
 	}
@@ -86,7 +100,7 @@ func (g *EgressGuard) Apply(ctx context.Context, holdsLease bool) error {
 // wanted is the set of addresses to block, sorted so that an unchanged set
 // compares equal.
 func (g *EgressGuard) wanted(ctx context.Context, holdsLease bool) ([]netip.Addr, error) {
-	if holdsLease {
+	if holdsLease && !g.BlockAll {
 		return nil, nil
 	}
 
