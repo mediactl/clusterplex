@@ -85,12 +85,49 @@ What each retired piece is replaced by:
 Plex advertises what it is told to advertise, and it must be told the
 Gateway's address. That does not change, only the address does.
 
-### Persistence must key on a header, not a cookie
+### Not `sessionPersistence`. Consistent hashing.
 
-Plex clients are not browsers. They identify themselves with
-`X-Plex-Client-Identifier` and `X-Plex-Session-Identifier`, and cookie handling
-across the native clients is not something to rely on. `sessionPersistence`
-supports both; this uses the header form.
+This was tested in kind against Envoy Gateway v1.9.1 and Gateway API v1.6.2
+experimental, and the mechanism this ADR was named after turned out to be the
+wrong one.
+
+`sessionPersistence` is not affinity on a header the client already sends. Per
+GEP-1619 the *gateway* mints the session and the client returns it. Envoy
+accepts the route — `Accepted=True` — and then answers with its own value:
+
+    x-plex-client-identifier: MTAuMjQ0LjAuMjMzOjgw     # base64 "10.244.0.233:80"
+
+That is the backend endpoint, not the client's identifier. Twelve requests
+carrying one `X-Plex-Client-Identifier` spread 9/2/1 across three pods, because
+the value the client sent was never a session Envoy had issued. Plex clients
+send their own identifier and will never echo Envoy's — and Envoy *overwrites*
+that response header trying, clobbering a header Plex's own protocol uses. The
+Cookie form is no better for the same reason and worse for non-browsers.
+
+Consistent hashing asks for no cooperation. It hashes a header the client
+already sends, which is exactly what `pkg/hashring` does today. Envoy Gateway
+exposes it through its own `BackendTrafficPolicy`:
+
+    loadBalancer:
+      type: ConsistentHash
+      consistentHash:
+        type: Header
+        header:
+          name: X-Plex-Client-Identifier
+
+Measured on the same three pods, same requests:
+
+| Requests | Result |
+| --- | --- |
+| No header | spread 5 / 4 / 3 |
+| `client-aaaa` × 12 | 12 to one pod |
+| `client-bbbb` × 12 | 12 to a different pod |
+
+**This costs portability, and that is the trade to weigh.** `BackendTrafficPolicy`
+is `gateway.envoyproxy.io/v1alpha1`, not Gateway API, so the routing stops
+being implementation-neutral and moving off Envoy Gateway means rewriting it.
+The alternative is keeping a hash ring we maintain ourselves, which is what
+the tier already is.
 
 The affinity has to outlive a transcode. Since ADR-0004 the transcode chunks
 live on a per-pod `emptyDir`, so a client that bounces to another pod mid-stream
@@ -111,13 +148,13 @@ provides it. A hash ring that pins on a token we choose is more predictable
 than persistence keyed on a header the client may or may not send on every
 request.
 
-**Unresolved, and why this is Proposed.** `sessionPersistence` is GEP-1619 and
-still experimental in Gateway API. Support is thin and uneven, and it is not
-obvious that any implementation offers header-based persistence on an
-`HTTPRoute` rather than only cookie-based, or only through a
-`BackendLBPolicy`. **This ADR cannot be accepted until one implementation is
-named and shown to do it.** There is no Gateway API in the cluster today — no
-CRDs at all — so this is greenfield and the choice is open.
+**Resolved, and it changed the decision.** The blocking question was whether
+any implementation offers header-based persistence. Envoy Gateway v1.9.1 does
+not, in the Gateway API sense, and neither does the spec mean what this ADR
+assumed it meant. Consistent hashing through Envoy Gateway's own
+`BackendTrafficPolicy` does the job instead, proved above. What is left to
+decide is not feasibility but whether an implementation-specific CRD is an
+acceptable price for deleting four packages.
 
 **To measure, not assume.** A Gateway is itself a data path. Today media bytes
 never touch a Plex pod; afterwards they cross the Gateway *and* a Plex pod, so
@@ -127,10 +164,10 @@ trades a bottleneck for a bottleneck and the offload was worth keeping.
 
 ## Action Items
 
-1. [ ] Pick a Gateway API implementation and prove header-based
-       `sessionPersistence` on an `HTTPRoute`, in kind, before anything else.
-       If none does it, this ADR is rejected and the tier gets repaired
-       instead — starting with the selector mismatch.
+1. [x] Prove the affinity mechanism in kind before anything else. Done, and
+       it rejected `sessionPersistence` in favour of consistent hashing; see
+       above. Envoy Gateway v1.9.1, Gateway API v1.6.2 experimental, both
+       installed in the kind cluster.
 2. [ ] Measure throughput through the Gateway against throughput through the
        proxy, with enough clients to saturate one pod's interface.
 3. [ ] Only then: the Gateway, the HTTPRoute, and `customConnections` pointed
@@ -139,6 +176,13 @@ trades a bottleneck for a bottleneck and the offload was worth keeping.
        and the `clusterplex.io/plex-serving` annotation.
 5. [ ] Rewrite `docs/media-proxy-pattern.md` as historical, the way ADR-0001
        was. It is the only record of why the offload existed and what it cost.
-6. [ ] Independently of all of the above, fix the two defects found here: the
-       selector mismatch and the role label. They are live now and the first
-       one means the manifests have never had a working proxy tier.
+6. [x] Independently of all of the above, fix the defects found here. The role
+       label follows the lease again, and `plex-main` no longer selects on it
+       at all — every pod runs Plex and readiness already means this pod's Plex
+       is answering, so selecting the holder sent every client to one pod. A
+       third defect turned up while testing: network-namespace provisioning
+       was not idempotent across a container restart, so any restart left a
+       pod crash-looping for ever on `create veth pair plex0/plex1: file
+       exists`. All three are fixed.
+7. [ ] The selector mismatch between `charts/` and `k8s/base` remains, and
+       matters only while `pkg/plexroute` does. It disappears with the tier.
