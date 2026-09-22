@@ -259,82 +259,76 @@ several of those inferences were wrong.
 
 ### Still open: `Invalid uuid length` once plex.tv is reachable
 
-With plex.tv resolving normally, Plex serves for a few seconds and then
-throws, uncaught, immediately after a 200 from `plex.tv/api/v2/features`:
+With plex.tv resolving normally, Plex serves for a few seconds and then throws,
+uncaught, about twenty milliseconds after a 200 from `plex.tv/api/v2/features`:
 
     libc++abi: terminating with uncaught exception of type
     std::domain_error: Invalid uuid length
 
-**The response is not the problem, and the charset is not either.** Fetched by
-hand: 5182 bytes, `Content-Type: application/xml; charset=utf-8`, 61 `uuid`
-attributes, every one of them 36 characters, and **not one non-ASCII byte in
-the body**. An ASCII-to-UTF-8 conversion of it is a no-op, so the
-`create_simple_converter` redirect cannot be corrupting it.
+**The parser accepts one length and one only.** From the throw site itself --
+`0x1fccba` is the message; `0x2a31cd`, which earlier notes pointed at, is the
+neighbouring *"Character at index 8 must be a '-'"*:
 
-That retires the chain this file used to record, which had Plex asking
-`boost::locale` for the ASCII charset and the redirect producing uuids that no
-longer parse. Whatever Plex is parsing as a uuid at that moment, it is not a
-`uuid=` attribute of that document.
+    11497ad:  cmp  $0x24,%rsi       ; length == 36?
+    11497b1:  jne  114992c          ; no -> throw "Invalid uuid length"
+    11497ba:  cmpb $0x2d,0x8(%rdi)  ; then dashes at 8, 13, 18, 23
 
-The backtrace, which is the thing to build on:
+Not 32, not 38, which boost normally also takes. Exactly 36.
 
-    [0] __cxa_throw
-    [1] Plex Media Server+0x11499d6   boost uuid string_generator, throws
-    [2] Plex Media Server+0x1149ab5
-    [3] Plex Media Server+0x1148333
-    [4] Plex Media Server+0x1148ff7
-    [5] Plex Media Server+0x8ba213    returns from a virtual call
-    [6..] the HTTP request dispatch
+**What feeds it.** The function two frames up holds the literals `//feature`
+and `uuid`: it runs that XPath over an XML document, collects each selected
+element's `uuid` attribute into a list, and parses every entry. The loop reads
+a libc++ string per node and passes (data, size) straight in, so a missing
+attribute arrives as an empty string -- length 0, and the throw.
 
-Frame 5 is the return from `call *0x10(%rdi)`, so the uuid parse is reached
-through a vtable and the caller does not name it. The next step is to find
-what object that is.
+And the documents differ in exactly that way:
 
-**Not yet ruled out, and worth checking before anything else:** that no
-locale is set at all, so the process charset is ASCII. `LANG=C.UTF-8` and
-`LC_ALL=C.UTF-8` were tried and changed nothing, but the only locale built
-into the image is `C.utf8`, which is the spelling `boost::locale` does not
-parse -- so that test may have proved only that the name was ignored.
+| document | `<feature>` elements | carrying `uuid=` |
+| --- | --- | --- |
+| `/api/v2/features` (anonymous or claimed) | 61 / 174 | all of them |
+| `/api/v2/user?includeSubscriptions=1&includeProviders=1` | 174 | **none** |
 
-**Ruled out since, each by testing it:**
+The user document's features carry `id` only.
 
-- *The response.* 5182 bytes, `charset=utf-8`, 61 `uuid` attributes, every one
-  36 characters, and not one non-ASCII byte. Nothing to mangle.
-- *An empty `PlexOnlineToken`.* A claim attempted while plex.tv was pinned to
-  loopback fails and leaves `PlexOnlineToken=""` in `Preferences.xml`, which
-  is not the same state as the attribute being absent -- Plex then talks to
-  plex.tv as though it had an account. Removing it changes nothing.
-- *A short string.* libc++ keeps a string of 22 bytes or fewer inside the
-  object, so a short or empty one would still be readable on the crashing
-  thread's stack in the minidump. There is none, so whatever failed to parse
-  is 23 characters or more and lives on the heap. 32, 36 and 38 are the
-  lengths boost accepts, so it is some other length above 22.
+**The control that matters, and that earlier attempts got wrong.** Run the
+pinned Plex on its own -- same version, same auth token, same plex.tv, its own
+fresh SQLite, no `LD_PRELOAD`, no PostgreSQL, no manager:
 
-**Where the frames actually are.** Nearest-symbol lookup invents names in this
-binary -- only ~1700 of its functions have symbols -- but every function has
-an FDE, and those ranges are exact:
+```sh
+docker run -d --name plexbare -v "$CFG:/config" \
+  -e "PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR=/config/Library/Application Support" \
+  -e "LD_LIBRARY_PATH=/usr/lib/plexmediaserver/lib" \
+  --entrypoint "/usr/lib/plexmediaserver/Plex Media Server" \
+  ghcr.io/mediactl/cluster-plex:<tag>
+```
 
-    0x11499d6  in 0x114979c..0x11499f1   throws
-    0x1149ab5  in 0x1149a5c..0x1149cec
-    0x1148333  in 0x114788c..0x11485ff
-    0x1148ff7  in 0x1148cd8..0x114942c   the virtually dispatched callee
-    0x8ba213   in 0x8ba1e6..0x8ba237     a 0x51-byte thunk, `call *0x10(%rdi)`
+It runs for as long as you leave it, fetches `/api/v2/user` repeatedly, and
+throws nothing -- MyPlex gets as far as "updating with 24 access tokens". So
+the user document is **not** inherently fatal, the pinned Plex is **not** too
+old for today's plex.tv, and the fault is on our side.
 
-`0x1148cd8` appears in no static vtable, and the pointer the thunk stores
-beside it is a zeroed slot filled at load time, so neither names the class.
+Do not repeat the invalid version of this control: starting Plex without the
+shim *inside our image* reuses the shadow SQLite the entrypoint builds, which
+is deliberately incomplete (`no such module: spellfix1`), so Plex dies in
+`DatabaseFixups` instead and proves nothing.
 
-**The configuration that works, and is supported.** With the NULL column fix
-in, `--block-plex-tv` (chart: the `block-plex-tv` flag, not a `hostAliases`
-patch) gives a healthy server: `1/1`, no crashes, serving. It cannot be
-claimed or reached remotely, but it is a real setting rather than a debugging
-hack, and it is the one to run under until this is understood.
+**The difference to chase.** The standalone asks for
+`/api/v2/server/users/features` and gets 200. Ours never asks for it at all;
+it asks for `/api/v2/server/users` and `/api/v2/server/users/subscriptions`
+instead. If the features list normally comes from the server endpoint and only
+falls back to the user document when that is missing, then the fallback is the
+path that throws, and the question becomes why our server never makes that
+request -- `PublishServerOnPlexOnlineKey` is forced to `0` here, so plex.tv
+never registers this server.
 
-**A control that looks decisive and is not:** running Plex without the
-interposer. It still crashes, but earlier and somewhere else, in
-`DatabaseFixups`, because without the shim Plex runs against the shadow
-SQLite the entrypoint builds for the shim's benefit -- which is deliberately
-incomplete (`no such module: spellfix1`). A real no-shim control needs a Plex
-that built its own library database.
+**Ruled out, each by testing it:** the response body (5182 bytes, pure ASCII,
+every uuid 36); the charset and the `create_simple_converter` redirect;
+`PlexOnlineToken=""` left behind by a claim that failed while plex.tv was
+pinned to loopback; `ProcessedMachineIdentifier` (40 characters, and not
+derived from the MachineIdentifier this repo forces); 24-character client
+identifiers in `plex.devices`; and claiming the server, which works -- the
+token can be exchanged out of band and written into `Preferences.xml` -- but
+does not stop the crash.
 
 ### The configuration that does work
 
