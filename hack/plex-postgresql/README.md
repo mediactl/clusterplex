@@ -230,61 +230,78 @@ be fixed, because that is the order they appear if anyone repeats this.
 With those in place Plex starts, answers `/identity` with a real
 MediaContainer, runs its plug-ins and holds ~35 PostgreSQL connections.
 
-### Still open: Plex cannot read plex.tv's answer
+### Fixed: the crash on `GET /` was a NULL column reported as TEXT
 
-Plex reaches the point of answering requests -- `/identity` returns a real
-MediaContainer, `/servers` lists the server, the plug-ins are up, ~35
-PostgreSQL connections are live -- and then throws, uncaught, from the
-HttpClient thread, moments after a 200 from `plex.tv/api/v2/features`.
+`sqlite3_column_type` never returned SQLITE_NULL. For a NULL value it
+reported the type derived from the PostgreSQL OID instead, so Plex could not
+tell "no value" from "empty value". Upstream added that to stop SOCI throwing
+`std::bad_cast` when the holder it allocated from `sqlite3_column_decltype`
+did not match; real SQLite returns SQLITE_NULL and SOCI copes with it, so a
+bad_cast means the decltype is wrong and that is the bug to fix.
 
-The chain, end to end:
+What it cost: the plug-in framework issues `GET /`, which runs a LEFT JOIN
+over `plugins` and `plugin_prefixes`, and `plugin_prefixes.prefix` is NULL for
+every plugin without a prefix. Told the column was TEXT, Plex read an empty
+string and parsed it as a path -- it looks for the second `/`, does not find
+one, and builds a substring at the resulting negative offset:
 
-1. The server is unclaimed, so Plex asks for features with no token:
-   `GET https://plex.tv/api/v2/features?X-Plex-Token=`.
-2. plex.tv answers 200 with about 5KB of well-formed UTF-8 XML, every
-   `uuid="..."` attribute a proper 36-character UUID. Fetched by hand to be
-   sure; there is nothing wrong with the response.
-3. Plex converts that body through `boost::locale`, which with the shim
-   loaded ends up asking for the **ASCII** charset.
-4. Boost's simple backend refuses ASCII outright, and redirecting it to UTF-8
-   yields something whose uuid attributes no longer parse.
+    libc++abi: terminating with uncaught exception of type
+    std::out_of_range: basic_string
 
-That single mechanism accounts for every symptom seen, which is why they
-looked unrelated:
+one millisecond after the request. Fixed in `v1.3.17-clusterplex.10`; `GET /`
+now answers 200, including the two concurrent ones the plug-ins issue at
+startup.
 
-| plex.tv | what Plex does | how it dies |
-| --- | --- | --- |
-| reachable | converts the body | `std::domain_error: Invalid uuid length` |
-| dropped by the egress filter | converts what came of the timeout | `std::out_of_range: basic_string` |
-| answered by Plex itself (loopback) | **no body to convert** | survives; dies after ~7 min on the 400 |
-| reachable, no charset redirect | refuses the charset | `invalid_charset_error: ... ASCII` |
+The throw site was found with the `__cxa_throw` backtrace added in the same
+tag (`PLEX_PG_EXCEPTION_BACKTRACE=1`), then read off the disassembly. Reach
+for that first next time: everything before it in this file was inference, and
+several of those inferences were wrong.
 
-The bottom row is what the ASCII-to-UTF-8 redirect above was added for. It
-moves the failure rather than fixing it, which means the redirect is not the
-answer and the question is upstream of it: **why does Plex ask boost for ASCII
-only when the shim is loaded?** The same image without `LD_PRELOAD` never
-reaches `create_simple_converter` at all.
+### Still open: `Invalid uuid length` once plex.tv is reachable
 
-The likeliest explanation, untested: `boost::locale` prefers its ICU backend
-and falls back to the simple one when ICU is not registered. Registration
-happens in `libboost_locale.so`'s static initialisers, and `LD_PRELOAD`
-changes initialisation order. If the shim causes boost::locale to initialise
-before ICU has registered, every later conversion goes to the simple backend,
-which is the only backend that cannot do ASCII. Worth checking before anything
-else: instrument or breakpoint the backend selection, with and without the
-shim, and compare.
+With plex.tv resolving normally, Plex serves for a few seconds and then
+throws, uncaught, immediately after a 200 from `plex.tv/api/v2/features`:
 
-**Ruled out, with the evidence, so nobody repeats them:** the SQL translation
-(`PLEX_PG_VALIDATE_OUTPUT=all` reports no mismatch and the fallback log is
-empty); the value lengths (every `value_text` traced beside its `value_bytes`,
-agreeing exactly on the row the crash follows); the fake-value API
-(`PLEX_PG_DISABLE_COLUMN_VALUE=1` changes nothing); the data (`plugins`,
-`accounts` and `devices` all hold well-formed values); stale state on the
-volume (a wiped `Library` and a dropped schema behave identically); and the
-preferences this architecture forces, which the working configuration has
-too. `PLEX_PG_DISABLE_SHIM_INIT=1` is **not** a valid control: the shim still
-interposes `sqlite3_open` while declining to redirect, so Plex cannot reach
-any database and dies of that instead.
+    libc++abi: terminating with uncaught exception of type
+    std::domain_error: Invalid uuid length
+
+**The response is not the problem, and the charset is not either.** Fetched by
+hand: 5182 bytes, `Content-Type: application/xml; charset=utf-8`, 61 `uuid`
+attributes, every one of them 36 characters, and **not one non-ASCII byte in
+the body**. An ASCII-to-UTF-8 conversion of it is a no-op, so the
+`create_simple_converter` redirect cannot be corrupting it.
+
+That retires the chain this file used to record, which had Plex asking
+`boost::locale` for the ASCII charset and the redirect producing uuids that no
+longer parse. Whatever Plex is parsing as a uuid at that moment, it is not a
+`uuid=` attribute of that document.
+
+The backtrace, which is the thing to build on:
+
+    [0] __cxa_throw
+    [1] Plex Media Server+0x11499d6   boost uuid string_generator, throws
+    [2] Plex Media Server+0x1149ab5
+    [3] Plex Media Server+0x1148333
+    [4] Plex Media Server+0x1148ff7
+    [5] Plex Media Server+0x8ba213    returns from a virtual call
+    [6..] the HTTP request dispatch
+
+Frame 5 is the return from `call *0x10(%rdi)`, so the uuid parse is reached
+through a vtable and the caller does not name it. The next step is to find
+what object that is.
+
+**Not yet ruled out, and worth checking before anything else:** that no
+locale is set at all, so the process charset is ASCII. `LANG=C.UTF-8` and
+`LC_ALL=C.UTF-8` were tried and changed nothing, but the only locale built
+into the image is `C.utf8`, which is the spelling `boost::locale` does not
+parse -- so that test may have proved only that the name was ignored.
+
+**A control that looks decisive and is not:** running Plex without the
+interposer. It still crashes, but earlier and somewhere else, in
+`DatabaseFixups`, because without the shim Plex runs against the shadow
+SQLite the entrypoint builds for the shim's benefit -- which is deliberately
+incomplete (`no such module: spellfix1`). A real no-shim control needs a Plex
+that built its own library database.
 
 ### The configuration that does work
 
