@@ -164,7 +164,7 @@ server exits before it serves:
 
     Unable to set up server: sqlite3_statement_backend::loadOne: not an error
 
-Two separate defects, both fixed in `v1.3.17-clusterplex.12`:
+Three separate defects, fixed in `v1.3.17-clusterplex.12` and `.13`:
 
 - **`fts4` DDL reached PostgreSQL untranslated.** `rewrite_virtual_tables`
   handled `fts5` and `rtree`; Plex writes `fts4`. The drops were worse than the
@@ -179,6 +179,13 @@ Two separate defects, both fixed in `v1.3.17-clusterplex.12`:
   transaction the migrations were holding open, where SQLite refuses it.
   `BEGIN` and `COMMIT` take the same path and hid the gap for as long as they
   did because they succeed against the shadow.
+- **`sqlite_stat1` went to PostgreSQL.** It holds what `ANALYZE` collected for
+  SQLite's query planner, and belongs to SQLite the way `sqlite_master` does —
+  but it was missing from the passthrough list, so Plex's read of it became
+  `relation "main.sqlite_stat1" does not exist` on every start. Nothing here
+  defines it, neither the dump nor the shadow schema. It goes to the shadow
+  now, which answers "no such table", which is what Plex sees on any library
+  nothing has analyzed. Not fatal, but it was the last line in the log.
 
 **Always run the control.** The first time, the failing run proves nothing on
 its own — the harness could be at fault. Build the *current* pin from the same
