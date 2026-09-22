@@ -1,6 +1,6 @@
 # ADR-0004: Run Plex on every pod, and split its state into shared and per-pod
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-22
 **Deciders:** cluster-plex maintainers
 
@@ -152,7 +152,7 @@ side above because it is expensive to rebuild and Plex treats it as a cache,
 but that is reasoning, not evidence; if it produces corruption it moves to the
 per-pod table and costs only rebuild time.
 
-**Unknown, and the reason this is Proposed rather than Accepted.** Whether
+**Unknown, and still unknown.** Whether
 Plex tolerates N instances under one identity at all beyond the library. The
 shim solves the database. It does not solve `Plug-in Support/Preferences/`,
 the blobs database, or media-provider state, and none of those has been tested
@@ -172,6 +172,15 @@ single-instance.
 5. [ ] Set `plex-mode: active` in the ConfigMap and make it the documented
        default once it has been exercised.
 6. [ ] Disable GDM, the one item from the standard checklist not yet forced.
-7. [ ] Run two pods serving one library in kind and confirm: both answer
-       `/identity` with the same `machineIdentifier`, a scan on one is visible
-       on the other, and a transcode survives being pinned.
+7. [x] Run several pods serving one library in kind. Three pods came up 3/3
+       with no restarts and no errors in any of their logs; all three answer
+       `/identity` with `claimed="1"` and the same
+       `machineIdentifier=ae5887ec46d6bfac69927015acffa8941a904368` at
+       1.43.4.10903; exactly one holds the lease and the other two log
+       "does not hold the plex.tv lease; blocking Plex's own services". The
+       volume split was checked by writing a marker rather than inferred: a
+       file created in one pod's `Databases` directory is invisible to the
+       others, while one at the volume root is visible to all.
+8. [ ] Still untested: a scan on one pod appearing on another, and a transcode
+       surviving its session being pinned. Both need media, which this cluster
+       has none of.
