@@ -321,6 +321,42 @@ path that throws, and the question becomes why our server never makes that
 request -- `PublishServerOnPlexOnlineKey` is forced to `0` here, so plex.tv
 never registers this server.
 
+**The bisect, and it clears the shim.** Four things separate a Plex that
+works from ours: the interposer, the network namespace, the proxy and the
+manager. Adding them back one at a time:
+
+| what is running | result |
+| --- | --- |
+| Plex alone, own SQLite, claimed | runs indefinitely |
+| ...plus `PublishServerOnPlexOnlineKey=0`, `ManualPortMappingMode=1` | runs indefinitely |
+| ...plus the shim and a fresh PostgreSQL | **runs indefinitely** |
+| the full cluster | dies in ~1.5s of Plex uptime |
+
+So neither the preferences this repo forces nor the interposer cause it. What
+is left is the network namespace, the proxy and the manager.
+
+**What the working runs do that ours never gets to.** Every run that survives
+follows the same path within about two seconds of starting:
+
+    Webhook: User 1 () has 2 webhooks.
+    GET /api/v2/features -> 200
+    [EventSourceClient/pubsub/pubsub.plex.tv:443] Connected in 144 ms.
+    MyPlex: We appear to have regained Internet connectivity.
+    MyPlex: mapping state set to 'Mapped - Publishing'
+    GET /api/v2/server/users/features -> 200
+
+Ours logs the webhook line and dies on the next thing it touches. It never
+reaches `Mapped - Publishing`, and **it never opens the pubsub connection at
+all** -- `pubsub.plex.tv` appears zero times in its log, against a connection
+inside 150ms in every working run. Without that it never asks for
+`server/users/features`, which is the document whose `<feature>` elements
+carry the uuids; the only feature list it has is the one in `/api/v2/user`,
+where they are absent.
+
+That makes the long-running EventSource connection to `pubsub.plex.tv:443`
+the thing to look at next, and `pkg/plexnet` the place to look: Plex holds
+only a link-local address in there and everything outbound is translated.
+
 **Ruled out, each by testing it:** the response body (5182 bytes, pure ASCII,
 every uuid 36); the charset and the `create_simple_converter` redirect;
 `PlexOnlineToken=""` left behind by a claim that failed while plex.tv was
