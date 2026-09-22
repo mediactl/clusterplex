@@ -103,6 +103,15 @@ func Apply(path string, values map[string]string) ([]string, error) {
 		return nil, err
 	}
 
+	// Held across the read and the write together, not around the write
+	// alone: what is lost without it is one pod's merge landing on top of a
+	// copy another pod read before it. See lockPreferences.
+	unlock, err := lockPreferences(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	current, err := read(path)
 	if err != nil {
 		return nil, err

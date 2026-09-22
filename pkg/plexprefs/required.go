@@ -7,6 +7,13 @@ import "maps"
 // address inside its own network namespace that no client can reach.
 const customConnections = "customConnections"
 
+// transcoderTempDirectory is where Plex writes the chunks it transcodes into.
+// Every pod runs Plex and they share one volume for the identity and the
+// metadata, so this has to be steered onto per-pod storage: the chunks are
+// written and read back by the single pod serving that session, which the
+// proxy pins. Left alone Plex puts them under Cache, which is shared.
+const transcoderTempDirectory = "TranscoderTempDirectory"
+
 // required are the settings this architecture depends on, as opposed to the
 // ones an operator chooses. They are written on every start and refused as
 // configuration, because each of them has exactly one correct value here and a
@@ -22,6 +29,12 @@ var required = map[string]string{
 	// otherwise ask the router to forward a port straight to a pod address,
 	// routing around the proxy and the load balancer together.
 	"ManualPortMappingMode": "1",
+	// Local discovery, off. GDM broadcasts a pod's own address on the LAN, so
+	// every pod would announce itself separately under one server identity and
+	// a client on the same network would reach a pod directly rather than the
+	// proxy — which is what pins its session. Clients find the server through
+	// plex.tv and customConnections instead.
+	"GdmEnabled": "0",
 }
 
 // Required returns the settings the architecture fixes, independent of any
@@ -31,12 +44,16 @@ func Required() map[string]string { return maps.Clone(required) }
 // Enforced returns everything the manager writes into Preferences.xml itself.
 // externalURL is the address clients reach the proxy on; an empty one leaves
 // whatever Plex already advertises in place, because clearing it is worse than
-// not setting it.
-func Enforced(externalURL string) map[string]string {
+// not setting it. transcodeDir is the per-pod directory for transcode chunks,
+// and is treated the same way.
+func Enforced(externalURL, transcodeDir string) map[string]string {
 	prefs := maps.Clone(required)
 	maps.Copy(prefs, DisabledButlerTasks())
 	if externalURL != "" {
 		prefs[customConnections] = externalURL
+	}
+	if transcodeDir != "" {
+		prefs[transcoderTempDirectory] = transcodeDir
 	}
 	return prefs
 }
@@ -48,6 +65,8 @@ func forcedBy(name string) string {
 	switch {
 	case name == customConnections:
 		return "it must match the address the proxy actually serves; set plex.external-url"
+	case name == transcoderTempDirectory:
+		return "it must match the per-pod volume the pod actually mounts; set plex.transcode-dir"
 	case IsButlerTask(name):
 		return "each pod would run its own copy of the scheduler; maintenance is scheduled as CronJobs"
 	default:

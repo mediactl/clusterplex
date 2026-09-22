@@ -45,9 +45,10 @@ func TestConfigDefaults(t *testing.T) {
 	assert.Equal(t, "plex-0.plex-workers.media.svc.cluster.local:32400", c.PMSAddr())
 	assert.Empty(t, c.Preferences)
 
-	// The library is shared, so Plex's own scheduler is off by default and
-	// Plex runs on one pod until egress control makes active mode safe.
-	assert.Equal(t, plexModeElected, c.PlexMode)
+	// Per-pod, because every pod runs Plex and a session's chunks are read
+	// back by the pod that wrote them (ADR-0004).
+	assert.Equal(t, "/transcode", c.TranscodeDir)
+
 	assert.Equal(t, 5432, c.Postgres.Port)
 	assert.Equal(t, "plex", c.Postgres.Database)
 	assert.Equal(t, "plex", c.Postgres.User)
@@ -70,7 +71,7 @@ func TestPlexNeverRunsItsOwnScheduler(t *testing.T) {
 	// knowledge of the others, so there is no mode in which leaving it on is
 	// right. There is deliberately no flag to turn it back on.
 	podIdentity(t)
-	c, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-mode", plexModeActive})
+	c, err := loadConfig([]string{"--postgres-host", "postgres"})
 	require.NoError(t, err)
 
 	for _, task := range plexprefs.ButlerTasks {
@@ -105,6 +106,36 @@ func TestUPnPAndRemoteAccessPublishingAreForcedOff(t *testing.T) {
 	prefs := c.EnforcedPreferences()
 	assert.Equal(t, "0", prefs["PublishServerOnPlexOnlineKey"])
 	assert.Equal(t, "1", prefs["ManualPortMappingMode"])
+	// GDM announces a pod's own address on the LAN. Every pod would announce
+	// itself under one identity, and a client on the same network would reach
+	// a pod directly rather than the proxy that pins its session.
+	assert.Equal(t, "0", prefs["GdmEnabled"])
+}
+
+func TestTheTranscodeDirectoryIsForcedOntoPerPodStorage(t *testing.T) {
+	// Every pod runs Plex (ADR-0004) and they share one volume for Metadata
+	// and the identity. Transcode chunks must not go there: they are written
+	// and read back by the one pod serving that session, which the proxy pins,
+	// so shared storage would be a network round trip per chunk for nothing.
+	// Left to itself Plex puts them under Cache, which is shared.
+	podIdentity(t)
+	c, err := loadConfig([]string{"--postgres-host", "postgres"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "/transcode", c.EnforcedPreferences()["TranscoderTempDirectory"])
+}
+
+func TestTheTranscodeDirectoryCanBeMovedButNotDeclared(t *testing.T) {
+	// It has to match what the pod actually mounts, so it is a setting of its
+	// own rather than a preference an operator writes by hand.
+	podIdentity(t)
+	c, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-transcode-dir", "/fast/transcode"})
+	require.NoError(t, err)
+	assert.Equal(t, "/fast/transcode", c.EnforcedPreferences()["TranscoderTempDirectory"])
+
+	_, err = loadConfig([]string{"--plex-preference", "TranscoderTempDirectory=/tmp"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TranscoderTempDirectory")
 }
 
 func TestAForcedSettingCannotBeDeclaredAsAPreference(t *testing.T) {

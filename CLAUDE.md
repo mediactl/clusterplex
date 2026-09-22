@@ -53,11 +53,18 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   route to plex.tv dropped in nftables.
 - **The Lease is the only source of truth for leadership.** Do not reintroduce a
   derived copy such as a pod label; a cache can disagree, and one did.
-- **`plex-mode` decides how many pods run Plex, not who owns plex.tv.**
-  `elected` runs it on the Lease holder only; `active` runs it everywhere. The
-  default is `elected` because that is the path that has been exercised.
-- **Plex's `Preferences.xml` is merged, never regenerated.** It holds the server
-  identity and the plex.tv token, which cannot be reconstructed.
+- **Every pod runs Plex, and the Lease changes nothing about that.** Winning it
+  opens a route to plex.tv; losing it closes one. Neither starts or stops Plex.
+  There is no `plex-mode`: a pod is serving or it is broken, never up and
+  deliberately idle. See ADR-0004.
+- **Plex's state is split, and the split is load-bearing.** Shared on the
+  ReadWriteMany claim: `Preferences.xml`, `Metadata/`, `Media/`, `Cache/`.
+  Per-pod on an `emptyDir`: `Plug-in Support/Databases/` (the shim's shadow,
+  rebuilt every start), `Logs/`, and the transcode directory. Sharing one of
+  the per-pod ones corrupts the library rather than failing loudly.
+- **Plex's `Preferences.xml` is merged, never regenerated, and under a lock.**
+  It holds the server identity and the plex.tv token, which cannot be
+  reconstructed, and every pod merges into the one copy as it starts.
 - **Settings the architecture depends on are forced, not defaulted.** The Butler
   schedulers, `PublishServerOnPlexOnlineKey`, `ManualPortMappingMode` and
   `customConnections` are written on every start and *refused* as configuration.

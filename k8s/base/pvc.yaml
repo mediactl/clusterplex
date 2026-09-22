@@ -1,9 +1,17 @@
-# Plex's state other than its SQLite databases: Preferences.xml (server
-# identity and plex.tv token), Metadata and Media bundles, Codecs, Cache and
-# the transcode temp directory. Every pod mounts it so a new leader inherits
-# the identity and workers can read codecs and write transcode segments.
-# Only the leader writes to it. Point volumeName at an existing NFS or CephFS
-# volume where that is the site convention.
+# What every pod must see one copy of: Preferences.xml (the server identity and
+# the plex.tv token), the Metadata and Media bundles, Codecs and Cache. A
+# poster one pod fetches has to be on disk for the pod that serves the next
+# request for it.
+#
+# Every pod writes to it, which is new — this used to say "only the leader
+# writes to it", and that stopped being true when every pod started running
+# Plex (ADR-0004). What does NOT belong here is carved back out in the
+# StatefulSet as emptyDir mounts: the shim's shadow databases, the logs and the
+# transcode directory. Sharing one of those corrupts the library rather than
+# failing loudly.
+#
+# Point volumeName at an existing NFS or CephFS volume where that is the site
+# convention.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

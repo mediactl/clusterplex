@@ -102,6 +102,25 @@ spec:
           volumeMounts:
             - name: plex-config
               mountPath: /var/lib/plexmediaserver
+            # Per-pod, carved back out of the shared claim above. Each of
+            # these belongs to one Plex process, and sharing them is how
+            # running Plex on every pod corrupts the library rather than
+            # merely racing. See ADR-0004.
+            #
+            # The shadow SQLite the shim keeps. It is rebuilt on every start,
+            # deliberately, because the shim writes DDL to it as it runs and a
+            # kept one drifts from what PostgreSQL holds — so three pods would
+            # rebuild one file while the other two held it open.
+            - name: plex-databases
+              mountPath: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases
+            # One server's log, not three servers appending to one file.
+            - name: plex-logs
+              mountPath: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Logs
+            # Transcode chunks are written and read back by the pod serving
+            # that session, which the proxy pins. On shared storage they would
+            # be a network round trip per chunk for no benefit.
+            - name: plex-transcode
+              mountPath: /transcode
             - name: plex-media
               mountPath: /media
             - name: config
@@ -117,3 +136,13 @@ spec:
         - name: plex-media
           persistentVolumeClaim:
             claimName: plex-media
+        # emptyDir rather than volumeClaimTemplates: every one of these is
+        # rebuilt on start or discarded between sessions, so none needs to
+        # outlive the pod — and a claim template is immutable once created,
+        # which this repo has already paid for once.
+        - name: plex-databases
+          emptyDir: {}
+        - name: plex-logs
+          emptyDir: {}
+        - name: plex-transcode
+          emptyDir: {}

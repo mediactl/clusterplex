@@ -55,7 +55,7 @@ func TestASettingTheArchitectureDoesNotClaimIsStillAllowed(t *testing.T) {
 }
 
 func TestTheExternalURLBecomesTheAdvertisedConnection(t *testing.T) {
-	prefs := Enforced("https://plex.example.com:443")
+	prefs := Enforced("https://plex.example.com:443", "/transcode")
 	assert.Equal(t, "https://plex.example.com:443", prefs["customConnections"])
 	assert.Equal(t, "0", prefs["PublishServerOnPlexOnlineKey"])
 }
@@ -63,7 +63,7 @@ func TestTheExternalURLBecomesTheAdvertisedConnection(t *testing.T) {
 func TestNoExternalURLLeavesTheAdvertisedConnectionAlone(t *testing.T) {
 	// Writing an empty customConnections would clear whatever Plex already
 	// advertises, which is worse than not setting it.
-	prefs := Enforced("")
+	prefs := Enforced("", "")
 	_, ok := prefs["customConnections"]
 	assert.False(t, ok)
 	assert.Equal(t, "1", prefs["ManualPortMappingMode"])

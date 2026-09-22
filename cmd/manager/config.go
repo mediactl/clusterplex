@@ -42,12 +42,6 @@ const (
 	// defaultConfigFile is read when --config is not given. It is optional.
 	defaultConfigFile = "/etc/clusterplex/config.yaml"
 
-	// plexModeElected runs Plex only on the pod holding the lease.
-	plexModeElected = "elected"
-	// plexModeActive runs Plex on every pod. It needs egress from the pods
-	// that do not hold the lease to be constrained first, or every pod opens
-	// its own connection to plex.tv under the same server identity.
-	plexModeActive = "active"
 )
 
 // Config is the manager's runtime configuration. Every field can be set by a
@@ -68,9 +62,6 @@ type Config struct {
 	// per-pod replicated SQLite file, so there is no database primary to elect
 	// and no local database state to keep.
 	Postgres plexdb.Config
-	// PlexMode is whether Plex runs on every pod ("active") or only on the
-	// lease holder ("elected").
-	PlexMode string
 	// BlockPlexTV keeps every pod away from Plex's own services, the lease
 	// holder included.
 	//
@@ -83,6 +74,11 @@ type Config struct {
 	// it as a custom connection; without it Plex offers only the link-local
 	// address inside its own namespace, which no client can reach.
 	ExternalURL string
+	// TranscodeDir is where Plex writes transcode chunks. It has to be
+	// per-pod storage: every pod runs Plex and they share one volume for the
+	// identity and the metadata, but a session's chunks are written and read
+	// back by the single pod serving it, which the proxy pins.
+	TranscodeDir string
 	// ShimLibrary is the interposer preloaded into Plex so its database calls
 	// reach PostgreSQL. Empty leaves Plex on its own SQLite file.
 	ShimLibrary string
@@ -143,8 +139,8 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("postgres-pool-size", 50, "connections the shim keeps open to the library database")
 	fs.Int("postgres-pool-max", 100, "most connections the shim will open; the database max_connections must cover this times the pod count")
 	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
-	fs.String("plex-mode", plexModeElected, "run Plex on every pod (active) or only on the lease holder (elected); active needs egress control so only one pod reaches plex.tv")
 	fs.Bool("block-plex-tv", false, "keep every pod away from plex.tv, the lease holder included; Plex still serves but cannot be claimed or reached remotely")
+	fs.String("plex-transcode-dir", "/transcode", "per-pod directory Plex writes transcode chunks to; it must be the path the pod mounts, not shared storage")
 	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
@@ -203,9 +199,9 @@ func loadConfig(args []string) (Config, error) {
 		PMSPort:         port("pms-port"),
 		WorkerPort:      port("worker-port"),
 		ProbePort:       port("probe-port"),
-		PlexMode:        v.GetString("plex-mode"),
 		BlockPlexTV:     v.GetBool("block-plex-tv"),
 		ExternalURL:     strings.TrimSpace(v.GetString("plex-external-url")),
+		TranscodeDir:    strings.TrimSpace(v.GetString("plex-transcode-dir")),
 		ShimLibrary:     v.GetString("shim-library"),
 		SubreaperBinary: v.GetString("plex-subreaper"),
 		InitScript:      v.GetString("init-script"),
@@ -220,9 +216,6 @@ func loadConfig(args []string) (Config, error) {
 			PoolMax:  v.GetInt("postgres-pool-max"),
 			SSLMode:  v.GetString("postgres-sslmode"),
 		},
-	}
-	if c.PlexMode != plexModeElected && c.PlexMode != plexModeActive {
-		errs = append(errs, fmt.Errorf("plex-mode: %q must be %s or %s", c.PlexMode, plexModeElected, plexModeActive))
 	}
 	if err := validateExternalURL(c.ExternalURL); err != nil {
 		errs = append(errs, err)
@@ -357,7 +350,7 @@ func validateExternalURL(raw string) error {
 func (c Config) EnforcedPreferences() map[string]string {
 	prefs := make(map[string]string, len(c.Preferences))
 	maps.Copy(prefs, c.Preferences)
-	maps.Copy(prefs, plexprefs.Enforced(c.ExternalURL))
+	maps.Copy(prefs, plexprefs.Enforced(c.ExternalURL, c.TranscodeDir))
 	return prefs
 }
 

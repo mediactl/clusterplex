@@ -107,7 +107,15 @@ Concretely:
    | `Plug-in Support/Databases/` | The shadow SQLite, rebuilt every start |
    | `Logs/` | One server's log |
    | Transcode temp | Chunks the serving pod reads back |
-   | `plexmediaserver.pid` | Removed before every start |
+
+   `plexmediaserver.pid` was in this table and has been taken out, during
+   implementation rather than after. It cannot be split the way the others can:
+   it is one file inside a shared directory, so the only mechanism is a
+   `subPath` mount, and a mounted file cannot be removed — `removeStalePIDFile`
+   would warn on every start for ever. Shared is also safe, which is the better
+   reason: the supervisor removes the file immediately before starting Plex and
+   Plex reads it only at startup, so the worst two pods starting together can
+   do is delete a file the other has already finished reading.
 
    `emptyDir` rather than a `volumeClaimTemplate` because every one of these is
    either rebuilt on start or disposable between sessions. Nothing here needs

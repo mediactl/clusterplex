@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -61,15 +60,16 @@ func (h *plexHealth) record(err error) (serving, giveUp bool) {
 
 // runPlex starts Plex on this pod and keeps it running.
 //
-// With the library in PostgreSQL every pod reads and writes the same database,
-// so there is no primary to elect and nothing to replicate. What still needs
-// one owner is the connection to plex.tv, because every pod shares one server
-// identity. That is what the lease decides.
+// Every pod runs Plex. With the library in PostgreSQL they all read and write
+// the same database, so there is no primary to elect and nothing to replicate,
+// and a pod that is up either serves or is broken — there is no third state
+// where it is running, not the leader, and not ready.
 //
-// Pods that do not hold the lease have their route to plex.tv filtered, so
-// running Plex on all of them no longer means several connections under one
-// identity. The default is still one pod, because that path has been exercised
-// and active mode has not.
+// What still needs exactly one owner is the connection to plex.tv, because
+// every pod runs under one server identity and several publishing at once
+// makes that identity appear to move between addresses. That, and only that,
+// is what the lease decides: the holder's route to plex.tv is open and
+// everyone else's is dropped. See ADR-0004.
 func (m *Manager) runPlex(ctx context.Context) {
 	if err := m.updatePodRole(ctx, RoleStarting); err != nil {
 		m.Logger.Error("update pod role label", "error", err)
@@ -83,47 +83,35 @@ func (m *Manager) runPlex(ctx context.Context) {
 	}
 	m.elector = elector
 
-	if m.Config.PlexMode == plexModeActive {
-		// Every pod serves. The lease still elects the plex.tv owner, which
-		// the egress rules will follow once they exist.
-		m.markReady(ctx, RoleWorker)
-		m.applyEgress(ctx, false)
-		m.start(ctx)
-		go m.holdPlexTVLease(ctx, elector)
-		return
-	}
-	go m.runElected(ctx, elector)
+	// Closed before Plex starts, not after: a pod must never reach plex.tv
+	// while it is still deciding whether it owns it.
+	m.releasePlexTV(ctx)
+	m.start(ctx)
+	go m.holdPlexTVLease(ctx, elector)
 }
 
-// runElected keeps trying to become the holder, and runs Plex only while it is.
-func (m *Manager) runElected(ctx context.Context, elector *lease.Elector) {
-	for {
-		switch err := elector.Acquire(ctx); {
-		case errors.Is(err, lease.ErrHeldByAnother):
-			m.markReady(ctx, RoleWorker)
-			m.applyEgress(ctx, false)
-		case err != nil:
-			m.Logger.Error("acquire lease", "error", err)
-		default:
-			m.Logger.Info("became the active Plex", "lease", m.Config.LeaseName)
-			m.markReady(ctx, RoleLeader)
-			m.Metrics.LeaderStatus.Set(1)
-			m.applyEgress(ctx, true)
-			m.start(ctx)
-			m.holdUntilLost(ctx, elector)
-			// Losing the lease means another pod is taking over. Exit so the
-			// container comes back clean rather than half torn down.
-			m.Logger.Warn("lost the lease; restarting as a standby")
-			m.shutdown(ctx)
-			return
-		}
+// takePlexTV records that this pod now owns the connection to plex.tv and
+// opens its route there.
+//
+// It deliberately does not touch Plex. Winning the lease does not make this
+// pod serve, because it was already serving.
+func (m *Manager) takePlexTV(ctx context.Context) {
+	m.Logger.Info("this pod now owns plex.tv", "lease", m.Config.LeaseName)
+	m.Metrics.LeaderStatus.Set(1)
+	m.markReady(ctx, RoleLeader)
+	m.applyEgress(ctx, true)
+}
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(acquireInterval):
-		}
-	}
+// releasePlexTV gives it up again and drops the route.
+//
+// It deliberately does not touch Plex either, and that is the whole point of
+// ADR-0004. Stopping Plex here used to leave the pod unable to recover: it
+// stopped re-acquiring the lease and never reset its readiness, so it sat at
+// 0/1 for ever and the rolling update that was waiting on it never finished.
+func (m *Manager) releasePlexTV(ctx context.Context) {
+	m.Metrics.LeaderStatus.Set(0)
+	m.markReady(ctx, RoleWorker)
+	m.applyEgress(ctx, false)
 }
 
 // applyEgress opens or closes this pod's route to Plex's own services.
@@ -170,11 +158,11 @@ func (m *Manager) holdPlexTVLease(ctx context.Context, elector *lease.Elector) {
 		case <-ticker.C:
 		}
 		if err := elector.Acquire(ctx); err == nil {
-			m.Metrics.LeaderStatus.Set(1)
-			m.applyEgress(ctx, true)
+			m.takePlexTV(ctx)
 			m.holdUntilLost(ctx, elector)
-			m.Metrics.LeaderStatus.Set(0)
-			m.applyEgress(ctx, false)
+			m.Logger.Warn("gave up plex.tv to another pod; still serving",
+				"lease", m.Config.LeaseName)
+			m.releasePlexTV(ctx)
 		}
 	}
 }
