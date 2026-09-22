@@ -263,6 +263,13 @@ init_plex_directories() {
         #   libc++abi: terminating with uncaught exception of type
         #     std::domain_error: Invalid uuid length
         machine_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "plex-pg-$(date +%s)")"
+        # OldestPreviousVersion describes the database, not the binary, so it
+        # does NOT follow ARG VERSION in the Dockerfile. The library this
+        # server opens is the shim's dump, and that dump was taken from Plex
+        # 1.43.0.10492; saying so is what lets a newer Plex decide which
+        # one-time fixups a 1.43.0-era database still needs. Raising it to
+        # match the running build would suppress those fixups rather than make
+        # them unnecessary. It moves only when the dump is re-taken.
         cat > "$plex_dir/Preferences.xml" << PREFEOF
 <?xml version="1.0" encoding="utf-8"?>
 <Preferences OldestPreviousVersion="1.43.0.10492-121068a07" MachineIdentifier="${machine_id}" ProcessedMachineIdentifier="${machine_id}" AnonymousMachineIdentifier="${machine_id}" AcceptedEULA="1" PublishServerOnPlexOnline="0"/>

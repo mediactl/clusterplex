@@ -25,7 +25,7 @@ FROM --platform=${BUILDPLATFORM} alpine:3.15 AS shim
 # the maintainer has not answered a pull request since April 2026. Fixes go to
 # the fork and come back here as a tag; see hack/plex-postgresql/README.md.
 ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
-ARG PLEX_PG_REF=v1.3.17-clusterplex.11
+ARG PLEX_PG_REF=v1.3.17-clusterplex.12
 RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
 WORKDIR /build
 ENV CARGO_HOME=/usr/local/cargo \
@@ -54,13 +54,26 @@ RUN sh scripts/docker-build-shim.sh --with-noop
 FROM --platform=${BUILDPLATFORM} ubuntu:latest AS extractor
 ARG TARGETARCH
 ARG VENDOR
-# Pinned, not latest. The PostgreSQL shim carries a schema dump taken from a
-# particular Plex, and a server newer than that dump decides its full-text
-# tables need rebuilding. It then issues CREATE VIRTUAL TABLE ... USING fts4
-# with Plex's own collating tokenizer, which the shim's translator cannot
-# parse, and Plex dies with an uncaught soci exception a fraction of a second
-# after starting. This is the version the dump matches.
-ARG VERSION=1.43.0.10492-121068a07
+# Pinned, not latest, and moved deliberately rather than followed. A bump here
+# is a change to the database, not to a download URL.
+#
+# The shim's schema dump carries its own record of which Plex migrations
+# produced it. A server whose migration list runs past that record applies the
+# outstanding ones at boot, and it also concludes that the library was written
+# by an older server and rebuilds its full-text index. Both have broken this
+# image before; see hack/plex-postgresql/README.md.
+#
+# Before moving it: boot the candidate on plain SQLite, read its
+# schema_migrations, and diff that against the COPY block in
+# hack/plex-postgresql/schema/plex_schema.sql. That is the exact list of
+# migrations the upgrade will run. Then run the candidate against a fresh
+# PostgreSQL loaded from the dump, with PLEX_PG_LOG_LEVEL=DEBUG, and read the
+# shim's log — the index rebuild does not appear in the migration list at all.
+#
+# 1.43.0.10492 -> 1.43.4.10903 left two migrations outstanding, 202601121053
+# and 202608120900, and both apply. The rebuild took two fixes in the shim,
+# which is what v1.3.17-clusterplex.12 above carries.
+ARG VERSION=1.43.4.10903-e5521bd8c
 
 WORKDIR /plex-build
 

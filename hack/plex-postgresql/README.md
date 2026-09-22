@@ -132,6 +132,70 @@ Re-run the comparison after any re-vendoring: parse `CREATE TABLE plex.<name>`
 out of `plex_schema.sql` and the quoted column names out of `sqlite_schema.sql`,
 and diff the sets per table.
 
+## What a Plex version bump actually costs
+
+`ARG VERSION` in the Dockerfile was pinned with a note saying a newer server
+rebuilds its full-text tables and dies on the `fts4` DDL. That was right, and
+it stayed right through `1.43.4.10903`. What follows is how to check it, and
+what the check found, because "pinned, do not touch" is not a plan.
+
+**The migrations are the cheap half.** Boot the candidate on plain SQLite — no
+shim, no PostgreSQL, `docker run plexinc/pms-docker:<version>` — let it settle,
+and read `schema_migrations` out of the library it builds. Diff that against
+the `COPY plex.schema_migrations` block in `plex_schema.sql` plus the one row
+appended after it. Do not try to read the list out of the binary: the migration
+identifiers are not stored as plain strings, and `strings` finds only the ones
+from 2024 and earlier, which looks like an answer and is not.
+
+`1.43.0.10492` → `1.43.4.10903` leaves exactly two outstanding, `202601121053`
+and `202608120900`, and neither adds a table or a column the dump does not
+already have. `202608120900` carries `rollback_sql = 'select 1'` with
+`optimize_on_rollback = 1`, the same shape as `202505261219` — Plex's marker
+for an index rebuild.
+
+**The rebuild is the expensive half, and it is not in the migration list.**
+Plex concludes the library was written by an older server and rebuilds the
+full-text index: sixteen `DROP TRIGGER`s, four `DROP TABLE`s, two
+`CREATE VIRTUAL TABLE ... USING fts4`, and eight `CREATE TRIGGER`s. It then
+vacuums once the migrations are done. The only way to see this is to run the
+candidate against a fresh PostgreSQL loaded from the dump with
+`PLEX_PG_LOG_LEVEL=DEBUG` and read the shim's log. Sixty-eight errors, and the
+server exits before it serves:
+
+    Unable to set up server: sqlite3_statement_backend::loadOne: not an error
+
+Two separate defects, both fixed in `v1.3.17-clusterplex.12`:
+
+- **`fts4` DDL reached PostgreSQL untranslated.** `rewrite_virtual_tables`
+  handled `fts5` and `rtree`; Plex writes `fts4`. The drops were worse than the
+  creates: `DROP TABLE IF EXISTS fts4_metadata_titles` answered
+  `"fts4_metadata_titles" is not a table`, because under the shim those four
+  names are **views** the dump provides over the real tables. Had the syntax
+  been accepted it would have deleted the compatibility layer. The whole
+  rebuild is now `SELECT 1`.
+- **`VACUUM` ran against the shadow SQLite.** It is on the skip list, but a
+  skipped statement only gets the `is_pg = 3` no-op when it also looks like a
+  read or a write, and `VACUUM` is neither. It reached the shadow inside the
+  transaction the migrations were holding open, where SQLite refuses it.
+  `BEGIN` and `COMMIT` take the same path and hid the gap for as long as they
+  did because they succeed against the shadow.
+
+**Always run the control.** The first time, the failing run proves nothing on
+its own — the harness could be at fault. Build the *current* pin from the same
+Dockerfile, run it against the same rig, and confirm it comes up. `1.43.0`
+does, with one error in the shim log and no `CREATE VIRTUAL TABLE` at all,
+which is what makes the newer server's 68 errors a regression rather than a
+property of the test. This repo has been caught by a bad control twice; see
+"It is not our build" below.
+
+**Upstream will not do this for you.** `cgnl/plex-postgresql` releases are
+automated base-image bumps — every changelog entry from `1.3.9` to `1.3.18`
+reads "Updated upstream base Docker images", written by
+`scripts/check-upstream-updates.py` when the `plexinc/pms-docker:latest` digest
+moves. The schema dumps do not move with them: at `v1.3.18` all four are
+identical to what is vendored here apart from our own two additions. Taking a
+newer upstream tag buys nothing for a Plex bump.
+
 ## 0001 — collect backtraces with the DWARF unwinder (removed)
 
 Removed, not merely unhelpful. It replaced `collect_frames` with
