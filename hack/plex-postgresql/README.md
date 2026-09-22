@@ -296,6 +296,39 @@ locale is set at all, so the process charset is ASCII. `LANG=C.UTF-8` and
 into the image is `C.utf8`, which is the spelling `boost::locale` does not
 parse -- so that test may have proved only that the name was ignored.
 
+**Ruled out since, each by testing it:**
+
+- *The response.* 5182 bytes, `charset=utf-8`, 61 `uuid` attributes, every one
+  36 characters, and not one non-ASCII byte. Nothing to mangle.
+- *An empty `PlexOnlineToken`.* A claim attempted while plex.tv was pinned to
+  loopback fails and leaves `PlexOnlineToken=""` in `Preferences.xml`, which
+  is not the same state as the attribute being absent -- Plex then talks to
+  plex.tv as though it had an account. Removing it changes nothing.
+- *A short string.* libc++ keeps a string of 22 bytes or fewer inside the
+  object, so a short or empty one would still be readable on the crashing
+  thread's stack in the minidump. There is none, so whatever failed to parse
+  is 23 characters or more and lives on the heap. 32, 36 and 38 are the
+  lengths boost accepts, so it is some other length above 22.
+
+**Where the frames actually are.** Nearest-symbol lookup invents names in this
+binary -- only ~1700 of its functions have symbols -- but every function has
+an FDE, and those ranges are exact:
+
+    0x11499d6  in 0x114979c..0x11499f1   throws
+    0x1149ab5  in 0x1149a5c..0x1149cec
+    0x1148333  in 0x114788c..0x11485ff
+    0x1148ff7  in 0x1148cd8..0x114942c   the virtually dispatched callee
+    0x8ba213   in 0x8ba1e6..0x8ba237     a 0x51-byte thunk, `call *0x10(%rdi)`
+
+`0x1148cd8` appears in no static vtable, and the pointer the thunk stores
+beside it is a zeroed slot filled at load time, so neither names the class.
+
+**The configuration that works, and is supported.** With the NULL column fix
+in, `--block-plex-tv` (chart: the `block-plex-tv` flag, not a `hostAliases`
+patch) gives a healthy server: `1/1`, no crashes, serving. It cannot be
+claimed or reached remotely, but it is a real setting rather than a debugging
+hack, and it is the one to run under until this is understood.
+
 **A control that looks decisive and is not:** running Plex without the
 interposer. It still crashes, but earlier and somewhere else, in
 `DatabaseFixups`, because without the shim Plex runs against the shadow
