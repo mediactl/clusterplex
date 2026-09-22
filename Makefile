@@ -73,8 +73,12 @@ deploy: ## Apply the base manifests to the current context
 deploy-kind: ## Apply the kind overlay (ReadWriteOnce claims) to the current context
 	kubectl apply -k k8s/overlays/kind
 
+.PHONY: kind-lb
+kind-lb: ## Start cloud-provider-kind, so LoadBalancer Services get an address
+	hack/kind.sh lb
+
 .PHONY: kind-up
-kind-up: ## Create the kind cluster and namespace
+kind-up: ## Create the kind cluster, namespace and load balancer
 	hack/kind.sh up
 
 .PHONY: kind-load

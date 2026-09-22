@@ -6,6 +6,11 @@ CLUSTER_NAME="${KIND_CLUSTER_NAME:-cluster-plex}"
 NAMESPACE="media"
 IMG="${IMG:-ghcr.io/mediactl/cluster-plex:dev}"
 CONTEXT="kind-${CLUSTER_NAME}"
+# cloud-provider-kind gives LoadBalancer Services a real address. Without it
+# they sit at <pending> for ever, and a Gateway in front of them never reaches
+# Programmed=True. https://kind.sigs.k8s.io/docs/user/loadbalancer/
+LB_IMAGE="registry.k8s.io/cloud-provider-kind/cloud-controller-manager:v0.11.1"
+LB_NAME="cloud-provider-kind"
 
 log()  { printf '==> %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -30,11 +35,27 @@ ensure_namespace() {
   kc create namespace "${NAMESPACE}" --dry-run=client -o yaml | kc apply -f -
 }
 
+# It runs beside the cluster rather than in it: it needs the Docker socket to
+# hand out addresses on the kind network, and it serves every kind cluster on
+# that network at once, so one container is enough however many exist.
+ensure_loadbalancer() {
+  if docker ps --filter "name=^${LB_NAME}$" --format '{{.Names}}' | grep -qx "${LB_NAME}"; then
+    log "load balancer '${LB_NAME}' already running"
+    return
+  fi
+  log "starting the load balancer '${LB_NAME}'"
+  docker rm -f "${LB_NAME}" >/dev/null 2>&1 || true
+  docker run -d --name "${LB_NAME}" --network kind --restart unless-stopped \
+    -v /var/run/docker.sock:/var/run/docker.sock "${LB_IMAGE}" >/dev/null
+}
+
 cmd_up() {
   need kind
   need kubectl
+  need docker
   create_cluster
   ensure_namespace
+  ensure_loadbalancer
 }
 
 cmd_load() {
@@ -54,6 +75,7 @@ cmd_down() {
 
 case "${1:-}" in
   up)   cmd_up ;;
+  lb)   need docker; ensure_loadbalancer ;;
   load) cmd_load ;;
   down) cmd_down ;;
   *)    die "unknown subcommand" ;;

@@ -1,4 +1,4 @@
-# ADR-0005: Retire the media proxy tier in favour of Gateway API session persistence
+# ADR-0005: Retire the media proxy tier, and pin sessions at the gateway
 
 **Status:** Proposed
 **Date:** 2026-09-22
@@ -61,8 +61,8 @@ beats repairing it:
 
 ## Decision
 
-**Clients reach Plex through a Gateway API `HTTPRoute` with
-`sessionPersistence`, and the media proxy tier is deleted.**
+**Clients reach Plex through a Gateway API `HTTPRoute`, pinned to a pod by
+consistent hashing, and the media proxy tier is deleted.**
 
 Every Plex pod is a backend. Session persistence pins a client to one of them
 for the life of its session, which is what the hash ring did. Plex serves its
@@ -74,7 +74,7 @@ What each retired piece is replaced by:
 
 | Retired | Replaced by |
 | --- | --- |
-| `pkg/hashring` session pinning | `sessionPersistence` on the HTTPRoute |
+| `pkg/hashring` session pinning | Consistent hashing at the gateway |
 | `pkg/plexroute` pod discovery | The Service's own endpoints |
 | `clusterplex.io/plex-serving` annotation | Pod readiness |
 | `pkg/mediaproxy` byte serving | Plex itself, on every pod |
@@ -144,9 +144,9 @@ against.
 
 **Harder.** Session affinity moves from something we implement and can debug to
 something the Gateway implementation provides, at whatever fidelity it
-provides it. A hash ring that pins on a token we choose is more predictable
-than persistence keyed on a header the client may or may not send on every
-request.
+provides it — and, as it turned out, under a name that means something else.
+A hash ring we own is more predictable than a policy whose behaviour has to be
+established by sending real requests through it.
 
 **Resolved, and it changed the decision.** The blocking question was whether
 any implementation offers header-based persistence. Envoy Gateway v1.9.1 does
