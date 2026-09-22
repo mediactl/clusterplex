@@ -154,3 +154,26 @@ func TestTheShimsOwnIdleTimeoutIsLeftAlone(t *testing.T) {
 			"the shim's default is the right one now: %s", v)
 	}
 }
+
+func TestTheShimLogsToStderrSoEachPodKeepsItsOwnLog(t *testing.T) {
+	// The shim's default log file lands in Plex's state directory, which is
+	// the plex-config claim every pod mounts. Three shims then append to one
+	// file, and on a busy start their lines interleave mid-line, so a log
+	// read from any pod is a shuffle of all of them -- one pod's restart
+	// looked like another's, and a reaper run could not be attributed at
+	// all. stderr is per pod and already wrapped into the manager's log.
+	env := shimEnv([]string{"PATH=/bin"}, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
+
+	assert.Contains(t, env, "PLEX_PG_LOG_FILE=stderr")
+}
+
+func TestAnOperatorCanStillPointTheShimLogAtAFile(t *testing.T) {
+	env := shimEnv(
+		[]string{"PATH=/bin", "PLEX_PG_LOG_FILE=/tmp/shim.log"},
+		Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()},
+	)
+
+	assert.Contains(t, env, "PLEX_PG_LOG_FILE=/tmp/shim.log")
+	assert.NotContains(t, env, "PLEX_PG_LOG_FILE=stderr",
+		"two values for one variable leave it to whichever libc reads it first")
+}

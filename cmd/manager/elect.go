@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -32,6 +33,9 @@ const (
 	// once it has started. Frequent enough that a stalled Plex leaves the load
 	// balancer quickly, rare enough to be free.
 	healthInterval = 10 * time.Second
+	// healthTimeout bounds one check. Plex answers in milliseconds when it is
+	// well, so a check that runs out of time is a failed check, not a slow one.
+	healthTimeout = 5 * time.Second
 	// unhealthyRestartAfter is how many checks in a row Plex may miss before
 	// the pod is given up on and restarted. One miss is a slow request or a
 	// restarting proxy; three in a row is Plex gone.
@@ -271,7 +275,7 @@ func (m *Manager) startHealthWatch(ctx context.Context, interval time.Duration) 
 	if previous != nil {
 		previous()
 	}
-	go m.watchPlexHealth(watchCtx, interval)
+	go m.watchPlexHealth(watchCtx, interval, healthTimeout)
 }
 
 // stopHealthWatch ends it again, before Plex is stopped on purpose.
@@ -300,19 +304,68 @@ func (m *Manager) plexURL() string { return "http://" + m.plexAddr }
 // never returns and OnUnexpectedExit never fires. This is the only thing that
 // notices, so it has to be the thing that recovers too; withdrawing alone left
 // the pod 0/1 for ever with a dead Plex inside it.
-func (m *Manager) watchPlexHealth(ctx context.Context, interval time.Duration) {
+//
+// Nor is a dead main loop the only way Plex stops serving. Its database layer
+// can deadlock with the listener up: /identity, served from memory, goes on
+// answering in milliseconds while every request that needs the library never
+// completes. A watch on /identity alone called that pod healthy for seven
+// minutes, with thirty threads "waiting on db connections" and every playback
+// against it failing. So the check also reads the library, with the local
+// admin token, and a check that runs out of time counts as a miss.
+//
+// Not from the first tick, though. The watch starts as soon as /identity
+// answers, which Plex does before it has finished with its database: on a
+// version upgrade it can spend minutes migrating and rebuilding its search
+// index, answering /identity throughout and the library not at all. Holding
+// it to the library then would restart it mid-migration, and a restart that
+// is retried would never let it finish. So until the library has answered
+// once, only /identity counts; after that, both do. A Plex that never
+// answers for its library at all is a start that failed, which is what
+// pmsStartTimeout and the startup probe are for.
+//
+// The grace is per life of Plex, not per watch. The watch outlives a Plex
+// that is restarted underneath it, and the one that comes back has the same
+// migrating to do, so the grace starts over whenever the listener goes away
+// or this watch asks for a restart.
+func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var health plexHealth
+	libraryAnswered, libraryWaiting := false, false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		err := plexroute.Serving(ctx, m.plexURL())
+		checkCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := plexroute.Answering(checkCtx, m.plexURL(), m.localAdminToken())
+		cancel()
 		if ctx.Err() != nil {
 			return
+		}
+		switch {
+		case err == nil:
+			if !libraryAnswered {
+				m.Logger.Info("Plex is answering for its library; holding it to that from now on")
+			}
+			libraryAnswered = true
+			libraryWaiting = false
+		case errors.Is(err, plexroute.ErrLibrary):
+			if !libraryAnswered {
+				// Still starting: up, answering, not yet through with
+				// its database. Not a miss -- but say so once, so a pod
+				// whose library check never arms is visible.
+				if !libraryWaiting {
+					m.Logger.Info("Plex is up but not yet answering for its library; not counting that until it has", "error", err)
+					libraryWaiting = true
+				}
+				continue
+			}
+		default:
+			// The listener itself is gone. Whatever answers next is a new
+			// life of Plex, with its startup still ahead of it.
+			libraryAnswered, libraryWaiting = false, false
 		}
 		serving, giveUp := health.record(err)
 		m.setPlexServing(ctx, serving)
@@ -323,6 +376,7 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval time.Duration) {
 		if giveUp {
 			m.Logger.Error("Plex has not answered since; giving up on this pod",
 				"checks", unhealthyRestartAfter, "error", err)
+			libraryAnswered, libraryWaiting = false, false
 			m.plexLost(err)
 		}
 	}

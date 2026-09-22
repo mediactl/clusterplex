@@ -89,7 +89,7 @@ func TestTheHealthWatchRestartsThePodWhenPlexStopsAnswering(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	const tick = 5 * time.Millisecond
-	go m.watchPlexHealth(ctx, tick)
+	go m.watchPlexHealth(ctx, tick, 50*time.Millisecond)
 
 	// Nothing happens while Plex answers.
 	time.Sleep(10 * tick)

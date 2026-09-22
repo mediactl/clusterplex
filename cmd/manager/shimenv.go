@@ -66,19 +66,13 @@ func shimEnv(base []string, cfg Config) []string {
 	if !hasEnv(base, "PLEX_PG_LOG_LEVEL") {
 		env = append(env, "PLEX_PG_LOG_LEVEL=ERROR")
 	}
-	// PLEX_PG_IDLE_TIMEOUT is deliberately left at the shim's own default.
-	//
-	// It was pinned to a day here for one build, to stop the pool reclaiming
-	// a connection Plex was still using and killing it mid-statement. The
-	// fork fixes that properly as of v1.3.17-clusterplex.14: the pool counts
-	// the database handles still holding a slot rather than guessing from
-	// idle time and thread liveness, so the timeout is a hint again rather
-	// than the only thing standing between Plex and a use-after-free.
-	//
-	// Leaving the workaround in place would have been worse than useless.
-	// Disabling the reclaim means a slot whose owner really did die is never
-	// returned, so the pool leaks slots towards PLEX_PG_POOL_MAX, and it
-	// would have hidden whether the real fix works.
+	// The shim's default log file lands in Plex's state directory, which is
+	// the plex-config claim every pod mounts, so three shims append to one
+	// file and their lines interleave -- mid-line, on a busy start. stderr is
+	// per pod, and the manager already folds Plex's stderr into its own log.
+	if !hasEnv(base, "PLEX_PG_LOG_FILE") {
+		env = append(env, "PLEX_PG_LOG_FILE=stderr")
+	}
 	return append(env, pgEnv(cfg)...)
 }
 
