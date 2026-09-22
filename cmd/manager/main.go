@@ -65,6 +65,11 @@ type Manager struct {
 	// supervisor seeing it exit, and the health watch seeing it stop
 	// answering. Tests replace it; in the manager it restarts the container.
 	onPlexLost func(err error)
+	// stopHealth ends the health watch started for the current leadership.
+	// A pod that loses the lease stops Plex on purpose, and the watch has to
+	// go with it: left running it finds Plex gone and restarts the container
+	// over what is really a clean handover. Guarded by mu.
+	stopHealth context.CancelFunc
 
 	mu         sync.RWMutex
 	isReady    bool

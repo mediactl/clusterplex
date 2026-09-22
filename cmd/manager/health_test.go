@@ -93,3 +93,42 @@ func TestTheHealthWatchRestartsThePodWhenPlexStopsAnswering(t *testing.T) {
 		2*time.Second, tick,
 		"the pod is given up on once Plex has stopped answering")
 }
+
+func TestStoppingPlexOnPurposeDoesNotCountAsLosingIt(t *testing.T) {
+	// A pod that loses the lease stops Plex and carries on as a standby. That
+	// is a handover, not a crash, but the watch the leader started was still
+	// running: it found Plex gone — because this pod had just stopped it —
+	// and restarted the container three checks later.
+	//
+	// In the cluster that turned every election into a restart. plex-0 took
+	// the lease, started Plex, lost the lease twenty seconds later and logged
+	// "lost the lease; restarting as a standby", then:
+	//
+	//	Plex is no longer serving; withdrawing this pod
+	//	Plex has not answered since; giving up on this pod
+	//	exiting so the pod restarts
+	//
+	// The watch must not outlive the leadership that started it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<MediaContainer machineIdentifier="test"/>`))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager()
+	m.plexAddr = srv.Listener.Addr().String()
+	var restarts atomic.Int32
+	m.onPlexLost = func(error) { restarts.Add(1) }
+
+	const tick = 5 * time.Millisecond
+	m.startHealthWatch(t.Context(), tick)
+	time.Sleep(4 * tick)
+
+	// What losing the lease does, in the order it does it.
+	m.stopHealthWatch()
+	srv.Close()
+
+	time.Sleep(40 * tick)
+	assert.Zero(t, restarts.Load(),
+		"Plex was stopped deliberately, so the pod must stay up as a standby")
+}

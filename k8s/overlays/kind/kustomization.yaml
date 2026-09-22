@@ -18,6 +18,15 @@ patches:
         value:
           name: CLUSTERPLEX_PLEX_MACHINE_IDENTIFIER
           value: 11111111-2222-3333-4444-555555555555
+      # Without this Plex advertises 169.254.1.2, the only address it can see
+      # from inside its own network namespace, and no client can reach it.
+      # The kind node's address on the docker network reaches the NodePort;
+      # `docker inspect cluster-plex-control-plane` prints it if it moves.
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: CLUSTERPLEX_PLEX_EXTERNAL_URL
+          value: http://172.19.0.4:32400
 
   - target:
       kind: PersistentVolumeClaim

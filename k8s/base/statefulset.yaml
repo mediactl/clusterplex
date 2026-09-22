@@ -42,6 +42,40 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            # The shared library. These manifests do not deploy PostgreSQL,
+            # they expect one to be reachable at this Service, and they do not
+            # create the Secret below either.
+            #
+            # Only the host and the password have no usable default. The rest
+            # repeat the manager's own, written out so a reader can see what
+            # the pods will connect with without going to `--help`, and so
+            # changing one is an edit here rather than a new flag.
+            - name: CLUSTERPLEX_POSTGRES_HOST
+              value: plex-postgres
+            - name: CLUSTERPLEX_POSTGRES_PORT
+              value: "5432"
+            - name: CLUSTERPLEX_POSTGRES_DATABASE
+              value: plex
+            - name: CLUSTERPLEX_POSTGRES_USER
+              value: plex
+            # Not optional. The shim interpolates it into
+            # "SET search_path TO <schema>, public" whatever it holds, so an
+            # empty one is a syntax error on every connection rather than a
+            # fall back to the default search path.
+            - name: CLUSTERPLEX_POSTGRES_SCHEMA
+              value: plex
+            # Plex opens 20 sessions per process and every pod runs one, so
+            # the database's max_connections has to cover POOL_MAX times the
+            # replica count.
+            - name: CLUSTERPLEX_POSTGRES_POOL_SIZE
+              value: "50"
+            - name: CLUSTERPLEX_POSTGRES_POOL_MAX
+              value: "100"
+            - name: CLUSTERPLEX_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: plex-postgres
+                  key: password
           ports:
             # The proxy holds Plex's own port in the pod namespace; Plex binds
             # it inside its namespace, where nothing else competes for it.

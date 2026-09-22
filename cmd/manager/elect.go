@@ -246,7 +246,35 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 		m.Logger.Error("mark this pod as serving Plex", "error", err)
 	}
 	m.Logger.Info("advertised this pod as a routable Plex", "address", m.Config.PMSAddr())
-	go m.watchPlexHealth(ctx, healthInterval)
+	m.startHealthWatch(ctx, healthInterval)
+}
+
+// startHealthWatch begins watching Plex for this stretch of leadership.
+//
+// Scoped rather than tied to the pod's own context, because losing the lease
+// is not losing Plex: the pod stops Plex itself and carries on as a standby.
+// A watch that outlived that found Plex gone and restarted the container.
+func (m *Manager) startHealthWatch(ctx context.Context, interval time.Duration) {
+	watchCtx, cancel := context.WithCancel(ctx)
+	m.mu.Lock()
+	previous := m.stopHealth
+	m.stopHealth = cancel
+	m.mu.Unlock()
+	if previous != nil {
+		previous()
+	}
+	go m.watchPlexHealth(watchCtx, interval)
+}
+
+// stopHealthWatch ends it again, before Plex is stopped on purpose.
+func (m *Manager) stopHealthWatch() {
+	m.mu.Lock()
+	cancel := m.stopHealth
+	m.stopHealth = nil
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // plexURL reaches Plex inside its own network namespace. It must not go
@@ -330,7 +358,12 @@ func (m *Manager) withdraw(ctx context.Context) {
 }
 
 // shutdown withdraws this pod, stops Plex and releases the lease.
+//
+// The health watch goes first. Everything below is a deliberate stop, and the
+// watch cannot tell one of those from Plex dying on its own — left running it
+// would count three missed checks and restart the container on the way out.
 func (m *Manager) shutdown(ctx context.Context) {
+	m.stopHealthWatch()
 	m.withdraw(ctx)
 	if err := m.sup.Stop(ctx); err != nil {
 		m.Logger.Error("stop Plex Media Server", "error", err)
