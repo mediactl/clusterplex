@@ -33,7 +33,31 @@ const (
 	// once it has started. Frequent enough that a stalled Plex leaves the load
 	// balancer quickly, rare enough to be free.
 	healthInterval = 10 * time.Second
+	// unhealthyRestartAfter is how many checks in a row Plex may miss before
+	// the pod is given up on and restarted. One miss is a slow request or a
+	// restarting proxy; three in a row is Plex gone.
+	unhealthyRestartAfter = 3
 )
+
+// plexHealth folds the health checks together and decides when this pod is
+// past saving.
+type plexHealth struct {
+	consecutiveFailures int
+}
+
+// record takes one check's result and reports whether Plex is serving, and
+// whether this pod should now be given up on.
+//
+// giveUp is true on exactly the check that crosses the threshold, never again
+// after, so a pod already on its way out is not restarted once per tick.
+func (h *plexHealth) record(err error) (serving, giveUp bool) {
+	if err == nil {
+		h.consecutiveFailures = 0
+		return true, false
+	}
+	h.consecutiveFailures++
+	return false, h.consecutiveFailures == unhealthyRestartAfter
+}
 
 // runPlex starts Plex on this pod and keeps it running.
 //
@@ -222,7 +246,7 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 		m.Logger.Error("mark this pod as serving Plex", "error", err)
 	}
 	m.Logger.Info("advertised this pod as a routable Plex", "address", m.Config.PMSAddr())
-	go m.watchPlexHealth(ctx)
+	go m.watchPlexHealth(ctx, healthInterval)
 }
 
 // plexURL reaches Plex inside its own network namespace. It must not go
@@ -230,16 +254,20 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 // up or not, so a health check aimed there grades the proxy.
 func (m *Manager) plexURL() string { return "http://" + m.plexAddr }
 
-// watchPlexHealth withdraws this pod when Plex stops answering.
+// watchPlexHealth withdraws this pod when Plex stops answering, and restarts
+// the pod when it stays that way.
 //
 // Starting is not the only time Plex can stop serving while holding its port,
 // and the supervisor cannot see it: Plex is wrapped in a subreaper that stays
 // alive as long as any descendant does, so a Plex that has aborted its main
-// loop still looks like a running process. Without this the pod keeps its
-// readiness and its serving annotation forever.
-func (m *Manager) watchPlexHealth(ctx context.Context) {
-	ticker := time.NewTicker(healthInterval)
+// loop still looks like a running process — its plug-ins outlive it, cmd.Wait
+// never returns and OnUnexpectedExit never fires. This is the only thing that
+// notices, so it has to be the thing that recovers too; withdrawing alone left
+// the pod 0/1 for ever with a dead Plex inside it.
+func (m *Manager) watchPlexHealth(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var health plexHealth
 	for {
 		select {
 		case <-ctx.Done():
@@ -250,13 +278,26 @@ func (m *Manager) watchPlexHealth(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err == nil {
-			m.setPlexServing(ctx, true)
+		serving, giveUp := health.record(err)
+		m.setPlexServing(ctx, serving)
+		if serving {
 			continue
 		}
 		m.Logger.Error("Plex is no longer serving; withdrawing this pod", "error", err)
-		m.setPlexServing(ctx, false)
+		if giveUp {
+			m.Logger.Error("Plex has not answered since; giving up on this pod",
+				"checks", unhealthyRestartAfter, "error", err)
+			m.plexLost(err)
+		}
 	}
+}
+
+// plexLost hands this pod over to whatever restarts it.
+func (m *Manager) plexLost(err error) {
+	if m.onPlexLost == nil {
+		return
+	}
+	m.onPlexLost(err)
 }
 
 // setPlexServing records whether traffic should come here, in both the places

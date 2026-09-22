@@ -61,6 +61,10 @@ type Manager struct {
 	plexAddr     string
 	shimServer   *grpc.Server
 	workerServer *grpc.Server
+	// onPlexLost gives this pod up. Both ways of losing Plex end here: the
+	// supervisor seeing it exit, and the health watch seeing it stop
+	// answering. Tests replace it; in the manager it restarts the container.
+	onPlexLost func(err error)
 
 	mu         sync.RWMutex
 	isReady    bool
@@ -195,13 +199,18 @@ func run() int {
 			Logger:       logger.With("component", "proxy"),
 			OnConnChange: func(delta int) { metrics.ProxyConnections.Add(float64(delta)) },
 		},
-		OnUnexpectedExit: func(err error) {
-			// A fresh container is the cleanest recovery, and it re-runs the
-			// election rather than leaving a half torn down pod advertised.
+		OnUnexpectedExit: func(err error) { m.plexLost(err) },
+	}
+	// A fresh container is the cleanest recovery, and it re-runs the election
+	// rather than leaving a half torn down pod advertised. Once, because both
+	// ways of losing Plex can fire for the same death.
+	var lost sync.Once
+	m.onPlexLost = func(err error) {
+		lost.Do(func() {
 			logger.Error("exiting so the pod restarts", "error", err)
 			m.shutdown(context.Background())
 			os.Exit(1)
-		},
+		})
 	}
 
 	go m.serveProbes()

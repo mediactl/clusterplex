@@ -1,6 +1,14 @@
 -- Seed initial/default data for a fresh Plex PostgreSQL database.
 
 -- accounts
+--
+-- Account 0 is the anonymous one Plex looks up for a request that carries no
+-- token, and it has to exist before Plex asks for it. Without it Plex inserts
+-- a replacement on every start, and because the insert leaves out the id the
+-- sequence hands out 8, 9, 10 and so on rather than 0 -- so the next start
+-- does not find it either, and the table fills with nameless accounts.
+INSERT INTO plex.accounts (id, name, created_at, updated_at, default_audio_language, default_subtitle_language, auto_select_subtitle, auto_select_audio)
+VALUES (0, '', 1289520473, 1289520473, 'en', 'en', 1, 1);
 INSERT INTO plex.accounts (id, name, created_at, updated_at, default_audio_language, default_subtitle_language, auto_select_subtitle, auto_select_audio)
 VALUES (1, 'Administrator', 1289520473, 1782210228, '', '', 1, 1);
 
