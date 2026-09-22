@@ -114,3 +114,26 @@ func TestShimEnvSetsNoLocaleBecausePlexCannotParseOne(t *testing.T) {
 			"Plex picks its own locale; naming one crashes it")
 	}
 }
+
+func TestTheShimLogsOnlyErrorsUnlessAskedForMore(t *testing.T) {
+	// The shim defaults to INFO, which is a column type, a pool slot and a
+	// statement handle for every value Plex reads. It lands on the manager's
+	// own stderr, so every other component's output is buried under it, and
+	// the file it keeps reaches tens of megabytes on a single start.
+	env := shimEnv([]string{"PATH=/bin"}, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
+
+	assert.Contains(t, env, "PLEX_PG_LOG_LEVEL=ERROR")
+}
+
+func TestAnOperatorCanStillTurnTheShimLogBackUp(t *testing.T) {
+	// Raising it is how most of the bugs in this repo were found, so the
+	// quiet default has to stay a default rather than become a decision.
+	env := shimEnv(
+		[]string{"PATH=/bin", "PLEX_PG_LOG_LEVEL=DEBUG"},
+		Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()},
+	)
+
+	assert.Contains(t, env, "PLEX_PG_LOG_LEVEL=DEBUG")
+	assert.NotContains(t, env, "PLEX_PG_LOG_LEVEL=ERROR",
+		"two values for one variable leave it to whichever libc reads it first")
+}

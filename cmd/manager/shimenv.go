@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // ShimLibrary is the interposer that redirects Plex's database calls to
@@ -57,7 +58,29 @@ func shimEnv(base []string, cfg Config) []string {
 		// absorbs the vfork re-exec, and its CrashUploader is a no-op binary.
 		"PLEX_PG_DISABLE_SIGCHLD_IGNORE=1",
 	)
+	// The shim defaults to INFO, which is a column type, a pool slot and a
+	// statement handle for every value Plex reads: tens of megabytes on a
+	// single start, on the manager's own stderr, burying everything else.
+	// Raising it is how most of the bugs here were found, so this is a default
+	// rather than a decision -- set PLEX_PG_LOG_LEVEL on the pod to override.
+	if !hasEnv(base, "PLEX_PG_LOG_LEVEL") {
+		env = append(env, "PLEX_PG_LOG_LEVEL=ERROR")
+	}
 	return append(env, pgEnv(cfg)...)
+}
+
+// hasEnv reports whether name is already set in env.
+//
+// A second value for the same variable is not an override: which one a
+// process sees is down to whichever its libc finds first.
+func hasEnv(env []string, name string) bool {
+	prefix := name + "="
+	for _, v := range env {
+		if strings.HasPrefix(v, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // pgEnv returns only the database settings, for things that are not Plex.
