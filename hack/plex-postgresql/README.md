@@ -257,143 +257,54 @@ tag (`PLEX_PG_EXCEPTION_BACKTRACE=1`), then read off the disassembly. Reach
 for that first next time: everything before it in this file was inference, and
 several of those inferences were wrong.
 
-### Still open: `Invalid uuid length` once plex.tv is reachable
+### Fixed: interposing `__cxa_throw` broke every catch in Plex
 
-With plex.tv resolving normally, Plex serves for a few seconds and then throws,
-uncaught, about twenty milliseconds after a 200 from `plex.tv/api/v2/features`:
+This is what was behind the crash on plex.tv, and behind two others that
+looked nothing like it.
 
-    libc++abi: terminating with uncaught exception of type
+The shim interposed `__cxa_throw`, which puts a frame belonging to this
+library between every `throw` in Plex and the `catch` that was meant to
+handle it. Plex does not survive that: **the first exception the process
+throws is fatal, whatever it was**. Plex throws and catches routinely, so the
+symptom depended entirely on which exception happened to come first -- three
+unrelated looking crashes, every one of them something Plex handles perfectly
+well on its own:
+
+    std::out_of_range: basic_string
     std::domain_error: Invalid uuid length
-
-**The parser accepts one length and one only.** From the throw site itself --
-`0x1fccba` is the message; `0x2a31cd`, which earlier notes pointed at, is the
-neighbouring *"Character at index 8 must be a '-'"*:
-
-    11497ad:  cmp  $0x24,%rsi       ; length == 36?
-    11497b1:  jne  114992c          ; no -> throw "Invalid uuid length"
-    11497ba:  cmpb $0x2d,0x8(%rdi)  ; then dashes at 8, 13, 18, 23
-
-Not 32, not 38, which boost normally also takes. Exactly 36.
-
-**What feeds it.** The function two frames up holds the literals `//feature`
-and `uuid`: it runs that XPath over an XML document, collects each selected
-element's `uuid` attribute into a list, and parses every entry. The loop reads
-a libc++ string per node and passes (data, size) straight in, so a missing
-attribute arrives as an empty string -- length 0, and the throw.
-
-And the documents differ in exactly that way:
-
-| document | `<feature>` elements | carrying `uuid=` |
-| --- | --- | --- |
-| `/api/v2/features` (anonymous or claimed) | 61 / 174 | all of them |
-| `/api/v2/user?includeSubscriptions=1&includeProviders=1` | 174 | **none** |
-
-The user document's features carry `id` only.
-
-**The control that matters, and that earlier attempts got wrong.** Run the
-pinned Plex on its own -- same version, same auth token, same plex.tv, its own
-fresh SQLite, no `LD_PRELOAD`, no PostgreSQL, no manager:
-
-```sh
-docker run -d --name plexbare -v "$CFG:/config" \
-  -e "PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR=/config/Library/Application Support" \
-  -e "LD_LIBRARY_PATH=/usr/lib/plexmediaserver/lib" \
-  --entrypoint "/usr/lib/plexmediaserver/Plex Media Server" \
-  ghcr.io/mediactl/cluster-plex:<tag>
-```
-
-It runs for as long as you leave it, fetches `/api/v2/user` repeatedly, and
-throws nothing -- MyPlex gets as far as "updating with 24 access tokens". So
-the user document is **not** inherently fatal, the pinned Plex is **not** too
-old for today's plex.tv, and the fault is on our side.
-
-Do not repeat the invalid version of this control: starting Plex without the
-shim *inside our image* reuses the shadow SQLite the entrypoint builds, which
-is deliberately incomplete (`no such module: spellfix1`), so Plex dies in
-`DatabaseFixups` instead and proves nothing.
-
-**The difference to chase.** The standalone asks for
-`/api/v2/server/users/features` and gets 200. Ours never asks for it at all;
-it asks for `/api/v2/server/users` and `/api/v2/server/users/subscriptions`
-instead. If the features list normally comes from the server endpoint and only
-falls back to the user document when that is missing, then the fallback is the
-path that throws, and the question becomes why our server never makes that
-request -- `PublishServerOnPlexOnlineKey` is forced to `0` here, so plex.tv
-never registers this server.
-
-**The bisect, and it clears the shim.** Four things separate a Plex that
-works from ours: the interposer, the network namespace, the proxy and the
-manager. Adding them back one at a time:
-
-| what is running | result |
-| --- | --- |
-| Plex alone, own SQLite, claimed | runs indefinitely |
-| ...plus `PublishServerOnPlexOnlineKey=0`, `ManualPortMappingMode=1` | runs indefinitely |
-| ...plus the shim and a fresh PostgreSQL | **runs indefinitely** |
-| the full cluster | dies in ~1.5s of Plex uptime |
-
-So neither the preferences this repo forces nor the interposer cause it. What
-is left is the network namespace, the proxy and the manager.
-
-**What the working runs do that ours never gets to.** Every run that survives
-follows the same path within about two seconds of starting:
-
-    Webhook: User 1 () has 2 webhooks.
-    GET /api/v2/features -> 200
-    [EventSourceClient/pubsub/pubsub.plex.tv:443] Connected in 144 ms.
-    MyPlex: We appear to have regained Internet connectivity.
-    MyPlex: mapping state set to 'Mapped - Publishing'
-    GET /api/v2/server/users/features -> 200
-
-Ours logs the webhook line and dies on the next thing it touches. It never
-reaches `Mapped - Publishing`, and **it never opens the pubsub connection at
-all** -- `pubsub.plex.tv` appears zero times in its log, against a connection
-inside 150ms in every working run. Without that it never asks for
-`server/users/features`, which is the document whose `<feature>` elements
-carry the uuids; the only feature list it has is the one in `/api/v2/user`,
-where they are absent.
-
-That makes the long-running EventSource connection to `pubsub.plex.tv:443`
-the thing to look at next, and `pkg/plexnet` the place to look: Plex holds
-only a link-local address in there and everything outbound is translated.
-
-**Ruled out, each by testing it:** the response body (5182 bytes, pure ASCII,
-every uuid 36); the charset and the `create_simple_converter` redirect;
-`PlexOnlineToken=""` left behind by a claim that failed while plex.tv was
-pinned to loopback; `ProcessedMachineIdentifier` (40 characters, and not
-derived from the MachineIdentifier this repo forces); 24-character client
-identifiers in `plex.devices`; and claiming the server, which works -- the
-token can be exchanged out of band and written into `Preferences.xml` -- but
-does not stop the crash.
-
-### There is no configuration you can actually use yet
-
-`--block-plex-tv` gives a server that comes up `1/1` and serves, which is
-enough to exercise everything else here, and it is a real setting rather than
-the `hostAliases` patch that used to stand in for it. But it only survives
-while nobody uses it. Sign in through the web client and the server dies on
-the next request:
-
-    libc++abi: terminating with uncaught exception of type
     UnauthorizedException: HTTP status code 401
 
-`/media/providers` on the server is a proxy for `https://plex.tv/media/providers`.
-With plex.tv dropped the background refresh fails harmlessly --
-`[MediaProviderManager/Response::fetch] failed to complete query (408)` -- but
-the request the signed-in web client makes turns the same unreachable plex.tv
-into an uncaught exception. In the log `GET /media/providers` never completes
-and the crash handler runs 95ms later, with no outbound request logged at all:
-it throws inside the handler.
+One request reproduces it in about a minute, with no Kubernetes, no cluster
+and no manager:
 
-So the two symptoms are one problem wearing two faces. This configuration
-sends Plex down plex.tv paths it cannot finish: reachable, it dies parsing
-feature uuids about fifteen seconds in, with nobody touching it; blocked, it
-dies the moment somebody signs in. Fixing the uuid crash is the way out --
-blocking is somewhere to stand while debugging, not somewhere to run.
+| `GET /media/providers`, no token | result |
+| --- | --- |
+| plain Plex, own SQLite | 401, keeps running |
+| shim + fresh PostgreSQL | terminates, uncaught |
+| shim without the hook | 401, keeps running |
 
-The pod does at least recover now. The manager gives up after three missed
-health checks and exits so Kubernetes restarts the container, rather than
-leaving it `0/1` for ever with a dead Plex inside it.
+Fixed in `v1.3.17-clusterplex.11`. With it the server comes up `1/1` with
+plex.tv reachable, reaches `Mapped - Publishing`, opens the pubsub
+EventSource connection, and fetches `/api/v2/server/users/features` -- none of
+which it had ever managed before.
+
+**Why it took so long to see.** Two earlier investigations went past it:
+
+- A throw/catch test built against **libstdc++** passes with the hook loaded,
+  which is what cleared it the first time. libstdc++ and libgcc are a matched
+  pair and forwarding between them is harmless. Plex is libc++ with LLVM's
+  unwinder, and that is the pairing that breaks. A control has to use the
+  runtime the program actually uses.
+- Every symptom pointed somewhere else, plausibly. The `Invalid uuid length`
+  crash really does follow a document whose `<feature>` elements carry no
+  `uuid` -- but Plex only asked for that document because it had not reached
+  `Mapped - Publishing`, and it had not reached it because it had already
+  died. The whole chain was downstream of the first throw.
+
+The hook, and the `__cxa_throw` backtrace that depends on it, are kept behind
+an `exception-hook` Cargo feature, off by default. That backtrace is what
+found the NULL column-type bug and is worth having for the next one; turning
+it on means accepting that Plex will die on its first exception.
 
 ## Races fixed in the fork
 
