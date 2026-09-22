@@ -5,7 +5,8 @@ metadata:
 spec:
   replicas: 3
   serviceName: plex-workers
-  # Pods do not depend on each other's ordinal; LiteFS elects the primary.
+  # Pods do not depend on each other's ordinal: the library is PostgreSQL
+  # and every pod shares it, so there is nothing to bring up in order.
   podManagementPolicy: Parallel
   selector:
     matchLabels:
@@ -23,10 +24,10 @@ spec:
           image: ghcr.io/mediactl/cluster-plex:dev
           imagePullPolicy: IfNotPresent
           securityContext:
-            # FUSE needs /dev/fuse plus CAP_SYS_ADMIN, and Plex's network
-            # namespace needs CAP_SYS_ADMIN to create and CAP_NET_ADMIN to
-            # wire up; privileged is the only mode that provides the device
-            # without a device plugin.
+            # Plex's network namespace needs CAP_SYS_ADMIN to create and
+            # CAP_NET_ADMIN to wire up. This was privileged for FUSE as
+            # well, which went with LiteFS; the two capabilities may now be
+            # enough on their own, which nobody has tried.
             privileged: true
           env:
             - name: POD_NAME
@@ -48,8 +49,6 @@ spec:
               containerPort: 32400
             - name: grpc
               containerPort: 50051
-            - name: litefs
-              containerPort: 20202
             - name: probes
               containerPort: 8080
           livenessProbe:
@@ -67,8 +66,6 @@ spec:
             failureThreshold: 30
             periodSeconds: 10
           volumeMounts:
-            - name: litefs-data
-              mountPath: /var/lib/litefs
             - name: plex-config
               mountPath: /var/lib/plexmediaserver
             - name: plex-media
@@ -86,13 +83,3 @@ spec:
         - name: plex-media
           persistentVolumeClaim:
             claimName: plex-media
-  volumeClaimTemplates:
-    # LiteFS transaction files and the database copies: per pod, never shared.
-    - metadata:
-        name: litefs-data
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 10Gi

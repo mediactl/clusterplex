@@ -25,7 +25,7 @@ allowed, and which file does this part ID refer to. It then streams the file
 itself. Control traffic, metadata, timelines and websockets are forwarded to
 the leader untouched.
 
-Plex pods keep running Plex, LiteFS and the transcode workers. They stop being
+Plex pods keep running Plex and the transcode workers. They stop being
 the data path for playback.
 
 ## Coordination

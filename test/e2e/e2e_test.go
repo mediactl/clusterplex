@@ -27,7 +27,7 @@ import (
 
 const (
 	namespace = "media"
-	leaseName = "cluster-plex-litefs"
+	leaseName = "cluster-plex-plextv"
 	pmsPort   = 32400
 	grpcPort  = 50051
 	// retiredProxyPort is where the proxy used to sit, back when Plex held
@@ -123,8 +123,8 @@ func derivedIdentity(t *testing.T, prefs string) string {
 
 func TestClusterPlexE2E(t *testing.T) {
 	// StatefulSet volume claims and pod management policy are immutable, so
-	// each run starts from a fresh StatefulSet. The per-pod LiteFS claims and
-	// the shared claims survive, as they would across an upgrade.
+	// each run starts from a fresh StatefulSet. The shared claims survive, as
+	// they would across an upgrade.
 	runCmd(t, "sh", "-c", "kubectl create namespace "+namespace+" --dry-run=client -o yaml | kubectl apply -f -")
 	runCmd(t, "kubectl", "delete", "statefulset", "plex", "-n", namespace, "--ignore-not-found", "--cascade=foreground", "--wait=true")
 	runCmd(t, "kubectl", "apply", "-k", "../../k8s/overlays/kind")
