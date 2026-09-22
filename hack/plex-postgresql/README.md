@@ -330,23 +330,34 @@ identifiers in `plex.devices`; and claiming the server, which works -- the
 token can be exchanged out of band and written into `Preferences.xml` -- but
 does not stop the crash.
 
-### The configuration that does work
+### There is no configuration you can actually use yet
 
-Plex comes up and serves -- `1/1`, no crashes, PostgreSQL behind it -- with
-plex.tv resolved to loopback, so there is never a body to convert:
+`--block-plex-tv` gives a server that comes up `1/1` and serves, which is
+enough to exercise everything else here, and it is a real setting rather than
+the `hostAliases` patch that used to stand in for it. But it only survives
+while nobody uses it. Sign in through the web client and the server dies on
+the next request:
 
-```sh
-kubectl -n media patch statefulset cp --type=json -p \
-  '[{"op":"add","path":"/spec/template/spec/hostAliases","value":
-     [{"ip":"127.0.0.1","hostnames":["plex.tv","clients.plex.tv","my.plexapp.com"]}]}]'
-```
+    libc++abi: terminating with uncaught exception of type
+    UnauthorizedException: HTTP status code 401
 
-It is a diagnostic, not a deployment. Plex is then talking to its own HTTP
-server, which answers 400, and after about seven minutes one of those 400s
-kills it with `BadRequestException`. Nothing can claim the server or reach it
-remotely either. It is written down because it is the only configuration in
-which the rest of this can be exercised -- and because it is what proves the
-shim itself now carries Plex through migrations, plug-in startup and serving.
+`/media/providers` on the server is a proxy for `https://plex.tv/media/providers`.
+With plex.tv dropped the background refresh fails harmlessly --
+`[MediaProviderManager/Response::fetch] failed to complete query (408)` -- but
+the request the signed-in web client makes turns the same unreachable plex.tv
+into an uncaught exception. In the log `GET /media/providers` never completes
+and the crash handler runs 95ms later, with no outbound request logged at all:
+it throws inside the handler.
+
+So the two symptoms are one problem wearing two faces. This configuration
+sends Plex down plex.tv paths it cannot finish: reachable, it dies parsing
+feature uuids about fifteen seconds in, with nobody touching it; blocked, it
+dies the moment somebody signs in. Fixing the uuid crash is the way out --
+blocking is somewhere to stand while debugging, not somewhere to run.
+
+The pod does at least recover now. The manager gives up after three missed
+health checks and exits so Kubernetes restarts the container, rather than
+leaving it `0/1` for ever with a dead Plex inside it.
 
 ## Races fixed in the fork
 
