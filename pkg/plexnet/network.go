@@ -48,7 +48,7 @@ func Provision(_ context.Context, cfg Config, log *slog.Logger) (*Network, error
 	var handle netns.NsHandle
 	if err := onLockedThread(func() error {
 		var err error
-		handle, err = build(cfg)
+		handle, err = build(cfg, log)
 		return err
 	}); err != nil {
 		return nil, err
@@ -117,7 +117,7 @@ func (n *Network) Close() error {
 // build does the whole provisioning sequence. It runs on a locked thread whose
 // namespace onLockedThread guarantees to restore, which is what lets it switch
 // namespaces freely and still return early on any error.
-func build(cfg Config) (netns.NsHandle, error) {
+func build(cfg Config, log *slog.Logger) (netns.NsHandle, error) {
 	pod, err := netns.Get()
 	if err != nil {
 		return 0, fmt.Errorf("read pod network namespace: %w", err)
@@ -153,6 +153,23 @@ func build(cfg Config) (netns.NsHandle, error) {
 		}
 		_ = plexNS.Close()
 	}()
+
+	// A link already holding our name is one this pod left behind. The name is
+	// fixed, the pod's network namespace belongs to this pod alone, and that
+	// namespace outlives the container inside it — so a container that
+	// restarts finds its predecessor's veth still there and LinkAdd refuses
+	// with EEXIST. Provisioning is fatal, so the pod then crash-loops for
+	// ever: one restart for any reason and it never comes back.
+	//
+	// Removing it is not inheriting it. Whatever state it is in, it is wired
+	// to a Plex namespace that died with the container, not to the one being
+	// created here.
+	if stale, err := netlink.LinkByName(cfg.HostIface); err == nil && cfg.ReclaimStaleLink {
+		log.Info("removing the veth a previous container left behind", "link", cfg.HostIface)
+		if err := netlink.LinkDel(stale); err != nil {
+			return 0, fmt.Errorf("remove stale veth %s: %w", cfg.HostIface, err)
+		}
+	}
 
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: cfg.HostIface},

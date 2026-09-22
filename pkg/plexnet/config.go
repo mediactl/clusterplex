@@ -36,6 +36,20 @@ type Config struct {
 	// NFTable names the nftables table holding the masquerade rule. Teardown
 	// deletes the table by name, so it must be ours alone.
 	NFTable string
+	// ReclaimStaleLink removes a veth already holding HostIface instead of
+	// failing on it.
+	//
+	// Only true at process start, and the distinction matters. The pod's
+	// network namespace outlives the container inside it, so a container that
+	// restarts finds its predecessor's veth and cannot provision — fatal, and
+	// the pod crash-loops for ever. At startup any such link is ours and
+	// stale, because nothing else creates it.
+	//
+	// It stays false everywhere else so that a second Provision inside a
+	// living process still fails on the name rather than deleting the veth
+	// the first one is using, which is how a retry takes a working network
+	// down with it.
+	ReclaimStaleLink bool
 }
 
 func (c Config) withDefaults() Config {

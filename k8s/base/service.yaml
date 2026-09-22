@@ -7,9 +7,13 @@ metadata:
   name: plex-main
 spec:
   type: LoadBalancer
+  # Every pod that is ready, not the lease holder. Every pod runs Plex
+  # (ADR-0004), and readiness already means this pod's Plex is answering — a
+  # pod serving Plex is not ready until it does. Selecting on plex-role sent
+  # every client to one pod, which is the thing active-active exists to stop,
+  # and it selected nothing at all once the label stopped following the lease.
   selector:
     app: plex
-    plex-role: leader
   ports:
     - name: pms
       port: 32400

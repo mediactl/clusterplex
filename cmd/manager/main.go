@@ -74,6 +74,9 @@ type Manager struct {
 	mu         sync.RWMutex
 	isReady    bool
 	isStarting bool
+	// role is what this pod's plex-role label last said, so a transition can
+	// be told from a repeat. Guarded by mu.
+	role string
 	// runsPlex is whether this pod is one that serves Plex, as opposed to a
 	// worker that only takes transcode jobs. A worker is ready as soon as it
 	// has a role; a pod serving Plex is not ready until Plex answers.
@@ -148,6 +151,11 @@ func run() int {
 	plexNet, err := plexnet.Provision(ctx, plexnet.Config{
 		Subnet:   cfg.PlexSubnet,
 		PlexPort: cfg.PMSPort,
+		// This is process start, so a veth already holding the name is one a
+		// previous container in this same pod left behind: the pod's network
+		// namespace outlives the container inside it. Without this the pod
+		// crash-loops for ever after its first restart, whatever caused it.
+		ReclaimStaleLink: true,
 	}, logger.With("component", "plexnet"))
 	if err != nil {
 		// Fatal, unlike the port redirect it replaces. Starting Plex without

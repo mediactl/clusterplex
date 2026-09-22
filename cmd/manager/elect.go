@@ -196,12 +196,18 @@ func (m *Manager) start(ctx context.Context) {
 	go m.advertiseWhenAccepting(ctx)
 }
 
+// markReady marks this pod ready and records the role it is ready in.
+//
+// The role is written whenever it changes, not only on the first call. It used
+// to be first-call-only, which was harmless while the first call was the one
+// that knew this pod's role — and stopped being harmless when taking and
+// giving up the lease became ordinary transitions a running pod makes.
 func (m *Manager) markReady(ctx context.Context, role string) {
 	m.mu.Lock()
-	already := !m.isStarting
-	m.isStarting, m.isReady = false, true
+	changed := m.isStarting || m.role != role
+	m.isStarting, m.isReady, m.role = false, true, role
 	m.mu.Unlock()
-	if already {
+	if !changed {
 		return
 	}
 	if err := m.updatePodRole(ctx, role); err != nil {
