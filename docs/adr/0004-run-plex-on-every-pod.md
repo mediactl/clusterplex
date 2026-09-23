@@ -161,17 +161,20 @@ single-instance.
 
 ## Action Items
 
-1. [ ] Split the volumes in `k8s/base/statefulset.yaml`; update the comment in
-       `k8s/base/pvc.yaml` that says only the leader writes.
-2. [ ] Make the transcode temp directory explicit rather than inherited, so it
-       lands on the per-pod mount.
-3. [ ] Delete `runElected`; start Plex unconditionally; reduce the lease to
+1. [x] Split the volumes in `k8s/base/statefulset.yaml`; update the comment in
+       `k8s/base/pvc.yaml` that says only the leader writes. The chart's
+       StatefulSet got the same split later than the base did.
+2. [x] Make the transcode temp directory explicit rather than inherited, so it
+       lands on the per-pod mount (`plex-transcode-dir`, forced into
+       `TranscoderTempDirectory`).
+3. [x] Delete `runElected`; start Plex unconditionally; reduce the lease to
        plex.tv ownership.
-4. [ ] Lock `Preferences.xml` across the merge, with a test that interleaves
+4. [x] Lock `Preferences.xml` across the merge, with a test that interleaves
        two merges.
-5. [ ] Set `plex-mode: active` in the ConfigMap and make it the documented
-       default once it has been exercised.
-6. [ ] Disable GDM, the one item from the standard checklist not yet forced.
+5. [x] Superseded: there is no `plex-mode` any more. Active is the only
+       mode, and the chart no longer renders the setting.
+6. [x] Disable GDM, the one item from the standard checklist not yet forced
+       (`GdmEnabled=0` in `pkg/plexprefs/required.go`).
 7. [x] Run several pods serving one library in kind. Three pods came up 3/3
        with no restarts and no errors in any of their logs; all three answer
        `/identity` with `claimed="1"` and the same
@@ -181,6 +184,11 @@ single-instance.
        volume split was checked by writing a marker rather than inferred: a
        file created in one pod's `Databases` directory is invisible to the
        others, while one at the volume root is visible to all.
-8. [ ] Still untested: a scan on one pod appearing on another, and a transcode
-       surviving its session being pinned. Both need media, which this cluster
-       has none of.
+8. [x] Covered by `test/e2e`: a file scanned in on one pod is listed by the
+       others; a transcode session pinned to one pod keeps serving while the
+       other two pods are deleted and replaced; every pod refreshing one
+       item at once leaves every bundle parseable, and a pod without the
+       lease reaches the metadata provider; a deleted pod drains the stream
+       it holds to the end; and the lease moves without the identity
+       changing. The suite generates media on the host when the volume has
+       none.

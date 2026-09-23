@@ -229,6 +229,47 @@ in. `Local` is what keeps the affinity meaningful: under the default `Cluster`
 policy kube-proxy replaces the source address with a node's, so every external
 client hashes the same and lands on one pod.
 
+### A stopping pod lets its streams finish
+
+A pod that is terminating has already left `plex-main`, so no new client
+arrives there. The streams it holds are another matter: a session's transcode
+chunks live only on that pod, so a client mid-stream cannot pick up where it
+was on another one. The manager therefore drains before it stops Plex: it
+waits, for up to `drain-timeout` (`CLUSTERPLEX_DRAIN_TIMEOUT`, default `2m`),
+for the streams its proxy holds to finish on their own, and only then sends
+Plex SIGTERM. A stream is a connection that moved a byte towards the client
+within the last fifteen seconds, counting bytes still leaving the kernel's
+send queue; a web app's notification socket, open for hours and silent, is
+not one, and is closed with Plex rather than waited for -- while it was
+waited for, that client was still talking to a pod about to go. Restarting a
+Plex that has stopped answering never drains.
+
+The StatefulSet's `terminationGracePeriodSeconds` (180) has to cover the
+drain plus the 30 seconds Plex gets to flush; shorter, and the kubelet kills
+the pod mid-drain. A `PodDisruptionBudget` holds evictions to one pod at a
+time for the same reason: each pod that goes takes its sessions with it.
+
+What a drain cannot do is keep a client on the pod. A client that opens a new
+connection after the pod started terminating lands elsewhere, and a transcode
+it was watching starts again there from its position; a direct-play stream
+carries on unchanged.
+
+### What each pod reports
+
+The manager serves Prometheus metrics on the probe port, `/metrics`:
+
+| Series | Meaning |
+| --- | --- |
+| `clusterplex_plex_serving` | 1 while this pod's Plex answers for its library, 0 while it is withdrawn |
+| `clusterplex_plex_sessions` | Items this pod's Plex is playing to clients, read from `/status/sessions` on every health check |
+| `clusterplex_plex_transcode_sessions` | Of those, the ones it is transcoding |
+| `clusterplex_proxy_connections` | Client connections open through this pod's proxy; what a drain waits on |
+| `clusterplex_manager_is_leader` | 1 on the pod that holds the plex.tv lease; every pod serves regardless |
+| `clusterplex_active_jobs`, `clusterplex_jobs_routed_total` | Helper processes running here, and intercepted helper invocations by binary and where they ran |
+
+Three pods splitting one library are invisible without these: nothing else
+says which pod holds how many streams.
+
 ### Settings that are per-pod, not per-cluster
 
 Rate limits apply to one Plex process, and every pod runs one. `WanTotalMaxUploadRate`
@@ -238,6 +279,15 @@ Divide by the replica count to get the cap that was intended.
 `DatabaseCacheSize` sizes SQLite's page cache. The library is PostgreSQL now, so
 it reaches only the per-pod shadow database the shim rebuilds on every start;
 tune PostgreSQL instead.
+
+The local admin token is per process, and its file is not. Plex writes a fresh
+`.LocalAdminToken` on every start into its state directory, which is on the
+shared claim, so with three pods starting together the file holds whichever
+Plex started last and the other two refuse it with 401. The manager therefore
+authenticates with the server's own `PlexOnlineToken` from `Preferences.xml`,
+one value for every pod, and falls back to the local admin token only on a
+server that has not been claimed. Anything else that calls a pod's API with
+the file's token should expect to be refused by two pods in three.
 
 Note that GDM discovery (UDP 32410-32414) does not cross the link either.
 Broadcast discovery already did not work across pod networking, so nothing that
