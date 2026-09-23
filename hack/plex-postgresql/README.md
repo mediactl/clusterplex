@@ -423,6 +423,76 @@ structure, or shares a single slot, and then releases the lock. When looking
 for the next one, grep for a function that takes a lock, calls `.as_ptr()` on
 something it does not own, and returns.
 
+## Fixed: the pool probed dead threads with `pthread_kill`, which segfaults on musl
+
+Plex on every pod died within minutes of its first playback, in
+`sqlite3_prepare_v2` or `sqlite3_step`, and nothing logged it. Fixed in
+`v1.3.17-clusterplex.19`.
+
+**Why it was silent.** Plex installs its own SIGSEGV handler and re-raises
+the signal, so the kernel's usual `segfault at` line never appears; with crash
+reporting disabled no minidump is written; the shim's handler
+(`PLEX_PG_ENABLE_SIGNAL_LOG=1`) is installed with `sa_flags = 0` and never got
+to run; PostgreSQL saw nothing; Plex's own log stops mid-request. The manager
+only noticed the listener was gone.
+
+**How it was found.** Three things, in order:
+
+1. `sysctl -w kernel.print-fatal-signals=1` on the kind node. Every death then
+   logged `Plex Media Server: PMS ReqHandler: potentially unexpected fatal
+   signal 11` -- and that wording means the signal was delivered with its
+   *default* action, i.e. whatever handler was installed could not run.
+2. Core dumps were already being written and nobody had looked: the host's
+   `core_pattern` is `core`, Plex's core limit is unlimited, and Plex's working
+   directory is `/`, so each death left `/core.<pid>` (~150 MB) in the pod's
+   root filesystem. They survive an in-place Plex restart and are lost when
+   the pod is recreated.
+3. Host `gdb` on the core through the container's root:
+   `gdb -c /proc/<manager pid>/root/core.<pid> "/proc/<manager pid>/root/usr/lib/plexmediaserver/Plex Media Server"`
+   with `set sysroot /proc/<manager pid>/root`. Plex is stripped and gdb
+   cannot walk musl's link map, so frames in Plex itself are `??`, but the shim
+   keeps its symbol table and the shim, libpq, soci and libc++ frames resolve.
+   Attaching gdb to the live process from the host does not work: it cannot
+   see the threads across the PID namespace.
+
+Three cores from three pods, one stack:
+
+```
+#0  ld-musl-x86_64.so.1   lock cmpxchg %edx,(%rdi)
+#1  pthread_kill
+#2  plex_pg_core::pg_client::pool_acquire::pool_get_connection_inner_excluding
+#3  plex_pg_core::pg_client::pool_lookup::pool_find_connection_for_db
+#4  rust_pg_find_connection
+#5  sqlite3_prepare_v2 / rust_my_sqlite3_step
+```
+
+**The cause.** The zombie reclaim asked whether a slot's owner thread was
+still alive with `pthread_kill(owner, 0)`. Plex runs on its own musl, where a
+`pthread_t` is a pointer to the thread's control block and `pthread_kill`
+dereferences it to take the kill lock. Once the owner has exited -- and Plex's
+request, webhook and pool threads are short-lived -- that block is unmapped,
+and the thread acquiring a connection faults. The 300-second idle guard in
+front of the probe is why nothing could die in the first five minutes, and a
+playback burst is what runs the reclaim pass on many threads at once, which is
+why "it dies when I press play". `.14` had already made the reference count
+the decision and kept the probe as a hint; the hint was the crash. It is
+deleted, not disabled.
+
+**Reproducer**, which killed Plex within a second before the fix and is the
+check after it: eight concurrent playback-start sequences (metadata with
+`includeBandwidths`, the thumbnail, timeline `buffering`/`playing` reports)
+with the owner token from `Preferences.xml` -- the local admin token gets 401
+on `/:/timeline` -- against one pod, more than five minutes after its Plex
+started. One client, sequentially, does not reproduce it.
+Run after `.19` rolled out, past the five-minute window, against all three
+pods in turn -- eight clients, three rounds each -- and then three concurrent
+HLS transcode sessions per pod: the kernel's fatal-signal count did not move,
+no request failed and every Plex stayed on its first start.
+
+Two things seen along the way and not chased: the shim's `STACK_CHECK` lines
+show it running on Plex threads with 124--128 KB stacks and ~110 KB of
+headroom, and the pool auto-grew 59 to 69 slots in one minute under the burst.
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
