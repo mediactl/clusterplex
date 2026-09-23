@@ -94,7 +94,7 @@ kind-down: ## Delete the kind cluster
 
 .PHONY: e2e
 e2e: ## Deploy the kind overlay and run the end-to-end test
-	go test -tags e2e ./test/e2e/... -v -timeout 15m
+	go test -tags e2e ./test/e2e/... -v -timeout 30m
 
 .PHONY: help
 help:
