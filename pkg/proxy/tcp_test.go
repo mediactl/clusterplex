@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -122,6 +123,58 @@ func TestTCPProxyDrainGivesUpAtTheDeadline(t *testing.T) {
 	assert.Equal(t, 1, left, "the held connection is reported, not cut")
 	assert.Less(t, time.Since(started), 2*time.Second)
 	assert.Equal(t, 1, p.Open(), "a drain that gives up leaves the connection alone")
+}
+
+func TestTCPProxyHoldsAConnectionUntilItsBytesAreDelivered(t *testing.T) {
+	// A copy is finished once the last byte is in the kernel's send buffer,
+	// which holds megabytes. On the cluster an 890 KB file was "copied" in
+	// under a second while the client had two thirds of it still to receive;
+	// the drain saw nothing open, the pod went, and the tail went with it.
+	payload := bytes.Repeat([]byte("x"), 1<<20)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lis.Close() })
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = c.Write(payload); _ = c.Close() }()
+		}
+	}()
+	p := &TCP{Listen: "127.0.0.1:0", Target: lis.Addr().String()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, err := p.Start(ctx)
+	require.NoError(t, err)
+
+	// A client with a tiny receive buffer that reads nothing for a while.
+	d := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
+		var serr error
+		err := c.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 8192) })
+		if err != nil {
+			return err
+		}
+		return serr
+	}}
+	conn, err := d.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	// Upstream has long since written everything and closed; the proxy has
+	// copied all it will ever copy. The client has read none of it.
+	time.Sleep(700 * time.Millisecond)
+	assert.Equal(t, 1, p.Open(), "the connection is open until the client has its bytes, not until the copy returned")
+
+	got, err := io.ReadAll(conn)
+	require.NoError(t, err)
+	assert.Len(t, got, len(payload))
+	// Delivered and done with: the client hangs up, and only then is the
+	// connection no longer open.
+	require.NoError(t, conn.Close())
+	assert.Eventually(t, func() bool { return p.Open() == 0 }, 5*time.Second, 20*time.Millisecond)
 }
 
 func TestTCPProxyDrainWithNothingOpenReturnsAtOnce(t *testing.T) {

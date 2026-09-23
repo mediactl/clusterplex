@@ -38,6 +38,14 @@ type TCP struct {
 // drainPoll is how often Drain looks again.
 const drainPoll = 250 * time.Millisecond
 
+// deliveryPoll is how often a finished copy asks whether its bytes have
+// reached the client; maxDeliveryWait is how long it will ask before giving
+// up on a client that has stopped reading.
+const (
+	deliveryPoll    = 50 * time.Millisecond
+	maxDeliveryWait = 2 * time.Minute
+)
+
 // Start binds Listen and serves until ctx is cancelled. It returns the bound
 // address so callers may pass port 0.
 func (p *TCP) Start(ctx context.Context) (net.Addr, error) {
@@ -153,21 +161,51 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pipe(&wg, upstream, client)
-	go pipe(&wg, client, upstream)
+	go pipe(ctx, &wg, upstream, client, false)
+	go pipe(ctx, &wg, client, upstream, true)
 	wg.Wait()
 }
 
 // pipe copies src to dst, then half-closes dst so the peer sees EOF while the
 // other direction drains.
-func pipe(wg *sync.WaitGroup, dst, src net.Conn) {
+//
+// Towards the client it first waits for what it wrote to be delivered. A copy
+// is finished once the last byte is in the kernel's send buffer, which holds
+// megabytes, so a whole file can be "copied" while the client has most of it
+// still to receive -- and a drain that counts copies in progress would see
+// nothing to wait for, then the pod would go, and the buffered tail with it.
+func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, toClient bool) {
 	defer wg.Done()
 	_, _ = io.Copy(dst, src)
+	if toClient {
+		awaitDelivery(ctx, dst)
+	}
 	if tc, ok := dst.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
 		return
 	}
 	_ = dst.Close()
+}
+
+// awaitDelivery returns once the peer has acknowledged everything written to
+// c, or when ctx ends, or after maxDeliveryWait for a client that has stopped
+// reading.
+func awaitDelivery(ctx context.Context, c net.Conn) {
+	deadline := time.NewTimer(maxDeliveryWait)
+	defer deadline.Stop()
+	for {
+		pending, ok := sendQueue(c)
+		if !ok || pending == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-time.After(deliveryPoll):
+		}
+	}
 }
 
 func (p *TCP) log() *slog.Logger {
