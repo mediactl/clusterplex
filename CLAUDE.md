@@ -140,6 +140,21 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
 - **Viper lowercases nested map keys.** `FriendlyName` silently becomes
   `friendlyname`, and Plex preference names are case sensitive. Preferences are
   a list of name/value pairs for that reason.
+- **Plex can die without the supervisor noticing.** It runs under a subreaper
+  that stays alive while any descendant does — that is what stops Plex's
+  vfork re-exec looking like an exit — so `cmd.Wait` keeps blocking and
+  `OnUnexpectedExit` never fires. The health watch is the only thing that
+  finds out, and what it does about it is `Supervisor.Restart`, not exiting.
+  The pod is still replaced once Plex has been restarted `plexRestartLimit`
+  times inside `plexRestartWindow`. A corollary: `plexHealth.record` fires
+  once per *run* of failures, not once ever, or a Plex that never comes back
+  would be left alone at 0/1.
+- **Plex's crash dumps are deleted on every start,** by
+  `standalone-entrypoint.sh`, to keep CrashUploader from running. A crash
+  therefore leaves no dump behind by the time anyone looks at the pod, and
+  "no crash report" says nothing about whether Plex crashed. The host's
+  kernel log is the record that survives: `dmesg -T | grep segfault` names
+  the faulting thread and library.
 - **A stale `plexmediaserver.pid` stops Plex starting.** It outlives the
   container on a persistent volume and container PIDs repeat, so the supervisor
   removes it before every start.

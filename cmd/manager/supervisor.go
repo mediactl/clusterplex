@@ -189,9 +189,57 @@ func (s *Supervisor) wait(cmd *exec.Cmd) {
 	}
 }
 
+// lostGrace is how long Plex gets to exit when it is being restarted because
+// it stopped answering, rather than because someone asked it to stop.
+//
+// It is deliberately much shorter than Grace. By the time Restart is called
+// the health watch has already waited unhealthyRestartAfter checks, so Plex is
+// not merely slow — and the subreaper it runs under will not exit on SIGTERM
+// while any descendant lives, which is the whole reason the supervisor did not
+// notice by itself. Waiting the full grace here just adds half a minute to
+// every recovery before the inevitable SIGKILL.
+const lostGrace = 3 * time.Second
+
+// pid is the process the supervisor is currently waiting on, or 0.
+func (s *Supervisor) pid() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
+// Restart replaces a Plex that is no longer serving.
+//
+// It exists because Plex can die without the supervisor learning of it: Plex
+// runs under a subreaper, which stays alive while any descendant does, so
+// cmd.Wait blocks and OnUnexpectedExit never fires. The health watch is what
+// notices, and this is what it should do about it — replacing the process
+// takes seconds, where replacing the pod took forty and re-ran the init
+// script and the election on the way back.
+//
+// Stopping first is not optional even though Plex is expected to be gone
+// already: the subreaper and whatever descendants kept it alive are still
+// there, and they hold Plex's port.
+func (s *Supervisor) Restart(ctx context.Context) error {
+	if err := s.stopWithin(ctx, lostGrace); err != nil {
+		return fmt.Errorf("stop the Plex that stopped answering: %w", err)
+	}
+	return s.Start(ctx)
+}
+
 // Stop sends SIGTERM to Plex's process group, waits up to Grace, then kills
 // it, and finally stops the proxy. It is a no-op when nothing is running.
 func (s *Supervisor) Stop(ctx context.Context) error {
+	grace := s.Grace
+	if grace == 0 {
+		grace = defaultGrace
+	}
+	return s.stopWithin(ctx, grace)
+}
+
+func (s *Supervisor) stopWithin(ctx context.Context, grace time.Duration) error {
 	s.mu.Lock()
 	cmd, done, cancel := s.cmd, s.done, s.cancel
 	s.stopping = true
@@ -207,10 +255,6 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		}
 	}()
 
-	grace := s.Grace
-	if grace == 0 {
-		grace = defaultGrace
-	}
 	s.Logger.Info("stopping Plex Media Server", "pid", cmd.Process.Pid, "grace", grace)
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 

@@ -217,16 +217,40 @@ func run() int {
 		},
 		OnUnexpectedExit: func(err error) { m.plexLost(err) },
 	}
-	// A fresh container is the cleanest recovery, and it re-runs the election
-	// rather than leaving a half torn down pod advertised. Once, because both
-	// ways of losing Plex can fire for the same death.
-	var lost sync.Once
+	// Losing Plex means restarting Plex, not replacing the pod.
+	//
+	// Plex can die without the supervisor learning of it — it runs under a
+	// subreaper that stays alive while any descendant does, so cmd.Wait blocks
+	// and OnUnexpectedExit never fires — and the health watch is what notices.
+	// Replacing the pod for that cost about forty seconds and re-ran the init
+	// script and the election on the way back, for a process that takes
+	// seconds to start.
+	//
+	// The pod is still replaced when Plex cannot stay up, because a pod
+	// restarting a process that dies again immediately serves nothing while
+	// looking like it is coping.
+	var restarts plexRestarts
+	var giveUp sync.Once
 	m.onPlexLost = func(err error) {
-		lost.Do(func() {
-			logger.Error("exiting so the pod restarts", "error", err)
-			m.shutdown(context.Background())
-			os.Exit(1)
-		})
+		if restarts.record(time.Now()) {
+			giveUp.Do(func() {
+				logger.Error("Plex keeps dying; exiting so the pod restarts",
+					"restarts", plexRestartLimit, "within", plexRestartWindow, "error", err)
+				m.shutdown(context.Background())
+				os.Exit(1)
+			})
+			return
+		}
+		logger.Error("Plex stopped serving; restarting it", "error", err)
+		if err := m.sup.Restart(ctx); err != nil {
+			// Nothing else is going to fix this, and a pod that cannot start
+			// Plex should not stay up pretending otherwise.
+			giveUp.Do(func() {
+				logger.Error("cannot restart Plex; exiting so the pod restarts", "error", err)
+				m.shutdown(context.Background())
+				os.Exit(1)
+			})
+		}
 	}
 
 	go m.serveProbes()

@@ -45,17 +45,25 @@ type plexHealth struct {
 }
 
 // record takes one check's result and reports whether Plex is serving, and
-// whether this pod should now be given up on.
+// whether recovering it should be attempted now.
 //
-// giveUp is true on exactly the check that crosses the threshold, never again
-// after, so a pod already on its way out is not restarted once per tick.
+// giveUp is true once per run of failures rather than once per tick, so the
+// recovery is not started again while it is still happening — and the count
+// starts over when it fires, so a Plex that does not come back is tried again
+// rather than left alone. That second part matters: while losing Plex meant
+// exiting the pod, firing once ever was right; now that it means restarting
+// Plex, a restart that does not take has to be noticed.
 func (h *plexHealth) record(err error) (serving, giveUp bool) {
 	if err == nil {
 		h.consecutiveFailures = 0
 		return true, false
 	}
 	h.consecutiveFailures++
-	return false, h.consecutiveFailures == unhealthyRestartAfter
+	if h.consecutiveFailures < unhealthyRestartAfter {
+		return false, false
+	}
+	h.consecutiveFailures = 0
+	return false, true
 }
 
 // runPlex starts Plex on this pod and keeps it running.

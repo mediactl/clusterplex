@@ -30,7 +30,15 @@ func TestPlexIsGivenUpOnOnlyAfterItHasMissedSeveralChecksInARow(t *testing.T) {
 	assert.True(t, giveUp, "the %dth consecutive failure gives up", unhealthyRestartAfter)
 }
 
-func TestThePodIsGivenUpOnOnceRatherThanOnEveryTick(t *testing.T) {
+func TestPlexIsGivenUpOnEveryRoundOfChecksRatherThanOnEveryTick(t *testing.T) {
+	// Not once per tick: that would restart Plex ten times while the first
+	// restart was still starting. Not once ever either, which is what this
+	// did while losing Plex meant exiting — the count never reached the
+	// threshold a second time, so a Plex that did not come back after a
+	// restart was never tried again and the pod sat at 0/1 for ever.
+	//
+	// Once per round of failures is what lets the restarts escalate: each
+	// round is one restart, and plexRestartLimit rounds replace the pod.
 	var h plexHealth
 	boom := errors.New("connection refused")
 	gaveUp := 0
@@ -39,7 +47,7 @@ func TestThePodIsGivenUpOnOnceRatherThanOnEveryTick(t *testing.T) {
 			gaveUp++
 		}
 	}
-	assert.Equal(t, 1, gaveUp, "a pod already being restarted must not be restarted again")
+	assert.Equal(t, 4, gaveUp, "each run of consecutive failures is one attempt to recover")
 }
 
 func TestAnAnswerFromPlexForgivesTheFailuresBeforeIt(t *testing.T) {
