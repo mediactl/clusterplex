@@ -78,6 +78,25 @@ func TestTCPProxyTracksActiveConnections(t *testing.T) {
 	assert.Eventually(t, func() bool { return active.Load() == 0 }, 2*time.Second, 10*time.Millisecond)
 }
 
+// stream keeps a connection moving bytes until it is closed: an echo every
+// few tens of milliseconds, which is what a client taking segments looks like
+// from the proxy.
+func stream(t *testing.T, conn net.Conn) {
+	t.Helper()
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			if _, err := conn.Write([]byte("x")); err != nil {
+				return
+			}
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+}
+
 func TestTCPProxyDrainWaitsForHeldConnectionsToFinish(t *testing.T) {
 	// A rollout used to cut every stream on the pod the instant it began. The
 	// pod has already left its Service by then, so nothing new arrives; what
@@ -91,12 +110,13 @@ func TestTCPProxyDrainWaitsForHeldConnectionsToFinish(t *testing.T) {
 
 	conn, err := net.Dial("tcp", addr.String())
 	require.NoError(t, err)
-	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond)
+	stream(t, conn)
+	assert.Eventually(t, func() bool { return p.Streams() == 1 }, 2*time.Second, 10*time.Millisecond)
 
 	drained := make(chan int, 1)
 	go func() { drained <- p.Drain(context.Background(), 5*time.Second) }()
 	assert.Never(t, func() bool { return len(drained) > 0 }, 400*time.Millisecond, 20*time.Millisecond,
-		"the drain must wait while the connection is held")
+		"the drain must wait while the stream is moving")
 
 	require.NoError(t, conn.Close())
 	select {
@@ -116,11 +136,12 @@ func TestTCPProxyDrainGivesUpAtTheDeadline(t *testing.T) {
 	conn, err := net.Dial("tcp", addr.String())
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
-	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond)
+	stream(t, conn)
+	assert.Eventually(t, func() bool { return p.Streams() == 1 }, 2*time.Second, 10*time.Millisecond)
 
 	started := time.Now()
 	left := p.Drain(context.Background(), 300*time.Millisecond)
-	assert.Equal(t, 1, left, "the held connection is reported, not cut")
+	assert.Equal(t, 1, left, "the stream is reported, not cut")
 	assert.Less(t, time.Since(started), 2*time.Second)
 	assert.Equal(t, 1, p.Open(), "a drain that gives up leaves the connection alone")
 }
@@ -175,6 +196,53 @@ func TestTCPProxyHoldsAConnectionUntilItsBytesAreDelivered(t *testing.T) {
 	// connection no longer open.
 	require.NoError(t, conn.Close())
 	assert.Eventually(t, func() bool { return p.Open() == 0 }, 5*time.Second, 20*time.Millisecond)
+}
+
+func TestTCPProxyDrainDoesNotWaitForIdleConnections(t *testing.T) {
+	// A web app holds a notification socket open for hours without moving a
+	// byte. A drain that waited for it kept that client on a pod about to go,
+	// and its next playback would have started there. Idle connections are
+	// not streams; they are closed with Plex.
+	// Shorter than in production so the test does not wait fifteen seconds
+	// for the idle connection to count as idle.
+	previous := streamIdle
+	streamIdle = 300 * time.Millisecond
+	t.Cleanup(func() { streamIdle = previous })
+
+	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, err := p.Start(ctx)
+	require.NoError(t, err)
+
+	idle, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = idle.Close() }()
+	_, err = idle.Write([]byte("once"))
+	require.NoError(t, err)
+	_, err = io.ReadFull(idle, make([]byte, 4))
+	require.NoError(t, err)
+
+	moving, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	stream(t, moving)
+	assert.Eventually(t, func() bool { return p.Open() == 2 && p.Streams() == 2 }, 2*time.Second, 10*time.Millisecond)
+
+	// Only the moving connection is a stream once the idle one has gone
+	// quiet, and the drain ends when it ends.
+	drained := make(chan int, 1)
+	go func() { drained <- p.Drain(context.Background(), 5*time.Second) }()
+	time.Sleep(500 * time.Millisecond)
+	assert.Empty(t, drained, "the drain waits while a stream is moving")
+	require.NoError(t, moving.Close())
+	select {
+	case left := <-drained:
+		assert.Equal(t, 0, left)
+	case <-time.After(3 * time.Second):
+		t.Fatal("the drain waited on the idle connection")
+	}
+	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond,
+		"the idle connection is left to Stop")
 }
 
 func TestTCPProxyDrainWithNothingOpenReturnsAtOnce(t *testing.T) {

@@ -48,8 +48,9 @@ func echoUpstream(t *testing.T) string {
 	return lis.Addr().String()
 }
 
-// holdConnection opens a client connection through the supervisor's proxy and
-// proves it is being proxied.
+// holdConnection opens a client connection through the supervisor's proxy
+// and keeps bytes moving on it until it is closed: a stream, as the drain
+// understands one, rather than an idle socket.
 func holdConnection(t *testing.T, sup *Supervisor) net.Conn {
 	t.Helper()
 	conn, err := net.Dial("tcp", sup.Proxy.Addr().String())
@@ -59,6 +60,20 @@ func holdConnection(t *testing.T, sup *Supervisor) net.Conn {
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
 	_, err = io.ReadFull(conn, make([]byte, 1))
 	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Time{}))
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			if _, err := conn.Write([]byte("x")); err != nil {
+				return
+			}
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	assert.Eventually(t, func() bool { return sup.Proxy.Streams() == 1 }, 2*time.Second, 10*time.Millisecond)
 	return conn
 }
 
@@ -115,13 +130,9 @@ func TestProxiedConnectionsOutliveTheStartContext(t *testing.T) {
 	conn := holdConnection(t, sup)
 
 	cancel() // the signal
-	time.Sleep(200 * time.Millisecond)
-	_, err := conn.Write([]byte("y"))
-	require.NoError(t, err)
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
-	_, err = io.ReadFull(conn, make([]byte, 1))
-	require.NoError(t, err, "a held connection must survive the signal; only Stop may close it")
-	assert.Equal(t, 1, sup.Proxy.Open())
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, 1, sup.Proxy.Open(), "a held connection must survive the signal; only Stop may close it")
+	assert.Equal(t, 1, sup.Proxy.Streams(), "and it is still moving")
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- sup.Stop(context.Background()) }()

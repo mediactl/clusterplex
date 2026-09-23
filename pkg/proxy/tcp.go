@@ -33,6 +33,40 @@ type TCP struct {
 	down atomic.Bool
 	// active counts the connections being proxied right now.
 	active atomic.Int64
+	// conns holds each open connection's activity, for Drain.
+	conns sync.Map // *activity -> struct{}
+}
+
+// activity is when a proxied connection last moved a byte towards the
+// client, as Unix nanoseconds.
+type activity struct{ last atomic.Int64 }
+
+func (a *activity) touch() { a.last.Store(time.Now().UnixNano()) }
+
+func (a *activity) idleFor(now time.Time) time.Duration {
+	return now.Sub(time.Unix(0, a.last.Load()))
+}
+
+// streamIdle is how long a connection may go without moving a byte and still
+// count as a stream the drain waits for. A client fetching segments moves
+// bytes every few seconds; a web app's notification socket may move none
+// for hours, and the drain must not wait on it: while it waited, that client
+// was still talking to a pod about to go, and its next playback would have
+// started there.
+var streamIdle = 15 * time.Second
+
+// touchWriter marks the connection active on every byte written to it.
+type touchWriter struct {
+	net.Conn
+	a *activity
+}
+
+func (w touchWriter) Write(b []byte) (int, error) {
+	n, err := w.Conn.Write(b)
+	if n > 0 {
+		w.a.touch()
+	}
+	return n, err
 }
 
 // drainPoll is how often Drain looks again.
@@ -96,31 +130,45 @@ func (p *TCP) Addr() net.Addr {
 // Open reports how many client connections are being proxied right now.
 func (p *TCP) Open() int { return int(p.active.Load()) }
 
-// Drain waits for the connections the proxy holds to finish on their own,
-// for at most timeout, and reports how many were still open when it stopped
-// waiting.
+// Streams reports how many of them moved a byte towards the client within
+// streamIdle: the ones a client is actually watching, as opposed to holding.
+func (p *TCP) Streams() int {
+	now := time.Now()
+	n := 0
+	p.conns.Range(func(k, _ any) bool {
+		if k.(*activity).idleFor(now) < streamIdle {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// Drain waits for the streams the proxy holds to finish on their own, for at
+// most timeout, and reports how many were still streaming when it stopped
+// waiting. Idle connections are not waited for; Stop closes them.
 //
 // Nothing here refuses new connections: the listener stays open, because a
 // pod that is terminating has already left its Service's endpoints and new
 // clients are going elsewhere. What a drain preserves is what those clients
 // cannot get back -- a stream part way through a file, a transcode whose
 // chunks live only on this pod -- for as long as the connection carrying it
-// lasts.
+// keeps moving.
 func (p *TCP) Drain(ctx context.Context, timeout time.Duration) int {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(drainPoll)
 	defer tick.Stop()
 	for {
-		open := p.Open()
-		if open == 0 {
+		streams := p.Streams()
+		if streams == 0 {
 			return 0
 		}
 		select {
 		case <-ctx.Done():
-			return open
+			return streams
 		case <-deadline.C:
-			return open
+			return streams
 		case <-tick.C:
 		}
 	}
@@ -131,6 +179,10 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 	defer func() { _ = client.Close() }()
 	p.active.Add(1)
 	defer p.active.Add(-1)
+	act := &activity{}
+	act.touch()
+	p.conns.Store(act, struct{}{})
+	defer p.conns.Delete(act)
 	if p.OnConnChange != nil {
 		p.OnConnChange(1)
 		defer p.OnConnChange(-1)
@@ -161,8 +213,8 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pipe(ctx, &wg, upstream, client, false)
-	go pipe(ctx, &wg, client, upstream, true)
+	go pipe(ctx, &wg, upstream, client, nil)
+	go pipe(ctx, &wg, client, upstream, act)
 	wg.Wait()
 }
 
@@ -174,11 +226,15 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 // megabytes, so a whole file can be "copied" while the client has most of it
 // still to receive -- and a drain that counts copies in progress would see
 // nothing to wait for, then the pod would go, and the buffered tail with it.
-func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, toClient bool) {
+//
+// act is set for the copy towards the client, and records its activity.
+func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, act *activity) {
 	defer wg.Done()
-	_, _ = io.Copy(dst, src)
-	if toClient {
-		awaitDelivery(ctx, dst)
+	if act == nil {
+		_, _ = io.Copy(dst, src)
+	} else {
+		_, _ = io.Copy(touchWriter{dst, act}, src)
+		awaitDelivery(ctx, dst, act)
 	}
 	if tc, ok := dst.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
@@ -189,14 +245,20 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, toClient b
 
 // awaitDelivery returns once the peer has acknowledged everything written to
 // c, or when ctx ends, or after maxDeliveryWait for a client that has stopped
-// reading.
-func awaitDelivery(ctx context.Context, c net.Conn) {
+// reading. Bytes leaving the queue count as activity: the client is still
+// taking the stream, just from the kernel rather than from us.
+func awaitDelivery(ctx context.Context, c net.Conn, act *activity) {
 	deadline := time.NewTimer(maxDeliveryWait)
 	defer deadline.Stop()
+	last := -1
 	for {
 		pending, ok := sendQueue(c)
 		if !ok || pending == 0 {
 			return
+		}
+		if pending != last {
+			act.touch()
+			last = pending
 		}
 		select {
 		case <-ctx.Done():

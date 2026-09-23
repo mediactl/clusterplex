@@ -270,19 +270,19 @@ func (s *Supervisor) drain(ctx context.Context) {
 		s.Logger.Info("not draining client connections: Plex Media Server is not running")
 		return
 	}
-	open := s.Proxy.Open()
-	if open == 0 {
-		s.Logger.Info("no client connections to drain")
+	open, streams := s.Proxy.Open(), s.Proxy.Streams()
+	if streams == 0 {
+		s.Logger.Info("no streams to drain", "idle_connections", open)
 		return
 	}
 	s.Logger.Info("draining client connections before stopping Plex Media Server",
-		"open", open, "timeout", s.Drain)
+		"streams", streams, "open", open, "timeout", s.Drain)
 	if left := s.Proxy.Drain(ctx, s.Drain); left > 0 {
 		s.Logger.Warn("stopping Plex Media Server with client connections still open",
-			"open", left, "waited", s.Drain)
+			"streams", left, "waited", s.Drain)
 		return
 	}
-	s.Logger.Info("client connections drained")
+	s.Logger.Info("client connections drained", "idle_connections_closed", s.Proxy.Open())
 }
 
 func (s *Supervisor) stopWithin(ctx context.Context, grace time.Duration) error {
