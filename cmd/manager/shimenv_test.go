@@ -137,3 +137,34 @@ func TestAnOperatorCanStillTurnTheShimLogBackUp(t *testing.T) {
 	assert.NotContains(t, env, "PLEX_PG_LOG_LEVEL=ERROR",
 		"two values for one variable leave it to whichever libc reads it first")
 }
+
+func TestTheConnectionPoolDoesNotReclaimSlotsPlexIsStillUsing(t *testing.T) {
+	// The shim's pool frees a slot once it has been idle past this timeout and
+	// the thread that opened it looks dead. Neither is evidence that Plex has
+	// finished with it: Plex opens twenty database handles at startup and
+	// keeps them for the life of the process, while the worker threads that
+	// used them come and go.
+	//
+	// At the default of 300 seconds that reclaimed a live connection and
+	// killed Plex. The last line it ever wrote was
+	//
+	//	Pool PHASE 0: Freed zombie slot 4 (owner thread dead, idle 322 sec)
+	//
+	// Raising it past any realistic idle period stops the reclaim firing. It
+	// is a workaround for an upstream bug, not a fix: the pool is bounded, so
+	// the cost is only that idle connections stay open.
+	env := shimEnv([]string{"PATH=/bin"}, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
+
+	assert.Contains(t, env, "PLEX_PG_IDLE_TIMEOUT=86400")
+}
+
+func TestTheIdleTimeoutIsStillAnOperatorsToSet(t *testing.T) {
+	env := shimEnv(
+		[]string{"PATH=/bin", "PLEX_PG_IDLE_TIMEOUT=600"},
+		Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()},
+	)
+
+	assert.Contains(t, env, "PLEX_PG_IDLE_TIMEOUT=600")
+	assert.NotContains(t, env, "PLEX_PG_IDLE_TIMEOUT=86400",
+		"two values for one variable leave it to whichever libc reads it first")
+}
