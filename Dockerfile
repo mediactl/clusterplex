@@ -25,7 +25,7 @@ FROM --platform=${BUILDPLATFORM} alpine:3.15 AS shim
 # the maintainer has not answered a pull request since April 2026. Fixes go to
 # the fork and come back here as a tag; see hack/plex-postgresql/README.md.
 ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
-ARG PLEX_PG_REF=v1.3.17-clusterplex.18
+ARG PLEX_PG_REF=v1.3.17-clusterplex.19
 RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
 WORKDIR /build
 ENV CARGO_HOME=/usr/local/cargo \
