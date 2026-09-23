@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -325,12 +326,29 @@ func deleteLink(name string) error {
 	return nil
 }
 
+// ipForwardPath is the pod namespace's IPv4 forwarding switch.
+const ipForwardPath = "/proc/sys/net/ipv4/ip_forward"
+
 // enableForwarding turns on IPv4 forwarding in the current namespace. Without
 // it a packet from Plex is dropped before it ever reaches the masquerade.
-func enableForwarding() error {
-	const path = "/proc/sys/net/ipv4/ip_forward"
+func enableForwarding() error { return enableForwardingAt(ipForwardPath) }
+
+// enableForwardingAt is enableForwarding on a given sysctl file.
+//
+// It reads before it writes. A pod that is not privileged has /proc/sys
+// mounted read-only, and the write fails whatever the value -- but the value
+// can already be right, because Kubernetes sets net.ipv4.ip_forward=1 in the
+// pod namespace before any container starts when the pod's securityContext
+// asks for it (sysctls: net.ipv4.ip_forward). Forwarding that is already on
+// is what we want, however it got there; only forwarding that is off and
+// cannot be turned on is an error, and then the message says what to do.
+func enableForwardingAt(path string) error {
+	if current, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(current)) == "1" {
+		return nil
+	}
 	if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
-		return fmt.Errorf("enable IPv4 forwarding: %w", err)
+		return fmt.Errorf("enable IPv4 forwarding: %w (an unprivileged pod needs net.ipv4.ip_forward=1 "+
+			"in its securityContext.sysctls, which the kubelet must allow-list)", err)
 	}
 	return nil
 }
