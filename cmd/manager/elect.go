@@ -370,6 +370,7 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Du
 		serving, giveUp := health.record(err)
 		m.setPlexServing(ctx, serving)
 		if serving {
+			m.recordSessions(ctx)
 			continue
 		}
 		m.Logger.Error("Plex is no longer serving; withdrawing this pod", "error", err)
@@ -380,6 +381,29 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Du
 			m.plexLost(err)
 		}
 	}
+}
+
+// recordSessions publishes what this pod's Plex is serving, on the health
+// watch's tick. Three pods splitting one library are invisible without it:
+// nothing else says which pod holds how many streams, or how many of them it
+// is transcoding.
+func (m *Manager) recordSessions(ctx context.Context) {
+	if m.Metrics == nil {
+		return
+	}
+	token := m.localAdminToken()
+	if token == "" {
+		return
+	}
+	s, err := plexroute.ReadSessions(ctx, m.plexURL(), token)
+	if err != nil {
+		if ctx.Err() == nil {
+			m.Logger.Debug("read Plex sessions", "error", err)
+		}
+		return
+	}
+	m.Metrics.PlexSessions.Set(float64(s.Total))
+	m.Metrics.PlexTranscodeSessions.Set(float64(s.Transcoding))
 }
 
 // plexLost hands this pod over to whatever restarts it.
@@ -398,6 +422,17 @@ func (m *Manager) setPlexServing(ctx context.Context, serving bool) {
 	changed := m.plexServing != serving
 	m.plexServing = serving
 	m.mu.Unlock()
+	if m.Metrics != nil {
+		if serving {
+			m.Metrics.PlexServing.Set(1)
+		} else {
+			// Whatever it was serving, it is not any more; a stale count
+			// would read as load on a pod that has none.
+			m.Metrics.PlexServing.Set(0)
+			m.Metrics.PlexSessions.Set(0)
+			m.Metrics.PlexTranscodeSessions.Set(0)
+		}
+	}
 	if !changed {
 		return
 	}
