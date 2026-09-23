@@ -181,11 +181,24 @@ safe to set.
 Use the address clients actually reach — the LoadBalancer in front of the proxy,
 or whatever ingress sits in front of that.
 
-**It has to be live, not merely well-formed.** Startup checks the scheme and the
-host, which a stale address passes. Plex publishes it to plex.tv, and a client
-that signs in stops using the address it was given and switches to the published
-one — so a stale value works until someone logs in and then fails on the way
-back, which looks like the sign-in breaking rather than the address being wrong.
+**Usually you should not set it at all.** Left empty, the manager reads the
+LoadBalancer address of the Service named by `plex-external-service`
+(`plex-main` by default) before every Plex start, and advertises that:
+
+```yaml
+plex-external-service: plex-main
+```
+
+Set `plex-external-url` only for an address the cluster cannot see for itself —
+a DNS name, an ingress, a certificate — because then that name is the address
+rather than whatever the Service happens to hold. An explicit value always wins.
+
+**A written-down address has to be live, not merely well-formed.** Startup checks
+the scheme and the host, which a stale address passes. Plex publishes it to
+plex.tv, and a client that signs in stops using the address it was given and
+switches to the published one — so a stale value works until someone logs in and
+then fails on the way back, which looks like the sign-in breaking rather than the
+address being wrong. That is the failure reading it from the Service avoids.
 Check what plex.tv is handing out:
 
 ```bash

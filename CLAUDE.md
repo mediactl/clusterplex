@@ -17,11 +17,11 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   own network namespace, and why the proxy can therefore hold 32400 itself.
   Supersedes `0002`, which is kept for why the proxy is L4 and for the 32401
   discovery.
-- `docs/adr/0005-retire-the-media-proxy-for-gateway-api.md` — **proposed**. Why
-  the byte offload is a workaround for a constraint ADR-0004 removed, and what
-  would replace it. Read it before changing `pkg/mediaproxy`, `pkg/plexroute`
-  or `pkg/hashring`; blocked on proving header-based `sessionPersistence` in a
-  real Gateway implementation.
+- `docs/adr/0005-retire-the-media-proxy-for-gateway-api.md` — **rejected**.
+  Sessions are pinned by the Service, not by a Gateway `HTTPRoute`. Read it for
+  why `sessionPersistence` is the wrong mechanism, why the Gateway cannot hold
+  the address Plex advertises, and why retiring the byte offload is still an
+  open question that now needs an ADR of its own.
 - `docs/adr/0004-run-plex-on-every-pod.md` — why the lease elects the plex.tv
   owner rather than the pod that runs Plex, and which parts of Plex's state
   stop being shared so every pod can run one. Read it before touching the

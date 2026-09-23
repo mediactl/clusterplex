@@ -72,7 +72,18 @@ type Config struct {
 	// ExternalURL is the address clients reach the proxy on. Plex advertises
 	// it as a custom connection; without it Plex offers only the link-local
 	// address inside its own namespace, which no client can reach.
+	//
+	// Leave it empty to take the address from ExternalService, which is the
+	// better answer whenever a LoadBalancer is what clients reach. Set it when
+	// something the cluster cannot see is in front — a DNS name, an ingress,
+	// a certificate — because then that name is the address, not the one the
+	// Service happens to hold.
 	ExternalURL string
+	// ExternalService is the Service whose LoadBalancer address Plex
+	// advertises when ExternalURL is empty. It is read before every start, so
+	// an address the cluster assigns later is picked up without editing
+	// anything.
+	ExternalService string
 	// TranscodeDir is where Plex writes transcode chunks. It has to be
 	// per-pod storage: every pod runs Plex and they share one volume for the
 	// identity and the metadata, but a session's chunks are written and read
@@ -140,7 +151,8 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
 	fs.Bool("block-plex-tv", false, "keep every pod away from plex.tv, the lease holder included; Plex still serves but cannot be claimed or reached remotely")
 	fs.String("plex-transcode-dir", "/transcode", "per-pod directory Plex writes transcode chunks to; it must be the path the pod mounts, not shared storage")
-	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443")
+	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443; empty takes it from plex-external-service")
+	fs.String("plex-external-service", "plex-main", "Service whose LoadBalancer address is advertised when plex-external-url is empty")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
 	fs.String("init-script", InitScript, "upstream's initialisation script, run before Plex starts")
@@ -200,6 +212,7 @@ func loadConfig(args []string) (Config, error) {
 		ProbePort:       port("probe-port"),
 		BlockPlexTV:     v.GetBool("block-plex-tv"),
 		ExternalURL:     strings.TrimSpace(v.GetString("plex-external-url")),
+		ExternalService: strings.TrimSpace(v.GetString("plex-external-service")),
 		TranscodeDir:    strings.TrimSpace(v.GetString("plex-transcode-dir")),
 		ShimLibrary:     v.GetString("shim-library"),
 		SubreaperBinary: v.GetString("plex-subreaper"),
@@ -346,10 +359,15 @@ func validateExternalURL(raw string) error {
 // start: what the operator declared, with the settings this architecture fixes
 // applied over the top. The order matters — the forced ones win — though
 // declaring one is refused at load, so it should never come to that.
-func (c Config) EnforcedPreferences() map[string]string {
+//
+// externalURL is passed in rather than read from the config because it is not
+// always configuration: with plex-external-url empty it is the Service's
+// address, which only the cluster knows and which can change. An empty one
+// leaves whatever Plex already advertises alone.
+func (c Config) EnforcedPreferences(externalURL string) map[string]string {
 	prefs := make(map[string]string, len(c.Preferences))
 	maps.Copy(prefs, c.Preferences)
-	maps.Copy(prefs, plexprefs.Enforced(c.ExternalURL, c.TranscodeDir))
+	maps.Copy(prefs, plexprefs.Enforced(externalURL, c.TranscodeDir))
 	return prefs
 }
 

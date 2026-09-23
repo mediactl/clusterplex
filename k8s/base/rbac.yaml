@@ -16,6 +16,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "watch", "list", "patch"]
+  # Read-only, and only to learn the address clients reach Plex on. The
+  # manager advertises the LoadBalancer address of plex-main rather than one
+  # written into a manifest, because a written one goes stale silently: it
+  # still validates, and Plex still starts, and it breaks only once a client
+  # signs in and follows the published connection.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -53,6 +53,12 @@ spec:
             - name: CLUSTERPLEX_PLEX_EXTERNAL_URL
               value: {{ . | quote }}
             {{- end }}
+            # Where the address comes from when externalURL is not set: the
+            # manager reads this Service's LoadBalancer address before every
+            # start. Naming it here rather than taking the default matters,
+            # because the chart names its Service after the release.
+            - name: CLUSTERPLEX_PLEX_EXTERNAL_SERVICE
+              value: {{ .Release.Name | quote }}
             - name: CLUSTERPLEX_POSTGRES_HOST
               value: {{ required "postgres.host is required: the library lives in PostgreSQL" .Values.postgres.host | quote }}
             - name: CLUSTERPLEX_POSTGRES_PORT

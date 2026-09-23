@@ -1,9 +1,26 @@
 # ADR-0005: Retire the media proxy tier, and pin sessions at the gateway
 
-**Status:** Proposed
+**Status:** Rejected
 **Date:** 2026-09-22
 **Deciders:** cluster-plex maintainers
 **Supersedes, in part:** `docs/media-proxy-pattern.md`
+
+> **Rejected.** Sessions are pinned by the Service — `sessionAffinity: ClientIP`
+> with `externalTrafficPolicy: Local` on `plex-main` — not by an `HTTPRoute`.
+> The Gateway cannot hold the address Plex advertises, because plex.tv may
+> publish it as a `plex.direct` URI whose certificate lives on the Plex pod,
+> and L4 affinity turned out to answer the question this ADR was written to
+> answer without a CRD or an implementation to be locked into.
+>
+> What this ADR got right is kept: the defects in **Consequences → Resolved**
+> are fixed, and `sessionPersistence` is recorded below as the wrong mechanism
+> so nobody reaches for it again.
+>
+> **Retiring the media proxy tier is still unresolved and is no longer this
+> ADR's to settle.** Its case here rested on the Gateway replacing the hash
+> ring, which is not what happened. ADR-0004 already lifts the ceiling the
+> tier was built for, so the question deserves its own ADR rather than being
+> carried along by a decision that was rejected for other reasons.
 
 ## Context
 
@@ -205,8 +222,8 @@ throughput question in item 2, and that was always the weaker argument, because
 Plex serving its own bytes from three pods already lifts the ceiling ADR-0004
 was written to lift.
 
-This ADR should probably be narrowed or withdrawn rather than accepted as
-written. That is a decision, not a cleanup, so it is left open.
+This is what settled it. The Service pins sessions; the `HTTPRoute` and its
+`BackendTrafficPolicy` are gone. See the note at the top.
 
 ## Consequences
 

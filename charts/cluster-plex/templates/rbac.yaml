@@ -27,6 +27,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "watch", "list", "patch"]
+  # Read-only, and only to learn the address clients reach Plex on, which the
+  # manager advertises rather than having it written into values. An address
+  # written down goes stale silently: it still validates and Plex still starts,
+  # and it breaks only once a client signs in and follows the published
+  # connection.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

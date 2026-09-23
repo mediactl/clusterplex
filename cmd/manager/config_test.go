@@ -75,7 +75,7 @@ func TestPlexNeverRunsItsOwnScheduler(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, task := range plexprefs.ButlerTasks {
-		assert.Equal(t, "0", c.EnforcedPreferences()[task], task)
+		assert.Equal(t, "0", c.EnforcedPreferences("")[task], task)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestTheExternalURLIsWhatPlexAdvertises(t *testing.T) {
 		"--plex-external-url", "https://plex.example.com:443",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "https://plex.example.com:443", c.EnforcedPreferences()["customConnections"])
+	assert.Equal(t, "https://plex.example.com:443", c.EnforcedPreferences(c.ExternalURL)["customConnections"])
 }
 
 func TestConfigRefusesAdvertisingAnAddressThatIsNotAURL(t *testing.T) {
@@ -103,7 +103,7 @@ func TestUPnPAndRemoteAccessPublishingAreForcedOff(t *testing.T) {
 	c, err := loadConfig([]string{"--postgres-host", "postgres"})
 	require.NoError(t, err)
 
-	prefs := c.EnforcedPreferences()
+	prefs := c.EnforcedPreferences("")
 	assert.Equal(t, "0", prefs["PublishServerOnPlexOnlineKey"])
 	assert.Equal(t, "1", prefs["ManualPortMappingMode"])
 	// GDM announces a pod's own address on the LAN. Every pod would announce
@@ -122,7 +122,7 @@ func TestTheTranscodeDirectoryIsForcedOntoPerPodStorage(t *testing.T) {
 	c, err := loadConfig([]string{"--postgres-host", "postgres"})
 	require.NoError(t, err)
 
-	assert.Equal(t, "/transcode", c.EnforcedPreferences()["TranscoderTempDirectory"])
+	assert.Equal(t, "/transcode", c.EnforcedPreferences("")["TranscoderTempDirectory"])
 }
 
 func TestTheTranscodeDirectoryCanBeMovedButNotDeclared(t *testing.T) {
@@ -131,7 +131,7 @@ func TestTheTranscodeDirectoryCanBeMovedButNotDeclared(t *testing.T) {
 	podIdentity(t)
 	c, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-transcode-dir", "/fast/transcode"})
 	require.NoError(t, err)
-	assert.Equal(t, "/fast/transcode", c.EnforcedPreferences()["TranscoderTempDirectory"])
+	assert.Equal(t, "/fast/transcode", c.EnforcedPreferences("")["TranscoderTempDirectory"])
 
 	_, err = loadConfig([]string{"--plex-preference", "TranscoderTempDirectory=/tmp"})
 	require.Error(t, err)
@@ -152,7 +152,7 @@ func TestOperatorPreferencesCannotOverrideTheForcedOnes(t *testing.T) {
 	c, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-preference", "FriendlyName=Cluster Plex"})
 	require.NoError(t, err)
 
-	prefs := c.EnforcedPreferences()
+	prefs := c.EnforcedPreferences("")
 	assert.Equal(t, "Cluster Plex", prefs["FriendlyName"])
 	assert.Equal(t, "0", prefs["ButlerTaskAnalyzeMedia"])
 }

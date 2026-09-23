@@ -191,8 +191,11 @@ func run() int {
 		Logger:       logger.With("component", "supervisor"),
 		Grace:        defaultGrace,
 		StartProcess: plexNet.StartProcess,
-		Preferences: func(context.Context) error {
-			prefs := m.Config.EnforcedPreferences()
+		Preferences: func(ctx context.Context) error {
+			// Resolved here rather than at load because the address is the
+			// cluster's to assign: a LoadBalancer that had none when the
+			// manager started has one by the next start.
+			prefs := m.Config.EnforcedPreferences(m.externalURL(ctx))
 			changed, err := plexprefs.Apply(cfg.PreferencesFile(), prefs)
 			if err != nil {
 				return err

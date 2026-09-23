@@ -18,27 +18,19 @@ patches:
         value:
           name: CLUSTERPLEX_PLEX_MACHINE_IDENTIFIER
           value: 11111111-2222-3333-4444-555555555555
-      # Without this Plex advertises 169.254.1.2, the only address it can see
-      # from inside its own network namespace, and no client can reach it.
+      # Nothing sets CLUSTERPLEX_PLEX_EXTERNAL_URL here on purpose.
       #
-      # This address has to be live, not merely well-formed. Plex publishes it
-      # to plex.tv, and a client that signs in stops using whatever address it
-      # was typed and switches to the published one — so a stale value here
-      # works right up until someone logs in, then fails on the way back. Point
-      # it at plex-main's LoadBalancer address:
+      # Plex would otherwise advertise 169.254.1.2, the only address it can see
+      # from inside its own network namespace, which no client can reach. The
+      # manager fills that gap by reading plex-main's LoadBalancer address
+      # before every start — see plex-external-service.
       #
-      #   kubectl get svc plex-main -n media -o \
-      #     jsonpath='{.status.loadBalancer.ingress[0].ip}'
-      #
-      # Not the Envoy Gateway. plex.tv rewrites whatever is here into an https
-      # <address>.<cert-uuid>.plex.direct URI, and the certificate for it lives
-      # on the Plex pod; the Gateway's listener is plain HTTP and the handshake
-      # fails. plex-main is L4, so Plex terminates its own TLS through it.
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: CLUSTERPLEX_PLEX_EXTERNAL_URL
-          value: http://172.19.0.6:32400
+      # It was written down here once, and went stale when the LoadBalancer
+      # moved. That failure is invisible: the address still validates and Plex
+      # still starts, and it breaks only when a client signs in, because
+      # plex.tv hands back the published connection and the client switches to
+      # it. Set this only for an address the cluster cannot see, such as a DNS
+      # name with a certificate in front.
 
   - target:
       kind: PersistentVolumeClaim
