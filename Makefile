@@ -59,7 +59,10 @@ docker-build: ## Build the image (the Dockerfile builds the PostgreSQL shim itse
 .PHONY: helm-lint
 helm-lint: ## Lint and render the Helm chart
 	helm lint charts/cluster-plex
-	helm template cluster-plex charts/cluster-plex >/dev/null
+	# The chart refuses to render without a database host and a password
+	# Secret, on purpose; these stand in so the templates themselves are checked.
+	helm template cluster-plex charts/cluster-plex \
+		--set postgres.host=postgres --set postgres.passwordSecret.name=plex-postgres >/dev/null
 
 .PHONY: manifests
 manifests: ## Render the base manifests
