@@ -4,15 +4,9 @@ image:
   pullPolicy: IfNotPresent
 
 plex:
-  # Pods that may run Plex. In elected mode only one runs it at a time and the
-  # rest run transcodes; in active mode all of them serve.
+  # Every pod runs Plex against the shared library and serves clients; the
+  # Lease decides only which one talks to plex.tv. See ADR-0004.
   replicas: 3
-  # "elected" runs Plex on the lease holder only. "active" runs it on every
-  # pod, which the shared PostgreSQL library makes possible and the egress
-  # rules make safe — only the lease holder reaches plex.tv, because all the
-  # pods share one server identity. Elected is the default because it is the
-  # path that has actually been run.
-  mode: elected
   # Pin the server identity so a rebuilt cluster keeps the identity clients
   # already know. Setting this on a server that already has one CHANGES it.
   machineIdentifier: ""
@@ -28,7 +22,32 @@ plex:
   preferences:
     - name: FriendlyName
       value: Cluster Plex
-  resources: {}
+  # Plex wants little at rest and several cores for a transcode. The request
+  # is what the scheduler places by; the memory limit keeps a runaway
+  # transcode from taking the node with it. No CPU limit on purpose: a
+  # throttled transcoder stutters.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+  # One pod per node where the cluster has the nodes (ScheduleAnyway, so a
+  # smaller cluster still schedules). Every pod serves, so this is what makes
+  # a node going away cost one third rather than everything.
+  spreadAcrossNodes: true
+  # Plex's network namespace needs CAP_SYS_ADMIN to create and CAP_NET_ADMIN
+  # to wire up. Privileged is the form that has been run. The unprivileged
+  # form is the two capabilities, and then the render device for hardware
+  # transcoding has to come from a device plugin (for example
+  # gpu.intel.com/i915 in resources) rather than from privilege:
+  #
+  #   securityContext:
+  #     privileged: false
+  #     capabilities:
+  #       add: [SYS_ADMIN, NET_ADMIN]
+  securityContext:
+    privileged: true
   # How long a stopping pod lets the client connections it holds finish
   # before Plex is stopped. A terminating pod has already left the Service,
   # so new clients go elsewhere; this is for the streams in flight, whose

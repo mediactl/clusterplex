@@ -6,7 +6,8 @@ metadata:
 spec:
   replicas: {{ .Values.plex.replicas }}
   serviceName: {{ .Release.Name }}-workers
-  # No pod depends on another's ordinal; the Lease decides who runs Plex.
+  # No pod depends on another's ordinal: every pod runs Plex against the
+  # shared library, and the Lease decides only who talks to plex.tv.
   podManagementPolicy: Parallel
   selector:
     matchLabels:
@@ -20,6 +21,20 @@ spec:
         app.kubernetes.io/component: plex
     spec:
       serviceAccountName: {{ .Release.Name }}-plex
+      {{- if .Values.plex.spreadAcrossNodes }}
+      # One pod per node where the cluster has the nodes. Every pod serves,
+      # so a node going away costs one third rather than everything;
+      # ScheduleAnyway keeps a cluster with fewer nodes schedulable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: plex
+      {{- end }}
       # Covers the manager's drain (plex.drainTimeout), which lets the streams
       # this pod holds finish before Plex is told to stop, plus the 30s Plex
       # gets to flush on SIGTERM. Shorter, and the kubelet kills the pod
@@ -29,11 +44,10 @@ spec:
         - name: plex
           image: {{ include "cluster-plex.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            # Plex's network namespace needs CAP_SYS_ADMIN to create and
-            # CAP_NET_ADMIN to wire up. FUSE no longer figures in this: the
-            # library is in PostgreSQL, so nothing mounts a filesystem.
-            privileged: true
+          # Plex's network namespace needs CAP_SYS_ADMIN to create and
+          # CAP_NET_ADMIN to wire up; see plex.securityContext for the
+          # unprivileged form and what it costs.
+          securityContext: {{- toYaml .Values.plex.securityContext | nindent 12 }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -52,8 +66,6 @@ spec:
             # from the moment the pod starts terminating.
             - name: CLUSTERPLEX_DRAIN_TIMEOUT
               value: {{ .Values.plex.drainTimeout | quote }}
-            - name: CLUSTERPLEX_PLEX_MODE
-              value: {{ include "cluster-plex.plexMode" . }}
             {{- with .Values.proxy.externalURL }}
             # Plex advertises this to clients. The manager forces it into
             # Preferences.xml on every start; it is not an operator preference,
@@ -109,6 +121,21 @@ spec:
           {{- end }}
           volumeMounts:
             - {name: plex-config, mountPath: /var/lib/plexmediaserver}
+            # Per-pod, carved back out of the shared claim above. Each of
+            # these belongs to one Plex process, and sharing them is how
+            # running Plex on every pod corrupts the library rather than
+            # merely racing. See ADR-0004.
+            #
+            # The shadow SQLite the shim keeps, rebuilt on every start.
+            - name: plex-databases
+              mountPath: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases
+            # One server's log, not three servers appending to one file.
+            - name: plex-logs
+              mountPath: /var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Logs
+            # Transcode chunks are written and read back by the pod serving
+            # that session, which the Service pins.
+            - name: plex-transcode
+              mountPath: /transcode
             - {name: plex-media, mountPath: /media}
             - {name: config, mountPath: /etc/clusterplex, readOnly: true}
       volumes:
@@ -121,3 +148,12 @@ spec:
         - name: config
           configMap:
             name: {{ .Release.Name }}-config
+        # emptyDir rather than volumeClaimTemplates: each is rebuilt on start
+        # or discarded between sessions, and a claim template is immutable
+        # once created.
+        - name: plex-databases
+          emptyDir: {}
+        - name: plex-logs
+          emptyDir: {}
+        - name: plex-transcode
+          emptyDir: {}

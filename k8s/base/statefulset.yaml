@@ -17,6 +17,16 @@ spec:
         app: plex
     spec:
       serviceAccountName: clusterplex-sa
+      # One pod per node where the cluster has the nodes. Every pod serves,
+      # so spreading them makes a node going away cost one third rather than
+      # everything; ScheduleAnyway keeps a one-node cluster schedulable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: plex
       # The manager's drain (2m by default, CLUSTERPLEX_DRAIN_TIMEOUT) lets
       # the streams this pod holds finish before Plex is told to stop, then
       # Plex gets 30s to flush on SIGTERM. This has to cover both, or the
@@ -79,6 +89,17 @@ spec:
                 secretKeyRef:
                   name: plex-postgres
                   key: password
+          # Plex wants little at rest and several cores for a transcode. The
+          # request is what the scheduler places by; the memory limit is what
+          # keeps a runaway transcode from taking the node with it. No CPU
+          # limit on purpose: a throttled transcoder stutters, and the pod
+          # sharing the node fairly is what the request already buys.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
           ports:
             # The proxy holds Plex's own port in the pod namespace; Plex binds
             # it inside its namespace, where nothing else competes for it.
