@@ -41,7 +41,6 @@ const (
 	machineIDKey = "plex.machine-identifier"
 	// defaultConfigFile is read when --config is not given. It is optional.
 	defaultConfigFile = "/etc/clusterplex/config.yaml"
-
 )
 
 // Config is the manager's runtime configuration. Every field can be set by a

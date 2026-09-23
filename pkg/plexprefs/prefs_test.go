@@ -180,7 +180,9 @@ func TestValidateAcceptsRealPlexKeys(t *testing.T) {
 		"FriendlyName": "Cluster Plex",
 		"LogVerbose":   "1",
 		"_10de1f141a58200c00000100.0-TranscodeCountLimit": "0",
-		"allowedNetworks": "10.244.0.0/16",
+		// Settable, though it caps one Plex process rather than the cluster:
+		// see the note in docs/configuration.md.
+		"WanTotalMaxUploadRate": "2000000",
 	}))
 }
 

@@ -70,7 +70,7 @@ func Validate(values map[string]string) error {
 	errs := []error{writable(values)}
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		if forced := forcedBy(name); forced != "" {
-			errs = append(errs, fmt.Errorf("preference %q is set by the manager and cannot be declared: %s", name, forced))
+			errs = append(errs, fmt.Errorf("preference %q cannot be declared: %s", name, forced))
 		}
 	}
 	return errors.Join(errs...)

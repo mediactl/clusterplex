@@ -1,6 +1,9 @@
 package plexprefs
 
-import "maps"
+import (
+	"maps"
+	"slices"
+)
 
 // customConnections is the address Plex hands to clients. Plex otherwise
 // advertises only what it can see of itself, which here is a link-local
@@ -37,9 +40,60 @@ var required = map[string]string{
 	"GdmEnabled": "0",
 }
 
+// scanScheduling are the settings that start a library scan without anyone
+// asking for one. Required turns every one of them off.
+//
+// The Butler list covers analysis, thumbnails and metadata refresh, but none
+// of those discovers files: ButlerTaskRefreshLocalMedia refreshes items Plex
+// already knows about. Scanning has its own switches, and they were the hole
+// left in that list.
+//
+// Every pod mounts the same media on the same paths, so each would watch the
+// same tree, wake on the same event and scan it into the same PostgreSQL
+// library concurrently — and Plex's scanner assumes it is the only one
+// running. All of these default off, so turning them off closes a door rather
+// than changing today's behaviour; a pod re-enabling its own scanner in the
+// web interface would show up as database load rather than as an error.
+//
+// Scanning still happens. The refresh maintenance task is fanned out to one
+// pod per library, the same way the Butler work is.
+var scanScheduling = []string{
+	"FSEventLibraryUpdatesEnabled",
+	"FSEventLibraryPartialScanEnabled",
+	"ScheduledLibraryUpdatesEnabled",
+}
+
+func isScanScheduling(name string) bool { return slices.Contains(scanScheduling, name) }
+
+// refused are settings an operator may not declare and the manager does not
+// write either. They differ from required in that this architecture has no
+// correct value for them — the setting simply cannot mean here what it means
+// on a server Plex was designed for, so the honest answer is to refuse it
+// rather than to pick a value.
+var refused = map[string]string{
+	// allowedNetworks grants access without authentication to clients whose
+	// source address falls in the list. Plex never sees a client's source
+	// address here: it runs in its own network namespace (ADR-0003) behind the
+	// in-pod L4 proxy, which dials upstream with an ordinary Dialer, so every
+	// request arrives from the pod end of the veth.
+	//
+	// That makes it all-or-nothing. A range covering the link subnet drops
+	// authentication for everyone who reaches the proxy, including from the
+	// internet; any other range matches nothing and silently does nothing.
+	// Neither is what an operator writing a LAN range intends.
+	"allowedNetworks": "Plex sees every request arriving from the pod end of the veth, " +
+		"so this would drop authentication for all clients or for none; restrict access at the proxy instead",
+}
+
 // Required returns the settings the architecture fixes, independent of any
 // address the proxy is reachable on.
-func Required() map[string]string { return maps.Clone(required) }
+func Required() map[string]string {
+	prefs := maps.Clone(required)
+	for _, name := range scanScheduling {
+		prefs[name] = "0"
+	}
+	return prefs
+}
 
 // Enforced returns everything the manager writes into Preferences.xml itself.
 // externalURL is the address clients reach the proxy on; an empty one leaves
@@ -47,7 +101,7 @@ func Required() map[string]string { return maps.Clone(required) }
 // not setting it. transcodeDir is the per-pod directory for transcode chunks,
 // and is treated the same way.
 func Enforced(externalURL, transcodeDir string) map[string]string {
-	prefs := maps.Clone(required)
+	prefs := Required()
 	maps.Copy(prefs, DisabledButlerTasks())
 	if externalURL != "" {
 		prefs[customConnections] = externalURL
@@ -69,7 +123,13 @@ func forcedBy(name string) string {
 		return "it must match the per-pod volume the pod actually mounts; set plex.transcode-dir"
 	case IsButlerTask(name):
 		return "each pod would run its own copy of the scheduler; maintenance is scheduled as CronJobs"
+	case isScanScheduling(name):
+		return "every pod would scan the same media into the same library at once; " +
+			"schedule the refresh maintenance task as a CronJob instead"
 	default:
+		if why, ok := refused[name]; ok {
+			return why
+		}
 		if _, ok := required[name]; ok {
 			return "this architecture depends on its value"
 		}

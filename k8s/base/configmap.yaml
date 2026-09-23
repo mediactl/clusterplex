@@ -41,7 +41,14 @@ data:
         # Other settings worth declaring here, for example:
         # - name: LogVerbose
         #   value: "0"
-        # - name: ScheduledLibraryUpdatesEnabled
-        #   value: "1"
-        # - name: allowedNetworks
-        #   value: 10.0.0.0/8
+        #
+        # Note that a rate limit caps one Plex process, and every pod runs
+        # one, so the cluster serves this many times the replica count:
+        # - name: WanTotalMaxUploadRate
+        #   value: "2000000"
+        #
+        # Settings the architecture fixes are refused here rather than
+        # overridden, and startup fails naming what to set instead. That
+        # includes the Butler tasks, the two library-scan switches and
+        # allowedNetworks; see docs/configuration.md for the full list and
+        # why each one has no correct value to choose.

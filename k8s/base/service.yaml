@@ -14,6 +14,31 @@ spec:
   # and it selected nothing at all once the label stopped following the lease.
   selector:
     app: plex
+  # Pin a client to one pod for the life of its session.
+  #
+  # A playback session is not one request. The client asks to start a
+  # transcode, then fetches chunk after chunk, and since ADR-0004 those chunks
+  # are written to a per-pod emptyDir. Spread across three pods, the pod asked
+  # for a chunk is usually not the pod that produced it, and the client gets
+  # "Error code: s1001 (Network)" a moment into playback. Measured before this
+  # was set: one client identifier, twelve requests, 8/4/0 across the pods.
+  #
+  # This is done here rather than at a Gateway because plex.tv rewrites
+  # whatever customConnections holds into an https <address>.<uuid>.plex.direct
+  # URI, and the certificate for that name lives on the Plex pod. Only an L4
+  # path lets Plex terminate its own TLS, so the affinity has to be L4 too.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      # Longer than a request, because what has to survive is the session: a
+      # client that moves pods mid-film loses its chunks. Three hours covers a
+      # feature-length transcode.
+      timeoutSeconds: 10800
+  # ClientIP affinity hashes the source address, so the source address has to
+  # be the client's. Under the default Cluster policy kube-proxy SNATs external
+  # traffic to a node address and every external client would look like one
+  # client, pinning all of them onto a single pod.
+  externalTrafficPolicy: Local
   ports:
     - name: pms
       port: 32400

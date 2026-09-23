@@ -134,6 +134,80 @@ live on a per-pod `emptyDir`, so a client that bounces to another pod mid-stream
 finds none of its chunks and playback stops. `absoluteTimeout` therefore has to
 exceed the longest session, not the longest request.
 
+### The unresolved part: the Gateway cannot hold the advertised address
+
+Found while root-causing a sign-in that failed on the way back, and it is a
+harder constraint than the affinity question.
+
+plex.tv does not always hand `customConnections` back verbatim. An `http://`
+value set on this cluster was published as
+`https://<address>.<cert-uuid>.plex.direct:32400` — the scheme upgraded and the
+address folded into a `plex.direct` name. A freshly written value was still
+plain `http` when checked minutes later, so the rewrite is not immediate and
+what triggers it has not been pinned down. What matters is that it happens at
+all: a client that signs in takes the connection plex.tv offers, and once that
+is a `plex.direct` URI the advertised address must terminate TLS **with the Plex
+pod's own certificate**, a Let's Encrypt `*.<uuid>.plex.direct`.
+
+Measured on the running cluster:
+
+| Path | Result |
+| --- | --- |
+| `plex-main` (L4 LoadBalancer) | 200, serving `CN=*.a4132c14….plex.direct` |
+| Envoy Gateway, HTTP listener | TLS handshake fails |
+
+This is ADR-0002's finding arriving from a new direction: it is why the proxy is
+L4, and the reasoning does not stop applying because the L7 hop is now a
+Gateway. The consistent-hash policy proved above needs to read
+`X-Plex-Client-Identifier`, which needs the request decrypted, which needs the
+`plex.direct` certificate and key — and those are Plex's, renewed by Plex,
+readable only from inside the pod.
+
+Three ways out, none free, and none yet chosen:
+
+- **Terminate with our own hostname and certificate**, and never advertise
+  `plex.direct`. This is what `cmd/proxy` already does, so it argues the tier
+  was solving this too and not only the bandwidth ceiling.
+- **`TLSRoute` with `mode: Passthrough`**, so Plex terminates its own TLS. The
+  certificate problem disappears and the header-hashing does too: Envoy cannot
+  read a header it cannot decrypt, so affinity falls back to source IP, which
+  collapses every client behind one NAT onto one pod.
+- **Extract the certificate into a Secret** the Gateway serves. It has to track
+  Plex's renewals, and it puts the server's private key somewhere Plex did not
+  put it.
+
+Action item 3 is blocked on this, not on item 2.
+
+### And a cheaper answer to the affinity question turned up
+
+Session pinning did not need a Gateway at all. `plex-main` now sets
+`sessionAffinity: ClientIP` with `externalTrafficPolicy: Local`, and measured on
+the same three pods with the same probe that produced the 8/4/0 spread above:
+
+| Path | Result |
+| --- | --- |
+| `plex-main`, affinity off | 8 / 4 / 0 |
+| `plex-main`, `ClientIP` + `Local` | **12 / 0 / 0** |
+
+This was found by root-causing `s1001 (Network)` on playback, which is what the
+spread does to a transcode whose chunks live on one pod's `emptyDir`.
+
+It is worse than consistent hashing in a way worth writing down: it keys on
+source address, so every client behind one NAT pins to one pod, and the
+distribution is only as good as the spread of client addresses. Consistent
+hashing on `X-Plex-Client-Identifier` distinguishes clients that share an
+address; this cannot.
+
+But it costs no CRD, no implementation lock-in and no certificate, and it works
+on the address plex.tv actually advertises — which the Gateway currently cannot.
+That removes affinity as a reason to adopt the Gateway. What remains is the
+throughput question in item 2, and that was always the weaker argument, because
+Plex serving its own bytes from three pods already lifts the ceiling ADR-0004
+was written to lift.
+
+This ADR should probably be narrowed or withdrawn rather than accepted as
+written. That is a decision, not a cleanup, so it is left open.
+
 ## Consequences
 
 **Easier.** Four packages and a Deployment go away, along with the annotation
@@ -170,8 +244,9 @@ trades a bottleneck for a bottleneck and the offload was worth keeping.
        installed in the kind cluster.
 2. [ ] Measure throughput through the Gateway against throughput through the
        proxy, with enough clients to saturate one pod's interface.
-3. [ ] Only then: the Gateway, the HTTPRoute, and `customConnections` pointed
-       at its hostname.
+3. [ ] **Blocked.** Decide how the Gateway serves the `plex.direct` certificate
+       before `customConnections` can point at it at all; see above. Until then
+       the advertised address stays on an L4 path.
 4. [ ] Delete `pkg/mediaproxy`, `pkg/plexroute`, `pkg/hashring`, `cmd/proxy`
        and the `clusterplex.io/plex-serving` annotation.
 5. [ ] Rewrite `docs/media-proxy-pattern.md` as historical, the way ADR-0001
