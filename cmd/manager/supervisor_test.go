@@ -95,6 +95,43 @@ func TestSupervisorStopLetsHeldConnectionsFinishFirst(t *testing.T) {
 	assert.Contains(t, logs.String(), "bye", "and then Plex was stopped in the ordinary way")
 }
 
+func TestProxiedConnectionsOutliveTheStartContext(t *testing.T) {
+	// The manager runs under the context its shutdown signal cancels. When
+	// the proxy shared it, SIGTERM closed every client connection before the
+	// drain could look: the gauge read 1 a second before the signal and the
+	// drain found 0 sixteen milliseconds after it, and the client received
+	// only what the kernel had already queued.
+	var logs bytes.Buffer
+	sup := &Supervisor{
+		Binary: fakePMS(t, gracefulPMS),
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		Grace:  5 * time.Second,
+		Drain:  5 * time.Second,
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, sup.Start(ctx))
+	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
+	conn := holdConnection(t, sup)
+
+	cancel() // the signal
+	time.Sleep(200 * time.Millisecond)
+	_, err := conn.Write([]byte("y"))
+	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err = io.ReadFull(conn, make([]byte, 1))
+	require.NoError(t, err, "a held connection must survive the signal; only Stop may close it")
+	assert.Equal(t, 1, sup.Proxy.Open())
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- sup.Stop(context.Background()) }()
+	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "draining client connections") }, 2*time.Second, 20*time.Millisecond,
+		"and Stop finds it to drain")
+	require.NoError(t, conn.Close())
+	require.NoError(t, <-stopped)
+	assert.Contains(t, logs.String(), "client connections drained")
+}
+
 func TestSupervisorStopGivesUpDrainingAtTheDeadline(t *testing.T) {
 	var logs bytes.Buffer
 	sup := &Supervisor{

@@ -84,14 +84,20 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return errors.New("plex media server is already running")
 	}
 
-	pctx, cancel := context.WithCancel(ctx)
+	// The proxy and Plex live until Stop, not until the caller's context.
+	// Everything in the manager runs under the context the shutdown signal
+	// cancels, and every proxied connection closes when its context does; so
+	// while the proxy shared that context, SIGTERM closed every client
+	// connection before the drain could look, and the drain found nothing to
+	// wait for. Stop cancels this one, after the drain and after Plex.
+	pctx, cancel := context.WithCancel(context.Background())
 	if s.Proxy != nil {
 		addr, err := s.Proxy.Start(pctx)
 		if err != nil {
 			cancel()
 			return fmt.Errorf("start proxy: %w", err)
 		}
-		s.Logger.Info("proxy listening", "addr", addr.String(), "target", s.Proxy.Target)
+		s.Logger.Info("proxy listening", "addr", addr.String(), "target", s.Proxy.Target, "drain", s.Drain)
 	}
 
 	if s.Preferences != nil {
@@ -254,16 +260,19 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 // Before this, a rollout cut every one of them at the instant it began.
 func (s *Supervisor) drain(ctx context.Context) {
 	if s.Proxy == nil || s.Drain <= 0 {
+		s.Logger.Info("not draining client connections: draining is off", "drain", s.Drain)
 		return
 	}
 	s.mu.Lock()
 	running := s.cmd != nil
 	s.mu.Unlock()
 	if !running {
+		s.Logger.Info("not draining client connections: Plex Media Server is not running")
 		return
 	}
 	open := s.Proxy.Open()
 	if open == 0 {
+		s.Logger.Info("no client connections to drain")
 		return
 	}
 	s.Logger.Info("draining client connections before stopping Plex Media Server",
