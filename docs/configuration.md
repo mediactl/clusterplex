@@ -293,6 +293,28 @@ Note that GDM discovery (UDP 32410-32414) does not cross the link either.
 Broadcast discovery already did not work across pod networking, so nothing that
 worked before stops working.
 
+### Running without privilege
+
+The pods run privileged by default. Plex's network namespace needs
+`CAP_SYS_ADMIN` to create and `CAP_NET_ADMIN` to wire up, and IPv4 forwarding
+on in the pod namespace; privilege gives all three, and the render device for
+hardware transcoding with it.
+
+The form without privilege is `k8s/components/unprivileged` (chart:
+`plex.unprivileged: true`): the two capabilities, and the forwarding set by
+Kubernetes through the pod's `securityContext.sysctls` before any container
+starts, which the manager then finds already on. The cluster has to provide
+two things first:
+
+- `net.ipv4.ip_forward` is an "unsafe" sysctl to Kubernetes, so every kubelet
+  must allow-list it (`KubeletConfiguration` `allowedUnsafeSysctls`), or the
+  pod is rejected with `SysctlForbidden`. `hack/kind.sh` creates kind
+  clusters with it allowed.
+- The render device has to come from a device plugin, for example
+  `gpu.intel.com/i915` in the container's resources. Mounting `/dev/dri` is
+  not enough: Plex finds the device and the device cgroup refuses it, and it
+  transcodes in software. Everything else works unprivileged, tried on kind.
+
 ### Changing the link subnet
 
 `--plex-subnet` sets the point-to-point link joining the pod to Plex's
