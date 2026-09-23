@@ -493,6 +493,84 @@ Two things seen along the way and not chased: the shim's `STACK_CHECK` lines
 show it running on Plex threads with 124--128 KB stacks and ~110 KB of
 headroom, and the pool auto-grew 59 to 69 slots in one minute under the burst.
 
+## Fixed: a warm pool never shrank
+
+After the crash fix the pods held 35--48 PostgreSQL connections each, all
+idle, some for a quarter of an hour, and the count only ever went up. Fixed
+in `v1.3.17-clusterplex.20`.
+
+**The cause.** The pool's maintenance -- reclaiming a slot whose owner thread
+has moved on, and closing connections idle past `PLEX_PG_IDLE_TIMEOUT` -- ran
+in exactly one place: after a thread missed the phase-1 fast path of an
+acquire. On a warm pool every Plex thread already owns a READY slot, so phase
+1 answers every acquire and nothing misses. Every "Pool reaper: running" line
+in every pod's log sits inside startup or a playback burst, when new threads
+were arriving; there is none after the last burst, however long the pod ran.
+Connections were closed only when the *next* burst brought new threads, and
+by then it had opened more.
+
+**The fix.** The pass also runs at the top of the acquire whenever the
+reaper's interval (60 s) has elapsed since it last ran, whatever the acquire
+does next. When it is not due the fast path pays one atomic load. A thread
+that needs a slot still reclaims immediately. So an unreferenced connection
+now lives at most the idle timeout plus one reaper interval after its last
+use, as long as anything at all queries the database -- and the manager's
+library probe does, every few seconds. Handles Plex keeps open (about twenty
+at startup) pin their slots and are not touched.
+
+Verified on the kind cluster: a playback burst took the pods to 33, 50 and
+34 connections; nine minutes later, with only the manager's probe querying,
+they were at 9, 23 and 12, with a reaper run on every pod every minute.
+
+**Test.** The shim's unit test drives the real acquire on a pool it owns, with
+the calling thread on the fast path (libpq's `PQstatus` stood in for by a
+`cfg(test)` thread-local, so no server is needed) and another thread's
+connection idle and unreferenced past the timeout. Before the change the
+acquire returned the caller's connection and left the other open.
+
+Also in `.20`: `Pool: auto-grew N -> M` is logged at INFO. It was ERROR, and
+fifteen of them per burst read as fifteen faults; growth is the pool doing
+its job.
+
+## Fixed: a movie played again once it finished
+
+Every play queue built from one movie held the movie twice, at orders 1000
+and 2000, so when the first playback finished the client moved on to the
+"next" item and played the same movie again. Five of the six play queues in
+the database had it, one of them created by a plain `POST /playQueues` with
+no client involved. Fixed in `v1.3.17-clusterplex.21`.
+
+**How it was found.** The postgres pod logs every statement
+(`log_statement = all`), so a controlled `POST /playQueues` for the movie
+gave the exact SQL. Plex itself issued two `INSERT INTO play_queue_items`,
+two milliseconds apart -- its item query had returned the one movie twice --
+and its answer to the request listed the second item twice as well. Around
+those inserts, every SELECT that Plex steps more than once had run twice: the
+same prepared statement, on two different connections, four milliseconds
+apart. `SELECT ... LIMIT 1` queries, which the shim fetches eagerly, ran once.
+
+**The cause.** The shim resolved a statement's connection through the pool on
+every `sqlite3_step`. A streaming SELECT marks its connection
+`streaming_active` when it returns its first row, and the pool refuses to
+hand a thread the slot it is streaming from, so the statement's own second
+step was given a different connection. `should_clear_cross_thread_result`
+took a result connection that differs from the execution connection as the
+statement having crossed threads, cancelled the stream and ran the query
+again eagerly -- from row one. So the first row of every streamed result was
+delivered twice. Listings survive it because Plex keys them by id; play
+queues append every row they are given.
+
+**The fix.** A statement that is mid-stream stays on the connection it is
+streaming from when the stepping thread is the one that started it; the pool
+is only asked when it is not. Another thread stepping the statement still
+takes the requery path, which is what the check was written for -- and that
+path still replays already-delivered rows, so it remains a hazard if Plex
+ever does step a streaming statement from another thread. Nothing observed
+says it does.
+
+Verified on the kind cluster: the same `POST /playQueues` now yields one
+item, one insert, and every read in the request executed on one connection.
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
