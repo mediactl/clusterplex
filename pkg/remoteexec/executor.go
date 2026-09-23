@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,20 @@ type Executor struct {
 	BinDir string
 	// Suffix is the real binary's suffix; DefaultSuffix when empty.
 	Suffix string
+	// Env is added to every job, and beats the request's own value for a name
+	// they both set.
+	//
+	// It exists because the request's environment cannot be trusted to carry
+	// the interposer. The PostgreSQL shim removes LD_PRELOAD from Plex's
+	// environment once it has loaded, so that Plex's ordinary helper children
+	// do not inherit a musl-linked library, and re-injects it only when it
+	// recognises Plex exec'ing a scanner itself. It never sees ours: the
+	// binary Plex execs is the shim, which forwards the call here, and the
+	// real one is started by this process instead.
+	//
+	// Without it a helper opens the local SQLite file rather than the shared
+	// library, finds nothing there and exits successfully having done nothing.
+	Env    []string
 	Logger *slog.Logger
 }
 
@@ -71,7 +86,7 @@ func (e *Executor) Run(ctx context.Context, req *pb.ExecRequest, sink Sink) erro
 
 	cmd := exec.CommandContext(ctx, bin, req.GetArgs()...)
 	cmd.Dir = req.GetCwd()
-	cmd.Env = envList(req.GetEnv())
+	cmd.Env = envList(req.GetEnv(), e.Env)
 	cmd.Stdout = out
 	cmd.Stderr = errw
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -102,20 +117,40 @@ func (e *Executor) log() *slog.Logger {
 	return slog.Default()
 }
 
-// envList turns the request environment into KEY=VALUE pairs. An empty map
+// envList turns the request environment into KEY=VALUE pairs, with extra
+// overriding any name the request also sets. An empty request and no extra
 // inherits the manager's environment.
-func envList(env map[string]string) []string {
-	if len(env) == 0 {
+//
+// A name is never emitted twice. Two values for one name is not an override:
+// which one a process sees is down to whichever its libc finds first.
+func envList(env map[string]string, extra []string) []string {
+	if len(env) == 0 && len(extra) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
+	merged := make(map[string]string, len(env)+len(extra))
+	if len(env) == 0 {
+		// Preserve "empty request inherits the manager's environment", which
+		// extra then adds to rather than replaces.
+		for _, e := range os.Environ() {
+			if k, v, ok := strings.Cut(e, "="); ok {
+				merged[k] = v
+			}
+		}
+	}
+	maps.Copy(merged, env)
+	for _, e := range extra {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			merged[k] = v
+		}
+	}
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	list := make([]string, 0, len(keys))
 	for _, k := range keys {
-		list = append(list, k+"="+env[k])
+		list = append(list, k+"="+merged[k])
 	}
 	return list
 }

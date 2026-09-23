@@ -37,6 +37,46 @@ func TestExecutorRunsRealBinaryWithArgsEnvAndCwd(t *testing.T) {
 	assert.Equal(t, int32(3), fin.ExitCode)
 }
 
+func TestExecutorAddsItsOwnEnvironmentToEveryJob(t *testing.T) {
+	// Plex strips LD_PRELOAD from its own environment once the interposer has
+	// loaded, so a helper launched through the shim arrives here without it
+	// and would open an empty local SQLite instead of the shared library. The
+	// analysis then finds nothing, media_streams stays empty, and playback
+	// fails with "video has neither a video stream nor an audio stream".
+	bin := t.TempDir()
+	writeScript(t, bin, "Plex Media Scanner.real", `echo "preload:$LD_PRELOAD"`)
+
+	ex := &Executor{BinDir: bin, Env: []string{"LD_PRELOAD=/lib/shim.so"}}
+	sink := &collectSink{}
+	err := ex.Run(context.Background(), &pb.ExecRequest{
+		TargetBinary: "Plex Media Scanner",
+		Env:          map[string]string{"PATH": os.Getenv("PATH")},
+	}, sink)
+	require.NoError(t, err)
+
+	assert.Contains(t, sink.stdout(), "preload:/lib/shim.so\n")
+}
+
+func TestExecutorEnvironmentBeatsTheRequestRatherThanDuplicatingIt(t *testing.T) {
+	// Which of two values for one name a process sees is down to whichever its
+	// libc finds first, so the same name must never be emitted twice. The
+	// manager's value is the authoritative one: it comes from the same config
+	// Plex itself is started with.
+	bin := t.TempDir()
+	writeScript(t, bin, "Plex Media Scanner.real", `echo "preload:$LD_PRELOAD"`)
+
+	ex := &Executor{BinDir: bin, Env: []string{"LD_PRELOAD=/lib/right.so"}}
+	sink := &collectSink{}
+	err := ex.Run(context.Background(), &pb.ExecRequest{
+		TargetBinary: "Plex Media Scanner",
+		Env:          map[string]string{"PATH": os.Getenv("PATH"), "LD_PRELOAD": "/lib/stale.so"},
+	}, sink)
+	require.NoError(t, err)
+
+	assert.Contains(t, sink.stdout(), "preload:/lib/right.so\n")
+	assert.NotContains(t, sink.stdout(), "stale")
+}
+
 func TestExecutorKillsProcessGroupWhenContextCancelled(t *testing.T) {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Transcoder.real", `sleep 30`)

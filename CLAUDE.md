@@ -116,6 +116,19 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   derives it from `MachineIdentifier` with a salt you cannot reproduce, and
   **never recomputes it**. Change the UUID without deleting the derived value
   and clients keep seeing the old server forever.
+- **A helper binary only reaches the library if the manager gives it
+  `LD_PRELOAD`.** The shim removes it from Plex's environment once it has
+  loaded, so that Plex's ordinary children do not inherit a musl-linked
+  library, and re-injects it only when it sees Plex exec a scanner itself. It
+  never sees ours: Plex execs `cmd/shim`, which forwards the call to the
+  manager, and the manager starts the real binary. Without the preload the
+  helper opens the per-pod SQLite shadow instead of PostgreSQL, finds nothing
+  in it, and **exits 0 having done nothing** — so `Plex Media Scanner
+  --analyze` leaves `media_streams` empty and playback fails with
+  `s1001 (Network)`, the server having logged "video has neither a video
+  stream nor an audio stream". `startExecServers` sets `Executor.Env` for this
+  reason. The scanner's own log is the tell: with the preload it reaches
+  "Analyzing media parts", without it stops at "Opening 20 database sessions".
 - **The PostgreSQL shim is lossy in two known ways.** Library search returns
   nothing, because it translates Plex's full-text `MATCH` into a constant false
   predicate; and title ordering follows PostgreSQL's default collation, because

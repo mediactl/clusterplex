@@ -18,7 +18,24 @@ import (
 // can become leader, or be asked to work, without restarting.
 func (m *Manager) startExecServers(ctx context.Context) error {
 	cfg := m.Config
-	local := &remoteexec.Executor{BinDir: cfg.BinDir, Logger: m.Logger.With("component", "executor")}
+	// The same environment Plex is started with. A helper reaches the library
+	// only if it loads the interposer, and the request cannot be relied on to
+	// carry it: the shim removes LD_PRELOAD from Plex's environment once it
+	// has loaded, and re-injects it only for a scanner Plex execs itself —
+	// never for one that arrives here through our own shim. Without this the
+	// scanner opens an empty local SQLite, analyses nothing and exits 0, and
+	// playback fails with "video has neither a video stream nor an audio
+	// stream" because media_streams was never written.
+	//
+	// It goes to every job because every job is a Plex binary: Executor
+	// resolves the target inside BinDir with a .real suffix and runs nothing
+	// else. The interposer being wrong for an ordinary glibc program is why
+	// the shim scrubs it broadly; none of those programs runs here.
+	local := &remoteexec.Executor{
+		BinDir: cfg.BinDir,
+		Env:    shimEnv(nil, cfg),
+		Logger: m.Logger.With("component", "executor"),
+	}
 	dispatcher := &remoteexec.Dispatcher{
 		Local:   local,
 		Workers: &remoteexec.PodWorkerLister{Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName, Port: cfg.WorkerPort},
