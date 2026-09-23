@@ -129,6 +129,22 @@ func Apply(path string, values map[string]string) ([]string, error) {
 
 // read returns the attributes of an existing file, or nil when it does not
 // exist yet or is empty.
+// Value returns one setting from Preferences.xml, or "" when the file or the
+// setting is absent. Reading is what the manager does with the server's own
+// token, which lives here and nowhere else.
+func Value(path, name string) (string, error) {
+	attrs, err := read(path)
+	if err != nil {
+		return "", err
+	}
+	for _, a := range attrs {
+		if a.Name == name {
+			return a.Value, nil
+		}
+	}
+	return "", nil
+}
+
 func read(path string) ([]attr, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

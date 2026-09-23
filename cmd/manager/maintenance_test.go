@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -118,4 +120,19 @@ func TestEveryTaskNameIsReachableThroughTheEndpoint(t *testing.T) {
 		rr := post(t, m, MaintenancePrefix+name)
 		assert.NotEqual(t, http.StatusNotFound, rr.Code, "task %s is not reachable", name)
 	}
+}
+
+func TestTheManagerAuthenticatesWithTheServersOwnToken(t *testing.T) {
+	// The local admin token is per process and its file is on the shared
+	// claim: three pods starting together leave the token of whichever Plex
+	// started last, and the other two answer 401 to everything the manager
+	// asks with it. The server's own token is one value for every pod.
+	m := &Manager{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	m.Config.PlexDir = t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(m.Config.PlexDir, ".LocalAdminToken"), []byte("this-pods-own\n"), 0o600))
+	assert.Equal(t, "this-pods-own", m.plexToken(), "an unclaimed server has only the local admin token")
+
+	require.NoError(t, os.WriteFile(m.Config.PreferencesFile(),
+		[]byte(`<?xml version="1.0" encoding="utf-8"?>\n<Preferences MachineIdentifier="x" PlexOnlineToken="shared-by-every-pod"/>`), 0o600))
+	assert.Equal(t, "shared-by-every-pod", m.plexToken(), "a claimed server's own token is what every pod accepts")
 }

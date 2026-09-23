@@ -339,7 +339,7 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Du
 		case <-ticker.C:
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, timeout)
-		err := plexroute.Answering(checkCtx, m.plexURL(), m.localAdminToken())
+		err := plexroute.Answering(checkCtx, m.plexURL(), m.plexToken())
 		cancel()
 		if ctx.Err() != nil {
 			return
@@ -391,7 +391,7 @@ func (m *Manager) recordSessions(ctx context.Context) {
 	if m.Metrics == nil {
 		return
 	}
-	token := m.localAdminToken()
+	token := m.plexToken()
 	if token == "" {
 		return
 	}

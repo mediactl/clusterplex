@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/mediactl/clusterplex/pkg/maintenance"
+	"github.com/mediactl/clusterplex/pkg/plexprefs"
 )
 
 // MaintenancePrefix is where a CronJob asks for work to be distributed.
@@ -164,7 +165,7 @@ func (m *Manager) dispatchToPlex(ctx context.Context, member, method, path strin
 // state directory for exactly this purpose: administering a claimed server
 // from the machine it runs on.
 func (m *Manager) authenticate(req *http.Request) {
-	if token := m.localAdminToken(); token != "" {
+	if token := m.plexToken(); token != "" {
 		req.Header.Set("X-Plex-Token", token)
 	}
 	req.Header.Set("Accept", "application/xml")
@@ -173,7 +174,24 @@ func (m *Manager) authenticate(req *http.Request) {
 // localAdminToken reads the token Plex writes into its own state directory so
 // that the machine it runs on can administer it. Reading it per call keeps us
 // honest about Plex rewriting it, and these calls are rare.
-func (m *Manager) localAdminToken() string {
+// plexToken is what the manager authenticates to Plex with, on this pod and
+// on the others it dispatches maintenance to.
+//
+// The server's own token, PlexOnlineToken in Preferences.xml: the file is
+// shared, so every pod holds the same value, and Plex accepts it from any of
+// them. The local admin token is only the fallback for a server that has not
+// been claimed and so has no online token. It is per process: Plex writes a
+// fresh one to .LocalAdminToken on every start, and that file is on the
+// shared claim too, so with three pods starting together it holds whichever
+// Plex started last and the other two answer 401 -- to the library check,
+// the session count and every maintenance dispatch, and 401 reads as an
+// answer, so silently.
+func (m *Manager) plexToken() string {
+	if token, err := plexprefs.Value(m.Config.PreferencesFile(), "PlexOnlineToken"); err != nil {
+		m.Logger.Warn("read the server token from Preferences.xml", "error", err)
+	} else if token != "" {
+		return token
+	}
 	b, err := os.ReadFile(filepath.Join(m.Config.PlexDir, ".LocalAdminToken"))
 	if err != nil {
 		return ""

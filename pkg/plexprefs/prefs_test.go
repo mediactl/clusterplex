@@ -230,3 +230,17 @@ func TestApplySettingTheIdentityOnAFreshServerAddsNothingToRemove(t *testing.T) 
 	assert.Equal(t, []string{"MachineIdentifier"}, changed)
 	assert.NotContains(t, attrs(t, path), "ProcessedMachineIdentifier")
 }
+
+func TestValueReadsOneSettingAndIsEmptyWhenAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Preferences.xml")
+	require.NoError(t, os.WriteFile(path, []byte(`<?xml version="1.0" encoding="utf-8"?>\n<Preferences FriendlyName="x" PlexOnlineToken="tok"/>`), 0o600))
+	v, err := Value(path, "PlexOnlineToken")
+	require.NoError(t, err)
+	assert.Equal(t, "tok", v)
+	v, err = Value(path, "Missing")
+	require.NoError(t, err)
+	assert.Empty(t, v)
+	v, err = Value(filepath.Join(t.TempDir(), "absent.xml"), "PlexOnlineToken")
+	require.NoError(t, err, "no file is no value, not an error")
+	assert.Empty(t, v)
+}
