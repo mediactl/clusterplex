@@ -2,14 +2,19 @@ package plexroute
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestPublishMakesThisPodTheRoutableTarget(t *testing.T) {
@@ -24,6 +29,40 @@ func TestPublishMakesThisPodTheRoutableTarget(t *testing.T) {
 	got, ok := tr.Current()
 	require.True(t, ok)
 	assert.Equal(t, Target{Pod: "plex-2", Address: addr2}, got)
+}
+
+func TestPublishRetriesWhenTheLeaseChangedUnderIt(t *testing.T) {
+	// The holder renews this lease every few seconds while every other pod
+	// annotates it, so losing the race is ordinary rather than exceptional.
+	//
+	// Treating it as fatal wedged a pod completely: advertiseWhenAccepting
+	// returns on the error, so the pod was never marked serving and never
+	// became ready, and the health watch that would have restarted Plex was
+	// never started either. One lost race, and the pod sat at 0/1 for ever.
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset(lease(t, "plex-2", time.Second, ""))
+
+	var updates int
+	cs.PrependReactor("update", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+		updates++
+		if updates == 1 {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
+				name, errors.New("the object has been modified"))
+		}
+		return false, nil, nil
+	})
+
+	p := &Publisher{Client: cs, Namespace: ns, LeaseName: name, Pod: "plex-2"}
+	require.NoError(t, p.Publish(ctx, addr2, ""))
+	assert.Greater(t, updates, 1, "the conflict has to be retried, not returned")
+
+	tr := newTracker(cs)
+	require.NoError(t, tr.Refresh(ctx))
+	got, ok := tr.Current()
+	require.True(t, ok)
+	assert.Equal(t, Target{Pod: "plex-2", Address: addr2}, got,
+		"the retry has to re-read the lease and land the annotation")
 }
 
 func TestClearStopsTrafficBeforePlexGoesAway(t *testing.T) {

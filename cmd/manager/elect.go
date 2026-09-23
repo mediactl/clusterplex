@@ -238,8 +238,14 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 	}
 	manager := net.JoinHostPort(m.Config.PodDNS(), strconv.Itoa(m.Config.ProbePort))
 	if err := m.publisher.Publish(ctx, m.Config.PMSAddr(), "http://"+manager); err != nil {
-		m.Logger.Error("advertise Plex availability", "error", err)
-		return
+		// Not fatal, and deliberately not a return. Publishing is an
+		// annotation on the Lease for the routing tier; everything below is
+		// local and matters more. Returning here left the pod unadvertised,
+		// never marked serving, never ready, and — worst — with no health
+		// watch, which is what restarts Plex when it dies. One failed write
+		// cost the whole pod, and losing a race with the lease holder was
+		// enough to cause it.
+		m.Logger.Error("advertise Plex availability; carrying on without it", "error", err)
 	}
 	// Also record it on the pod itself. The maintenance fan-out needs the set
 	// of pods that can do work, which the Lease cannot express: it names one

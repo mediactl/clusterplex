@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 )
 
 // dialInterval is how often WaitListening retries the port.
@@ -57,24 +58,40 @@ func (p *Publisher) Clear(ctx context.Context) error {
 	})
 }
 
+// update applies mutate to the lease's annotations, re-reading and trying
+// again when something else wrote the lease first.
+//
+// The conflict is ordinary here rather than exceptional: the holder renews
+// this same lease every few seconds, and every pod annotates it to advertise
+// itself, so the two race by design. Returning the conflict made the caller
+// give up — and advertiseWhenAccepting gives up completely, leaving the pod
+// unadvertised, never marked serving, never ready, and with no health watch
+// to restart Plex. One lost race cost the whole pod.
 func (p *Publisher) update(ctx context.Context, mutate func(map[string]string) bool) error {
 	leases := p.Client.CoordinationV1().Leases(p.Namespace)
-	lease, err := leases.Get(ctx, p.LeaseName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		lease, err := leases.Get(ctx, p.LeaseName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("get lease: %w", err)
+		}
+		if lease.Annotations == nil {
+			lease.Annotations = map[string]string{}
+		}
+		if !mutate(lease.Annotations) {
+			return nil
+		}
+		if _, err := leases.Update(ctx, lease, metav1.UpdateOptions{}); err != nil {
+			// Returned unwrapped: RetryOnConflict has to recognise it, and
+			// wrapping hides it from apierrors.IsConflict.
+			if apierrors.IsConflict(err) {
+				return err
+			}
+			return fmt.Errorf("update lease: %w", err)
+		}
 		return nil
-	} else if err != nil {
-		return fmt.Errorf("get lease: %w", err)
-	}
-	if lease.Annotations == nil {
-		lease.Annotations = map[string]string{}
-	}
-	if !mutate(lease.Annotations) {
-		return nil
-	}
-	if _, err := leases.Update(ctx, lease, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update lease: %w", err)
-	}
-	return nil
+	})
 }
 
 // WaitListening blocks until addr accepts a TCP connection, or timeout passes.
