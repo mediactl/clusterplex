@@ -8,3 +8,4 @@ resources:
   - service.yaml
   - pvc.yaml
   - statefulset.yaml
+  - pdb.yaml

@@ -77,6 +77,64 @@ func TestTCPProxyTracksActiveConnections(t *testing.T) {
 	assert.Eventually(t, func() bool { return active.Load() == 0 }, 2*time.Second, 10*time.Millisecond)
 }
 
+func TestTCPProxyDrainWaitsForHeldConnectionsToFinish(t *testing.T) {
+	// A rollout used to cut every stream on the pod the instant it began. The
+	// pod has already left its Service by then, so nothing new arrives; what
+	// it holds is what its clients cannot get back from another pod.
+	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, err := p.Start(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, addr.String(), p.Addr().String())
+
+	conn, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	drained := make(chan int, 1)
+	go func() { drained <- p.Drain(context.Background(), 5*time.Second) }()
+	assert.Never(t, func() bool { return len(drained) > 0 }, 400*time.Millisecond, 20*time.Millisecond,
+		"the drain must wait while the connection is held")
+
+	require.NoError(t, conn.Close())
+	select {
+	case left := <-drained:
+		assert.Equal(t, 0, left, "nothing was open when the drain ended")
+	case <-time.After(3 * time.Second):
+		t.Fatal("the drain did not end once the last connection closed")
+	}
+}
+
+func TestTCPProxyDrainGivesUpAtTheDeadline(t *testing.T) {
+	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, err := p.Start(ctx)
+	require.NoError(t, err)
+	conn, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	started := time.Now()
+	left := p.Drain(context.Background(), 300*time.Millisecond)
+	assert.Equal(t, 1, left, "the held connection is reported, not cut")
+	assert.Less(t, time.Since(started), 2*time.Second)
+	assert.Equal(t, 1, p.Open(), "a drain that gives up leaves the connection alone")
+}
+
+func TestTCPProxyDrainWithNothingOpenReturnsAtOnce(t *testing.T) {
+	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := p.Start(ctx)
+	require.NoError(t, err)
+	started := time.Now()
+	assert.Equal(t, 0, p.Drain(context.Background(), 5*time.Second))
+	assert.Less(t, time.Since(started), time.Second)
+}
+
 func TestTCPProxyReportsAnUnreachableUpstreamOncePerOutage(t *testing.T) {
 	// Plex going down is normal -- it restarts, and it is unreachable while it
 	// boots. Every client connection and every health poll dials it, so a

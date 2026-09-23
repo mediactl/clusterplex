@@ -29,6 +29,18 @@ plex:
     - name: FriendlyName
       value: Cluster Plex
   resources: {}
+  # How long a stopping pod lets the client connections it holds finish
+  # before Plex is stopped. A terminating pod has already left the Service,
+  # so new clients go elsewhere; this is for the streams in flight, whose
+  # transcode chunks live only on that pod.
+  drainTimeout: 2m
+  # Must cover drainTimeout plus the 30s Plex gets to flush on SIGTERM.
+  terminationGracePeriodSeconds: 180
+  # One pod at a time under eviction: every pod serves, and each one that
+  # goes takes the sessions pinned to it.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
 
 proxy:
   # The only thing clients connect to. Media bytes are served from here, so

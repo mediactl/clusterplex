@@ -190,6 +190,7 @@ func run() int {
 		Env:          shimEnv(os.Environ(), cfg),
 		Logger:       logger.With("component", "supervisor"),
 		Grace:        defaultGrace,
+		Drain:        cfg.DrainTimeout,
 		StartProcess: plexNet.StartProcess,
 		Preferences: func(ctx context.Context) error {
 			// Resolved here rather than at load because the address is the
@@ -262,7 +263,7 @@ func run() int {
 
 	<-ctx.Done()
 	logger.Info("shutting down")
-	stopCtx, cancel := context.WithTimeout(context.Background(), defaultGrace+5*time.Second)
+	stopCtx, cancel := context.WithTimeout(context.Background(), cfg.DrainTimeout+defaultGrace+5*time.Second)
 	defer cancel()
 	m.shutdown(stopCtx)
 	return 0

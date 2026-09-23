@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
@@ -117,6 +118,13 @@ type Config struct {
 	WorkerPort int
 	// ProbePort serves the health probes and metrics.
 	ProbePort int
+	// DrainTimeout is how long a stopping pod lets the client connections it
+	// holds finish before Plex is stopped. New connections go to the other
+	// pods from the moment the pod starts terminating; this is for the
+	// streams already in flight, whose transcode chunks live only here. The
+	// pod's terminationGracePeriodSeconds has to cover it plus Plex's own
+	// grace.
+	DrainTimeout time.Duration
 
 	// Preferences are the Plex settings the manager writes into
 	// Preferences.xml before each start. Keys not listed here are left as
@@ -140,6 +148,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("plex-subnet", "169.254.1.0/30", "point-to-point subnet joining the pod to Plex's network namespace")
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
+	fs.Duration("drain-timeout", 2*time.Minute, "how long a stopping pod lets the client connections it holds finish before Plex is stopped; the pod's termination grace period must cover it plus Plex's own 30s")
 	fs.String("postgres-host", "", "host of the shared Plex library database")
 	fs.Int("postgres-port", 5432, "port of the shared Plex library database")
 	fs.String("postgres-database", "plex", "name of the shared Plex library database")
@@ -210,6 +219,7 @@ func loadConfig(args []string) (Config, error) {
 		PMSPort:         port("pms-port"),
 		WorkerPort:      port("worker-port"),
 		ProbePort:       port("probe-port"),
+		DrainTimeout:    v.GetDuration("drain-timeout"),
 		BlockPlexTV:     v.GetBool("block-plex-tv"),
 		ExternalURL:     strings.TrimSpace(v.GetString("plex-external-url")),
 		ExternalService: strings.TrimSpace(v.GetString("plex-external-service")),

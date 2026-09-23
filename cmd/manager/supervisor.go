@@ -49,6 +49,12 @@ type Supervisor struct {
 	Env []string
 	// Grace is how long Plex gets after SIGTERM before it is killed.
 	Grace time.Duration
+	// Drain is how long Stop lets the client connections the proxy holds
+	// finish before Plex is told to stop. Zero stops Plex at once.
+	//
+	// Restart never drains: a Plex that has stopped answering is holding
+	// nothing its clients could still get.
+	Drain time.Duration
 	// StartProcess, when set, starts Plex in place of cmd.Start(), so it can
 	// be launched inside its own network namespace.
 	StartProcess func(*exec.Cmd) error
@@ -229,14 +235,45 @@ func (s *Supervisor) Restart(ctx context.Context) error {
 	return s.Start(ctx)
 }
 
-// Stop sends SIGTERM to Plex's process group, waits up to Grace, then kills
-// it, and finally stops the proxy. It is a no-op when nothing is running.
+// Stop lets the connections the proxy holds finish, for up to Drain, then
+// sends SIGTERM to Plex's process group, waits up to Grace, kills it, and
+// finally stops the proxy. It is a no-op when nothing is running.
 func (s *Supervisor) Stop(ctx context.Context) error {
 	grace := s.Grace
 	if grace == 0 {
 		grace = defaultGrace
 	}
+	s.drain(ctx)
 	return s.stopWithin(ctx, grace)
+}
+
+// drain waits for the clients this pod is serving to finish with it.
+//
+// A terminating pod has already left its Service, so no new client arrives;
+// the ones it holds are mid-stream, and a transcode's chunks live only here.
+// Before this, a rollout cut every one of them at the instant it began.
+func (s *Supervisor) drain(ctx context.Context) {
+	if s.Proxy == nil || s.Drain <= 0 {
+		return
+	}
+	s.mu.Lock()
+	running := s.cmd != nil
+	s.mu.Unlock()
+	if !running {
+		return
+	}
+	open := s.Proxy.Open()
+	if open == 0 {
+		return
+	}
+	s.Logger.Info("draining client connections before stopping Plex Media Server",
+		"open", open, "timeout", s.Drain)
+	if left := s.Proxy.Drain(ctx, s.Drain); left > 0 {
+		s.Logger.Warn("stopping Plex Media Server with client connections still open",
+			"open", left, "waited", s.Drain)
+		return
+	}
+	s.Logger.Info("client connections drained")
 }
 
 func (s *Supervisor) stopWithin(ctx context.Context, grace time.Duration) error {

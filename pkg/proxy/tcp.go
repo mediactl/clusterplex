@@ -31,7 +31,12 @@ type TCP struct {
 	// down records whether upstream was unreachable last time we dialled, so
 	// an outage is reported once rather than once per connection.
 	down atomic.Bool
+	// active counts the connections being proxied right now.
+	active atomic.Int64
 }
+
+// drainPoll is how often Drain looks again.
+const drainPoll = 250 * time.Millisecond
 
 // Start binds Listen and serves until ctx is cancelled. It returns the bound
 // address so callers may pass port 0.
@@ -72,9 +77,52 @@ func (p *TCP) serve(ctx context.Context) {
 	p.wg.Wait()
 }
 
+// Addr is the address the proxy listens on, once Start has returned.
+func (p *TCP) Addr() net.Addr {
+	if p.lis == nil {
+		return nil
+	}
+	return p.lis.Addr()
+}
+
+// Open reports how many client connections are being proxied right now.
+func (p *TCP) Open() int { return int(p.active.Load()) }
+
+// Drain waits for the connections the proxy holds to finish on their own,
+// for at most timeout, and reports how many were still open when it stopped
+// waiting.
+//
+// Nothing here refuses new connections: the listener stays open, because a
+// pod that is terminating has already left its Service's endpoints and new
+// clients are going elsewhere. What a drain preserves is what those clients
+// cannot get back -- a stream part way through a file, a transcode whose
+// chunks live only on this pod -- for as long as the connection carrying it
+// lasts.
+func (p *TCP) Drain(ctx context.Context, timeout time.Duration) int {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(drainPoll)
+	defer tick.Stop()
+	for {
+		open := p.Open()
+		if open == 0 {
+			return 0
+		}
+		select {
+		case <-ctx.Done():
+			return open
+		case <-deadline.C:
+			return open
+		case <-tick.C:
+		}
+	}
+}
+
 func (p *TCP) handle(ctx context.Context, client net.Conn) {
 	defer p.wg.Done()
 	defer func() { _ = client.Close() }()
+	p.active.Add(1)
+	defer p.active.Add(-1)
 	if p.OnConnChange != nil {
 		p.OnConnChange(1)
 		defer p.OnConnChange(-1)

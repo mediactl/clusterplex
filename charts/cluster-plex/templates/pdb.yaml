@@ -1,0 +1,17 @@
+{{- if .Values.plex.podDisruptionBudget.enabled }}
+# One pod at a time. Every pod serves, and a client is pinned to one of them
+# for the life of its session, so each pod that goes takes its sessions with
+# it. Evictions -- node drains, cluster upgrades -- are held to one pod.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.plex.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: plex
+{{- end }}

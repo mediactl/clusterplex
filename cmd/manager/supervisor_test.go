@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mediactl/clusterplex/pkg/proxy"
 )
 
 func fakePMS(t *testing.T, body string) string {
@@ -25,6 +29,115 @@ func fakePMS(t *testing.T, body string) string {
 }
 
 const gracefulPMS = "trap 'echo bye; exit 0' TERM\necho pms-ready\nwhile true; do sleep 0.1; done"
+
+// echoUpstream stands in for Plex behind the proxy.
+func echoUpstream(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lis.Close() })
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
+		}
+	}()
+	return lis.Addr().String()
+}
+
+// holdConnection opens a client connection through the supervisor's proxy and
+// proves it is being proxied.
+func holdConnection(t *testing.T, sup *Supervisor) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", sup.Proxy.Addr().String())
+	require.NoError(t, err)
+	_, err = conn.Write([]byte("x"))
+	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err = io.ReadFull(conn, make([]byte, 1))
+	require.NoError(t, err)
+	return conn
+}
+
+func TestSupervisorStopLetsHeldConnectionsFinishFirst(t *testing.T) {
+	// A rollout used to cut every stream on the pod the instant it began. The
+	// pod has already left its Service by then, so nothing new arrives; what
+	// it holds is what its clients cannot get back from another pod.
+	var logs bytes.Buffer
+	sup := &Supervisor{
+		Binary: fakePMS(t, gracefulPMS),
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		Grace:  5 * time.Second,
+		Drain:  5 * time.Second,
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
+	conn := holdConnection(t, sup)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- sup.Stop(context.Background()) }()
+	assert.Never(t, func() bool { return strings.Contains(logs.String(), "bye") }, 500*time.Millisecond, 20*time.Millisecond,
+		"Plex must not be told to stop while a client connection is held")
+	assert.Contains(t, logs.String(), "draining client connections")
+
+	require.NoError(t, conn.Close())
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return once the last connection closed")
+	}
+	assert.Contains(t, logs.String(), "client connections drained")
+	assert.Contains(t, logs.String(), "bye", "and then Plex was stopped in the ordinary way")
+}
+
+func TestSupervisorStopGivesUpDrainingAtTheDeadline(t *testing.T) {
+	var logs bytes.Buffer
+	sup := &Supervisor{
+		Binary: fakePMS(t, gracefulPMS),
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		Grace:  5 * time.Second,
+		Drain:  300 * time.Millisecond,
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
+	conn := holdConnection(t, sup)
+	defer func() { _ = conn.Close() }()
+
+	started := time.Now()
+	require.NoError(t, sup.Stop(context.Background()))
+	assert.Less(t, time.Since(started), 3*time.Second)
+	assert.Contains(t, logs.String(), "client connections still open")
+	assert.Contains(t, logs.String(), "bye")
+}
+
+func TestSupervisorRestartDoesNotDrain(t *testing.T) {
+	// A Plex that has stopped answering is holding nothing its clients could
+	// still get; waiting on its connections would only delay the restart.
+	var logs bytes.Buffer
+	sup := &Supervisor{
+		Binary: fakePMS(t, gracefulPMS),
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		Grace:  5 * time.Second,
+		Drain:  10 * time.Second,
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+	}
+	require.NoError(t, sup.Start(context.Background()))
+	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
+	conn := holdConnection(t, sup)
+	defer func() { _ = conn.Close() }()
+
+	started := time.Now()
+	require.NoError(t, sup.Restart(context.Background()))
+	assert.Less(t, time.Since(started), 5*time.Second)
+	assert.NotContains(t, logs.String(), "draining client connections")
+	require.NoError(t, sup.Stop(context.Background()))
+}
 
 func TestSupervisorStopTerminatesPlexGracefully(t *testing.T) {
 	var logs bytes.Buffer

@@ -20,8 +20,11 @@ spec:
         app.kubernetes.io/component: plex
     spec:
       serviceAccountName: {{ .Release.Name }}-plex
-      # Long enough for Plex to flush its databases on SIGTERM.
-      terminationGracePeriodSeconds: 60
+      # Covers the manager's drain (plex.drainTimeout), which lets the streams
+      # this pod holds finish before Plex is told to stop, plus the 30s Plex
+      # gets to flush on SIGTERM. Shorter, and the kubelet kills the pod
+      # mid-drain.
+      terminationGracePeriodSeconds: {{ .Values.plex.terminationGracePeriodSeconds }}
       containers:
         - name: plex
           image: {{ include "cluster-plex.image" . }}
@@ -44,6 +47,11 @@ spec:
               value: {{ .Release.Name }}-plextv
             - name: CLUSTERPLEX_WORKERS_SERVICE
               value: {{ .Release.Name }}-workers
+            # How long a stopping pod lets the client connections it holds
+            # finish before Plex is stopped. New clients go to the other pods
+            # from the moment the pod starts terminating.
+            - name: CLUSTERPLEX_DRAIN_TIMEOUT
+              value: {{ .Values.plex.drainTimeout | quote }}
             - name: CLUSTERPLEX_PLEX_MODE
               value: {{ include "cluster-plex.plexMode" . }}
             {{- with .Values.proxy.externalURL }}

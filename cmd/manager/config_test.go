@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,7 @@ func TestConfigDefaults(t *testing.T) {
 	// Per-pod, because every pod runs Plex and a session's chunks are read
 	// back by the pod that wrote them (ADR-0004).
 	assert.Equal(t, "/transcode", c.TranscodeDir)
+	assert.Equal(t, 2*time.Minute, c.DrainTimeout, "a stopping pod lets the streams it holds finish for this long")
 
 	assert.Equal(t, 5432, c.Postgres.Port)
 	assert.Equal(t, "plex", c.Postgres.Database)

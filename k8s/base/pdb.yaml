@@ -1,0 +1,13 @@
+# One pod at a time. Every pod serves, and a client is pinned to one of them
+# for the life of its session, so each pod that goes takes its sessions with
+# it. Evictions -- node drains, cluster upgrades -- are held to one pod, and
+# rolling updates already go one at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: plex
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: plex

@@ -17,8 +17,11 @@ spec:
         app: plex
     spec:
       serviceAccountName: clusterplex-sa
-      # Long enough for Plex to flush its databases on SIGTERM (manager grace is 30s).
-      terminationGracePeriodSeconds: 60
+      # The manager's drain (2m by default, CLUSTERPLEX_DRAIN_TIMEOUT) lets
+      # the streams this pod holds finish before Plex is told to stop, then
+      # Plex gets 30s to flush on SIGTERM. This has to cover both, or the
+      # kubelet kills the pod mid-drain and the drain was for nothing.
+      terminationGracePeriodSeconds: 180
       containers:
         - name: plex
           image: ghcr.io/mediactl/cluster-plex:dev
