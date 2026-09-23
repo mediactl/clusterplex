@@ -38,9 +38,13 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             # Plex's network namespace needs CAP_SYS_ADMIN to create and
-            # CAP_NET_ADMIN to wire up. This was privileged for FUSE as
-            # well, which went with LiteFS; the two capabilities may now be
-            # enough on their own, which nobody has tried.
+            # CAP_NET_ADMIN to wire up. The two capabilities alone are not
+            # enough, tried on kind: without privilege /proc/sys is
+            # read-only in the container and provisioning the namespace
+            # fails at "enable IPv4 forwarding". Unprivileged would take
+            # net.ipv4.ip_forward made writable (a privileged init container,
+            # or the sysctl allow-listed on the kubelet) and a device plugin
+            # for the render device.
             privileged: true
           env:
             - name: POD_NAME
