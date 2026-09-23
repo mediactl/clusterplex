@@ -62,9 +62,10 @@ func holdConnection(t *testing.T, sup *Supervisor) net.Conn {
 	require.NoError(t, err)
 	require.NoError(t, conn.SetReadDeadline(time.Time{}))
 	go func() {
-		buf := make([]byte, 1)
+		chunk := bytes.Repeat([]byte("x"), 4096)
+		buf := make([]byte, len(chunk))
 		for {
-			if _, err := conn.Write([]byte("x")); err != nil {
+			if _, err := conn.Write(chunk); err != nil {
 				return
 			}
 			if _, err := io.ReadFull(conn, buf); err != nil {

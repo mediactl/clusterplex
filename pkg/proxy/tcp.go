@@ -37,23 +37,53 @@ type TCP struct {
 	conns sync.Map // *activity -> struct{}
 }
 
-// activity is when a proxied connection last moved a byte towards the
-// client, as Unix nanoseconds.
-type activity struct{ last atomic.Int64 }
-
-func (a *activity) touch() { a.last.Store(time.Now().UnixNano()) }
-
-func (a *activity) idleFor(now time.Time) time.Duration {
-	return now.Sub(time.Unix(0, a.last.Load()))
+// activity is how much a proxied connection has moved towards the client
+// lately: bytes in the current window of streamIdle and in the one before.
+type activity struct {
+	mu          sync.Mutex
+	windowStart time.Time
+	window      int64
+	previous    int64
 }
 
-// streamIdle is how long a connection may go without moving a byte and still
-// count as a stream the drain waits for. A client fetching segments moves
-// bytes every few seconds; a web app's notification socket may move none
-// for hours, and the drain must not wait on it: while it waited, that client
-// was still talking to a pod about to go, and its next playback would have
-// started there.
-var streamIdle = 15 * time.Second
+// add records n bytes delivered towards the client.
+func (a *activity) add(n int) {
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if now.Sub(a.windowStart) >= streamIdle {
+		a.previous, a.window, a.windowStart = a.window, 0, now
+	}
+	a.window += int64(n)
+}
+
+// streaming reports whether the connection moved at least streamBytes within
+// the last window or two.
+func (a *activity) streaming(now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	age := now.Sub(a.windowStart)
+	switch {
+	case age < streamIdle:
+		return a.window+a.previous >= streamBytes
+	case age < 2*streamIdle:
+		return a.window >= streamBytes
+	default:
+		return false
+	}
+}
+
+// A stream, to the drain, is a connection that moved at least streamBytes
+// towards the client within the last streamIdle or so. A client taking video
+// or audio moves that in a second; a web app polling its timeline every few
+// seconds moves a few hundred bytes, and its notification socket none for
+// hours. The drain must wait for the first and not the other two: while it
+// waited on a polling client, every rollout took the full drain per pod and
+// that client stayed on a pod about to go, its next playback starting there.
+var (
+	streamIdle  = 15 * time.Second
+	streamBytes = int64(32 << 10)
+)
 
 // touchWriter marks the connection active on every byte written to it.
 type touchWriter struct {
@@ -64,7 +94,7 @@ type touchWriter struct {
 func (w touchWriter) Write(b []byte) (int, error) {
 	n, err := w.Conn.Write(b)
 	if n > 0 {
-		w.a.touch()
+		w.a.add(n)
 	}
 	return n, err
 }
@@ -73,11 +103,13 @@ func (w touchWriter) Write(b []byte) (int, error) {
 const drainPoll = 250 * time.Millisecond
 
 // deliveryPoll is how often a finished copy asks whether its bytes have
-// reached the client; maxDeliveryWait is how long it will ask before giving
-// up on a client that has stopped reading.
+// reached the client; maxDeliveryStall is how long the queue may stay the
+// same before the client is taken to have stopped reading; maxDeliveryWait
+// bounds the whole wait.
 const (
-	deliveryPoll    = 50 * time.Millisecond
-	maxDeliveryWait = 2 * time.Minute
+	deliveryPoll     = 50 * time.Millisecond
+	maxDeliveryStall = 30 * time.Second
+	maxDeliveryWait  = 2 * time.Minute
 )
 
 // Start binds Listen and serves until ctx is cancelled. It returns the bound
@@ -130,13 +162,13 @@ func (p *TCP) Addr() net.Addr {
 // Open reports how many client connections are being proxied right now.
 func (p *TCP) Open() int { return int(p.active.Load()) }
 
-// Streams reports how many of them moved a byte towards the client within
-// streamIdle: the ones a client is actually watching, as opposed to holding.
+// Streams reports how many of them are moving real data towards the client:
+// the ones a client is actually watching, as opposed to holding or polling.
 func (p *TCP) Streams() int {
 	now := time.Now()
 	n := 0
 	p.conns.Range(func(k, _ any) bool {
-		if k.(*activity).idleFor(now) < streamIdle {
+		if k.(*activity).streaming(now) {
 			n++
 		}
 		return true
@@ -180,7 +212,6 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 	p.active.Add(1)
 	defer p.active.Add(-1)
 	act := &activity{}
-	act.touch()
 	p.conns.Store(act, struct{}{})
 	defer p.conns.Delete(act)
 	if p.OnConnChange != nil {
@@ -244,22 +275,37 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, act *activ
 }
 
 // awaitDelivery returns once the peer has acknowledged everything written to
-// c, or when ctx ends, or after maxDeliveryWait for a client that has stopped
-// reading. Bytes leaving the queue count as activity: the client is still
-// taking the stream, just from the kernel rather than from us.
+// c; or when the socket reports an error, which is what a client that closed
+// with data unread, or vanished, looks like; or when the queue has not moved
+// for maxDeliveryStall; or when ctx ends; or after maxDeliveryWait. Bytes
+// leaving the queue count as movement: the client is still taking the
+// stream, just from the kernel rather than from us.
 func awaitDelivery(ctx context.Context, c net.Conn, act *activity) {
 	deadline := time.NewTimer(maxDeliveryWait)
 	defer deadline.Stop()
 	last := -1
+	progressed := time.Now()
 	for {
 		pending, ok := sendQueue(c)
 		if !ok || pending == 0 {
 			return
 		}
-		if pending != last {
-			act.touch()
-			last = pending
+		if e, known := socketError(c); known && e != 0 {
+			return
 		}
+		if tcpClosed(c) {
+			return
+		}
+		if last >= 0 && pending < last {
+			act.add(last - pending)
+		}
+		if pending != last {
+			progressed = time.Now()
+		}
+		if time.Since(progressed) > maxDeliveryStall {
+			return
+		}
+		last = pending
 		select {
 		case <-ctx.Done():
 			return

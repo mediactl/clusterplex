@@ -78,21 +78,40 @@ func TestTCPProxyTracksActiveConnections(t *testing.T) {
 	assert.Eventually(t, func() bool { return active.Load() == 0 }, 2*time.Second, 10*time.Millisecond)
 }
 
-// stream keeps a connection moving bytes until it is closed: an echo every
-// few tens of milliseconds, which is what a client taking segments looks like
-// from the proxy.
+// stream keeps a connection moving real data until it is closed: a few
+// kilobytes echoed every few tens of milliseconds, which is what a client
+// taking segments looks like from the proxy.
 func stream(t *testing.T, conn net.Conn) {
 	t.Helper()
 	go func() {
-		buf := make([]byte, 1)
+		chunk := bytes.Repeat([]byte("x"), 4096)
+		buf := make([]byte, len(chunk))
 		for {
-			if _, err := conn.Write([]byte("x")); err != nil {
+			if _, err := conn.Write(chunk); err != nil {
 				return
 			}
 			if _, err := io.ReadFull(conn, buf); err != nil {
 				return
 			}
 			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+}
+
+// poll is a client that asks a small question every so often: a web app
+// reporting its timeline. It is not a stream.
+func poll(t *testing.T, conn net.Conn) {
+	t.Helper()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			if _, err := conn.Write(bytes.Repeat([]byte("p"), 64)); err != nil {
+				return
+			}
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
 		}
 	}()
 }
@@ -198,17 +217,12 @@ func TestTCPProxyHoldsAConnectionUntilItsBytesAreDelivered(t *testing.T) {
 	assert.Eventually(t, func() bool { return p.Open() == 0 }, 5*time.Second, 20*time.Millisecond)
 }
 
-func TestTCPProxyDrainDoesNotWaitForIdleConnections(t *testing.T) {
+func TestTCPProxyDrainDoesNotWaitForIdleOrPollingConnections(t *testing.T) {
 	// A web app holds a notification socket open for hours without moving a
-	// byte. A drain that waited for it kept that client on a pod about to go,
-	// and its next playback would have started there. Idle connections are
-	// not streams; they are closed with Plex.
-	// Shorter than in production so the test does not wait fifteen seconds
-	// for the idle connection to count as idle.
-	previous := streamIdle
-	streamIdle = 300 * time.Millisecond
-	t.Cleanup(func() { streamIdle = previous })
-
+	// byte, and reports its timeline every few seconds in a few hundred
+	// bytes. A drain that waited for either kept that client on a pod about
+	// to go, its next playback starting there, and made every rollout take
+	// the full drain per pod. Neither is a stream; both are closed with Plex.
 	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -223,26 +237,72 @@ func TestTCPProxyDrainDoesNotWaitForIdleConnections(t *testing.T) {
 	_, err = io.ReadFull(idle, make([]byte, 4))
 	require.NoError(t, err)
 
+	polling, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = polling.Close() }()
+	poll(t, polling)
+
 	moving, err := net.Dial("tcp", addr.String())
 	require.NoError(t, err)
 	stream(t, moving)
-	assert.Eventually(t, func() bool { return p.Open() == 2 && p.Streams() == 2 }, 2*time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool { return p.Open() == 3 && p.Streams() == 1 }, 3*time.Second, 10*time.Millisecond,
+		"three connections, one of them a stream")
 
-	// Only the moving connection is a stream once the idle one has gone
-	// quiet, and the drain ends when it ends.
 	drained := make(chan int, 1)
 	go func() { drained <- p.Drain(context.Background(), 5*time.Second) }()
 	time.Sleep(500 * time.Millisecond)
-	assert.Empty(t, drained, "the drain waits while a stream is moving")
+	assert.Empty(t, drained, "the drain waits while the stream is moving")
 	require.NoError(t, moving.Close())
 	select {
 	case left := <-drained:
 		assert.Equal(t, 0, left)
 	case <-time.After(3 * time.Second):
-		t.Fatal("the drain waited on the idle connection")
+		t.Fatal("the drain waited on a connection that was not streaming")
 	}
-	assert.Eventually(t, func() bool { return p.Open() == 1 }, 2*time.Second, 10*time.Millisecond,
-		"the idle connection is left to Stop")
+	assert.Eventually(t, func() bool { return p.Open() == 2 }, 2*time.Second, 10*time.Millisecond,
+		"the idle and polling connections are left to Stop")
+}
+
+func TestTCPProxyLetsGoOfAClientThatVanished(t *testing.T) {
+	// A client that closes with data unread resets the connection. The
+	// delivery wait must not go on counting the unsent bytes on a dead
+	// socket, or the connection stays open, still counts as a stream, and a
+	// drain waits on a client that is gone.
+	payload := bytes.Repeat([]byte("x"), 1<<20)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lis.Close() })
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = c.Write(payload); _ = c.Close() }()
+		}
+	}()
+	p := &TCP{Listen: "127.0.0.1:0", Target: lis.Addr().String()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, err := p.Start(ctx)
+	require.NoError(t, err)
+
+	d := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) {
+			_ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 8192)
+			// Close with a reset rather than a FIN, as a client that
+			// crashed or lost its network does.
+			_ = syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &syscall.Linger{Onoff: 1, Linger: 0})
+		})
+	}}
+	conn, err := d.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	_, err = io.ReadFull(conn, make([]byte, 16<<10))
+	require.NoError(t, err)
+	assert.Equal(t, 1, p.Open())
+	require.NoError(t, conn.Close())
+	assert.Eventually(t, func() bool { return p.Open() == 0 }, 5*time.Second, 20*time.Millisecond,
+		"a vanished client is let go of, unsent bytes and all")
 }
 
 func TestTCPProxyDrainWithNothingOpenReturnsAtOnce(t *testing.T) {

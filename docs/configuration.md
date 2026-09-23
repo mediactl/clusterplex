@@ -237,11 +237,14 @@ chunks live only on that pod, so a client mid-stream cannot pick up where it
 was on another one. The manager therefore drains before it stops Plex: it
 waits, for up to `drain-timeout` (`CLUSTERPLEX_DRAIN_TIMEOUT`, default `2m`),
 for the streams its proxy holds to finish on their own, and only then sends
-Plex SIGTERM. A stream is a connection that moved a byte towards the client
-within the last fifteen seconds, counting bytes still leaving the kernel's
-send queue; a web app's notification socket, open for hours and silent, is
-not one, and is closed with Plex rather than waited for -- while it was
-waited for, that client was still talking to a pod about to go. Restarting a
+Plex SIGTERM. A stream is a connection that moved at least 32 KiB towards
+the client within the last fifteen seconds or so, counting bytes still
+leaving the kernel's send queue. A client taking video or audio moves that
+in a second; a web app polling its timeline every few seconds moves a few
+hundred bytes, and its notification socket none for hours. Those two are
+not streams and are closed with Plex rather than waited for -- while they
+were waited for, every rollout took the full drain per pod and that client
+stayed on a pod about to go, its next playback starting there. Restarting a
 Plex that has stopped answering never drains.
 
 The StatefulSet's `terminationGracePeriodSeconds` (180) has to cover the
