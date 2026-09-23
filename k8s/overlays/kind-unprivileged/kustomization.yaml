@@ -1,0 +1,26 @@
+# The kind overlay, unprivileged. kind's node has the sysctl allow-listed by
+# hack/kind.sh; the render device is mounted from the node for want of a
+# device plugin, which lets Plex find it but not necessarily use it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../kind
+components:
+  - ../../components/unprivileged
+patches:
+  - target:
+      kind: StatefulSet
+      name: plex
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: dri
+          hostPath:
+            path: /dev/dri
+            type: Directory
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: dri
+          mountPath: /dev/dri

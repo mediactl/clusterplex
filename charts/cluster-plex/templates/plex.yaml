@@ -21,6 +21,16 @@ spec:
         app.kubernetes.io/component: plex
     spec:
       serviceAccountName: {{ .Release.Name }}-plex
+      {{- if .Values.plex.unprivileged }}
+      # Forwarding for Plex's network namespace, set by Kubernetes before any
+      # container starts, since an unprivileged pod cannot write /proc/sys.
+      # Every kubelet must allow-list net.ipv4.ip_forward or the pod is
+      # rejected with SysctlForbidden; see plex.unprivileged.
+      securityContext:
+        sysctls:
+          - name: net.ipv4.ip_forward
+            value: "1"
+      {{- end }}
       {{- if .Values.plex.spreadAcrossNodes }}
       # One pod per node where the cluster has the nodes. Every pod serves,
       # so a node going away costs one third rather than everything;
@@ -45,9 +55,16 @@ spec:
           image: {{ include "cluster-plex.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Plex's network namespace needs CAP_SYS_ADMIN to create and
-          # CAP_NET_ADMIN to wire up; see plex.securityContext for the
-          # unprivileged form and what it costs.
+          # CAP_NET_ADMIN to wire up; see plex.unprivileged for the form
+          # without privilege and what the cluster has to provide for it.
+          {{- if .Values.plex.unprivileged }}
+          securityContext:
+            privileged: false
+            capabilities:
+              add: [SYS_ADMIN, NET_ADMIN]
+          {{- else }}
           securityContext: {{- toYaml .Values.plex.securityContext | nindent 12 }}
+          {{- end }}
           env:
             - name: POD_NAME
               valueFrom:

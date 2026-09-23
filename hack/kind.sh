@@ -28,7 +28,19 @@ create_cluster() {
     return
   fi
   log "creating kind cluster '${CLUSTER_NAME}'"
-  kind create cluster --name "${CLUSTER_NAME}" --wait 120s
+  # net.ipv4.ip_forward is an "unsafe" sysctl to Kubernetes; allow-listing it
+  # on the kubelet is what lets the unprivileged form of the Plex pods
+  # (k8s/components/unprivileged) set forwarding for Plex's namespace.
+  kind create cluster --name "${CLUSTER_NAME}" --wait 120s --config - <<'KIND'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        allowedUnsafeSysctls: ["net.ipv4.ip_forward"]
+KIND
 }
 
 ensure_namespace() {

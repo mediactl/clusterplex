@@ -37,15 +37,20 @@ plex:
   # a node going away cost one third rather than everything.
   spreadAcrossNodes: true
   # Plex's network namespace needs CAP_SYS_ADMIN to create and CAP_NET_ADMIN
-  # to wire up. Privileged is the form that runs. The two capabilities alone
-  # do not: without privilege /proc/sys is read-only in the container and
-  # provisioning the namespace fails at "enable IPv4 forwarding" (tried on
-  # kind). An unprivileged pod would need net.ipv4.ip_forward made writable
-  # -- a privileged init container, or the sysctl allow-listed on the kubelet
-  # -- and the render device for hardware transcoding from a device plugin
-  # (for example gpu.intel.com/i915 in resources) rather than from privilege.
+  # to wire up, and IPv4 forwarding on in the pod namespace. Privileged gives
+  # all three and is the default.
   securityContext:
     privileged: true
+  # The form without privilege: the two capabilities, and the forwarding set
+  # by Kubernetes through the pod's securityContext.sysctls before any
+  # container starts, which the manager then finds already on. The cluster
+  # has to provide two things first. net.ipv4.ip_forward is an "unsafe"
+  # sysctl to Kubernetes, so every kubelet must allow-list it
+  # (KubeletConfiguration allowedUnsafeSysctls) or the pod is rejected with
+  # SysctlForbidden. And the render device for hardware transcoding no longer
+  # comes with privilege: it has to come from a device plugin, for example
+  # gpu.intel.com/i915 in resources; without one Plex transcodes in software.
+  unprivileged: false
   # How long a stopping pod lets the client connections it holds finish
   # before Plex is stopped. A terminating pod has already left the Service,
   # so new clients go elsewhere; this is for the streams in flight, whose

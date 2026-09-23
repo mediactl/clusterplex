@@ -1,0 +1,35 @@
+# Run the Plex pods without privilege.
+#
+# Plex's network namespace needs CAP_SYS_ADMIN to create and CAP_NET_ADMIN to
+# wire up, and IPv4 forwarding on in the pod namespace. Without privilege the
+# manager cannot write /proc/sys, so the forwarding comes from the pod's
+# securityContext.sysctls instead, which Kubernetes applies before any
+# container starts and the manager then finds already on.
+#
+# Two things the cluster has to provide first:
+#
+# - net.ipv4.ip_forward is an "unsafe" sysctl to Kubernetes, so every kubelet
+#   must allow-list it (KubeletConfiguration allowedUnsafeSysctls) or the pod
+#   is rejected with SysctlForbidden. hack/kind.sh does this for kind.
+# - The render device for hardware transcoding no longer comes with privilege;
+#   it has to come from a device plugin (for example gpu.intel.com/i915 in the
+#   container's resources). Without one Plex transcodes in software.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      kind: StatefulSet
+      name: plex
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/securityContext
+        value:
+          privileged: false
+          capabilities:
+            add: [SYS_ADMIN, NET_ADMIN]
+      - op: add
+        path: /spec/template/spec/securityContext
+        value:
+          sysctls:
+            - name: net.ipv4.ip_forward
+              value: "1"
