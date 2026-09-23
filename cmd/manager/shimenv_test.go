@@ -138,33 +138,19 @@ func TestAnOperatorCanStillTurnTheShimLogBackUp(t *testing.T) {
 		"two values for one variable leave it to whichever libc reads it first")
 }
 
-func TestTheConnectionPoolDoesNotReclaimSlotsPlexIsStillUsing(t *testing.T) {
-	// The shim's pool frees a slot once it has been idle past this timeout and
-	// the thread that opened it looks dead. Neither is evidence that Plex has
-	// finished with it: Plex opens twenty database handles at startup and
-	// keeps them for the life of the process, while the worker threads that
-	// used them come and go.
+func TestTheShimsOwnIdleTimeoutIsLeftAlone(t *testing.T) {
+	// This was pinned to a day for one build, to stop the pool reclaiming a
+	// connection Plex was still using. The fork fixes that at the source as
+	// of v1.3.17-clusterplex.14 — the pool counts the handles still holding a
+	// slot instead of guessing from idle time and thread liveness.
 	//
-	// At the default of 300 seconds that reclaimed a live connection and
-	// killed Plex. The last line it ever wrote was
-	//
-	//	Pool PHASE 0: Freed zombie slot 4 (owner thread dead, idle 322 sec)
-	//
-	// Raising it past any realistic idle period stops the reclaim firing. It
-	// is a workaround for an upstream bug, not a fix: the pool is bounded, so
-	// the cost is only that idle connections stay open.
+	// Keeping the workaround would have been worse than useless: disabling
+	// the reclaim leaks the slots of threads that really did die, and it
+	// would have hidden whether the real fix works.
 	env := shimEnv([]string{"PATH=/bin"}, Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()})
 
-	assert.Contains(t, env, "PLEX_PG_IDLE_TIMEOUT=86400")
-}
-
-func TestTheIdleTimeoutIsStillAnOperatorsToSet(t *testing.T) {
-	env := shimEnv(
-		[]string{"PATH=/bin", "PLEX_PG_IDLE_TIMEOUT=600"},
-		Config{ShimLibrary: "/lib/shim.so", Postgres: pgConfig()},
-	)
-
-	assert.Contains(t, env, "PLEX_PG_IDLE_TIMEOUT=600")
-	assert.NotContains(t, env, "PLEX_PG_IDLE_TIMEOUT=86400",
-		"two values for one variable leave it to whichever libc reads it first")
+	for _, v := range env {
+		assert.False(t, strings.HasPrefix(v, "PLEX_PG_IDLE_TIMEOUT="),
+			"the shim's default is the right one now: %s", v)
+	}
 }

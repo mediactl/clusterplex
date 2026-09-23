@@ -66,31 +66,19 @@ func shimEnv(base []string, cfg Config) []string {
 	if !hasEnv(base, "PLEX_PG_LOG_LEVEL") {
 		env = append(env, "PLEX_PG_LOG_LEVEL=ERROR")
 	}
-	// Keep the connection pool from reclaiming a slot Plex is still using.
+	// PLEX_PG_IDLE_TIMEOUT is deliberately left at the shim's own default.
 	//
-	// The shim frees a slot once it has been idle past this timeout and the
-	// thread that opened it looks dead, and treats that as proof the
-	// connection is unreferenced. It is not: Plex opens twenty database
-	// handles when it starts and keeps them for the life of the process,
-	// while the worker threads that used them come and go. A handle sitting
-	// idle for a few minutes is ordinary.
+	// It was pinned to a day here for one build, to stop the pool reclaiming
+	// a connection Plex was still using and killing it mid-statement. The
+	// fork fixes that properly as of v1.3.17-clusterplex.14: the pool counts
+	// the database handles still holding a slot rather than guessing from
+	// idle time and thread liveness, so the timeout is a hint again rather
+	// than the only thing standing between Plex and a use-after-free.
 	//
-	// At the shipped default of 300 seconds this reclaimed a live connection
-	// and killed Plex mid-statement. The last thing it ever logged was
-	//
-	//	Pool PHASE 0: Freed zombie slot 4 (owner thread dead, idle 322 sec)
-	//
-	// and there is no crash dump and no segfault to find afterwards, because
-	// the connection is handed to a second thread and libpq is not
-	// thread-safe per connection.
-	//
-	// A day is past any idle period that means anything here. This is a
-	// workaround for an upstream bug rather than a fix, and it is cheap: the
-	// pool is bounded by PLEX_PG_POOL_MAX, so all it costs is idle
-	// connections staying open.
-	if !hasEnv(base, "PLEX_PG_IDLE_TIMEOUT") {
-		env = append(env, "PLEX_PG_IDLE_TIMEOUT=86400")
-	}
+	// Leaving the workaround in place would have been worse than useless.
+	// Disabling the reclaim means a slot whose owner really did die is never
+	// returned, so the pool leaks slots towards PLEX_PG_POOL_MAX, and it
+	// would have hidden whether the real fix works.
 	return append(env, pgEnv(cfg)...)
 }
 
