@@ -2,7 +2,7 @@
 
 // See network_netns_test.go: these provision real network namespaces and are
 // run by `make test-netns`.
-package plexnet
+package net
 
 import (
 	"context"

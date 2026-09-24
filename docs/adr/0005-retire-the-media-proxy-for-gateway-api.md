@@ -41,7 +41,7 @@ That makes the tier's central trick — authorize a media request against Plex,
 resolve the part ID to a path, then stream the file from the shared volume
 without Plex in the data path — a workaround for a constraint that no longer
 binds. It is a lot of machinery to keep for a premise that has expired:
-`pkg/mediaproxy`, `pkg/plexroute`, `pkg/hashring` and `cmd/proxy`, plus the
+`pkg/mediaproxy`, `pkg/plex/route`, `pkg/hashring` and `cmd/proxy`, plus the
 annotation protocol the pods maintain to feed it.
 
 ### Two different things are called "the proxy"
@@ -92,7 +92,7 @@ What each retired piece is replaced by:
 | Retired | Replaced by |
 | --- | --- |
 | `pkg/hashring` session pinning | Consistent hashing at the gateway |
-| `pkg/plexroute` pod discovery | The Service's own endpoints |
+| `pkg/plex/route` pod discovery | The Service's own endpoints |
 | `clusterplex.io/plex-serving` annotation | Pod readiness |
 | `pkg/mediaproxy` byte serving | Plex itself, on every pod |
 | `cmd/proxy` TLS termination | The Gateway listener |
@@ -264,7 +264,7 @@ trades a bottleneck for a bottleneck and the offload was worth keeping.
 3. [ ] **Blocked.** Decide how the Gateway serves the `plex.direct` certificate
        before `customConnections` can point at it at all; see above. Until then
        the advertised address stays on an L4 path.
-4. [ ] Delete `pkg/mediaproxy`, `pkg/plexroute`, `pkg/hashring`, `cmd/proxy`
+4. [ ] Delete `pkg/mediaproxy`, `pkg/plex/route`, `pkg/hashring`, `cmd/proxy`
        and the `clusterplex.io/plex-serving` annotation.
 5. [ ] Rewrite `docs/media-proxy-pattern.md` as historical, the way ADR-0001
        was. It is the only record of why the offload existed and what it cost.
@@ -277,4 +277,4 @@ trades a bottleneck for a bottleneck and the offload was worth keeping.
        pod crash-looping for ever on `create veth pair plex0/plex1: file
        exists`. All three are fixed.
 7. [ ] The selector mismatch between `charts/` and `k8s/base` remains, and
-       matters only while `pkg/plexroute` does. It disappears with the tier.
+       matters only while `pkg/plex/route` does. It disappears with the tier.

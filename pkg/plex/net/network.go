@@ -1,11 +1,11 @@
-// Package plexnet gives Plex Media Server a network namespace of its own,
+// Package net gives Plex Media Server a network namespace of its own,
 // joined to the pod by a veth pair.
 //
 // Plex always binds 0.0.0.0:32400, and 32401 beside it, with no setting to
 // change either. Isolating it frees those ports in the pod namespace, so the
 // manager's proxy can take 32400 itself and no packet can reach Plex without
 // passing through it. See docs/adr/0003.
-package plexnet
+package net
 
 import (
 	"context"

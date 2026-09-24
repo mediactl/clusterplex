@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/mediaproxy"
-	"github.com/mediactl/clusterplex/pkg/plexdb"
+	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 )
 
 // authProbeTimeout bounds the authorization round trip to Plex.

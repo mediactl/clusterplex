@@ -39,13 +39,14 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `cmd/proxy/` | The media proxy clients connect to |
 | `cmd/shim/` | Stands in for Plex's helper binaries and forwards each invocation to the manager |
 | `cmd/maintenance/` | What a CronJob runs to ask the manager to distribute one task |
-| `pkg/plexdb/` | The shared PostgreSQL library database |
+| `pkg/plex/db/` | The shared PostgreSQL library database |
+| `pkg/plex/net/` | Plex's network namespace and the plex.tv egress filter |
+| `pkg/plex/prefs/` | Merging settings into Plex's `Preferences.xml` |
+| `pkg/plex/route/` | Finding the pods to send traffic to |
 | `pkg/lease/` | Leader election on a Kubernetes Lease |
 | `pkg/maintenance/` | The task catalogue and the fan-out across pods |
 | `pkg/hashring/` | Consistent hashing, for both the fan-out and session pinning |
-| `pkg/mediaproxy/`, `pkg/proxy/`, `pkg/plexroute/` | Serving media, the L4 proxy, and finding the pods to send traffic to |
-| `pkg/plexnet/` | Plex's network namespace and the plex.tv egress filter |
-| `pkg/plexprefs/` | Merging settings into Plex's `Preferences.xml` |
+| `pkg/mediaproxy/`, `pkg/proxy/` | Serving media, and the L4 proxy |
 | `pkg/remoteexec/` | Running helper binaries locally or on a worker pod |
 
 ## Invariants
@@ -73,7 +74,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 - **Settings the architecture depends on are forced, not defaulted.** The Butler
   schedulers, `PublishServerOnPlexOnlineKey`, `ManualPortMappingMode` and
   `customConnections` are written on every start and *refused* as configuration.
-  See `pkg/plexprefs/required.go` and the table in `docs/configuration.md`.
+  See `pkg/plex/prefs/required.go` and the table in `docs/configuration.md`.
 - **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
   CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
   failover is a failed Job that retries and shows up in `kubectl`.
@@ -83,7 +84,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 ```bash
 make build         # manager, shim, proxy and maintenance into bin/
 make test          # unit tests
-make test-netns    # pkg/plexnet against real network namespaces (needs unshare)
+make test-netns    # pkg/plex/net against real network namespaces (needs unshare)
 make lint          # golangci-lint v2
 make docker-build  # the image; it builds the PostgreSQL shim itself
 make helm-lint     # lint and render the chart
@@ -103,11 +104,11 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   that namespace is fatal on failure rather than best effort. Plex started in
   the pod namespace lands on the proxy's port and dies this way.
 - **Plex has no setting for its listen address or port.** It is confined with a
-  network namespace rather than steered with a rule; see `pkg/plexnet` and ADR
+  network namespace rather than steered with a rule; see `pkg/plex/net` and ADR
   0003. Nothing shells out for it and the image carries no `iptables`.
 - **Never set `Pdeathsig` on a process started in the namespace.** It fires when
   the *forking thread* exits, and that thread is a temporary one the Go runtime
-  retires whenever it likes — so Plex would be killed at random. `pkg/plexnet`
+  retires whenever it likes — so Plex would be killed at random. `pkg/plex/net`
   rejects it rather than letting it be set.
 - **Plex advertises `169.254.1.2` to plex.tv,** because that is the only address
   it can see. Set `plex-external-url` (chart: `proxy.externalURL`) for an
@@ -168,6 +169,12 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
 ## Conventions
 
 - Logging is `slog` with a handler per component; no package-level logger.
+- Packages under `pkg/plex/` are named for their directory (`db`, `net`,
+  `prefs`, `route`) and imported as `plexdb`, `plexnet`, `plexprefs` and
+  `plexroute`: `net` would shadow the standard library and `db` the usual
+  variable name. Alias every import the same way, so call sites read alike.
+- Formatting rules for every file type are in `.editorconfig`; line endings
+  and generated or vendored paths are in `.gitattributes`.
 - Tests are table-driven with testify, and name the behaviour rather than the
   function. Anything worth a comment about *why* goes in the test name or a
   comment above it.

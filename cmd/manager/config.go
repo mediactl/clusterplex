@@ -16,8 +16,8 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
-	"github.com/mediactl/clusterplex/pkg/plexdb"
-	"github.com/mediactl/clusterplex/pkg/plexprefs"
+	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
+	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 )
 
 const (

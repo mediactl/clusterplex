@@ -114,7 +114,7 @@ recording `202510021115` as applied, with the three null columns a stock Plex
 published image running Plex on SQLite, whose `schema_migrations` differs from
 the dump's by exactly this one row.
 
-`pkg/plexdb/schema_test.go` guards it, so re-vendoring a dump that carries the
+`pkg/plex/db/schema_test.go` guards it, so re-vendoring a dump that carries the
 column without the row fails the build rather than hanging a pod.
 
 ### Still inconsistent between the two dumps

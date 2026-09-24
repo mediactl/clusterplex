@@ -1,4 +1,4 @@
-// Package plexroute tracks which pod is currently running an available Plex
+// Package route tracks which pod is currently running an available Plex
 // Media Server.
 //
 // The Kubernetes Lease is the only source of truth for leadership. Holding the
@@ -6,7 +6,7 @@
 // leadership moves, while Plex needs seconds to bind its port. The leader
 // therefore publishes an availability annotation once its Plex is confirmed to
 // be accepting connections, and only then does this tracker route to it.
-package plexroute
+package route
 
 import (
 	"context"

@@ -1,11 +1,11 @@
-// Package plexprefs maintains Plex Media Server's Preferences.xml.
+// Package prefs maintains Plex Media Server's Preferences.xml.
 //
 // The file is a single self-closing <Preferences/> element whose attributes
 // are the settings. Plex owns it at runtime and writes things the manager
 // must never invent, above all the server identity and the plex.tv token, so
 // this package merges rather than generates: declared keys are set, every
 // other attribute is carried across untouched.
-package plexprefs
+package prefs
 
 import (
 	"bytes"

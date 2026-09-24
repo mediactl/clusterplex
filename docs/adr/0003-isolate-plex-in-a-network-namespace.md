@@ -111,7 +111,7 @@ being privileged, this is what stands in the way.
 
 ## Action Items
 
-1. [x] `pkg/plexnet`: namespace, veth, addresses, routes and masquerade over netlink.
+1. [x] `pkg/plex/net`: namespace, veth, addresses, routes and masquerade over netlink.
 2. [x] Launch Plex through it (`Supervisor.StartProcess`), fatal on failure.
 3. [x] Bind the proxy to 32400; retire `--proxy-port` and `pkg/portredirect`.
 4. [x] Drop `iptables` from the image.

@@ -14,7 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/mediactl/clusterplex/pkg/plexroute"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
 func TestAPodThatCannotAdvertiseItselfIsStillSupervised(t *testing.T) {

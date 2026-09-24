@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mediactl/clusterplex/pkg/plexprefs"
+	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 )
 
 // podIdentity sets the minimum a manager needs to start: who this pod is, and

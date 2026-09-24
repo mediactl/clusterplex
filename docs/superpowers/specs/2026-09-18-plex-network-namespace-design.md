@@ -72,7 +72,7 @@ One thing gets *better*: Plex tells its children to report progress at
 Plex itself, which is exactly what Plex meant. Today it is only true by
 accident.
 
-## `pkg/plexnet`
+## `pkg/plex/net`
 
 One package replaces `pkg/portredirect`. Its whole surface:
 
@@ -196,7 +196,7 @@ use it.
 This is narrower than it first appears. The address it advertises today,
 `podIP:32400`, is already useless outside the cluster, and in-cluster callers
 still work because they now land on the proxy. External access already depends
-on the LoadBalancer. The fix is `customConnections`, which `pkg/plexprefs`
+on the LoadBalancer. The fix is `customConnections`, which `pkg/plex/prefs`
 already knows how to manage; it is an action item below rather than something
 to wave away.
 
@@ -246,7 +246,7 @@ The replacement distinguishes the two namespaces with no new tooling:
 
 ## Action items
 
-1. [x] `pkg/plexnet`: `Provision`, `Do`, `StartProcess`, `Close`, plus config
+1. [x] `pkg/plex/net`: `Provision`, `Do`, `StartProcess`, `Close`, plus config
        defaulting and teardown-on-failure.
 2. [x] Unprivileged unit tests; privileged namespace tests behind a build tag.
 3. [x] `Supervisor`: replace `Redirect` with `StartProcess`; provisioning

@@ -1,4 +1,4 @@
-package plexnet
+package net
 
 import (
 	"os"

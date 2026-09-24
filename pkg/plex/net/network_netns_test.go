@@ -3,7 +3,7 @@
 // These tests provision real network namespaces and need CAP_SYS_ADMIN. Run
 // them with `make test-netns`, which re-execs the suite inside a user
 // namespace so no actual root is required.
-package plexnet
+package net
 
 import (
 	"context"

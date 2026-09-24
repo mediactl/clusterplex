@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/lease"
-	"github.com/mediactl/clusterplex/pkg/plexroute"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
 // Pod role labels, kept for observability only. Nothing routes on them: the

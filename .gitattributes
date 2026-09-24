@@ -1,0 +1,17 @@
+# Everything here runs on Linux, so every text file is LF, whatever the
+# checkout platform. A CR breaks a shebang and a Dockerfile line continuation.
+* text=auto eol=lf
+
+# Hunk headers name the enclosing function or heading.
+*.go diff=golang
+*.md diff=markdown
+*.py diff=python
+*.sh diff=bash
+
+# Generated: collapsed in GitHub diffs and left out of language statistics.
+*.pb.go linguist-generated=true
+go.sum linguist-generated=true
+
+# Copied from upstream plex-postgresql; see hack/plex-postgresql/README.md.
+hack/plex-postgresql/schema/** linguist-vendored=true
+hack/plex-postgresql/standalone-entrypoint.sh linguist-vendored=true

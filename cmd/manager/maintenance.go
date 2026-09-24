@@ -18,7 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/mediactl/clusterplex/pkg/maintenance"
-	"github.com/mediactl/clusterplex/pkg/plexprefs"
+	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 )
 
 // MaintenancePrefix is where a CronJob asks for work to be distributed.

@@ -1,4 +1,18 @@
+# The builder stage copies the whole context (COPY . .), so a change to
+# anything not listed here invalidates its Go build cache.
 .git
+.claude/
+.superpowers/
+.data/
+.env
 bin/
 dist/
 cover.out
+*.test
+
+# Not part of the image.
+charts/
+docs/
+k8s/
+test/
+**/*.md

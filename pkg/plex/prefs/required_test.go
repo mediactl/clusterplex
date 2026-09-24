@@ -1,4 +1,4 @@
-package plexprefs
+package prefs
 
 import (
 	"testing"

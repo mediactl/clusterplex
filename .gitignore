@@ -6,4 +6,5 @@ cover.out
 .data/
 /cluster-plex/cluster-plex
 .superpowers/
-
+.claude/worktrees/
+.claude/settings.local.json

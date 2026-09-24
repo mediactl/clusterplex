@@ -35,7 +35,7 @@ The generic advice for active-active Plex is four parts filesystem and identity
 and two parts scheduling. Measured against this repo:
 
 - **One identity across replicas.** Done. Every pod mounts one `Preferences.xml`
-  and `pkg/plexprefs` merges rather than regenerates it, so `MachineIdentifier`,
+  and `pkg/plex/prefs` merges rather than regenerates it, so `MachineIdentifier`,
   `ProcessedMachineIdentifier` and `PlexOnlineToken` are shared by construction.
 - **Media at identical absolute paths.** Done. One `plex-media` claim at the
   same `mountPath` in every pod.
@@ -43,11 +43,11 @@ and two parts scheduling. Measured against this repo:
   the proxy tier pin a session to the pod serving it (ADR-0002, ADR-0003).
 - **No split-brain scanning.** Done, and more thoroughly than by designating a
   primary. *Every* Butler task is disabled on *every* pod
-  (`pkg/plexprefs/butler.go`) and maintenance is Kubernetes CronJobs calling
+  (`pkg/plex/prefs/butler.go`) and maintenance is Kubernetes CronJobs calling
   `/api/v1/maintenance/{task}`. There is no scheduler left in Plex to collide.
 - **No GDM, no UPnP, a custom access URL.** Mostly done:
   `PublishServerOnPlexOnlineKey=0`, `ManualPortMappingMode=1` and
-  `customConnections` are forced in `pkg/plexprefs/required.go`. GDM is not
+  `customConnections` are forced in `pkg/plex/prefs/required.go`. GDM is not
   explicitly disabled.
 
 So the settings half of active-active is already built. What is not built is
@@ -174,7 +174,7 @@ single-instance.
 5. [x] Superseded: there is no `plex-mode` any more. Active is the only
        mode, and the chart no longer renders the setting.
 6. [x] Disable GDM, the one item from the standard checklist not yet forced
-       (`GdmEnabled=0` in `pkg/plexprefs/required.go`).
+       (`GdmEnabled=0` in `pkg/plex/prefs/required.go`).
 7. [x] Run several pods serving one library in kind. Three pods came up 3/3
        with no restarts and no errors in any of their logs; all three answer
        `/identity` with `claimed="1"` and the same

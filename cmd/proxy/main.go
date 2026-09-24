@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mediactl/clusterplex/pkg/mediaproxy"
-	"github.com/mediactl/clusterplex/pkg/plexroute"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
 func main() {

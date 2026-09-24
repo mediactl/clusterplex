@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/hashring"
-	"github.com/mediactl/clusterplex/pkg/plexroute"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
 // ErrNoPlex means no pod is currently serving Plex.

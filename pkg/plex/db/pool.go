@@ -1,4 +1,4 @@
-package plexdb
+package db
 
 import (
 	"context"

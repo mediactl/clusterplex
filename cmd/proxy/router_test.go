@@ -11,7 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/mediactl/clusterplex/pkg/plexroute"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
 func servingPod(name, ip string) *corev1.Pod {

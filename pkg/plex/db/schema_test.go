@@ -1,4 +1,4 @@
-package plexdb
+package db
 
 import (
 	"os"
@@ -53,7 +53,7 @@ func TestTheDumpRecordsEveryMigrationWhoseColumnsItAlreadyHas(t *testing.T) {
 // that embedded them could not tell a stale copy from a current one.
 func readSchemaDump(t *testing.T, name string) string {
 	t.Helper()
-	path := filepath.Join("..", "..", "hack", "plex-postgresql", "schema", name)
+	path := filepath.Join("..", "..", "..", "hack", "plex-postgresql", "schema", name)
 	b, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return string(b)

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mediactl/clusterplex/pkg/plexdb"
+	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 )
 
 // stubRow returns a fixed file path, standing in for the library database.

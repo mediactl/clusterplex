@@ -1,11 +1,11 @@
-// Package plexdb reads the few facts about Plex's library that the proxy needs.
+// Package db reads the few facts about Plex's library that the proxy needs.
 //
 // Plex's library lives in PostgreSQL, reached through the plex-postgresql shim
 // that translates Plex's SQLite calls. We read the same database directly with
 // ordinary SQL rather than going through that shim: a read of one column does
 // not need translating, and going direct means any pod can resolve a media
 // part without Plex or its database file being present locally.
-package plexdb
+package db
 
 import (
 	"context"

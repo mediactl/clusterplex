@@ -1,4 +1,4 @@
-package plexroute
+package route
 
 import (
 	"context"

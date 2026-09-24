@@ -31,10 +31,10 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mediactl/clusterplex/pkg/lease"
-	"github.com/mediactl/clusterplex/pkg/plexdb"
-	"github.com/mediactl/clusterplex/pkg/plexnet"
-	"github.com/mediactl/clusterplex/pkg/plexprefs"
-	"github.com/mediactl/clusterplex/pkg/plexroute"
+	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
+	plexnet "github.com/mediactl/clusterplex/pkg/plex/net"
+	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
 )
