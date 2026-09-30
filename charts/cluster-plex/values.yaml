@@ -22,6 +22,29 @@ plex:
   preferences:
     - name: FriendlyName
       value: Cluster Plex
+  # Metadata providers to register, by their root. PMS fetches each root;
+  # it must answer before anything using it is provisioned.
+  metadataProviders: []
+  #  - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/movies
+  #  - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/tv
+  # Libraries to create on those providers' agents. switchAgent: true lets
+  # the lease holder move an existing library of the same name onto the
+  # agent (and force a refresh); off, it is only reported as drifted.
+  libraries: []
+  #  - name: Movies
+  #    type: movie
+  #    provider: tv.plex.agents.custom.clustarr.movies
+  #    language: en-US
+  #    locations: [/media/movies]
+  #    switchAgent: false
+  # Follow a clustarr install: rescan what its files change and refresh
+  # what its metadata changes. Grants get/list/watch on its catalog in
+  # that namespace, nothing else.
+  clustarr:
+    enabled: false
+    namespace: clustarr-system
+    pathMappings: []
+    #  - {clustarr: /data/media, plex: /media}
   # Plex wants little at rest and several cores for a transcode. The request
   # is what the scheduler places by; the memory limit keeps a runaway
   # transcode from taking the node with it. No CPU limit on purpose: a
@@ -100,6 +123,10 @@ storage:
     size: 1Ti
     accessMode: ReadWriteMany
     storageClass: ""
+    # Mount an existing claim instead of creating <release>-media — the
+    # claim clustarr's library is on, so Plex scans what clustarr imports.
+    existingClaim: ""
+    subPath: ""
 
 # Plex's background maintenance. Its own scheduler is disabled on every pod,
 # because each process runs its own copy with no knowledge of the others, so

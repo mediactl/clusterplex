@@ -1,0 +1,24 @@
+# Read-only, and only clustarr's catalog. It writes nothing to clustarr.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: plex-clustarr-reader
+  namespace: clustarr-system
+rules:
+  - apiGroups: ["catalog.clustarr.io"]
+    resources: ["mediafiles", "movies", "series", "episodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: plex-clustarr-reader
+  namespace: clustarr-system
+subjects:
+  - kind: ServiceAccount
+    name: clusterplex-sa
+    namespace: media
+roleRef:
+  kind: Role
+  name: plex-clustarr-reader
+  apiGroup: rbac.authorization.k8s.io

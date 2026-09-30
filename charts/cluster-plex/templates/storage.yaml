@@ -1,4 +1,5 @@
 {{- range $name, $spec := dict "config" .Values.storage.config "media" .Values.storage.media }}
+{{- if not (and (eq $name "media") $spec.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -14,6 +15,7 @@ spec:
     requests:
       storage: {{ $spec.size }}
 ---
+{{- end }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -36,3 +38,23 @@ data:
         - name: {{ .name | quote }}
           value: {{ .value | quote }}
         {{- end }}
+      metadataProviders:
+        {{- range .Values.plex.metadataProviders }}
+        - uri: {{ .uri | quote }}
+        {{- end }}
+      libraries:
+        {{- range .Values.plex.libraries }}
+        - name: {{ .name | quote }}
+          type: {{ .type | quote }}
+          provider: {{ .provider | quote }}
+          language: {{ .language | default "en-US" | quote }}
+          locations: {{ toJson .locations }}
+          switchAgent: {{ .switchAgent | default false }}
+        {{- end }}
+      clustarr:
+        enabled: {{ .Values.plex.clustarr.enabled }}
+        namespace: {{ .Values.plex.clustarr.namespace | quote }}
+        pathMappings:
+          {{- range .Values.plex.clustarr.pathMappings }}
+          - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}
+          {{- end }}

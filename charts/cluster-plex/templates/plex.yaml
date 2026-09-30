@@ -153,7 +153,7 @@ spec:
             # that session, which the Service pins.
             - name: plex-transcode
               mountPath: /transcode
-            - {name: plex-media, mountPath: /media}
+            - {name: plex-media, mountPath: /media{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
             - {name: config, mountPath: /etc/clusterplex, readOnly: true}
       volumes:
         - name: plex-config
@@ -161,7 +161,7 @@ spec:
             claimName: {{ .Release.Name }}-config
         - name: plex-media
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-media
+            claimName: {{ .Values.storage.media.existingClaim | default (printf "%s-media" .Release.Name) }}
         - name: config
           configMap:
             name: {{ .Release.Name }}-config

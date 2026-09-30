@@ -64,14 +64,14 @@ spec:
           {{- end }}
           volumeMounts:
             # Read only: the proxy serves media, it never changes the library.
-            - {name: plex-media, mountPath: /media, readOnly: true}
+            - {name: plex-media, mountPath: /media, readOnly: true{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
             {{- if .Values.proxy.tls.secretName }}
             - {name: tls, mountPath: /etc/clusterplex/tls, readOnly: true}
             {{- end }}
       volumes:
         - name: plex-media
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-media
+            claimName: {{ .Values.storage.media.existingClaim | default (printf "%s-media" .Release.Name) }}
             readOnly: true
         {{- if .Values.proxy.tls.secretName }}
         - name: tls

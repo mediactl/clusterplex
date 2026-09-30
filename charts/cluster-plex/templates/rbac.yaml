@@ -74,3 +74,34 @@ roleRef:
   kind: Role
   name: {{ .Release.Name }}-proxy
   apiGroup: rbac.authorization.k8s.io
+{{- if .Values.plex.clustarr.enabled }}
+---
+# Read-only, and only clustarr's catalog: the lease holder rescans the folders
+# its MediaFiles change and refreshes the items whose metadata changes. It
+# writes nothing to clustarr.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-clustarr-reader
+  namespace: {{ .Values.plex.clustarr.namespace }}
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["catalog.clustarr.io"]
+    resources: ["mediafiles", "movies", "series", "episodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-clustarr-reader
+  namespace: {{ .Values.plex.clustarr.namespace }}
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-plex
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ .Release.Name }}-clustarr-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
