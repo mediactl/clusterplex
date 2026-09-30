@@ -618,6 +618,7 @@ byte-walking pass and places one at every offset from a keyword. It and three
 unit tests fail on `.21`.
 
 Verified on the kind cluster:
+
 - Scans of both clustarr libraries, with intro and credit detection on
   "Shōgun" and "Shifting Gears" (200 helper jobs), ran without a panic or a
   withdrawn pod.
