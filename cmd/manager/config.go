@@ -18,6 +18,7 @@ import (
 
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
+	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
 )
 
 const (
@@ -130,6 +131,12 @@ type Config struct {
 	// Preferences.xml before each start. Keys not listed here are left as
 	// Plex last wrote them.
 	Preferences map[string]string
+
+	// Provision is what the lease holder reconciles into Plex: metadata
+	// providers, their agents and the libraries on them.
+	Provision plexprovision.Config
+	// Clustarr is the clustarr install whose changes Plex follows.
+	Clustarr ClustarrConfig
 }
 
 // newFlagSet declares every flag and the default for each setting.
@@ -257,6 +264,12 @@ func loadConfig(args []string) (Config, error) {
 		errs = append(errs, err)
 	}
 	c.Preferences = prefs
+
+	prov, cl, err := loadProvisioning(v)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	c.Provision, c.Clustarr = prov, cl
 
 	if c.PodName == "" || c.Namespace == "" {
 		errs = append(errs, errors.New("pod-name and pod-namespace must be set (use the downward API as POD_NAME and POD_NAMESPACE)"))

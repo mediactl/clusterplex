@@ -9,7 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
+	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
 )
 
 // podIdentity sets the minimum a manager needs to start: who this pod is, and
@@ -367,4 +369,58 @@ func TestConfigRejectsAPlexSubnetThatIsNotAPrefix(t *testing.T) {
 	_, err := loadConfig([]string{"--plex-subnet", "169.254.1.1"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plex-subnet")
+}
+
+func TestProvisioningIsReadFromTheConfigFile(t *testing.T) {
+	podIdentity(t)
+	path := writeConfig(t, `
+plex:
+  metadataProviders:
+    - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/movies
+  libraries:
+    - name: Movies
+      type: movie
+      provider: tv.plex.agents.custom.clustarr.movies
+      language: en-US
+      locations: [/media/movies]
+      switchAgent: true
+  clustarr:
+    enabled: true
+    namespace: clustarr-system
+    pathMappings:
+      - {clustarr: /data/media, plex: /media}
+`)
+	c, err := loadConfig([]string{"--config", path})
+	require.NoError(t, err)
+	assert.Equal(t, []plexprovision.ProviderRef{{URI: "http://clustarr-ui.clustarr-system.svc:8080/plex/movies"}}, c.Provision.Providers)
+	require.Len(t, c.Provision.Libraries, 1)
+	assert.True(t, c.Provision.Libraries[0].SwitchAgent, "camelCase keys survive viper's lowercasing")
+	assert.Equal(t, []string{"/media/movies"}, c.Provision.Libraries[0].Locations)
+	assert.Equal(t, ClustarrConfig{Enabled: true, Namespace: "clustarr-system",
+		PathMappings: []clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}}}, c.Clustarr)
+}
+
+func TestProvisioningIsOffWhenNothingIsDeclared(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig(nil)
+	require.NoError(t, err)
+	assert.Empty(t, c.Provision.Providers)
+	assert.Empty(t, c.Provision.Libraries)
+	assert.False(t, c.Clustarr.Enabled)
+}
+
+func TestConfigRefusesAClustarrWatchItCannotUse(t *testing.T) {
+	podIdentity(t)
+	for name, body := range map[string]string{
+		"no namespace":            "plex:\n  clustarr:\n    enabled: true\n    pathMappings: [{clustarr: /data, plex: /media}]\n",
+		"no mappings":             "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n",
+		"relative mapping":        "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: data, plex: /media}]\n",
+		"duplicate clustarr side": "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: /data, plex: /a}, {clustarr: /data/, plex: /b}]\n",
+		"library without type":    "plex:\n  libraries:\n    - {name: M, provider: p, locations: [/media]}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadConfig([]string{"--config", writeConfig(t, body)})
+			require.Error(t, err)
+		})
+	}
 }
