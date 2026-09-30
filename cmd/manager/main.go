@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -56,6 +57,10 @@ type Manager struct {
 	publisher *plexroute.Publisher
 	elector   *lease.Elector
 	egress    *plexnet.EgressGuard
+	// startInPlexNS starts a process inside Plex's network namespace: Plex
+	// itself, and every helper job. See execServices for why a job must not
+	// start anywhere else.
+	startInPlexNS func(*exec.Cmd) error
 	// plexAddr reaches Plex inside its network namespace, bypassing the proxy.
 	// Anything asking "is Plex up?" has to use this: in the pod namespace the
 	// proxy holds Plex's port, and it answers whether Plex is running or not.
@@ -191,6 +196,7 @@ func run() int {
 	// Everything that needs to reach Plex directly, rather than through the
 	// proxy, uses this address.
 	m.plexAddr = plexNet.PlexAddrPort().String()
+	m.startInPlexNS = plexNet.StartProcess
 
 	// Only the lease holder may reach plex.tv. Every pod shares one server
 	// identity, and several holding that connection at once makes the identity
@@ -210,7 +216,7 @@ func run() int {
 		Logger:       logger.With("component", "supervisor"),
 		Grace:        defaultGrace,
 		Drain:        cfg.DrainTimeout,
-		StartProcess: plexNet.StartProcess,
+		StartProcess: m.startInPlexNS,
 		Preferences: func(ctx context.Context) error {
 			// Resolved here rather than at load because the address is the
 			// cluster's to assign: a LoadBalancer that had none when the

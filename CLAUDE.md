@@ -139,9 +139,27 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   in it, and **exits 0 having done nothing** — so `Plex Media Scanner
   --analyze` leaves `media_streams` empty and playback fails with
   `s1001 (Network)`, the server having logged "video has neither a video
-  stream nor an audio stream". `startExecServers` sets `Executor.Env` for this
+  stream nor an audio stream". `execServices` sets `Executor.Env` for this
   reason. The scanner's own log is the tell: with the preload it reaches
   "Analyzing media parts", without it stops at "Opening 20 database sessions".
+- **A helper job must start inside Plex's network namespace, or Plex answers
+  it 401 and analysis silently does nothing.** Helpers call Plex back on
+  `127.0.0.1:32400` (the scanner's `/library/changestamp`, the transcoder's
+  progress). In the pod namespace that address is the proxy, so Plex sees
+  the call arrive from `169.254.1.1 (Subnet)` rather than Loopback. The
+  owner's token still passes, which is why a few items did get analysed; but
+  analysis Plex starts itself (IntroDetector's internal fetch, a client
+  opening an item with `asyncRefreshAnalysis=1`) carries a transient local
+  token that Plex honours only from loopback. The tell in Plex's log is
+  `Refreshing tokens inside the token-based authentication filter`, a
+  plex.tv lookup with `unknownToken=`, `authenticating user as guest`,
+  `Signed-in Token ()` and a 401; the scanner logs `Unable to allocate a
+  changestamp from the server` and **exits 0**, so `media_streams` stays
+  empty and playback fails with `s1001` exactly as a missing `LD_PRELOAD`
+  does (seen on kind-cluster-plex, 2026-09-30). `remoteexec.Executor.Start`
+  is `plexnet.Network.StartProcess` for every job, the worker port's
+  included, and `execServices` refuses to serve jobs without it rather than
+  fall back to the pod namespace.
 - **The PostgreSQL shim is lossy in two known ways.** Library search returns
   nothing, because it translates Plex's full-text `MATCH` into a constant false
   predicate; and title ordering follows PostgreSQL's default collation, because

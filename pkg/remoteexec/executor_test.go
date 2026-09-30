@@ -3,6 +3,8 @@ package remoteexec
 import (
 	"context"
 	"os"
+	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -111,4 +113,79 @@ func TestExecutorReportsMissingBinary(t *testing.T) {
 	ex := &Executor{BinDir: t.TempDir()}
 	err := ex.Run(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Transcoder"}, &collectSink{})
 	require.Error(t, err)
+}
+
+// The manager starts every job inside Plex's network namespace, because a
+// helper calls Plex back on 127.0.0.1:32400 and only there is that Plex's own
+// loopback. Started in the pod namespace it reaches the proxy instead, Plex
+// sees the call arrive from its link subnet rather than from loopback, and
+// answers an analysis job carrying a transient local token 401.
+func TestExecutorStartsEveryJobThroughItsStarter(t *testing.T) {
+	bin := t.TempDir()
+	writeScript(t, bin, "Plex Media Scanner.real", `echo ran`)
+
+	var started []*exec.Cmd
+	ex := &Executor{BinDir: bin, Start: func(cmd *exec.Cmd) error {
+		started = append(started, cmd)
+		return cmd.Start()
+	}}
+	sink := &collectSink{}
+	require.NoError(t, ex.Run(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner"}, sink))
+
+	require.Len(t, started, 1, "the job must be started by the starter, not by cmd.Start behind its back")
+	require.NotNil(t, started[0].SysProcAttr)
+	assert.True(t, started[0].SysProcAttr.Setpgid, "the job still leads its own process group")
+	assert.Zero(t, started[0].SysProcAttr.Pdeathsig, "a namespaced start refuses Pdeathsig")
+	assert.Contains(t, sink.stdout(), "ran\n")
+	require.NotNil(t, sink.final())
+	assert.Equal(t, int32(0), sink.final().ExitCode)
+}
+
+func TestExecutorReportsAStarterThatFails(t *testing.T) {
+	bin := t.TempDir()
+	writeScript(t, bin, "Plex Media Scanner.real", `echo ran`)
+
+	ex := &Executor{BinDir: bin, Start: func(*exec.Cmd) error { return assert.AnError }}
+	err := ex.Run(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner"}, &collectSink{})
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+// plexnet.Network.StartProcess forks from a locked thread that the Go runtime
+// may retire as soon as the start returns. Cancellation must still reach the
+// job's whole process group, and the job must not die with that thread.
+func TestExecutorKillsTheGroupOfAJobStartedOnAThreadThatHasSinceGone(t *testing.T) {
+	bin := t.TempDir()
+	writeScript(t, bin, "Plex Transcoder.real", `sleep 30 & wait`)
+
+	ex := &Executor{BinDir: bin, Start: func(cmd *exec.Cmd) error {
+		errc := make(chan error, 1)
+		go func() {
+			runtime.LockOSThread()
+			// Returning while locked destroys the thread, as a namespaced
+			// start that could not restore its thread would.
+			errc <- cmd.Start()
+		}()
+		return <-errc
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sink := &collectSink{}
+	done := make(chan error, 1)
+	go func() { done <- ex.Run(ctx, &pb.ExecRequest{TargetBinary: "Plex Transcoder"}, sink) }()
+
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the job ended before it was cancelled: it died with the thread that started it")
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor did not return after cancellation; the job's group was not killed")
+	}
+	require.NotNil(t, sink.final())
+	assert.NotEqual(t, int32(0), sink.final().ExitCode)
 }

@@ -50,7 +50,19 @@ type Executor struct {
 	//
 	// Without it a helper opens the local SQLite file rather than the shared
 	// library, finds nothing there and exits successfully having done nothing.
-	Env    []string
+	Env []string
+	// Start starts each job's process in place of cmd.Start. The manager
+	// passes plexnet.Network.StartProcess, so a job runs inside Plex's
+	// network namespace and 127.0.0.1:32400 is Plex's own loopback, as it
+	// is beside a stock Plex. Started in the pod namespace, the same address
+	// is the proxy: Plex sees the helper's call-back arrive from its link
+	// subnet instead of loopback, and answers analysis it started itself --
+	// whose token is a transient local one -- 401.
+	//
+	// Whatever it does, it must call cmd.Start exactly once and leave
+	// SysProcAttr alone: Run relies on the job leading its own process group.
+	// Nil means cmd.Start.
+	Start  func(cmd *exec.Cmd) error
 	Logger *slog.Logger
 }
 
@@ -93,7 +105,7 @@ func (e *Executor) Run(ctx context.Context, req *pb.ExecRequest, sink Sink) erro
 	cmd.Cancel = func() error { return signalGroup(cmd, syscall.SIGTERM) }
 	cmd.WaitDelay = termGrace
 
-	if err := cmd.Start(); err != nil {
+	if err := e.start(cmd); err != nil {
 		return fmt.Errorf("start %q: %w", bin, err)
 	}
 	e.log().Info("job started", "target", req.GetTargetBinary(), "pid", cmd.Process.Pid)
@@ -108,6 +120,13 @@ func (e *Executor) Run(ctx context.Context, req *pb.ExecRequest, sink Sink) erro
 		return fmt.Errorf("stream output: %w", err)
 	}
 	return nil
+}
+
+func (e *Executor) start(cmd *exec.Cmd) error {
+	if e.Start != nil {
+		return e.Start(cmd)
+	}
+	return cmd.Start()
 }
 
 func (e *Executor) log() *slog.Logger {
