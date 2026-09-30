@@ -28,8 +28,10 @@ var (
 )
 
 var (
-	pathField = []string{"spec", "path"}
-	kindField = []string{"spec", "mediaRef", "kind"}
+	pathField    = []string{"spec", "path"}
+	kindField    = []string{"spec", "mediaRef", "kind"}
+	sizeField    = []string{"spec", "sizeBytes"}
+	modTimeField = []string{"spec", "modTime"}
 	// shown is what Plex displays of an item, and so what a refresh is for.
 	shown = [][]string{
 		{"status", "metadata"},
@@ -44,6 +46,10 @@ var (
 type File struct {
 	Path string
 	Kind string
+	// SizeBytes and ModTime move when the bytes change under the same path:
+	// squasharr's usual transcode swap, which catalogarr records.
+	SizeBytes int64
+	ModTime   string
 }
 
 // FileOf reads a movie or episode MediaFile. Anything else is not Plex's
@@ -54,7 +60,9 @@ func FileOf(u *unstructured.Unstructured) (File, bool) {
 	if p == "" || (k != "movie" && k != "episode") {
 		return File{}, false
 	}
-	return File{Path: p, Kind: k}, true
+	size, _, _ := unstructured.NestedInt64(u.Object, sizeField...)
+	mod, _, _ := unstructured.NestedString(u.Object, modTimeField...)
+	return File{Path: p, Kind: k, SizeBytes: size, ModTime: mod}, true
 }
 
 // MetadataHash hashes what Plex shows of an item. encoding/json sorts map
@@ -86,7 +94,7 @@ func Trim(obj any) (any, error) {
 	out.SetName(u.GetName())
 	out.SetUID(u.GetUID())
 	out.SetResourceVersion(u.GetResourceVersion())
-	for _, f := range append([][]string{pathField, kindField}, shown...) {
+	for _, f := range append([][]string{pathField, kindField, sizeField, modTimeField}, shown...) {
 		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
 			if err := unstructured.SetNestedField(out.Object, v, f...); err != nil {
 				return nil, err

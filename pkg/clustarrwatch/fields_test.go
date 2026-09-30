@@ -59,6 +59,10 @@ func TestTrimKeepsExactlyWhatTheWatcherReads(t *testing.T) {
 		assert.Equal(t, u.GetName(), trimmed.GetName(), name)
 		assert.Equal(t, u.GetResourceVersion(), trimmed.GetResourceVersion(), name)
 		f1, ok1 := clustarrwatch.FileOf(u)
+		if name == "mediafile.yaml" {
+			require.NotZero(t, f1.SizeBytes, "a real MediaFile carries spec.sizeBytes")
+			require.NotEmpty(t, f1.ModTime, "a real MediaFile carries spec.modTime")
+		}
 		f2, ok2 := clustarrwatch.FileOf(trimmed)
 		assert.Equal(t, ok1, ok2, name)
 		assert.Equal(t, f1, f2, name)

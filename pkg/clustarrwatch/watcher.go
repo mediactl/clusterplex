@@ -153,7 +153,12 @@ func (w *Watcher) fileHandler() cache.ResourceEventHandler {
 		UpdateFunc: func(oldObj, newObj any) {
 			of, ook := fileOf(oldObj)
 			nf, nok := fileOf(newObj)
+			if ook && nok && of == nf {
+				return
+			}
+			// A transcode swapped in place: same folder, new bytes.
 			if ook && nok && of.Path == nf.Path {
+				w.enqueueFile(nf.Path)
 				return
 			}
 			if ook {

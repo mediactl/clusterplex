@@ -190,3 +190,21 @@ func TestAMetadataChangeRefreshesTheMatchedItemOnly(t *testing.T) {
 		return strings.Contains(strings.Join(p.Calls(), "\n"), "PUT /library/metadata/42/refresh")
 	}, 5*time.Second, 10*time.Millisecond)
 }
+
+// TestATranscodeInPlaceScansItsFolder: squasharr's usual swap keeps the
+// path and changes the bytes; catalogarr records the new size and mtime
+// on the MediaFile, and Plex has to re-read the file.
+func TestATranscodeInPlaceScansItsFolder(t *testing.T) {
+	before := mediaFile("a", "/data/media/movies/Heat/Heat.mkv")
+	require.NoError(t, unstructured.SetNestedField(before.Object, int64(9000), "spec", "sizeBytes"))
+	require.NoError(t, unstructured.SetNestedField(before.Object, "2026-09-30T10:00:00Z", "spec", "modTime"))
+	dyn, p, _ := start(t, before)
+	require.Eventually(t, func() bool { return len(p.Calls()) == 1 }, 5*time.Second, 10*time.Millisecond)
+
+	after := before.DeepCopy()
+	require.NoError(t, unstructured.SetNestedField(after.Object, int64(4000), "spec", "sizeBytes"))
+	require.NoError(t, unstructured.SetNestedField(after.Object, "2026-09-30T11:00:00Z", "spec", "modTime"))
+	_, err := dyn.Resource(clustarrwatch.MediaFiles).Namespace(ns).Update(t.Context(), after, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return hasScan(p.Calls(), "/media/movies/Heat") }, 5*time.Second, 10*time.Millisecond)
+}
