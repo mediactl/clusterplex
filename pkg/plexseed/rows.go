@@ -20,8 +20,11 @@ const (
 // SourceKey marks every media row the seeder writes, and MarkerSource
 // every marker row, so each can be told from Plex's own.
 const (
-	SourceKey    = "cp:source"
-	SourceValue  = "clustarr"
+	SourceKey   = "cp:source"
+	SourceValue = "clustarr"
+	// ProbeHashKey records, on a seeded media item, the probe its streams
+	// were written from, so a file replaced in place is seeded again.
+	ProbeHashKey = "cp:probeHash"
 	MarkerKey    = "pv:source"
 	MarkerSource = "theintrodb"
 	// markerVersion is the pv:version Plex's credits detector writes.
@@ -46,8 +49,9 @@ type StreamRow struct {
 }
 
 // MediaRows describes p as Plex's analysis would: the file, then one video
-// stream, each audio track and each subtitle track, in that order.
-func MediaRows(p Probe) (MediaRow, []StreamRow) {
+// stream, each audio track and each subtitle track, in that order. The
+// media item records probeHash.
+func MediaRows(p Probe, probeHash string) (MediaRow, []StreamRow) {
 	m := MediaRow{
 		Container: p.Container, VideoCodec: PlexCodec(p.VideoCodec),
 		Width: p.Width, Height: p.Height, Duration: p.RuntimeMillis,
@@ -66,6 +70,9 @@ func MediaRows(p Probe) (MediaRow, []StreamRow) {
 	}
 	m.Bitrate = bitrate * 1000
 	item := map[string]string{SourceKey: SourceValue}
+	if probeHash != "" {
+		item[ProbeHashKey] = probeHash
+	}
 	if p.VideoProfile != "" {
 		item["ma:videoProfile"] = strings.ToLower(p.VideoProfile)
 	}

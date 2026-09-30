@@ -27,7 +27,7 @@ var andor = plexseed.Probe{
 }
 
 func TestMediaRowsDescribeTheFileAsPlexsAnalysisWould(t *testing.T) {
-	m, streams := plexseed.MediaRows(andor)
+	m, streams := plexseed.MediaRows(andor, "")
 	assert.Equal(t, "mkv", m.Container)
 	assert.Equal(t, "hevc", m.VideoCodec)
 	assert.Equal(t, "eac3", m.AudioCodec, "the default audio track's codec")

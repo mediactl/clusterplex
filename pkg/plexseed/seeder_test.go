@@ -140,6 +140,45 @@ func TestAnUnanalysedFileIsSeededOnce(t *testing.T) {
 	assert.Equal(t, 6, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", l.media), "idempotent")
 }
 
+// squasharr and Tdarr rename an encode over its source: the same path, a
+// new probe. Streams the seeder wrote for the old probe are replaced, or
+// Plex would tell clients the old codecs for good.
+func TestAFileReplacedInPlaceIsSeededAgain(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	_, err := seeder(conn).Seed(context.Background(), l.path, plexseed.Input{ProbeHash: "old", Probe: &andor})
+	require.NoError(t, err)
+
+	encoded := andor
+	encoded.VideoCodec, encoded.Audio, encoded.Subtitles = "av1", encoded.Audio[:1], nil
+	res, err := seeder(conn).Seed(context.Background(), l.path, plexseed.Input{ProbeHash: "new", Probe: &encoded})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.MediaSeeded)
+	assert.Equal(t, 2, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", l.media), "the old probe's streams are gone")
+	assert.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND video_codec = 'av1'", l.media))
+
+	res, err = seeder(conn).Seed(context.Background(), l.path, plexseed.Input{ProbeHash: "new", Probe: &encoded})
+	require.NoError(t, err)
+	assert.Zero(t, res.MediaSeeded, "the same probe is not seeded twice")
+}
+
+// Streams Plex analysed itself are never replaced, even when the probe
+// changes: Plex re-analyses a changed file on its own.
+func TestPlexsOwnStreamsSurviveANewProbe(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	_, err := seeder(conn).Seed(context.Background(), l.path, plexseed.Input{ProbeHash: "old", Probe: &andor})
+	require.NoError(t, err)
+	_, err = conn.Exec(context.Background(),
+		"INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec) VALUES (3, $1, $2, 'srt')", l.media, l.part)
+	require.NoError(t, err)
+
+	res, err := seeder(conn).Seed(context.Background(), l.path, plexseed.Input{ProbeHash: "new", Probe: &andor})
+	require.NoError(t, err)
+	assert.Zero(t, res.MediaSeeded)
+	assert.Equal(t, 7, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", l.media))
+}
+
 func TestAFilePlexAnalysedIsLeftAlone(t *testing.T) {
 	conn := plexDB(t)
 	l := insertFile(t, conn, "Clustarr TV")

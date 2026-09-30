@@ -2,6 +2,7 @@ package plexseed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -107,17 +108,30 @@ SELECT mp.id, mi.id, mi.metadata_item_id
 	return res, nil
 }
 
-// seedMedia fills an unanalysed media item from the probe; one with any
-// stream -- Plex's analysis, or ours -- is left alone.
+// seedMedia fills an unanalysed media item from the probe, and refills one
+// whose streams are all ours from another probe (a file replaced in
+// place). One with any stream Plex analysed is left alone.
 func (s *Seeder) seedMedia(ctx context.Context, tx pgx.Tx, t target, in Input, now int64) (bool, error) {
-	var streams int
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", t.media).Scan(&streams); err != nil {
+	var streams, ourStreams int
+	var extra string
+	if err := tx.QueryRow(ctx, `
+SELECT (SELECT count(*) FROM media_streams WHERE media_item_id = $1),
+       (SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND extra_data LIKE $2),
+       coalesce((SELECT extra_data FROM media_items WHERE id = $1), '')`,
+		t.media, "%"+ourMark+"%").Scan(&streams, &ourStreams, &extra); err != nil {
 		return false, fmt.Errorf("plexseed: count streams of media %d: %w", t.media, err)
 	}
-	if streams > 0 {
+	switch {
+	case streams == 0:
+	case ourStreams == streams && in.ProbeHash != "" && !strings.Contains(extra, probeHashMark(in.ProbeHash)):
+		if _, err := tx.Exec(ctx, "DELETE FROM media_streams WHERE media_item_id = $1 AND extra_data LIKE $2",
+			t.media, "%"+ourMark+"%"); err != nil {
+			return false, fmt.Errorf("plexseed: clear streams of media %d: %w", t.media, err)
+		}
+	default:
 		return false, nil
 	}
-	m, rows := MediaRows(*in.Probe)
+	m, rows := MediaRows(*in.Probe, in.ProbeHash)
 	if _, err := tx.Exec(ctx, `
 UPDATE media_items SET container = $2, video_codec = $3, audio_codec = $4, width = $5, height = $6,
        duration = $7, bitrate = $8, frames_per_second = $9, display_aspect_ratio = $10,
@@ -238,6 +252,14 @@ func same(have []markerRow, desired []MarkerRow) bool {
 		}
 	}
 	return true
+}
+
+// ourMark is how a media row the seeder wrote reads in its extra_data.
+const ourMark = `"` + SourceKey + `":"` + SourceValue + `"`
+
+func probeHashMark(h string) string {
+	b, _ := json.Marshal(h)
+	return `"` + ProbeHashKey + `":` + string(b)
 }
 
 func ours(extra string) bool { return strings.Contains(extra, `"`+MarkerKey+`":"`+MarkerSource+`"`) }

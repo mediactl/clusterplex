@@ -28,7 +28,9 @@ The Lease holder's clustarr watch writes clustarr's probe and TheIntroDB's marke
 
 - **Only two things are written:** media analysis (`media_items`, `media_parts`, `media_streams`) and skip markers (`taggings` rows on the marker tag, `tag_type = 12`). Configuration (providers, agents, libraries, preferences) stays API-only.
 - **Only the provisioned libraries** (`provision.Config.LibraryNames()`) are touched.
-- **A file Plex analysed is never touched:** any existing stream means the file is skipped. Plex's own analysis replaces seeded rows whenever it runs, because `media_analysis_version` stays 0.
+- **A file Plex analysed is never touched:** any stream Plex wrote means the file is skipped. Plex's own analysis replaces seeded rows whenever it runs, because `media_analysis_version` stays 0.
+- **A file replaced in place is seeded again.** squasharr and Tdarr rename an encode over its source, so the path stays and the probe changes. A seeded media item records its probe in `cp:probeHash`. When every stream is the seeder's and the hash differs, the seeder deletes its own streams and seeds them again.
+- **A file Plex hasn't scanned yet, or a failed seed, is retried** after 1, 5 and 30 minutes, and after that by the 6-hour resync. Each seed is cut off after 30 seconds, because it runs on the watcher's tick, which also places scans.
 - **Seeded rows are identifiable:**
   - media rows carry `cp:source=clustarr` in `extra_data`;
   - markers carry `pv:source=theintrodb`.
