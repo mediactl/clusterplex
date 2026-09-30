@@ -84,6 +84,18 @@ func MediaRows(p Probe) (MediaRow, []StreamRow) {
 		if p.VideoProfile != "" {
 			v["ma:profile"] = strings.ToLower(p.VideoProfile)
 		}
+		// What Plex titles the stream from: "1080p (HEVC Main 10)".
+		if p.Width > 0 && p.Height > 0 {
+			v["ma:width"], v["ma:codedWidth"] = strconv.Itoa(int(p.Width)), strconv.Itoa(int(p.Width))
+			v["ma:height"], v["ma:codedHeight"] = strconv.Itoa(int(p.Height)), strconv.Itoa(int(p.Height))
+		}
+		if p.FpsMilli > 0 {
+			v["ma:frameRate"] = strconv.FormatFloat(float64(p.FpsMilli)/1000, 'f', 3, 64)
+		}
+		v["ma:scanType"] = "progressive"
+		if cs := chromaSubsampling(p.PixelFormat); cs != "" {
+			v["ma:chromaSubsampling"] = cs
+		}
 		streams = append(streams, StreamRow{
 			Type: streamVideo, Index: 0, Codec: PlexCodec(p.VideoCodec),
 			Bitrate: p.VideoBitrateKbps * 1000, Default: true, Extra: ExtraData(v),
@@ -119,6 +131,17 @@ func MediaRows(p Probe) (MediaRow, []StreamRow) {
 		})
 	}
 	return m, streams
+}
+
+// chromaSubsampling reads ffprobe's pixel format ("yuv420p10le") as Plex
+// writes it ("4:2:0"); "" when the format names none.
+func chromaSubsampling(pixfmt string) string {
+	for _, cs := range []struct{ tag, out string }{{"420", "4:2:0"}, {"422", "4:2:2"}, {"444", "4:4:4"}} {
+		if strings.Contains(pixfmt, "yuv"+cs.tag) || strings.Contains(pixfmt, "yuvj"+cs.tag) {
+			return cs.out
+		}
+	}
+	return ""
 }
 
 // leadAudio is the default audio track, else the first.

@@ -23,6 +23,7 @@ type Probe struct {
 	Container        string     `json:"container,omitempty"`
 	VideoCodec       string     `json:"videoCodec,omitempty"`
 	VideoProfile     string     `json:"videoProfile,omitempty"`
+	PixelFormat      string     `json:"pixelFormat,omitempty"`
 	VideoBitDepth    int32      `json:"videoBitDepth,omitempty"`
 	Width            int32      `json:"width,omitempty"`
 	Height           int32      `json:"height,omitempty"`

@@ -13,7 +13,7 @@ import (
 // andor is clustarr's probe of Andor S01E02 on kind-cluster-plex
 // (2026-09-30), the file Plex left unanalysed.
 var andor = plexseed.Probe{
-	Container: "mkv", VideoCodec: "hevc", VideoProfile: "Main 10", VideoBitDepth: 10,
+	Container: "mkv", VideoCodec: "hevc", VideoProfile: "Main 10", VideoBitDepth: 10, PixelFormat: "yuv420p10le",
 	Width: 1920, Height: 1080, FpsMilli: 24000, VideoBitrateKbps: 5930, RuntimeMillis: 2138069,
 	Audio: []plexseed.Audio{
 		{Index: 1, Codec: "eac3", Profile: "Dolby Digital Plus + Dolby Atmos", Language: "eng", Channels: 6, ChannelLayout: "5.1(side)", BitrateKbps: 768, Default: true},
@@ -47,6 +47,10 @@ func TestMediaRowsDescribeTheFileAsPlexsAnalysisWould(t *testing.T) {
 	assert.EqualValues(t, 0, v.Index)
 	assert.EqualValues(t, 5930000, v.Bitrate)
 	assert.Contains(t, v.Extra, `"ma:bitDepth":"10"`)
+	for _, kv := range []string{`"ma:width":"1920"`, `"ma:height":"1080"`, `"ma:frameRate":"24.000"`,
+		`"ma:scanType":"progressive"`, `"ma:chromaSubsampling":"4:2:0"`} {
+		assert.Contains(t, v.Extra, kv, "Plex titles the video stream from these (\"1080p (HEVC Main 10)\")")
+	}
 	a := streams[1]
 	assert.EqualValues(t, 2, a.Type)
 	assert.Equal(t, "eac3", a.Codec)
