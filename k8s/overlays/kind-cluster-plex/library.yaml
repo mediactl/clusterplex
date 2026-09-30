@@ -1,0 +1,34 @@
+# clustarr's library, read-only for Plex. clustarr's own claim
+# (clustarr-system/clustarr-data) cannot be mounted from this namespace, so
+# this is a second PersistentVolume for the same NFS export, bound to a claim
+# here. readOnly on the export and the mount: Plex only ever reads the
+# library, and it is the owner's live one.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: plex-clustarr-library
+spec:
+  capacity: { storage: 60Ti }
+  accessModes: [ReadOnlyMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions: [nfsvers=4.1]
+  nfs:
+    server: 10.0.50.1
+    path: /volume2/data
+    readOnly: true
+  claimRef:
+    namespace: media
+    name: plex-clustarr-library
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-clustarr-library
+  namespace: media
+spec:
+  accessModes: [ReadOnlyMany]
+  storageClassName: ""
+  volumeName: plex-clustarr-library
+  resources:
+    requests: { storage: 60Ti }

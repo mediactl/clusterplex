@@ -169,6 +169,13 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
 - **A stale `plexmediaserver.pid` stops Plex starting.** It outlives the
   container on a persistent volume and container PIDs repeat, so the supervisor
   removes it before every start.
+- **PMS 1.43.4 answers 404 to `POST /library/sections/all`,** the form its
+  own API docs give for creating a library. `plexapi.CreateSection` falls
+  back to `POST /library/sections?type=movie&location=…`, which works and
+  honours `metadataAgentProviderGroupId`. A clustarr match is stored in
+  `metadata_items.guid` as `<provider identifier>://<movie|show|…>/<uid>`,
+  exactly `clustarrwatch.Guid`'s form (both seen on kind-cluster-plex,
+  2026-09-30, where `k8s/overlays/kind-cluster-plex` runs the integration).
 - **`go test ./...` passing does not mean the cluster works.** Nearly every bug
   in this repo so far was only visible in a real cluster.
 - **The image has no `curl`,** and Plex's bundled ffmpeg is stripped of `lavfi`,

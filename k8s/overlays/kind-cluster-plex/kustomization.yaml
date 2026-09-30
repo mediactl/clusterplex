@@ -1,0 +1,62 @@
+# The owner's dev cluster, kind-cluster-plex: the kind overlay plus the
+# clustarr integration against the clustarr install running there
+# (docs/configuration.md, "Provisioning libraries and following clustarr").
+#
+#   kubectl --context kind-cluster-plex apply -k k8s/overlays/kind-cluster-plex
+#
+# Plex reads clustarr's library read-only at /library, and the lease holder
+# provisions two libraries on clustarr's agents. The test library on the
+# kind overlay's /media volume is left as it is.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../kind
+  - library.yaml
+components:
+  - ../../components/clustarr
+images:
+  - name: ghcr.io/mediactl/cluster-plex
+    newTag: ca5310f
+patches:
+  - target:
+      kind: StatefulSet
+      name: plex
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: clustarr-library
+          persistentVolumeClaim: {claimName: plex-clustarr-library, readOnly: true}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: clustarr-library, mountPath: /library, subPath: media, readOnly: true}
+  - target:
+      kind: ConfigMap
+      name: clusterplex-config
+    patch: |-
+      - op: replace
+        path: /data/config.yaml
+        value: |
+          plex:
+            preferences:
+              - name: FriendlyName
+                value: Cluster Plex
+            metadataProviders:
+              - uri: http://clustarr-ui.clustarr-system.svc.cluster.local:8080/plex/movies
+              - uri: http://clustarr-ui.clustarr-system.svc.cluster.local:8080/plex/tv
+            libraries:
+              - name: Clustarr Movies
+                type: movie
+                provider: tv.plex.agents.custom.clustarr.movies
+                language: en-US
+                locations: [/library/movies]
+              - name: Clustarr TV
+                type: show
+                provider: tv.plex.agents.custom.clustarr.tv
+                language: en-US
+                locations: [/library/tv]
+            clustarr:
+              enabled: true
+              namespace: clustarr-system
+              pathMappings:
+                - {clustarr: /data/media, plex: /library}
