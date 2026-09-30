@@ -85,6 +85,12 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   library on another agent is only reported unless `switchAgent` is set.
   The clustarr watch reads clustarr as unstructured objects and imports
   none of its code.
+- **Media analysis and skip markers are seeded into Plex's database**
+  (ADR 0006), the one exception to API-only: Plex's API can write neither.
+  `pkg/plexseed` writes clustarr's probe into an unanalysed media item and
+  reconciles TheIntroDB's markers, only in the provisioned libraries, never
+  over Plex's own analysis, with every row marked (`cp:source`,
+  `pv:source=theintrodb`). Configuration stays API-only.
 - **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
   CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
   failover is a failed Job that retries and shows up in `kubectl`.
