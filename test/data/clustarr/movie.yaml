@@ -1,0 +1,165 @@
+apiVersion: catalog.clustarr.io/v1alpha1
+kind: Movie
+metadata:
+  creationTimestamp: '2026-09-23T17:30:44Z'
+  finalizers:
+  - catalog.clustarr.io/movie
+  generation: 5
+  name: 102-minutes-that-changed-america-972df7152e
+  namespace: clustarr-system
+  resourceVersion: '1958120'
+  uid: e879fac3-c91f-4772-8335-1cd4d06705ae
+spec:
+  addOptions:
+    addMethod: scan
+    monitor: movieOnly
+    searchForMovie: false
+  availabilityDelayDays: 0
+  minimumAvailability: released
+  monitored: true
+  qualityProfileRef: hd-bluray-web
+  region: US
+  rootFolderRef: movies
+  tmdbID: 36130
+status:
+  addOptionsApplied: true
+  artwork:
+  - digest: cdcbd3ad4f26581541b56b836a3a959a230dd0100150dcb4dc8d69bdaa5c1c5e
+    sizeBytes: 19350
+    source: provider
+    sourceURL: https://image.tmdb.org/t/p/w500/psTueksm8XxnCTi5c4dXzjWx5rZ.jpg
+    type: poster
+    updatedAt: '2026-09-24T18:18:16Z'
+  - digest: 786f9f5e53386553316b583b7b295c251f1daf5728ebc4c2059cb1aa540daf9f
+    sizeBytes: 92110
+    source: provider
+    sourceURL: https://image.tmdb.org/t/p/original/zJBU5LtWg0YanuJyDy8N8p4oJgL.jpg
+    type: fanart
+    updatedAt: '2026-09-24T18:18:16Z'
+  available: true
+  availableAt: '2008-10-28T00:00:00Z'
+  conditions:
+  - lastTransitionTime: '2026-09-23T17:30:44Z'
+    message: metadata task published
+    observedGeneration: 1
+    reason: Published
+    status: 'False'
+    type: QueueFull
+  - lastTransitionTime: '2026-09-23T17:48:07Z'
+    message: metadata is fresh
+    observedGeneration: 5
+    reason: Reconciled
+    status: 'True'
+    type: MetadataReady
+  - lastTransitionTime: '2026-09-23T17:30:44Z'
+    message: backed by MediaFile 102-minutes-that-changed-america-972df7152e-7b249809b0
+    observedGeneration: 5
+    reason: HasFile
+    status: 'True'
+    type: HasFile
+  - lastTransitionTime: '2026-09-30T13:09:09Z'
+    message: the file is transcoded, and a transcoded file is final
+    observedGeneration: 5
+    reason: Transcoded
+    status: 'True'
+    type: CutoffMet
+  - lastTransitionTime: '2026-09-23T17:48:07Z'
+    message: phase=Transcoded
+    observedGeneration: 5
+    reason: Reconciled
+    status: 'True'
+    type: Ready
+  - lastTransitionTime: '2026-09-23T17:48:07Z'
+    message: available=true
+    observedGeneration: 5
+    reason: Reconciled
+    status: 'True'
+    type: Available
+  cutoffMet: true
+  fileFormatScore: 0
+  fileQuality:
+    modifier: none
+    name: WEBRip-1080p
+    resolution: 1080
+    source: webrip
+  fileRef: 102-minutes-that-changed-america-972df7152e-7b249809b0
+  hasFile: true
+  lastSearchedAt: '2026-09-30T00:03:11Z'
+  metadata:
+    alternateTitles:
+    - I 102 minuti che hanno sconvolto l'America
+    - 11 De Setembro Em 102 Minutos
+    - "102 \u043C\u0438\u043D\u0443\u0442\u044B, \u0438\u0437\u043C\u0435\u043D\u0438\
+      \u0432\u0448\u0438\u0435 \u0410\u043C\u0435\u0440\u0438\u043A\u0443"
+    - 102 minutos que cambiaron al mundo
+    - '102 Minutes That Changed America: 15th Anniversary'
+    certification: ''
+    externalIDs:
+      imdb: tt1312203
+      tmdb: '36130'
+    genres:
+    - Documentary
+    images:
+    - type: poster
+      url: https://image.tmdb.org/t/p/w500/psTueksm8XxnCTi5c4dXzjWx5rZ.jpg
+    - type: fanart
+      url: https://image.tmdb.org/t/p/original/zJBU5LtWg0YanuJyDy8N8p4oJgL.jpg
+    inCinemas: '2008-09-11T00:00:00Z'
+    originalLanguage: en
+    originalTitle: 102 Minutes That Changed America
+    overview: The morning of September 11, 2001 is shown through multiple video cameras
+      in and around New York City, from the moment the first WTC tower is hit until
+      after both towers collapse.
+    physicalRelease: '2008-10-28T00:00:00Z'
+    ratings:
+    - source: imdb
+      valueCentis: 830
+      votes: 3388
+    - source: letterboxd
+      valueCentis: 820
+      votes: 3275
+    - source: tmdb
+      valueCentis: 749
+      votes: 66
+    - source: trakt
+      valueCentis: 790
+      votes: 157
+    refreshedAt: '2026-09-24T23:47:44Z'
+    releaseDates:
+    - country: BR
+      date: '2017-05-23T00:00:00Z'
+      type: 6
+    - country: CA
+      date: '2009-09-13T00:00:00Z'
+      type: 3
+    - country: DE
+      date: '2009-09-06T00:00:00Z'
+      type: 3
+    - country: NL
+      date: '2011-08-10T00:00:00Z'
+      type: 5
+    - country: NL
+      date: '2009-09-09T00:00:00Z'
+      type: 6
+    - country: US
+      date: '2008-09-11T00:00:00Z'
+      type: 3
+    - country: US
+      date: '2008-10-28T00:00:00Z'
+      type: 5
+    - country: US
+      date: '2016-09-11T00:00:00Z'
+      type: 6
+    runtimeMinutes: 102
+    secondaryYear: 0
+    sortTitle: ''
+    status: released
+    title: 102 Minutes That Changed America
+    year: 2008
+  observedGeneration: 5
+  path: /data/media/movies/102 Minutes That Changed America (2008) {tmdb-36130}
+  phase: Transcoded
+  searchAttempts:
+    count: 3
+    initial: '2026-09-24T00:00:01Z'
+    latest: '2026-09-30T00:03:11Z'

@@ -1,0 +1,67 @@
+apiVersion: catalog.clustarr.io/v1alpha1
+kind: Episode
+metadata:
+  creationTimestamp: '2026-09-23T18:35:17Z'
+  finalizers:
+  - catalog.clustarr.io/episode
+  generation: 2
+  name: a-bona-fide-killer-82a2fb8eb6-s01e01
+  namespace: clustarr-system
+  ownerReferences:
+  - apiVersion: catalog.clustarr.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: Series
+    name: a-bona-fide-killer-82a2fb8eb6
+    uid: 83d503be-42bd-494d-be7b-2929e7bf55f2
+  resourceVersion: '1469796'
+  uid: a235438b-bfb5-4ed2-b20e-477dd956554e
+spec:
+  episodeNumber: 1
+  monitored: false
+  seasonNumber: 1
+  seriesRef: a-bona-fide-killer-82a2fb8eb6
+status:
+  absoluteNumber: 0
+  airDate: '2026-07-31T00:00:00Z'
+  conditions:
+  - lastTransitionTime: '2026-09-23T18:35:18Z'
+    message: aired=true
+    observedGeneration: 2
+    reason: Reconciled
+    status: 'True'
+    type: Aired
+  - lastTransitionTime: '2026-09-23T19:02:32Z'
+    message: backed by MediaFile a-bona-fide-killer-82a2fb8eb6-s01e01-2e237a7d53
+    observedGeneration: 2
+    reason: HasFile
+    status: 'True'
+    type: HasFile
+  - lastTransitionTime: '2026-09-23T19:02:32Z'
+    message: file meets the profile cutoff
+    observedGeneration: 2
+    reason: CutoffMet
+    status: 'True'
+    type: CutoffMet
+  - lastTransitionTime: '2026-09-23T18:35:18Z'
+    message: phase=Unmonitored
+    observedGeneration: 2
+    reason: Reconciled
+    status: 'True'
+    type: Ready
+  cutoffMet: true
+  fileFormatScore: 0
+  fileQuality:
+    modifier: none
+    name: WEBDL-1080p
+    resolution: 1080
+    source: webdl
+  fileRef: a-bona-fide-killer-82a2fb8eb6-s01e01-2e237a7d53
+  hasFile: true
+  observedGeneration: 2
+  overview: Bo-na returns to work after a three-year leave. Tae-sung learns the vanished
+    serial killer is back in action.
+  phase: Unmonitored
+  runtimeMinutes: 62
+  title: Episode 1
+  tvdbID: 0

@@ -1,0 +1,107 @@
+apiVersion: catalog.clustarr.io/v1alpha1
+kind: MediaFile
+metadata:
+  creationTimestamp: '2026-09-23T17:30:44Z'
+  generation: 3
+  labels:
+    catalog.clustarr.io/hdr: none
+    catalog.clustarr.io/kind: movie
+    catalog.clustarr.io/modifier: none
+    catalog.clustarr.io/original: 'false'
+    catalog.clustarr.io/resolution: '1080'
+    catalog.clustarr.io/source: webrip
+    catalog.clustarr.io/video-codec: hevc
+  name: 102-minutes-that-changed-america-972df7152e-7b249809b0
+  namespace: clustarr-system
+  resourceVersion: '1958132'
+  uid: d29bc745-5335-4584-a757-75b3081c00c1
+spec:
+  languages:
+  - English
+  matchedFormats:
+  - amzn
+  - anime-amzn
+  mediaRef:
+    kind: movie
+    name: 102-minutes-that-changed-america-972df7152e
+  modTime: '2026-09-30T13:03:12Z'
+  original: false
+  path: /data/media/movies/102 Minutes That Changed America (2008) {tmdb-36130}/102
+    Minutes That Changed America (2008) {tmdb-36130} - [AMZN][WEBRip-1080p][AAC 2.0][h265]-CasStudio.mkv
+  profileHash: 7fb50e155790acd246e1e4221008b16995b58393f8973a6c22367cb71f709e39
+  quality:
+    modifier: none
+    name: WEBRip-1080p
+    resolution: 1080
+    source: webrip
+  releaseGroup: CasStudio
+  releaseType: single
+  revision:
+    real: 0
+    repack: false
+    version: 1
+  sizeBytes: 6795063371
+status:
+  conditions:
+  - lastTransitionTime: '2026-09-23T17:30:44Z'
+    message: probed at 2026-09-30 13:09:10.374992095 +0000 UTC m=+59.474109330
+    observedGeneration: 3
+    reason: Probed
+    status: 'True'
+    type: Probed
+  - lastTransitionTime: '2026-09-23T17:30:44Z'
+    message: file present and probed
+    observedGeneration: 3
+    reason: Ready
+    status: 'True'
+    type: Ready
+  - lastTransitionTime: '2026-09-30T13:09:11Z'
+    message: the file is at its canonical path
+    observedGeneration: 3
+    reason: Current
+    status: 'True'
+    type: NamingCurrent
+  mediaInfo:
+    audio:
+    - channelLayout: stereo
+      channels: 2
+      codec: aac
+      default: true
+      index: 1
+      language: eng
+      profile: LC
+    container: mkv
+    fpsMilli: 29970
+    hdr: none
+    height: 1080
+    pixelFormat: yuv420p10le
+    runtimeMillis: 7141668
+    subtitles:
+    - codec: subrip
+      index: 2
+      language: eng
+    transcodeProfile: hevc-mkv@f0a6f12c3c3f8093e91419f6643582767c05fbb2284fc9eec738c726aa084ec7
+    videoBitDepth: 10
+    videoBitrateKbps: 12464
+    videoCodec: hevc
+    videoEncoder: Lavc63.1.102 hevc_nvenc
+    videoProfile: Main 10
+    width: 1920
+  naming:
+    current: true
+    expectedPath: /data/media/movies/102 Minutes That Changed America (2008) {tmdb-36130}/102
+      Minutes That Changed America (2008) {tmdb-36130} - [AMZN][WEBRip-1080p][AAC
+      2.0][h265]-CasStudio.mkv
+    quality:
+      modifier: none
+      name: WEBRip-1080p
+      resolution: 1080
+      source: webrip
+  observedGeneration: 3
+  probeHash: a884066c588f1ccf8104ab63c53a7e5f7a017895
+  probeVersion: 2
+  probedAt: '2026-09-30T13:09:10Z'
+  transcode:
+    compliant: true
+    lastResult: succeeded
+    profileTag: hevc-mkv@f0a6f12c3c3f8093e91419f6643582767c05fbb2284fc9eec738c726aa084ec7
