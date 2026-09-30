@@ -69,6 +69,13 @@ type Watcher struct {
 	SeedResync time.Duration
 	// SeedBatch is how many files one flush seeds (default 50).
 	SeedBatch int
+	// SeedRetry is the backoff for a file Plex has no part for yet or
+	// whose Seed failed (default 1m, 5m, 30m); after its last step the
+	// resync takes over.
+	SeedRetry []time.Duration
+	// SeedTimeout bounds one Seed (default 30s): seeding runs on the
+	// tick that places scans and refreshes.
+	SeedTimeout time.Duration
 
 	sched *Scheduler
 	ctx   context.Context
@@ -83,6 +90,16 @@ type Watcher struct {
 	seedMu    sync.Mutex
 	seedQueue map[string]*unstructured.Unstructured
 	seedOrder []string
+	// seedRetry holds files waiting out a backoff step; seedAttempts, the
+	// steps a queued file has taken. A change to the file starts it over.
+	seedRetry    map[string]seedRetry
+	seedAttempts map[string]int
+}
+
+type seedRetry struct {
+	u        *unstructured.Unstructured
+	at       time.Time
+	attempts int
 }
 
 func (w *Watcher) log() *slog.Logger {
@@ -174,6 +191,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 					}
 					nextResync = now.Add(resync)
 				}
+				w.promoteSeedRetries(time.Now())
 				w.flushSeeds(ctx)
 			}
 		}
@@ -455,6 +473,12 @@ func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 func (w *Watcher) enqueueSeed(u *unstructured.Unstructured) {
 	w.seedMu.Lock()
 	defer w.seedMu.Unlock()
+	delete(w.seedRetry, u.GetName())
+	delete(w.seedAttempts, u.GetName())
+	w.queueSeedLocked(u)
+}
+
+func (w *Watcher) queueSeedLocked(u *unstructured.Unstructured) {
 	if w.seedQueue == nil {
 		w.seedQueue = map[string]*unstructured.Unstructured{}
 	}
@@ -464,25 +488,73 @@ func (w *Watcher) enqueueSeed(u *unstructured.Unstructured) {
 	w.seedQueue[u.GetName()] = u
 }
 
+// promoteSeedRetries queues every file whose backoff step has passed.
+func (w *Watcher) promoteSeedRetries(now time.Time) {
+	w.seedMu.Lock()
+	defer w.seedMu.Unlock()
+	for name, r := range w.seedRetry {
+		if now.Before(r.at) {
+			continue
+		}
+		delete(w.seedRetry, name)
+		if _, queued := w.seedQueue[name]; queued {
+			continue // a change queued it meanwhile, and started it over
+		}
+		w.queueSeedLocked(r.u)
+		if w.seedAttempts == nil {
+			w.seedAttempts = map[string]int{}
+		}
+		w.seedAttempts[name] = r.attempts
+	}
+}
+
+// retrySeed schedules u's next backoff step, or leaves it to the resync
+// after the last.
+func (w *Watcher) retrySeed(u *unstructured.Unstructured, attempts int) {
+	steps := w.SeedRetry
+	if steps == nil {
+		steps = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute}
+	}
+	if attempts >= len(steps) {
+		return
+	}
+	w.seedMu.Lock()
+	defer w.seedMu.Unlock()
+	if _, queued := w.seedQueue[u.GetName()]; queued {
+		return // changed while it was seeding: the new version is already queued
+	}
+	if w.seedRetry == nil {
+		w.seedRetry = map[string]seedRetry{}
+	}
+	w.seedRetry[u.GetName()] = seedRetry{u: u, at: time.Now().Add(steps[attempts]), attempts: attempts + 1}
+}
+
 // flushSeeds seeds up to SeedBatch queued files. A file Plex has no part
-// for, or one that fails, waits for its next change or the next resync.
+// for, or one that fails, is tried again on SeedRetry's backoff.
 func (w *Watcher) flushSeeds(ctx context.Context) {
 	batch := w.SeedBatch
 	if batch <= 0 {
 		batch = 50
+	}
+	timeout := w.SeedTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
 	w.seedMu.Lock()
 	n := min(batch, len(w.seedOrder))
 	names := append([]string(nil), w.seedOrder[:n]...)
 	w.seedOrder = w.seedOrder[n:]
 	objs := make([]*unstructured.Unstructured, 0, n)
+	attempts := make([]int, 0, n)
 	for _, name := range names {
 		objs = append(objs, w.seedQueue[name])
+		attempts = append(attempts, w.seedAttempts[name])
 		delete(w.seedQueue, name)
+		delete(w.seedAttempts, name)
 	}
 	w.seedMu.Unlock()
 
-	for _, u := range objs {
+	for i, u := range objs {
 		in, ok := SeedInputOf(u)
 		if !ok {
 			continue
@@ -491,14 +563,21 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		switch err := w.Seed(ctx, mapped, in); {
+		sctx, cancel := context.WithTimeout(ctx, timeout)
+		err := w.Seed(sctx, mapped, in)
+		cancel()
+		switch {
 		case err == nil:
 			inc(w.Counters.Seeded)
+			continue
 		case errors.Is(err, plexseed.ErrNotInPlex):
 			inc(w.Counters.SeedUnmatched)
 		default:
 			inc(w.Counters.SeedErrors)
 			w.log().Warn("seed Plex", "path", mapped, "error", err)
+		}
+		if ctx.Err() == nil {
+			w.retrySeed(u, attempts[i])
 		}
 	}
 }

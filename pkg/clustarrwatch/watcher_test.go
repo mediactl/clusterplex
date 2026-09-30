@@ -357,9 +357,8 @@ func TestFilesAreSeededAtStartAndWhenTheirProbeOrMarkersChange(t *testing.T) {
 	assert.Equal(t, "/media/movies/Heat/Heat.mkv|Found", s.Calls()[1])
 }
 
-// A file Plex has no part for yet is counted and left for the resync, not
-// retried every tick.
-func TestAFileNotInPlexIsCountedAndLeftForTheResync(t *testing.T) {
+// A file Plex has no part for yet is counted and not retried every tick.
+func TestAFileNotInPlexIsCountedAndNotRetriedEveryTick(t *testing.T) {
 	s := &seeds{err: plexseed.ErrNotInPlex}
 	var unmatched atomic.Int32
 	startWith(t, &pms{}, func(w *clustarrwatch.Watcher) {
@@ -369,4 +368,42 @@ func TestAFileNotInPlexIsCountedAndLeftForTheResync(t *testing.T) {
 	require.Eventually(t, func() bool { return unmatched.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	assert.Len(t, s.Calls(), 1, "not retried every tick")
+}
+
+// A file Plex has not scanned yet -- the probe usually lands first -- is
+// tried again on a short backoff, then left to the resync.
+func TestAFileNotInPlexIsRetriedOnAShortBackoff(t *testing.T) {
+	s := &seeds{err: plexseed.ErrNotInPlex}
+	startWith(t, &pms{}, func(w *clustarrwatch.Watcher) {
+		w.Seed = s.seed
+		w.SeedRetry = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}
+	}, mediaFile("a", "/data/media/movies/Heat/Heat.mkv"))
+	require.Eventually(t, func() bool { return len(s.Calls()) == 3 }, 5*time.Second, 10*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	assert.Len(t, s.Calls(), 3, "after the last backoff step, the resync takes over")
+}
+
+// A database blip is retried the same way.
+func TestAFailedSeedIsRetried(t *testing.T) {
+	s := &seeds{err: errors.New("connection refused")}
+	startWith(t, &pms{}, func(w *clustarrwatch.Watcher) {
+		w.Seed = s.seed
+		w.SeedRetry = []time.Duration{20 * time.Millisecond}
+	}, mediaFile("a", "/data/media/movies/Heat/Heat.mkv"))
+	require.Eventually(t, func() bool { return len(s.Calls()) == 2 }, 5*time.Second, 10*time.Millisecond)
+}
+
+// Seeding runs on the watcher's tick, so a Seed stuck behind a lock is cut
+// off rather than stalling scans and refreshes with it.
+func TestASeedThatHangsIsCutOff(t *testing.T) {
+	var calls atomic.Int32
+	startWith(t, &pms{}, func(w *clustarrwatch.Watcher) {
+		w.Seed = func(ctx context.Context, _ string, _ plexseed.Input) error {
+			calls.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		w.SeedTimeout = 50 * time.Millisecond
+	}, mediaFile("a", "/data/media/movies/Heat/Heat.mkv"), mediaFile("b", "/data/media/movies/Ronin/Ronin.mkv"))
+	require.Eventually(t, func() bool { return calls.Load() == 2 }, 5*time.Second, 10*time.Millisecond)
 }
