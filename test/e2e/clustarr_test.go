@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,13 @@ import (
 // clustarr agent from config.yaml alone, and a new MediaFile makes the lease
 // holder scan its folder.
 func TestClustarrLibraryIsProvisionedWithoutTheUI(t *testing.T) {
+	// The stand-ins come only from `make deploy-kind-clustarr`, whose guard
+	// refuses a cluster running a real clustarr; without them there is
+	// nothing to provision against.
+	if out, _ := exec.Command("kubectl", "get", "crd", "mediafiles.catalog.clustarr.io",
+		"-l", "clusterplex.mediactl.io/e2e-fixture=true", "-o", "name").Output(); len(strings.TrimSpace(string(out))) == 0 {
+		t.Skip("the clustarr fixture is not deployed: run make deploy-kind-clustarr on a throwaway kind cluster")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cs := getK8sClient(t)

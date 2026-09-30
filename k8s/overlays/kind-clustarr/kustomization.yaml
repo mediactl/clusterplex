@@ -1,0 +1,42 @@
+# The kind overlay plus stand-ins for a clustarr install, for the end-to-end
+# test of provisioning and the clustarr watch. It carries CustomResourceDefinitions
+# of catalog.clustarr.io, so it must never reach a cluster that runs a real
+# clustarr: applying it would replace clustarr's CRDs, and deleting it would
+# delete every Movie, Series, Episode and MediaFile. Deploy it only through
+# `make deploy-kind-clustarr`, whose guard (hack/deploy-clustarr-fixture.sh)
+# refuses a cluster holding a catalog.clustarr.io CRD not labelled as this
+# fixture.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../kind
+  - clustarr-fixture.yaml
+components:
+  - ../../components/clustarr
+patches:
+  # Provision a library on the fixture provider and follow the fixture
+  # catalog. Replaces config.yaml whole, so it repeats the base's FriendlyName.
+  - target:
+      kind: ConfigMap
+      name: clusterplex-config
+    patch: |-
+      - op: replace
+        path: /data/config.yaml
+        value: |
+          plex:
+            preferences:
+              - name: FriendlyName
+                value: Cluster Plex
+            metadataProviders:
+              - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/movies
+            libraries:
+              - name: Clustarr Fixture Movies
+                type: movie
+                provider: tv.plex.agents.custom.clustarr.movies
+                language: en-US
+                locations: [/media/fixture-movies]
+            clustarr:
+              enabled: true
+              namespace: clustarr-system
+              pathMappings:
+                - {clustarr: /data/media, plex: /media}

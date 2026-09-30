@@ -99,6 +99,7 @@ make docker-build  # the image; it builds the PostgreSQL shim itself
 make helm-lint     # lint and render the chart
 make kind-up kind-load deploy-kind
 make e2e           # deploys the kind overlay and runs the end-to-end test
+make deploy-kind-clustarr  # the kind overlay plus clustarr stand-ins; refuses a cluster running a real clustarr
 ```
 
 The end-to-end test is behind the `e2e` build tag so `go test ./...` stays

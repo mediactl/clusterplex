@@ -76,6 +76,10 @@ deploy: ## Apply the base manifests to the current context
 deploy-kind: ## Apply the kind overlay (ReadWriteOnce claims) to the current context
 	kubectl apply -k k8s/overlays/kind
 
+.PHONY: deploy-kind-clustarr
+deploy-kind-clustarr: ## Apply the kind overlay plus clustarr stand-ins; refuses a cluster that runs a real clustarr
+	hack/deploy-clustarr-fixture.sh
+
 .PHONY: kind-lb
 kind-lb: ## Start cloud-provider-kind, so LoadBalancer Services get an address
 	hack/kind.sh lb
