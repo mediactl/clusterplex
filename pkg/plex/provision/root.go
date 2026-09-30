@@ -10,9 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const maxRoot = 1 << 20
+
+// defaultHTTP fetches provider roots when the caller gives no client; the
+// timeout bounds a root that never answers.
+var defaultHTTP = &http.Client{Timeout: 30 * time.Second}
 
 // ErrNotAProvider is a root that does not answer as a metadata provider:
 // not yet (clustarr answers 503 until its --external-url is set) or not at
@@ -28,7 +33,7 @@ type Root struct {
 // FetchRoot reads a provider's root, as PMS does when the provider is added.
 func FetchRoot(ctx context.Context, hc *http.Client, uri string) (Root, error) {
 	if hc == nil {
-		hc = http.DefaultClient
+		hc = defaultHTTP
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {

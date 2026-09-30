@@ -15,10 +15,16 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // maxBody caps every response. Plex's own lists are far smaller.
 const maxBody = 1 << 20
+
+// defaultHTTP is used when a Client has none. The timeout bounds a Plex that
+// accepts a connection and never answers, which would otherwise hold the
+// caller -- the clustarr watch's event handlers among them -- for ever.
+var defaultHTTP = &http.Client{Timeout: 30 * time.Second}
 
 var (
 	ErrConflict         = errors.New("plex: conflict")
@@ -34,7 +40,7 @@ type Client struct {
 	// Token returns the X-Plex-Token. It is read per call because Plex
 	// rewrites it.
 	Token func() string
-	// HTTP is nil for http.DefaultClient.
+	// HTTP is nil for a client with a 30 s timeout.
 	HTTP *http.Client
 }
 
@@ -198,7 +204,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, out 
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = http.DefaultClient
+		hc = defaultHTTP
 	}
 	resp, err := hc.Do(req)
 	if err != nil {

@@ -97,7 +97,7 @@ func (c Config) ProviderFor(sectionType string) string {
 // Provisioner reconciles Config into one Plex.
 type Provisioner struct {
 	PMS *plexapi.Client
-	// HTTP fetches provider roots; nil is http.DefaultClient.
+	// HTTP fetches provider roots; nil is a client with a 30 s timeout.
 	HTTP   *http.Client
 	Config Config
 	Logger *slog.Logger
