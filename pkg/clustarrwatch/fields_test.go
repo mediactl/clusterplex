@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
+	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
 // load reads an object captured from a real clustarr install.
@@ -82,4 +83,42 @@ func TestFileOfIgnoresNonVideoFiles(t *testing.T) {
 func TestGuidIsTheFormClustarrsProviderIssues(t *testing.T) {
 	assert.Equal(t, "tv.plex.agents.custom.clustarr.movies://movie/0b6c",
 		clustarrwatch.Guid("tv.plex.agents.custom.clustarr.movies", "movie", "0b6c"))
+}
+
+// SeedInputOf reads what the seeder writes into Plex from a real MediaFile:
+// its path, size, probe and markers; Trim keeps all of it.
+func TestSeedInputOfReadsARealMediaFile(t *testing.T) {
+	u := load(t, "mediafile.yaml")
+	require.NoError(t, unstructured.SetNestedField(u.Object, map[string]any{
+		"result": "Found", "fetchedAt": "2026-09-30T12:00:00Z", "forProbeHash": "a884066c588f1ccf8104ab63c53a7e5f7a017895",
+		"segments": []any{map[string]any{"kind": "intro", "startMs": int64(0), "endMs": int64(40000)}},
+	}, "status", "markers"))
+
+	for _, obj := range []*unstructured.Unstructured{u, trimmed(t, u)} {
+		in, ok := clustarrwatch.SeedInputOf(obj)
+		require.True(t, ok)
+		assert.Equal(t, "a884066c588f1ccf8104ab63c53a7e5f7a017895", in.ProbeHash)
+		assert.NotZero(t, in.SizeBytes)
+		require.NotNil(t, in.Probe, "the probe survives Trim")
+		assert.EqualValues(t, 7141668, in.Probe.RuntimeMillis)
+		assert.NotEmpty(t, in.Probe.VideoCodec)
+		assert.NotEmpty(t, in.Probe.Audio)
+		require.NotNil(t, in.Markers, "the markers survive Trim")
+		assert.Equal(t, "Found", in.Markers.Result)
+		assert.Equal(t, []plexseed.Segment{{Kind: "intro", StartMs: 0, EndMs: 40000}}, in.Markers.Segments)
+	}
+}
+
+func TestSeedInputOfWantsAPath(t *testing.T) {
+	u := load(t, "mediafile.yaml")
+	unstructured.RemoveNestedField(u.Object, "spec", "path")
+	_, ok := clustarrwatch.SeedInputOf(u)
+	assert.False(t, ok)
+}
+
+func trimmed(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {
+	t.Helper()
+	out, err := clustarrwatch.Trim(u)
+	require.NoError(t, err)
+	return out.(*unstructured.Unstructured)
 }

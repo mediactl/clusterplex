@@ -13,6 +13,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
 func gvr(resource string) schema.GroupVersionResource {
@@ -32,6 +34,10 @@ var (
 	kindField    = []string{"spec", "mediaRef", "kind"}
 	sizeField    = []string{"spec", "sizeBytes"}
 	modTimeField = []string{"spec", "modTime"}
+	// What the seeder writes into Plex (pkg/plexseed).
+	probeField     = []string{"status", "mediaInfo"}
+	probeHashField = []string{"status", "probeHash"}
+	markersField   = []string{"status", "markers"}
 	// shown is what Plex displays of an item, and so what a refresh is for.
 	shown = [][]string{
 		{"status", "metadata"},
@@ -94,7 +100,7 @@ func Trim(obj any) (any, error) {
 	out.SetName(u.GetName())
 	out.SetUID(u.GetUID())
 	out.SetResourceVersion(u.GetResourceVersion())
-	for _, f := range append([][]string{pathField, kindField, sizeField, modTimeField}, shown...) {
+	for _, f := range append([][]string{pathField, kindField, sizeField, modTimeField, probeField, probeHashField, markersField}, shown...) {
 		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
 			if err := unstructured.SetNestedField(out.Object, v, f...); err != nil {
 				return nil, err
@@ -108,4 +114,39 @@ func Trim(obj any) (any, error) {
 // stores on the item it matched: "{identifier}://{type}/{uid}".
 func Guid(providerIdentifier, plexType, uid string) string {
 	return providerIdentifier + "://" + plexType + "/" + uid
+}
+
+// SeedInputOf reads what the seeder needs of a MediaFile: its path, size,
+// probe hash, probe and markers. The probe and markers are decoded through
+// JSON into plexseed's mirror of clustarr's shapes, so a field clustarr
+// adds is ignored and a field it drops reads as zero.
+func SeedInputOf(u *unstructured.Unstructured) (plexseed.Input, bool) {
+	p, _, _ := unstructured.NestedString(u.Object, pathField...)
+	if p == "" {
+		return plexseed.Input{}, false
+	}
+	in := plexseed.Input{Path: p}
+	in.SizeBytes, _, _ = unstructured.NestedInt64(u.Object, sizeField...)
+	in.ProbeHash, _, _ = unstructured.NestedString(u.Object, probeHashField...)
+	if m, ok, _ := unstructured.NestedMap(u.Object, probeField...); ok {
+		var probe plexseed.Probe
+		if decode(m, &probe) == nil {
+			in.Probe = &probe
+		}
+	}
+	if m, ok, _ := unstructured.NestedMap(u.Object, markersField...); ok {
+		var mk plexseed.Markers
+		if decode(m, &mk) == nil {
+			in.Markers = &mk
+		}
+	}
+	return in, true
+}
+
+func decode(m map[string]any, out any) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, out)
 }
