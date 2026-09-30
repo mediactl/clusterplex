@@ -47,8 +47,10 @@ func TestMediaRowsDescribeTheFileAsPlexsAnalysisWould(t *testing.T) {
 	assert.EqualValues(t, 0, v.Index)
 	assert.EqualValues(t, 5930000, v.Bitrate)
 	assert.Contains(t, v.Extra, `"ma:bitDepth":"10"`)
-	for _, kv := range []string{`"ma:width":"1920"`, `"ma:height":"1080"`, `"ma:frameRate":"24.000"`,
-		`"ma:scanType":"progressive"`, `"ma:chromaSubsampling":"4:2:0"`} {
+	for _, kv := range []string{
+		`"ma:width":"1920"`, `"ma:height":"1080"`, `"ma:frameRate":"24.000"`,
+		`"ma:scanType":"progressive"`, `"ma:chromaSubsampling":"4:2:0"`,
+	} {
 		assert.Contains(t, v.Extra, kv, "Plex titles the video stream from these (\"1080p (HEVC Main 10)\")")
 	}
 	a := streams[1]
