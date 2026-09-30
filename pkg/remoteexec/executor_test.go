@@ -117,9 +117,7 @@ func TestExecutorReportsMissingBinary(t *testing.T) {
 
 // The manager starts every job inside Plex's network namespace, because a
 // helper calls Plex back on 127.0.0.1:32400 and only there is that Plex's own
-// loopback. Started in the pod namespace it reaches the proxy instead, Plex
-// sees the call arrive from its link subnet rather than from loopback, and
-// answers an analysis job carrying a transient local token 401.
+// loopback. Started in the pod namespace it reaches the proxy instead.
 func TestExecutorStartsEveryJobThroughItsStarter(t *testing.T) {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Media Scanner.real", `echo ran`)

@@ -105,8 +105,8 @@ func runDialJob(t *testing.T, ex *remoteexec.Executor, addr string) (string, int
 // The property the manager's jobs depend on: a helper started through the
 // namespace reaches Plex on 127.0.0.1, as it would beside a stock Plex, and
 // one started the ordinary way does not. In the pod namespace 127.0.0.1:32400
-// is the proxy, Plex sees the call arrive from its link subnet rather than
-// from loopback, and refuses an analysis job's transient local token.
+// is the proxy, and Plex sees the call arrive from its link subnet rather
+// than from loopback.
 func TestAJobStartedThroughTheNamespaceReachesPlexOnLoopback(t *testing.T) {
 	n := provision(t)
 	addr := listenOnPlexLoopback(t, n)

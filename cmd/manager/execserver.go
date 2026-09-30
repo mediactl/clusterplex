@@ -62,16 +62,17 @@ func (m *Manager) serve(name string, srv *grpc.Server, lis net.Listener) {
 func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 	cfg := m.Config
 	// Every job starts inside Plex's network namespace, where 127.0.0.1:32400
-	// is Plex itself. A helper calls Plex back there -- the scanner allocates
-	// a changestamp, the transcoder posts its progress -- and in the pod
-	// namespace that address is the proxy, so Plex sees the call arrive from
-	// its link subnet (169.254.1.1) instead of from loopback. It still admits
-	// the owner's token, but analysis Plex starts itself carries a transient
-	// local one, which Plex honours only from loopback: it asks plex.tv about
-	// the "unknownToken", treats the caller as a guest and answers 401, and
-	// the scanner exits 0 having analysed nothing. There is no fallback to
-	// the pod namespace for that reason: a job started there does nothing and
-	// says so nowhere but in Plex's own log.
+	// is Plex itself, as it is beside a stock Plex. A helper calls Plex back
+	// there -- the scanner allocates a changestamp, the transcoder posts its
+	// progress -- and in the pod namespace that address is the proxy, so
+	// Plex sees the call arrive from its link subnet (169.254.1.1) rather
+	// than from loopback. A nil starter is a wiring fault, so there is no
+	// quiet fallback to the pod namespace.
+	//
+	// This was first taken for the cause of the scanner's 401s on
+	// /library/changestamp. It is not: the scanner authenticates with the
+	// token in .LocalAdminToken, which every pod's Plex overwrites on the
+	// shared claim, whatever its network. See CLAUDE.md.
 	//
 	// That includes jobs the worker port takes from another pod's Plex. Their
 	// loopback references were rewritten to that pod's address (RewriteArgs),
@@ -84,7 +85,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 	// business with plex.tv. One executor for both listeners keeps it so.
 	if m.startInPlexNS == nil {
 		return nil, nil, errors.New("no Plex network namespace to start jobs in: a helper started outside it " +
-			"reaches the proxy instead of Plex on 127.0.0.1:32400")
+			"reaches the proxy on 127.0.0.1:32400 instead of Plex")
 	}
 	// The same environment Plex is started with. A helper reaches the library
 	// only if it loads the interposer, and the request cannot be relied on to

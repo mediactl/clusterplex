@@ -22,10 +22,8 @@ func (nullSink) Send(*pb.TranscodeLog) error { return nil }
 // Every job a pod runs, whether its own Plex asked through the shim or the
 // leader sent it to the worker port, has to start inside Plex's network
 // namespace. A helper calls Plex back on 127.0.0.1:32400; started in the pod
-// namespace that is the proxy, Plex sees the call arrive from its link subnet
-// instead of loopback, and answers analysis Plex started itself 401 --
-// "Unable to allocate a changestamp from the server", exit 0, and
-// media_streams stays empty.
+// namespace that is the proxy, and Plex sees the call arrive from its link
+// subnet instead of loopback.
 func TestEveryJobListenerStartsJobsInPlexsNetworkNamespace(t *testing.T) {
 	bin := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "Plex Media Scanner.real"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
@@ -57,9 +55,9 @@ func TestEveryJobListenerStartsJobsInPlexsNetworkNamespace(t *testing.T) {
 	assert.Equal(t, []string{"Plex Media Scanner.real", "Plex Transcoder.real", "Plex Transcoder.real"}, started)
 }
 
-// Falling back to a start in the pod namespace is exactly the failure above,
-// and it is silent: the job runs, exits 0 and does nothing. So the manager
-// refuses to serve jobs at all rather than serve them from the wrong place.
+// Falling back to a start in the pod namespace would run every helper in a
+// network Plex does not expect, and nothing would say so. The manager refuses
+// to serve jobs at all rather than serve them from the wrong place.
 func TestJobListenersRefuseToStartWithoutPlexsNetworkNamespace(t *testing.T) {
 	m := newTestManager()
 	m.Config.BinDir = t.TempDir()

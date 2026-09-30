@@ -55,9 +55,8 @@ type Executor struct {
 	// passes plexnet.Network.StartProcess, so a job runs inside Plex's
 	// network namespace and 127.0.0.1:32400 is Plex's own loopback, as it
 	// is beside a stock Plex. Started in the pod namespace, the same address
-	// is the proxy: Plex sees the helper's call-back arrive from its link
-	// subnet instead of loopback, and answers analysis it started itself --
-	// whose token is a transient local one -- 401.
+	// is the proxy, and Plex sees the helper's call-back arrive from its
+	// link subnet (169.254.1.1) instead.
 	//
 	// Whatever it does, it must call cmd.Start exactly once and leave
 	// SysProcAttr alone: Run relies on the job leading its own process group.

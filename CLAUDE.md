@@ -142,24 +142,27 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   stream nor an audio stream". `execServices` sets `Executor.Env` for this
   reason. The scanner's own log is the tell: with the preload it reaches
   "Analyzing media parts", without it stops at "Opening 20 database sessions".
-- **A helper job must start inside Plex's network namespace, or Plex answers
-  it 401 and analysis silently does nothing.** Helpers call Plex back on
-  `127.0.0.1:32400` (the scanner's `/library/changestamp`, the transcoder's
-  progress). In the pod namespace that address is the proxy, so Plex sees
-  the call arrive from `169.254.1.1 (Subnet)` rather than Loopback. The
-  owner's token still passes, which is why a few items did get analysed; but
-  analysis Plex starts itself (IntroDetector's internal fetch, a client
-  opening an item with `asyncRefreshAnalysis=1`) carries a transient local
-  token that Plex honours only from loopback. The tell in Plex's log is
-  `Refreshing tokens inside the token-based authentication filter`, a
-  plex.tv lookup with `unknownToken=`, `authenticating user as guest`,
-  `Signed-in Token ()` and a 401; the scanner logs `Unable to allocate a
-  changestamp from the server` and **exits 0**, so `media_streams` stays
-  empty and playback fails with `s1001` exactly as a missing `LD_PRELOAD`
-  does (seen on kind-cluster-plex, 2026-09-30). `remoteexec.Executor.Start`
-  is `plexnet.Network.StartProcess` for every job, the worker port's
-  included, and `execServices` refuses to serve jobs without it rather than
-  fall back to the pod namespace.
+- **The scanner authenticates with `.LocalAdminToken`, not `X_PLEX_TOKEN`,
+  so analysis works only on the pod whose Plex started last.** Plex writes a
+  fresh local token to that file on every start (`SafelyWriteFile`: a temp
+  file renamed over it, so neither a symlink nor a file mount survives), the
+  file is on the shared claim, and `Plex Media Scanner` reads it for the
+  `X-Plex-Token` it sends to `127.0.0.1:32400` -- the path is built in the
+  binary, and `X_PLEX_TOKEN` in its environment does not change it. The
+  other pods' Plex have never seen that token: Plex logs `Refreshing tokens
+  inside the token-based authentication filter`, a plex.tv lookup with
+  `unknownToken=`, `authenticating user as guest`, `Signed-in Token ()` and
+  a 401; the scanner logs `Unable to allocate a changestamp from the
+  server` and **exits 0**, so `media_streams` stays empty and playback fails
+  with `s1001` exactly as a missing `LD_PRELOAD` does. Proven on
+  kind-cluster-plex, 2026-09-30: one `PUT /library/metadata/N/analyze` with
+  the owner's token, sent to each pod, analysed on the last-started pod and
+  401'd on another, both jobs inside Plex's namespace. Helpers first ran in
+  the pod namespace, where Plex logged the call-back as `169.254.1.1
+  (Subnet)`, and that was taken for the cause; moving them into Plex's
+  namespace (`remoteexec.Executor.Start` is `plexnet.Network.StartProcess`
+  for every job) made the log say `Loopback` and changed nothing else. The
+  file's token is accepted from the subnet too. Not fixed yet.
 - **The PostgreSQL shim is lossy in two known ways.** Library search returns
   nothing, because it translates Plex's full-text `MATCH` into a constant false
   predicate; and title ordering follows PostgreSQL's default collation, because
