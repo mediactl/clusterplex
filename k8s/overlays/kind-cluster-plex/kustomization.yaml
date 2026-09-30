@@ -16,7 +16,7 @@ components:
   - ../../components/clustarr
 images:
   - name: ghcr.io/mediactl/cluster-plex
-    newTag: 5b9e96b
+    newTag: 567e624
 patches:
   - target:
       kind: StatefulSet

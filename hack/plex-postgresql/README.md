@@ -582,6 +582,53 @@ says it does.
 Verified on the kind cluster: the same `POST /playQueues` now yields one
 item, one insert, and every read in the request executed on one connection.
 
+## Fixed: an accented title aborted Plex, and literals were re-encoded
+
+A scan of the clustarr TV library, whose folders include "Shōgun (2024)",
+killed the lease holder's Plex on 2026-09-30:
+
+```text
+thread '<unnamed>' panicked at src/keywords/preprocess.rs:445:28:
+end byte index 3157 is not a char boundary; it is inside 'Ã' (bytes 3156..3158 of string)
+panic in a function that cannot unwind
+```
+
+It was a panic in the translator's keyword search, inside an `extern "C"`
+function, so it aborted the process. Fixed in `v1.3.17-clusterplex.22`.
+
+**Two defects, one class.** The keyword search that the LIMIT rewrites use
+compared `stmt[i..i + kw.len()]`, a string slice that can end inside a
+multi-byte character in a literal right after an ASCII byte. And the 'Ã' the
+slice landed in was not in any title: twenty-four copies in the translator's
+lexical rewrites used `out.push(bytes[i] as char)`, which reads each byte of a
+multi-byte character as a character of its own. Every non-ASCII literal was
+re-encoded once per pass, so `'Caché (2005)'` reached PostgreSQL as
+`'CachÃÂÃÂ© (2005)'`. That matches nothing on a read and stores garbage on a
+write. The library held none of it only because Plex binds most values as
+parameters, which never pass through the translator; 91 media parts and 9
+directories in it have non-ASCII names.
+
+**The fix** copies bytes through `byte_utils::push_utf8_byte`, which emits a
+whole character at its first byte. The keyword search compares bytes. The
+GLOB, INDEXED BY and COLLATE rewrites indexed a `to_uppercase()` copy of the
+SQL by the original's byte offsets, and Unicode uppercasing can change a
+character's length, so they now uppercase ASCII only.
+`tests/non_ascii_literals.rs` in the fork sends accented literals through every
+byte-walking pass and places one at every offset from a keyword. It and three
+unit tests fail on `.21`.
+
+Verified on the kind cluster:
+- Scans of both clustarr libraries, with intro and credit detection on
+  "Shōgun" and "Shifting Gears" (200 helper jobs), ran without a panic or a
+  withdrawn pod.
+- A title filter for "Shōgun" reached PostgreSQL as `LIKE 'Shōgun%'` and found
+  the show; "Caché" and "La Jetée" found theirs.
+
+The statement that crashed never reached PostgreSQL: its backtrace runs through
+`prepare_dummy_shadow_stmt`, the translation made for the local shadow. Scans
+bind their paths and titles as parameters, so the statement log holds no
+non-ASCII text from them at all.
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
