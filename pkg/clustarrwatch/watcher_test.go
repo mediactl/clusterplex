@@ -2,11 +2,14 @@ package clustarrwatch_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
@@ -41,13 +45,26 @@ func hasScan(calls []string, folder string) bool {
 type pms struct {
 	mu    sync.Mutex
 	calls []string
+	// down answers every call 503, as a Plex still starting does.
+	down atomic.Bool
+	// tv adds a TV library at /media/tv, as the provisioner creating it
+	// after the watcher started does.
+	tv atomic.Bool
 }
 
 func (p *pms) client(t *testing.T) *plexapi.Client {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p.down.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if r.URL.Path == "/library/sections/all" && r.Method == http.MethodGet {
+			tv := ""
+			if p.tv.Load() {
+				tv = `,{"key":"2","type":"show","title":"TV","agent":"tv.plex.agents.custom.clustarr.tv","Location":[{"path":"/media/tv"}]}`
+			}
 			_, _ = w.Write([]byte(`{"MediaContainer":{"Directory":[{"key":"1","type":"movie","title":"Movies",
-				"agent":"tv.plex.agents.custom.clustarr.movies","Location":[{"path":"/media/movies"}]}]}}`))
+				"agent":"tv.plex.agents.custom.clustarr.movies","Location":[{"path":"/media/movies"}]}` + tv + `]}}`))
 			return
 		}
 		p.mu.Lock()
@@ -94,11 +111,20 @@ func (c *counts) get(k string) int {
 
 func start(t *testing.T, objs ...runtime.Object) (*dynamicfake.FakeDynamicClient, *pms, *counts) {
 	t.Helper()
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+	return startWith(t, &pms{}, nil, objs...)
+}
+
+func fakeDynamic(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		clustarrwatch.MediaFiles: "MediaFileList", clustarrwatch.Movies: "MovieList",
 		clustarrwatch.Series: "SeriesList", clustarrwatch.Episodes: "EpisodeList",
 	}, objs...)
-	p := &pms{}
+}
+
+// startWith runs a watcher against p; tweak adjusts it before it starts.
+func startWith(t *testing.T, p *pms, tweak func(*clustarrwatch.Watcher), objs ...runtime.Object) (*dynamicfake.FakeDynamicClient, *pms, *counts) {
+	t.Helper()
+	dyn := fakeDynamic(objs...)
 	cs := &counts{m: map[string]int{}}
 	w := &clustarrwatch.Watcher{
 		Dynamic: dyn, Namespace: ns, PMS: p.client(t),
@@ -115,8 +141,19 @@ func start(t *testing.T, objs ...runtime.Object) (*dynamicfake.FakeDynamicClient
 			Refreshes:  func() { cs.inc("refresh") },
 			Unmappable: func() { cs.inc("unmappable") },
 			Uncovered:  func() { cs.inc("uncovered") },
+			Synced: func(ok bool) {
+				if ok {
+					cs.inc("synced")
+				} else {
+					cs.inc("unsynced")
+				}
+			},
 		},
 		ScanDelay: 10 * time.Millisecond, RefreshDelay: 10 * time.Millisecond, FlushEvery: 5 * time.Millisecond,
+		MissRefetch: time.Millisecond,
+	}
+	if tweak != nil {
+		tweak(w)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
@@ -207,4 +244,63 @@ func TestATranscodeInPlaceScansItsFolder(t *testing.T) {
 	_, err := dyn.Resource(clustarrwatch.MediaFiles).Namespace(ns).Update(t.Context(), after, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return hasScan(p.Calls(), "/media/movies/Heat") }, 5*time.Second, 10*time.Millisecond)
+}
+
+// TestChangesWhilePlexIsStartingAreKeptUntilItAnswers: the Lease is won
+// before Plex accepts connections, so the catch-up refresh and a file
+// changed in the meantime must wait for it rather than be dropped.
+func TestChangesWhilePlexIsStartingAreKeptUntilItAnswers(t *testing.T) {
+	p := &pms{}
+	p.down.Store(true)
+	dyn, _, cs := startWith(t, p, nil)
+	time.Sleep(50 * time.Millisecond)
+	_, err := dyn.Resource(clustarrwatch.MediaFiles).Namespace(ns).Create(t.Context(),
+		mediaFile("a", "/data/media/movies/Heat/Heat.mkv"), metav1.CreateOptions{})
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	p.down.Store(false)
+	require.Eventually(t, func() bool {
+		c := p.Calls()
+		return hasScan(c, "/media/movies/Heat") && slices.Contains(c, "POST /library/sections/1/refresh?")
+	}, 5*time.Second, 10*time.Millisecond, "the catch-up and the change both reach Plex once it answers")
+	assert.Zero(t, cs.get("uncovered"), "a Plex outage is not a configuration problem")
+}
+
+// TestALibraryCreatedAfterTheWatcherStartedIsFound: on a fresh install the
+// provisioner creates the TV library after the watcher listed libraries.
+func TestALibraryCreatedAfterTheWatcherStartedIsFound(t *testing.T) {
+	dyn, p, cs := start(t)
+	require.Eventually(t, func() bool { return len(p.Calls()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	p.tv.Store(true)
+	_, err := dyn.Resource(clustarrwatch.MediaFiles).Namespace(ns).Create(t.Context(),
+		mediaFile("t", "/data/media/tv/Show/Season 01/x.mkv"), metav1.CreateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return hasScan(p.Calls(), "/media/tv/Show/Season 01") }, 5*time.Second, 10*time.Millisecond)
+	assert.Zero(t, cs.get("uncovered"))
+}
+
+// TestAWatchThatCannotSyncSaysSo: clustarr's CRDs missing, or the wrong
+// namespace, leaves the informers unsynced for good; the operator has to
+// hear about it.
+func TestAWatchThatCannotSyncSaysSo(t *testing.T) {
+	dyn := fakeDynamic()
+	dyn.PrependReactor("list", "mediafiles", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("the server could not find the requested resource")
+	})
+	p := &pms{}
+	var unsynced atomic.Int32
+	w := &clustarrwatch.Watcher{
+		Dynamic: dyn, Namespace: ns, PMS: p.client(t),
+		Mapper:      clustarrwatch.NewMapper([]clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}}),
+		SyncTimeout: 50 * time.Millisecond,
+		Counters: clustarrwatch.Counters{Synced: func(ok bool) {
+			if !ok {
+				unsynced.Add(1)
+			}
+		}},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go func() { _ = w.Run(ctx) }()
+	require.Eventually(t, func() bool { return unsynced.Load() > 0 }, 5*time.Second, 10*time.Millisecond)
 }

@@ -111,6 +111,13 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 			Refreshes:  m.Metrics.ClustarrRefreshes.Inc,
 			Unmappable: m.Metrics.ClustarrUnmappable.Inc,
 			Uncovered:  m.Metrics.ClustarrUncovered.Inc,
+			Synced: func(ok bool) {
+				v := 0.0
+				if ok {
+					v = 1
+				}
+				m.Metrics.ClustarrWatchSynced.Set(v)
+			},
 		},
 	}
 	if err := w.Run(ctx); err != nil && ctx.Err() == nil {

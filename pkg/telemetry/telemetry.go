@@ -36,6 +36,9 @@ type Metrics struct {
 	ClustarrUnmappable prometheus.Counter
 	// ClustarrUncovered counts mapped paths no library covers.
 	ClustarrUncovered prometheus.Counter
+	// ClustarrWatchSynced is 1 once the clustarr watch has synced, 0 while
+	// it has not within its timeout.
+	ClustarrWatchSynced prometheus.Gauge
 }
 
 // InitTelemetry returns the tracer and registers the metrics.
@@ -94,6 +97,10 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 		ClustarrUncovered: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "clusterplex_clustarr_uncovered_paths_total",
 			Help: "Mapped clustarr file paths no Plex library covers, dropped",
+		}),
+		ClustarrWatchSynced: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "clusterplex_clustarr_watch_synced",
+			Help: "1 once the lease holder's clustarr watch has synced, 0 while it has not within its timeout",
 		}),
 	}
 	return tracer, metrics

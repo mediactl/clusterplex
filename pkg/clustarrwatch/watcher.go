@@ -25,6 +25,9 @@ type Counters struct {
 	Refreshes  func()
 	Unmappable func()
 	Uncovered  func()
+	// Synced reports whether the informers have synced; false once they
+	// have not within SyncTimeout.
+	Synced func(ok bool)
 }
 
 // Watcher follows one clustarr namespace and tells one Plex what changed.
@@ -44,6 +47,12 @@ type Watcher struct {
 
 	// For tests; zero values take the spec's timings.
 	ScanDelay, RefreshDelay, FlushEvery, SectionTTL time.Duration
+	// MissRefetch is how old the library list must be before a path no
+	// library covers makes the watcher list them again; zero is 30s.
+	MissRefetch time.Duration
+	// SyncTimeout is how long the informers may take to sync before the
+	// watcher reports it; zero is 2m.
+	SyncTimeout time.Duration
 
 	sched *Scheduler
 	ctx   context.Context
@@ -51,6 +60,9 @@ type Watcher struct {
 	mu         sync.Mutex
 	sections   []plexapi.Section
 	sectionsAt time.Time
+	// pending holds mapped paths that could not be placed because Plex did
+	// not answer; each flush tries them again.
+	pending []string
 }
 
 func (w *Watcher) log() *slog.Logger {
@@ -100,10 +112,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 		}
 	}
 	f.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), synced...) {
+	if !w.waitForSync(ctx, synced) {
 		return ctx.Err()
 	}
-	w.catchUp(ctx)
+	caughtUp := false
 
 	every := w.FlushEvery
 	if every <= 0 {
@@ -116,28 +128,61 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+			if !caughtUp {
+				caughtUp = w.catchUp(ctx) == nil
+			}
+			w.retryPending()
 			w.sched.Flush(ctx)
 		}
 	}
 }
 
+// waitForSync waits for the informers, reporting through Counters.Synced
+// and the log when they have not synced within SyncTimeout: clustarr's
+// CRDs missing, the wrong namespace or no RBAC all look like this, and
+// otherwise say nothing. It keeps waiting afterwards; false means ctx ended.
+func (w *Watcher) waitForSync(ctx context.Context, synced []cache.InformerSynced) bool {
+	timeout := w.SyncTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	ok := cache.WaitForCacheSync(tctx.Done(), synced...)
+	cancel()
+	if !ok {
+		if ctx.Err() != nil {
+			return false
+		}
+		w.log().Error("the clustarr watch has not synced; check that the catalog.clustarr.io CRDs exist "+
+			"and that this pod may list them in the namespace", "namespace", w.Namespace, "after", timeout)
+		report(w.Counters.Synced, false)
+		if !cache.WaitForCacheSync(ctx.Done(), synced...) {
+			return false
+		}
+	}
+	w.log().Info("the clustarr watch has synced", "namespace", w.Namespace)
+	report(w.Counters.Synced, true)
+	return true
+}
+
 // catchUp covers what changed while no pod was watching: one non-forced
 // refresh of each library on a clustarr agent, which Plex limits to
-// folders whose modification time moved.
-func (w *Watcher) catchUp(ctx context.Context) {
-	sections, err := w.sectionList(ctx)
+// folders whose modification time moved. It fails while Plex is not
+// answering, and Run tries again at the next flush.
+func (w *Watcher) catchUp(ctx context.Context) error {
+	sections, err := w.sectionList(ctx, false)
 	if err != nil {
-		w.log().Warn("list libraries for the catch-up refresh", "error", err)
-		return
+		return err
 	}
 	for _, s := range sections {
 		if s.Agent == "" || (s.Agent != w.MovieProvider && s.Agent != w.TVProvider) {
 			continue
 		}
 		if err := w.PMS.RefreshSection(ctx, s.Key, "", false); err != nil {
-			w.log().Warn("catch-up refresh", "library", s.Title, "error", err)
+			return err
 		}
 	}
+	return nil
 }
 
 func (w *Watcher) fileHandler() cache.ResourceEventHandler {
@@ -206,21 +251,65 @@ func (w *Watcher) enqueueFile(p string) {
 		inc(w.Counters.Unmappable)
 		return
 	}
-	s, ok := w.sectionFor(mapped)
-	if !ok {
-		inc(w.Counters.Uncovered)
-		return
-	}
-	w.sched.EnqueueScan(s.Key, path.Dir(mapped))
+	w.enqueueMapped(mapped)
 }
 
-// sectionFor is the library with the longest location containing p.
-func (w *Watcher) sectionFor(p string) (plexapi.Section, bool) {
-	sections, err := w.sectionList(w.ctx)
-	if err != nil {
-		w.log().Warn("list libraries", "error", err)
-		return plexapi.Section{}, false
+// enqueueMapped queues a scan of the folder of a path as Plex sees it. A
+// Plex that does not answer keeps the path pending rather than dropping it.
+func (w *Watcher) enqueueMapped(mapped string) {
+	s, ok, err := w.sectionFor(mapped)
+	switch {
+	case err != nil:
+		w.mu.Lock()
+		w.pending = append(w.pending, mapped)
+		w.mu.Unlock()
+	case !ok:
+		inc(w.Counters.Uncovered)
+	default:
+		w.sched.EnqueueScan(s.Key, path.Dir(mapped))
 	}
+}
+
+// retryPending places the paths Plex could not be asked about before.
+func (w *Watcher) retryPending() {
+	w.mu.Lock()
+	pending := w.pending
+	w.pending = nil
+	w.mu.Unlock()
+	for _, p := range pending {
+		w.enqueueMapped(p)
+	}
+}
+
+// sectionFor is the library with the longest location containing p. A
+// path none covers lists the libraries again once the list is MissRefetch
+// old, since the provisioner may have created one since.
+func (w *Watcher) sectionFor(p string) (plexapi.Section, bool, error) {
+	sections, err := w.sectionList(w.ctx, false)
+	if err != nil {
+		return plexapi.Section{}, false, err
+	}
+	if s, ok := longestCovering(sections, p); ok {
+		return s, true, nil
+	}
+	refetch := w.MissRefetch
+	if refetch <= 0 {
+		refetch = 30 * time.Second
+	}
+	w.mu.Lock()
+	stale := time.Since(w.sectionsAt) >= refetch
+	w.mu.Unlock()
+	if !stale {
+		return plexapi.Section{}, false, nil
+	}
+	if sections, err = w.sectionList(w.ctx, true); err != nil {
+		return plexapi.Section{}, false, err
+	}
+	s, ok := longestCovering(sections, p)
+	return s, ok, nil
+}
+
+func longestCovering(sections []plexapi.Section, p string) (plexapi.Section, bool) {
 	var best plexapi.Section
 	bestLen := -1
 	for _, s := range sections {
@@ -234,21 +323,28 @@ func (w *Watcher) sectionFor(p string) (plexapi.Section, bool) {
 	return best, bestLen >= 0
 }
 
-func (w *Watcher) sectionList(ctx context.Context) ([]plexapi.Section, error) {
+// sectionList is Plex's libraries, cached for SectionTTL unless force.
+// Plex is asked without holding the lock, so a slow answer does not stall
+// another handler.
+func (w *Watcher) sectionList(ctx context.Context, force bool) ([]plexapi.Section, error) {
 	ttl := w.SectionTTL
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.sections != nil && time.Since(w.sectionsAt) < ttl {
-		return w.sections, nil
+	if !force && w.sections != nil && time.Since(w.sectionsAt) < ttl {
+		s := w.sections
+		w.mu.Unlock()
+		return s, nil
 	}
+	w.mu.Unlock()
 	s, err := w.PMS.Sections(ctx)
 	if err != nil {
 		return nil, err
 	}
+	w.mu.Lock()
 	w.sections, w.sectionsAt = s, time.Now()
+	w.mu.Unlock()
 	return s, nil
 }
 
@@ -279,6 +375,12 @@ func (w *Watcher) refresh(ctx context.Context, guid string) error {
 	}
 	inc(w.Counters.Refreshes)
 	return nil
+}
+
+func report(f func(bool), v bool) {
+	if f != nil {
+		f(v)
+	}
 }
 
 func inc(f func()) {
