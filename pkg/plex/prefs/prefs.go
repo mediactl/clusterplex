@@ -127,6 +127,32 @@ func Apply(path string, values map[string]string) ([]string, error) {
 	return changed, nil
 }
 
+// CreateIfAbsent writes content to path when there is no file there yet, and
+// reports whether it did.
+//
+// It takes the same lock as Apply. Every pod runs this on one shared file as
+// it starts, and the file carries the server's identity: two pods each seeing
+// no file and each writing a fresh MachineIdentifier would leave the server
+// with whichever identity landed second.
+func CreateIfAbsent(path string, content []byte) (bool, error) {
+	unlock, err := lockPreferences(path)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		return false, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if err := writeAtomic(path, content); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // read returns the attributes of an existing file, or nil when it does not
 // exist yet or is empty.
 // Value returns one setting from Preferences.xml, or "" when the file or the

@@ -14,4 +14,3 @@ go.sum linguist-generated=true
 
 # Copied from upstream plex-postgresql; see hack/plex-postgresql/README.md.
 hack/plex-postgresql/schema/** linguist-vendored=true
-hack/plex-postgresql/standalone-entrypoint.sh linguist-vendored=true

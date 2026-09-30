@@ -24,7 +24,7 @@ indent_size = 4
 
 # Copied from upstream plex-postgresql. Keep them byte-comparable with the
 # source, so re-vendoring shows only real changes.
-[hack/plex-postgresql/{schema/*.sql,standalone-entrypoint.sh}]
+[hack/plex-postgresql/schema/*.sql]
 indent_size = 4
 trim_trailing_whitespace = false
 insert_final_newline = unset

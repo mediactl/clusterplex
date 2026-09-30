@@ -40,6 +40,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `cmd/shim/` | Stands in for Plex's helper binaries and forwards each invocation to the manager |
 | `cmd/maintenance/` | What a CronJob runs to ask the manager to distribute one task |
 | `pkg/plex/db/` | The shared PostgreSQL library database |
+| `pkg/plex/bootstrap/` | Preparing the PostgreSQL schema, the SQLite shadows and Plex's state directory before Plex starts (upstream's init script, in Go) |
 | `pkg/plex/net/` | Plex's network namespace and the plex.tv egress filter |
 | `pkg/plex/prefs/` | Merging settings into Plex's `Preferences.xml` |
 | `pkg/plex/route/` | Finding the pods to send traffic to |
@@ -95,8 +96,9 @@ make build         # manager, shim, proxy and maintenance into bin/
 make test          # unit tests
 make test-netns    # pkg/plex/net against real network namespaces (needs unshare)
 make lint          # golangci-lint v2
-make docker-build  # the image; it builds the PostgreSQL shim itself
+make docker-build  # the image (FROM scratch); DOCKER_TARGET=debug adds busybox
 make helm-lint     # lint and render the chart
+make docker-build DOCKER_TARGET=debug  # the e2e suite execs sh, cat and find in the pod
 make kind-up kind-load deploy-kind
 make e2e           # deploys the kind overlay and runs the end-to-end test
 make deploy-kind-clustarr  # the kind overlay plus clustarr stand-ins; refuses a cluster running a real clustarr
@@ -160,8 +162,8 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   times inside `plexRestartWindow`. A corollary: `plexHealth.record` fires
   once per *run* of failures, not once ever, or a Plex that never comes back
   would be left alone at 0/1.
-- **Plex's crash dumps are deleted on every start,** by
-  `standalone-entrypoint.sh`, to keep CrashUploader from running. A crash
+- **Plex's crash dumps are deleted on every start,** by the manager's
+  bootstrap (`pkg/plex/bootstrap`), to keep CrashUploader from running. A crash
   therefore leaves no dump behind by the time anyone looks at the pod, and
   "no crash report" says nothing about whether Plex crashed. The host's
   kernel log is the record that survives: `dmesg -T | grep segfault` names
@@ -178,7 +180,17 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   2026-09-30, where `k8s/overlays/kind-cluster-plex` runs the integration).
 - **`go test ./...` passing does not mean the cluster works.** Nearly every bug
   in this repo so far was only visible in a real cluster.
-- **The image has no `curl`,** and Plex's bundled ffmpeg is stripped of `lavfi`,
+- **The image is `FROM scratch`: no shell, no `cat`, no `curl`.** Plex's
+  binaries carry their own musl loader and libraries, ours are static, and
+  what used to need bash, psql, sqlite3 and python3 -- upstream's init script
+  -- is `pkg/plex/bootstrap`. `kubectl exec` therefore finds nothing to run;
+  build with `DOCKER_TARGET=debug` for busybox in `/bin`, or attach one with
+  `kubectl debug --target=plex` and read files through `/proc/1/root`. Plex
+  does call `/bin/sh` -- its plug-in host's Python, looking for a C compiler
+  when `uuid` is imported -- and copes without one: the same plug-ins start,
+  with the same warnings (checked 2026-09-30 by booting Plex in both images
+  with a logging stub as `/bin/sh`).
+- **Plex's bundled ffmpeg is stripped of `lavfi`,**
   so generate test media on the host and copy it in. Plex writes a local admin
   token to `.LocalAdminToken` in its state directory, which is the way to call
   the API on a claimed server.
@@ -187,9 +199,9 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
 
 - Logging is `slog` with a handler per component; no package-level logger.
 - Packages under `pkg/plex/` are named for their directory (`db`, `net`,
-  `prefs`, `route`) and imported as `plexdb`, `plexnet`, `plexprefs` and
-  `plexroute`: `net` would shadow the standard library and `db` the usual
-  variable name. Alias every import the same way, so call sites read alike.
+  `prefs`, `route`, `bootstrap`) and imported as `plexdb`, `plexnet`,
+  `plexprefs`, `plexroute` and `plexbootstrap`: `net` would shadow the
+  standard library and `db` the usual variable name. Alias every import the same way, so call sites read alike.
 - Formatting rules for every file type are in `.editorconfig`; line endings
   and generated or vendored paths are in `.gitattributes`.
 - Tests are table-driven with testify, and name the behaviour rather than the

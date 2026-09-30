@@ -90,10 +90,16 @@ see a new server and the plex.tv claim is lost. To adopt the identity you
 already have rather than replace it, read it from the running leader first:
 
 ```bash
-kubectl exec -n media <leader> -- sh -c \
+kubectl debug -n media <leader> -q -i --image=busybox:1.37-musl --target=plex -- sh -c \
   'grep -o "MachineIdentifier=\"[^\"]*\"" \
-   "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml" | head -1'
+   "/proc/1/root/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml" | head -1'
 ```
+
+The image has no shell of its own (it is built `FROM scratch`), so this runs
+busybox in an ephemeral container beside the `plex` container and reads the
+file through that container's root, `/proc/1/root`. An image built with
+`make docker-build DOCKER_TARGET=debug` carries busybox itself, and there
+`kubectl exec` works as usual.
 
 `ProcessedMachineIdentifier` is the value clients actually see, and it is
 rejected if you try to set it. Plex derives it from `MachineIdentifier`

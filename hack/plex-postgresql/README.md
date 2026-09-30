@@ -11,7 +11,7 @@ patch stack any more — it was replaced by the fork once the fixes stopped bein
 one-liners, and `0002` below is in the fork instead, in a better form.
 
 This directory holds what the image needs beside the shim — the vendored schema
-dumps and upstream's init script — and the notes below, which are the record of
+dumps — and the notes below, which are the record of
 what has been established about the shim's behaviour. Read them before spending
 a day on something already ruled out.
 
@@ -77,6 +77,16 @@ manager depends on, so `subreaper.c` is no longer carried here; it ships
 `seed_data.sql` and `seed_shadow_table_from_pg.py`, which seeds the shadow's
 `preferences` table from PostgreSQL; and its two schema dumps agree with each
 other about `metadata_items.user_square_art_url`, where `v1.2.0`'s did not.
+
+Upstream's init script (`scripts/standalone-entrypoint.sh`) and that seeding
+helper were vendored here and run by the manager with bash until 2026-09-30.
+They are Go now, in `pkg/plex/bootstrap`, which is what lets the image be
+`scratch` with no shell, psql, sqlite3 or Python. The port is held to what the
+scripts produced, not to a reading of them: `testdata/shadow_objects.golden`
+is what Debian's sqlite3 3.40.1 built from `sqlite_schema.sql`, failures
+included, and `testdata/postgres_schema.golden` is every object, sequence value
+and row count psql left after loading the four PostgreSQL files. When the
+schema files are re-vendored, re-record both (the test files say how).
 
 ## The dump does not record one of the migrations it already contains
 
@@ -291,7 +301,8 @@ be fixed, because that is the order they appear if anyone repeats this.
    what AArch64 has always done: redirect the ASCII charset to UTF-8.
 7. **The init script stripped the dashes out of the machine identifier**
    (`tr -d '-'`), leaving 32 bare hex characters where Plex parses a UUID:
-   `std::domain_error: Invalid uuid length`. Fixed in our vendored copy.
+   `std::domain_error: Invalid uuid length`. Fixed in our vendored copy, and
+   kept in its Go port (`pkg/plex/bootstrap`).
 8. **The worker thread did not block signals.** A library thread must never be
    a candidate for the process's asynchronous signals; Plex handles its own on
    a dedicated `sigwait` thread, and when the kernel picked ours instead it

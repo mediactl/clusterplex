@@ -3,41 +3,37 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
+
+	"github.com/jackc/pgx/v5"
+
+	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
 )
 
-// InitScript is upstream's own initialisation, shipped in the image.
-//
-// It prepares the PostgreSQL schema, rebuilds the SQLite shadow databases the
-// shim keeps beside it, and creates the directories Plex expects. We run it
-// rather than reimplementing it: the shim is particular about the state it
-// starts from, and every difference we introduced turned into a crash that
-// looked like something else.
-//
-// It is written as an s6 init script, so it sets up and exits without starting
-// Plex, which is the half we want.
-const InitScript = "/usr/local/lib/plex-postgresql/standalone-entrypoint.sh"
+// SchemaDir is where the image puts the shim's SQL files.
+const SchemaDir = "/usr/local/lib/plex-postgresql"
 
-// prepareDatabases runs that script and waits for it.
+// plexTempDir is created world-writable for Plex, as upstream's image does.
+const plexTempDir = "/run/plex-temp"
+
+// prepareDatabases prepares the PostgreSQL schema, rebuilds the SQLite shadow
+// databases the shim keeps beside it, and creates the directories Plex
+// expects, before Plex starts.
 //
-// Its output goes to the log as the script writes it, because when this fails
-// it is the only account of what happened — the manager deliberately knows
-// nothing about the schema.
+// This was upstream's own initialisation script, run with bash. It is Go now
+// (pkg/plex/bootstrap), which is what lets the image carry no shell, psql,
+// sqlite3 or Python. The port follows the script step for step, because the
+// shim is particular about the state it starts from.
 func (m *Manager) prepareDatabases(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "bash", m.Config.InitScript)
-	// The script reads PLEX_PG_* from the environment, the same ones the shim
-	// reads, so it is given exactly what Plex will be given.
-	cmd.Env = append(os.Environ(), pgEnv(m.Config)...)
-	out, err := cmd.CombinedOutput()
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if line != "" {
-			m.Logger.Info(line, "component", "plex-postgresql-init")
-		}
-	}
+	cfg, err := pgx.ParseConfig(m.Config.Postgres.DSN())
 	if err != nil {
-		return fmt.Errorf("%s: %w", m.Config.InitScript, err)
+		return fmt.Errorf("postgres settings: %w", err)
 	}
-	return nil
+	return plexbootstrap.Run(ctx, m.Logger.With("component", "plex-postgresql-init"), plexbootstrap.Options{
+		Connect:      plexbootstrap.ConnectWith(cfg),
+		Schema:       m.Config.Postgres.Schema,
+		SchemaDir:    m.Config.SchemaDir,
+		PlexDir:      m.Config.PlexDir,
+		TempDir:      plexTempDir,
+		ShadowTables: plexbootstrap.ShadowTables(m.Config.ShadowSyncTables),
+	})
 }

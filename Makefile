@@ -1,6 +1,9 @@
 GOBIN ?= $(shell go env GOPATH)/bin
 GOLANGCI_LINT ?= $(GOBIN)/golangci-lint-v2
 IMG ?= ghcr.io/mediactl/cluster-plex:dev
+# release is FROM scratch, with no shell; debug is the same image with busybox
+# in /bin, for kubectl exec and the end-to-end suite.
+DOCKER_TARGET ?= release
 NETNS_TEST_BIN ?= $(CURDIR)/bin/plex-net.test
 
 .PHONY: all
@@ -53,8 +56,8 @@ test-netns: ## pkg/plex/net against real network namespaces
 ##@ Images and clusters
 
 .PHONY: docker-build
-docker-build: ## Build the image (the Dockerfile builds the PostgreSQL shim itself)
-	docker build -f Dockerfile -t $(IMG) .
+docker-build: ## Build the image; DOCKER_TARGET=debug adds busybox, which make e2e needs
+	docker build -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
 
 .PHONY: helm-lint
 helm-lint: ## Lint and render the Helm chart

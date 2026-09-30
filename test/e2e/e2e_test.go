@@ -64,6 +64,10 @@ func execPod(t *testing.T, pod string, cmd ...string) string {
 // container is still coming up is "not yet", not a test failure.
 func tryExecPod(pod string, cmd ...string) (string, error) {
 	out, err := exec.Command("kubectl", append([]string{"exec", "-n", namespace, pod, "--"}, cmd...)...).CombinedOutput()
+	if err != nil && strings.Contains(string(out), "executable file not found") {
+		// The release image is FROM scratch and has no sh, cat or find.
+		err = fmt.Errorf("%w: the image has no %s; build it with make docker-build DOCKER_TARGET=debug", err, cmd[0])
+	}
 	return string(out), err
 }
 
