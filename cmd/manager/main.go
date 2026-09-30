@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -70,6 +71,13 @@ type Manager struct {
 	// go with it: left running it finds Plex gone and restarts the container
 	// over what is really a clean handover. Guarded by mu.
 	stopHealth context.CancelFunc
+	// stopLeader ends the provisioner and the clustarr watcher started on
+	// winning the Lease. Guarded by mu.
+	stopLeader context.CancelFunc
+	// provisionEvery is the provisioner's resync period; zero is 10m.
+	provisionEvery time.Duration
+	// Dynamic reads clustarr's objects; nil unless Clustarr.Enabled.
+	Dynamic dynamic.Interface
 
 	mu         sync.RWMutex
 	isReady    bool
@@ -105,9 +113,14 @@ func run() int {
 	}
 	tracer, metrics := telemetry.InitTelemetry()
 
-	k8sClient, err := newK8sClient()
+	restCfg, err := newRestConfig()
 	if err != nil {
 		logger.Error("load kubernetes config", "error", err)
+		return 1
+	}
+	k8sClient, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		logger.Error("build kubernetes client", "error", err)
 		return 1
 	}
 
@@ -138,6 +151,12 @@ func run() int {
 		DB:         &plexdb.DB{Querier: pool},
 		pool:       pool,
 		isStarting: true,
+	}
+	if cfg.Clustarr.Enabled {
+		if m.Dynamic, err = dynamic.NewForConfig(restCfg); err != nil {
+			logger.Error("build the clustarr client", "error", err)
+			return 1
+		}
 	}
 	m.publisher = &plexroute.Publisher{
 		Client: k8sClient, Namespace: cfg.Namespace, LeaseName: cfg.LeaseName, Pod: cfg.PodName,
@@ -284,17 +303,14 @@ func (m *Manager) patchPod(ctx context.Context, payload []byte) (any, error) {
 		Patch(ctx, m.Config.PodName, types.StrategicMergePatchType, payload, metav1.PatchOptions{})
 }
 
-func newK8sClient() (kubernetes.Interface, error) {
+func newRestConfig() (*rest.Config, error) {
 	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		kubeconfig := os.Getenv("KUBECONFIG")
-		if kubeconfig == "" {
-			kubeconfig = os.ExpandEnv("$HOME/.kube/config")
-		}
-		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, err
-		}
+	if err == nil {
+		return cfg, nil
 	}
-	return kubernetes.NewForConfig(cfg)
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		kubeconfig = os.ExpandEnv("$HOME/.kube/config")
+	}
+	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }

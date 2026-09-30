@@ -24,6 +24,18 @@ type Metrics struct {
 	PlexSessions prometheus.Gauge
 	// PlexTranscodeSessions counts those it is transcoding.
 	PlexTranscodeSessions prometheus.Gauge
+	// ProvisionRuns counts provisioner passes by result.
+	ProvisionRuns *prometheus.CounterVec
+	// LibraryAgentDrift is 1 while a configured library is on another agent.
+	LibraryAgentDrift *prometheus.GaugeVec
+	// ClustarrScans counts rescans sent for clustarr changes, by scope.
+	ClustarrScans *prometheus.CounterVec
+	// ClustarrRefreshes counts item refreshes sent for clustarr changes.
+	ClustarrRefreshes prometheus.Counter
+	// ClustarrUnmappable counts clustarr paths no pathMapping covers.
+	ClustarrUnmappable prometheus.Counter
+	// ClustarrUncovered counts mapped paths no library covers.
+	ClustarrUncovered prometheus.Counter
 }
 
 // InitTelemetry returns the tracer and registers the metrics.
@@ -58,6 +70,30 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 		PlexTranscodeSessions: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "clusterplex_plex_transcode_sessions",
 			Help: "Of those, the ones it is transcoding",
+		}),
+		ProvisionRuns: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_provision_runs_total",
+			Help: "Provisioner passes by result: converged, pending or error",
+		}, []string{"result"}),
+		LibraryAgentDrift: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "clusterplex_library_agent_drift",
+			Help: "1 while a configured library is on another agent than its configured provider",
+		}, []string{"library"}),
+		ClustarrScans: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_clustarr_scans_total",
+			Help: "Library scans sent because clustarr changed a file, by scope: folder or section",
+		}, []string{"scope"}),
+		ClustarrRefreshes: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "clusterplex_clustarr_refreshes_total",
+			Help: "Item metadata refreshes sent because clustarr changed an item",
+		}),
+		ClustarrUnmappable: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "clusterplex_clustarr_unmappable_paths_total",
+			Help: "clustarr file paths no pathMapping covers, dropped",
+		}),
+		ClustarrUncovered: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "clusterplex_clustarr_uncovered_paths_total",
+			Help: "Mapped clustarr file paths no Plex library covers, dropped",
 		}),
 	}
 	return tracer, metrics

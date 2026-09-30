@@ -107,11 +107,15 @@ func (m *Manager) runPlex(ctx context.Context) {
 //
 // It deliberately does not touch Plex. Winning the lease does not make this
 // pod serve, because it was already serving.
+//
+// It also starts the leader-only work (leaderwork.go): provisioning and the
+// clustarr watch.
 func (m *Manager) takePlexTV(ctx context.Context) {
 	m.Logger.Info("this pod now owns plex.tv", "lease", m.Config.LeaseName)
 	m.Metrics.LeaderStatus.Set(1)
 	m.markReady(ctx, RoleLeader)
 	m.applyEgress(ctx, true)
+	m.startLeaderWork(ctx)
 }
 
 // releasePlexTV gives it up again and drops the route.
@@ -121,6 +125,7 @@ func (m *Manager) takePlexTV(ctx context.Context) {
 // stopped re-acquiring the lease and never reset its readiness, so it sat at
 // 0/1 for ever and the rolling update that was waiting on it never finished.
 func (m *Manager) releasePlexTV(ctx context.Context) {
+	m.stopLeaderWork()
 	m.Metrics.LeaderStatus.Set(0)
 	m.markReady(ctx, RoleWorker)
 	m.applyEgress(ctx, false)
@@ -461,6 +466,7 @@ func (m *Manager) withdraw(ctx context.Context) {
 // would count three missed checks and restart the container on the way out.
 func (m *Manager) shutdown(ctx context.Context) {
 	m.stopHealthWatch()
+	m.stopLeaderWork()
 	m.withdraw(ctx)
 	if err := m.sup.Stop(ctx); err != nil {
 		m.Logger.Error("stop Plex Media Server", "error", err)
