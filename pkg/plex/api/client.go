@@ -137,8 +137,8 @@ func (c *Client) Sections(ctx context.Context) ([]Section, error) {
 }
 
 // CreateSection creates a library in the form PMS's API documents. If PMS
-// refuses that form, it retries in the older form working third-party code
-// uses (spec §5.3).
+// does not serve that form or refuses it, it retries in the older form
+// working third-party code uses (spec §5.3).
 func (c *Client) CreateSection(ctx context.Context, s NewSection) error {
 	q := url.Values{
 		"name": {s.Name}, "type": {strconv.Itoa(sectionTypes[s.Type])}, "agent": {s.Agent},
@@ -149,7 +149,9 @@ func (c *Client) CreateSection(ctx context.Context, s NewSection) error {
 		q.Add("locations", l)
 	}
 	err := c.do(ctx, http.MethodPost, "/library/sections/all", q, nil)
-	if !errors.Is(err, ErrBadRequest) {
+	// PMS 1.43.4 does not serve the documented form (404); a PMS that
+	// serves it but rejects the request answers 400.
+	if !errors.Is(err, ErrBadRequest) && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	legacy := url.Values{

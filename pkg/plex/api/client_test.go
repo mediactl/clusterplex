@@ -116,3 +116,15 @@ func TestItMapsStatusesToSentinels(t *testing.T) {
 	_, err := c.Sections(t.Context())
 	assert.ErrorIs(t, err, plexapi.ErrResponseTooLarge)
 }
+
+// TestCreateSectionFallsBackWhenTheDocumentedFormIsNotServed: PMS 1.43.4
+// answers 404 to POST /library/sections/all, the form its API docs give
+// (kind-cluster-plex, 2026-09-30).
+func TestCreateSectionFallsBackWhenTheDocumentedFormIsNotServed(t *testing.T) {
+	c, calls := recorder(t, nil, map[string]int{"POST /library/sections/all": http.StatusNotFound})
+	require.NoError(t, c.CreateSection(t.Context(), plexapi.NewSection{Name: "TV", Type: "show",
+		Agent: "tv.plex.agents.custom.clustarr.tv", Scanner: "Plex TV Series", Language: "en-US",
+		GroupID: 8, Locations: []string{"/library/tv"}}))
+	require.Len(t, *calls, 2)
+	assert.Equal(t, "POST /library/sections", (*calls)[1].Method+" "+(*calls)[1].Path)
+}
