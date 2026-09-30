@@ -377,9 +377,16 @@ plex:
   than 50 folders at once rescan the library instead. An item whose metadata
   changes is refreshed. `pathMappings` translate clustarr's paths to Plex's,
   longest prefix first.
-- **Plex has to see clustarr's files.** Set `storage.media.existingClaim` (and
-  `subPath` if needed) to the claim clustarr's library is on; the chart then
-  mounts it at `/media` instead of creating `<release>-media`.
+- **Plex has to see clustarr's files.** Set `storage.media.existingClaim`
+  (and `subPath` if needed) to a claim **in Plex's namespace** bound to the
+  same volume as clustarr's library; the chart then mounts it at `/media`
+  instead of creating `<release>-media`. A claim is namespaced, so
+  clustarr's own claim in its namespace cannot be named here: create a
+  second claim (for NFS, a second PersistentVolume for the same export, or
+  one the storage class lets two namespaces share).
+- Watch `clusterplex_clustarr_watch_synced`: it reads 0 when the watch has
+  not synced within two minutes, which is what missing clustarr CRDs, a
+  wrong `plex.clustarr.namespace` or missing RBAC look like.
 
 | Metric | Meaning |
 | --- | --- |
@@ -389,6 +396,7 @@ plex:
 | `clusterplex_clustarr_refreshes_total` | Item refreshes sent |
 | `clusterplex_clustarr_unmappable_paths_total` | clustarr paths no mapping covers |
 | `clusterplex_clustarr_uncovered_paths_total` | Mapped paths no library covers |
+| `clusterplex_clustarr_watch_synced` | 1 once the clustarr watch has synced |
 
 ## Applying a change
 

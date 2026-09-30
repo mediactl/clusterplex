@@ -123,8 +123,10 @@ storage:
     size: 1Ti
     accessMode: ReadWriteMany
     storageClass: ""
-    # Mount an existing claim instead of creating <release>-media — the
-    # claim clustarr's library is on, so Plex scans what clustarr imports.
+    # Mount an existing claim instead of creating <release>-media, so Plex
+    # scans what clustarr imports. It must be a claim in this release's
+    # namespace bound to the same volume as clustarr's library: claims are
+    # namespaced, so clustarr's own cannot be named here.
     existingClaim: ""
     subPath: ""
 
