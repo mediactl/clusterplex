@@ -2,6 +2,7 @@ package clustarrwatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
@@ -16,6 +17,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
+	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
 // Counters are the watcher's metrics, injected so this package does not
@@ -28,6 +30,11 @@ type Counters struct {
 	// Synced reports whether the informers have synced; false once they
 	// have not within SyncTimeout.
 	Synced func(ok bool)
+	// Seeded, SeedUnmatched and SeedErrors count Seed's outcomes: a file
+	// written into Plex, one Plex has no part for yet, and a failure.
+	Seeded        func()
+	SeedUnmatched func()
+	SeedErrors    func()
 }
 
 // Watcher follows one clustarr namespace and tells one Plex what changed.
@@ -54,6 +61,15 @@ type Watcher struct {
 	// watcher reports it; zero is 2m.
 	SyncTimeout time.Duration
 
+	// Seed writes a file's probe and markers into Plex's library
+	// (pkg/plexseed, ADR 0006); nil seeds nothing. Every file is seeded
+	// once after the informers sync and every SeedResync (6h), and a file
+	// whose probe or markers change is seeded again.
+	Seed       func(ctx context.Context, plexPath string, in plexseed.Input) error
+	SeedResync time.Duration
+	// SeedBatch is how many files one flush seeds (default 50).
+	SeedBatch int
+
 	sched *Scheduler
 	ctx   context.Context
 
@@ -63,6 +79,10 @@ type Watcher struct {
 	// pending holds mapped paths that could not be placed because Plex did
 	// not answer; each flush tries them again.
 	pending []string
+
+	seedMu    sync.Mutex
+	seedQueue map[string]*unstructured.Unstructured
+	seedOrder []string
 }
 
 func (w *Watcher) log() *slog.Logger {
@@ -81,18 +101,25 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 	f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
 	var synced []cache.InformerSynced
-	add := func(gvr schema.GroupVersionResource, h cache.ResourceEventHandler) error {
+	add := func(gvr schema.GroupVersionResource, hs ...cache.ResourceEventHandler) (cache.SharedIndexInformer, error) {
 		inf := f.ForResource(gvr).Informer()
 		if err := inf.SetTransform(Trim); err != nil {
-			return err
+			return nil, err
 		}
-		if _, err := inf.AddEventHandler(h); err != nil {
-			return err
+		for _, h := range hs {
+			if _, err := inf.AddEventHandler(h); err != nil {
+				return nil, err
+			}
 		}
 		synced = append(synced, inf.HasSynced)
-		return nil
+		return inf, nil
 	}
-	if err := add(MediaFiles, w.fileHandler()); err != nil {
+	fileHandlers := []cache.ResourceEventHandler{w.fileHandler()}
+	if w.Seed != nil {
+		fileHandlers = append(fileHandlers, w.seedHandler())
+	}
+	files, err := add(MediaFiles, fileHandlers...)
+	if err != nil {
 		return err
 	}
 	for _, it := range []struct {
@@ -107,7 +134,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		if it.provider == "" {
 			continue
 		}
-		if err := add(it.gvr, w.itemHandler(it.plexType, it.provider)); err != nil {
+		if _, err := add(it.gvr, w.itemHandler(it.plexType, it.provider)); err != nil {
 			return err
 		}
 	}
@@ -116,6 +143,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 		return ctx.Err()
 	}
 	caughtUp := false
+	var nextResync time.Time // zero: seed everything on the first tick
+	resync := w.SeedResync
+	if resync <= 0 {
+		resync = 6 * time.Hour
+	}
 
 	every := w.FlushEvery
 	if every <= 0 {
@@ -133,6 +165,17 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 			w.retryPending()
 			w.sched.Flush(ctx)
+			if w.Seed != nil {
+				if now := time.Now(); !now.Before(nextResync) {
+					for _, obj := range files.GetStore().List() {
+						if u, ok := obj.(*unstructured.Unstructured); ok {
+							w.enqueueSeed(u)
+						}
+					}
+					nextResync = now.Add(resync)
+				}
+				w.flushSeeds(ctx)
+			}
 		}
 	}
 }
@@ -386,5 +429,76 @@ func report(f func(bool), v bool) {
 func inc(f func()) {
 	if f != nil {
 		f()
+	}
+}
+
+// seedHandler queues a file for Seed when what the seeder writes changed:
+// its path, probe or markers. The initial list is left to the first
+// resync, which seeds every file.
+func (w *Watcher) seedHandler() cache.ResourceEventHandler {
+	return cache.ResourceEventHandlerDetailedFuncs{
+		AddFunc: func(obj any, initial bool) {
+			if u, ok := obj.(*unstructured.Unstructured); ok && !initial {
+				w.enqueueSeed(u)
+			}
+		},
+		UpdateFunc: func(oldObj, newObj any) {
+			o, ok1 := oldObj.(*unstructured.Unstructured)
+			n, ok2 := newObj.(*unstructured.Unstructured)
+			if ok1 && ok2 && SeedKey(o) != SeedKey(n) {
+				w.enqueueSeed(n)
+			}
+		},
+	}
+}
+
+func (w *Watcher) enqueueSeed(u *unstructured.Unstructured) {
+	w.seedMu.Lock()
+	defer w.seedMu.Unlock()
+	if w.seedQueue == nil {
+		w.seedQueue = map[string]*unstructured.Unstructured{}
+	}
+	if _, queued := w.seedQueue[u.GetName()]; !queued {
+		w.seedOrder = append(w.seedOrder, u.GetName())
+	}
+	w.seedQueue[u.GetName()] = u
+}
+
+// flushSeeds seeds up to SeedBatch queued files. A file Plex has no part
+// for, or one that fails, waits for its next change or the next resync.
+func (w *Watcher) flushSeeds(ctx context.Context) {
+	batch := w.SeedBatch
+	if batch <= 0 {
+		batch = 50
+	}
+	w.seedMu.Lock()
+	n := min(batch, len(w.seedOrder))
+	names := append([]string(nil), w.seedOrder[:n]...)
+	w.seedOrder = w.seedOrder[n:]
+	objs := make([]*unstructured.Unstructured, 0, n)
+	for _, name := range names {
+		objs = append(objs, w.seedQueue[name])
+		delete(w.seedQueue, name)
+	}
+	w.seedMu.Unlock()
+
+	for _, u := range objs {
+		in, ok := SeedInputOf(u)
+		if !ok {
+			continue
+		}
+		mapped, ok := w.Mapper.Map(in.Path)
+		if !ok {
+			continue
+		}
+		switch err := w.Seed(ctx, mapped, in); {
+		case err == nil:
+			inc(w.Counters.Seeded)
+		case errors.Is(err, plexseed.ErrNotInPlex):
+			inc(w.Counters.SeedUnmatched)
+		default:
+			inc(w.Counters.SeedErrors)
+			w.log().Warn("seed Plex", "path", mapped, "error", err)
+		}
 	}
 }

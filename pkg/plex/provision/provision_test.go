@@ -186,3 +186,11 @@ func TestConfigValidate(t *testing.T) {
 		})
 	}
 }
+
+// LibraryNames are the libraries the seeder may write into: exactly the
+// provisioned ones.
+func TestLibraryNamesAreTheProvisionedLibraries(t *testing.T) {
+	cfg := plexprovision.Config{Libraries: []plexprovision.Library{{Name: "Clustarr Movies"}, {Name: "Clustarr TV"}}}
+	assert.Equal(t, []string{"Clustarr Movies", "Clustarr TV"}, cfg.LibraryNames())
+	assert.Empty(t, plexprovision.Config{}.LibraryNames())
+}

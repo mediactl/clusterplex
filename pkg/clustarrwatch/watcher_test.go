@@ -24,6 +24,7 @@ import (
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
+	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
 const ns = "clustarr-system"
@@ -303,4 +304,69 @@ func TestAWatchThatCannotSyncSaysSo(t *testing.T) {
 	t.Cleanup(cancel)
 	go func() { _ = w.Run(ctx) }()
 	require.Eventually(t, func() bool { return unsynced.Load() > 0 }, 5*time.Second, 10*time.Millisecond)
+}
+
+type seeds struct {
+	mu    sync.Mutex
+	calls []string // plex path | markers result
+	err   error
+}
+
+func (s *seeds) seed(_ context.Context, plexPath string, in plexseed.Input) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := ""
+	if in.Markers != nil {
+		result = in.Markers.Result
+	}
+	s.calls = append(s.calls, plexPath+"|"+result)
+	return s.err
+}
+
+func (s *seeds) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...)
+}
+
+func withSeeds(s *seeds) func(*clustarrwatch.Watcher) {
+	return func(w *clustarrwatch.Watcher) { w.Seed = s.seed }
+}
+
+// Every file is seeded once when the watch starts; afterwards only a change
+// to its probe or markers seeds it again, not a phase change.
+func TestFilesAreSeededAtStartAndWhenTheirProbeOrMarkersChange(t *testing.T) {
+	s := &seeds{}
+	dyn, _, _ := startWith(t, &pms{}, withSeeds(s), mediaFile("a", "/data/media/movies/Heat/Heat.mkv"))
+	require.Eventually(t, func() bool { return len(s.Calls()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, "/media/movies/Heat/Heat.mkv|", s.Calls()[0], "the Plex path, mapped")
+
+	res := dyn.Resource(clustarrwatch.MediaFiles).Namespace(ns)
+	phase := mediaFile("a", "/data/media/movies/Heat/Heat.mkv")
+	require.NoError(t, unstructured.SetNestedField(phase.Object, "Imported", "status", "phase"))
+	_, err := res.Update(t.Context(), phase, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	time.Sleep(150 * time.Millisecond)
+	assert.Len(t, s.Calls(), 1, "a phase change seeds nothing")
+
+	marked := phase.DeepCopy()
+	require.NoError(t, unstructured.SetNestedField(marked.Object, map[string]any{"result": "Found"}, "status", "markers"))
+	_, err = res.Update(t.Context(), marked, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(s.Calls()) == 2 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, "/media/movies/Heat/Heat.mkv|Found", s.Calls()[1])
+}
+
+// A file Plex has no part for yet is counted and left for the resync, not
+// retried every tick.
+func TestAFileNotInPlexIsCountedAndLeftForTheResync(t *testing.T) {
+	s := &seeds{err: plexseed.ErrNotInPlex}
+	var unmatched atomic.Int32
+	startWith(t, &pms{}, func(w *clustarrwatch.Watcher) {
+		w.Seed = s.seed
+		w.Counters.SeedUnmatched = func() { unmatched.Add(1) }
+	}, mediaFile("a", "/data/media/movies/Heat/Heat.mkv"))
+	require.Eventually(t, func() bool { return unmatched.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	assert.Len(t, s.Calls(), 1, "not retried every tick")
 }

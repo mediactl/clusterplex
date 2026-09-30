@@ -42,6 +42,10 @@ func (p *Pool) Ping(ctx context.Context) error {
 // Close releases the pool.
 func (p *Pool) Close() { p.pool.Close() }
 
+// Begin opens a transaction: the seeder (pkg/plexseed) writes a file's
+// rows in one.
+func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) { return p.pool.Begin(ctx) }
+
 type row struct{ inner pgx.Row }
 
 func (r row) Scan(dest ...any) error {

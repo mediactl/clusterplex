@@ -181,15 +181,16 @@ SELECT g.id, coalesce(g.text, ''), coalesce(g."index", 0), coalesce(g.time_offse
 				ofKind = append(ofKind, h)
 			}
 		}
-		if len(desired) == 0 {
+		switch {
+		case len(desired) == 0:
 			for _, h := range ofKind {
 				if ours(h.extra) {
 					drop = append(drop, h)
 				}
 			}
-		} else if !same(ofKind, desired) {
+		case !same(ofKind, desired):
 			drop = ofKind
-		} else {
+		default:
 			continue
 		}
 		for _, h := range drop {

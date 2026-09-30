@@ -94,6 +94,16 @@ func (c Config) ProviderFor(sectionType string) string {
 	return ""
 }
 
+// LibraryNames are the configured libraries' names: the only ones the
+// seeder writes into (ADR 0006).
+func (c Config) LibraryNames() []string {
+	var out []string
+	for _, l := range c.Libraries {
+		out = append(out, l.Name)
+	}
+	return out
+}
+
 // Provisioner reconciles Config into one Plex.
 type Provisioner struct {
 	PMS *plexapi.Client

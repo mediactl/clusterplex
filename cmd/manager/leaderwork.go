@@ -9,6 +9,7 @@ import (
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
+	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
 const (
@@ -119,6 +120,18 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 				m.Metrics.ClustarrWatchSynced.Set(v)
 			},
 		},
+	}
+	if m.pool != nil {
+		// ADR 0006: clustarr's probe and TheIntroDB's markers are written
+		// into Plex's library, only in the libraries provisioned here.
+		seeder := &plexseed.Seeder{DB: m.pool, Libraries: m.Config.Provision.LibraryNames()}
+		w.Seed = func(ctx context.Context, plexPath string, in plexseed.Input) error {
+			_, err := seeder.Seed(ctx, plexPath, in)
+			return err
+		}
+		w.Counters.Seeded = func() { m.Metrics.SeedFiles.WithLabelValues("seeded").Inc() }
+		w.Counters.SeedUnmatched = func() { m.Metrics.SeedFiles.WithLabelValues("unmatched").Inc() }
+		w.Counters.SeedErrors = func() { m.Metrics.SeedFiles.WithLabelValues("error").Inc() }
 	}
 	if err := w.Run(ctx); err != nil && ctx.Err() == nil {
 		m.Logger.Error("clustarr watch stopped", "error", err)

@@ -150,3 +150,17 @@ func decode(m map[string]any, out any) error {
 	}
 	return json.Unmarshal(b, out)
 }
+
+// SeedKey changes exactly when what the seeder writes for a MediaFile does:
+// its path, probe hash, probe or markers.
+func SeedKey(u *unstructured.Unstructured) string {
+	keep := map[string]any{}
+	for _, f := range [][]string{pathField, sizeField, probeHashField, probeField, markersField} {
+		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
+			keep[strings.Join(f, ".")] = v
+		}
+	}
+	b, _ := json.Marshal(keep)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}

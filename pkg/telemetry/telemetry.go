@@ -39,6 +39,9 @@ type Metrics struct {
 	// ClustarrWatchSynced is 1 once the clustarr watch has synced, 0 while
 	// it has not within its timeout.
 	ClustarrWatchSynced prometheus.Gauge
+	// SeedFiles counts the seeder's outcomes per file (pkg/plexseed): seeded,
+	// unmatched (Plex has no part for it) or error.
+	SeedFiles *prometheus.CounterVec
 }
 
 // InitTelemetry returns the tracer and registers the metrics.
@@ -90,6 +93,10 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Name: "clusterplex_clustarr_refreshes_total",
 			Help: "Item metadata refreshes sent because clustarr changed an item",
 		}),
+		SeedFiles: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_seed_files_total",
+			Help: "Files the seeder wrote clustarr's streams and markers for into Plex, by outcome: seeded, unmatched or error",
+		}, []string{"outcome"}),
 		ClustarrUnmappable: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "clusterplex_clustarr_unmappable_paths_total",
 			Help: "clustarr file paths no pathMapping covers, dropped",
