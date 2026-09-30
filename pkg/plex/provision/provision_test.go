@@ -35,10 +35,14 @@ func config(base string, switchAgent bool) plexprovision.Config {
 	return plexprovision.Config{
 		Providers: []plexprovision.ProviderRef{{URI: base + "/plex/movies"}, {URI: base + "/plex/tv"}},
 		Libraries: []plexprovision.Library{
-			{Name: "Movies", Type: "movie", Provider: "tv.plex.agents.custom.clustarr.movies", Language: "en-US",
-				Locations: []string{"/media/movies"}, SwitchAgent: switchAgent},
-			{Name: "TV", Type: "show", Provider: "tv.plex.agents.custom.clustarr.tv", Language: "en-US",
-				Locations: []string{"/media/tv"}},
+			{
+				Name: "Movies", Type: "movie", Provider: "tv.plex.agents.custom.clustarr.movies", Language: "en-US",
+				Locations: []string{"/media/movies"}, SwitchAgent: switchAgent,
+			},
+			{
+				Name: "TV", Type: "show", Provider: "tv.plex.agents.custom.clustarr.tv", Language: "en-US",
+				Locations: []string{"/media/tv"},
+			},
 		},
 	}
 }
@@ -77,12 +81,16 @@ func TestTheLiveShapeIsAdoptedAndItsDriftOnlyReported(t *testing.T) {
 			{ID: 7, Title: "Clustarr Movies", PrimaryIdentifier: "tv.plex.agents.custom.clustarr.movies"},
 			{ID: 8, Title: "Clustarr TV", PrimaryIdentifier: "tv.plex.agents.custom.clustarr.tv"},
 		},
-		sections: []plexapi.Section{{Key: "1", Type: "movie", Title: "Movies", Agent: "tv.plex.agents.movie",
-			Location: []plexapi.Location{{Path: "/media/movies"}}}},
+		sections: []plexapi.Section{{
+			Key: "1", Type: "movie", Title: "Movies", Agent: "tv.plex.agents.movie",
+			Location: []plexapi.Location{{Path: "/media/movies"}},
+		}},
 	}
 	drift := map[string]bool{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(base, false),
-		Drift: func(lib string, d bool) { drift[lib] = d }}
+	p := &plexprovision.Provisioner{
+		PMS: pms.server(t), Config: config(base, false),
+		Drift: func(lib string, d bool) { drift[lib] = d },
+	}
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
@@ -94,8 +102,10 @@ func TestSwitchAgentMovesTheLibraryAndForcesARefresh(t *testing.T) {
 	base := roots(t, nil)
 	pms := &fakePMS{sections: []plexapi.Section{{Key: "1", Type: "movie", Title: "Movies", Agent: "tv.plex.agents.movie"}}}
 	drift := map[string]bool{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(base, true),
-		Drift: func(lib string, d bool) { drift[lib] = d }}
+	p := &plexprovision.Provisioner{
+		PMS: pms.server(t), Config: config(base, true),
+		Drift: func(lib string, d bool) { drift[lib] = d },
+	}
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
@@ -135,7 +145,8 @@ func TestAProviderAtANewURIIsUpdatedNotAddedAgain(t *testing.T) {
 		groups:    []plexapi.Group{{ID: 7, PrimaryIdentifier: "tv.plex.agents.custom.clustarr.movies"}},
 	}
 	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: plexprovision.Config{
-		Providers: []plexprovision.ProviderRef{{URI: base + "/plex/movies"}}}}
+		Providers: []plexprovision.ProviderRef{{URI: base + "/plex/movies"}},
+	}}
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"PUT /media/providers/metadata/9"}, pms.Writes())

@@ -221,8 +221,10 @@ func (p *Provisioner) ensureLibrary(ctx context.Context, log *slog.Logger, lib L
 	}
 	i := slices.IndexFunc(sections, func(s plexapi.Section) bool { return s.Title == lib.Name })
 	if i < 0 {
-		err := p.PMS.CreateSection(ctx, plexapi.NewSection{Name: lib.Name, Type: lib.Type, Agent: lib.Provider,
-			Scanner: scanners[lib.Type], Language: language, GroupID: groupID, Locations: lib.Locations})
+		err := p.PMS.CreateSection(ctx, plexapi.NewSection{
+			Name: lib.Name, Type: lib.Type, Agent: lib.Provider,
+			Scanner: scanners[lib.Type], Language: language, GroupID: groupID, Locations: lib.Locations,
+		})
 		if err != nil {
 			return fmt.Errorf("library %q: create: %w", lib.Name, err)
 		}

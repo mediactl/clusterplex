@@ -82,8 +82,10 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		for _, l := range q["locations"] {
 			locs = append(locs, plexapi.Location{Path: l})
 		}
-		f.sections = append(f.sections, plexapi.Section{Key: strconv.Itoa(len(f.sections) + 1), Type: typ,
-			Title: q.Get("name"), Agent: q.Get("agent"), Language: q.Get("language"), Location: locs})
+		f.sections = append(f.sections, plexapi.Section{
+			Key: strconv.Itoa(len(f.sections) + 1), Type: typ,
+			Title: q.Get("name"), Agent: q.Get("agent"), Language: q.Get("language"), Location: locs,
+		})
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/library/sections/"):
 		write()
 		key := strings.TrimPrefix(r.URL.Path, "/library/sections/")

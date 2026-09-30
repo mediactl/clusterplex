@@ -396,8 +396,10 @@ plex:
 	require.Len(t, c.Provision.Libraries, 1)
 	assert.True(t, c.Provision.Libraries[0].SwitchAgent, "camelCase keys survive viper's lowercasing")
 	assert.Equal(t, []string{"/media/movies"}, c.Provision.Libraries[0].Locations)
-	assert.Equal(t, ClustarrConfig{Enabled: true, Namespace: "clustarr-system",
-		PathMappings: []clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}}}, c.Clustarr)
+	assert.Equal(t, ClustarrConfig{
+		Enabled: true, Namespace: "clustarr-system",
+		PathMappings: []clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}},
+	}, c.Clustarr)
 }
 
 func TestProvisioningIsOffWhenNothingIsDeclared(t *testing.T) {

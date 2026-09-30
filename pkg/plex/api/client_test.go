@@ -52,8 +52,10 @@ func TestItReadsProvidersGroupsAndSectionsAsJSON(t *testing.T) {
 
 	ss, err := c.Sections(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, []plexapi.Section{{Key: "1", Type: "movie", Title: "Movies", Agent: "tv.plex.agents.movie", Language: "en-US",
-		Location: []plexapi.Location{{Path: "/media/Movies"}}}}, ss)
+	assert.Equal(t, []plexapi.Section{{
+		Key: "1", Type: "movie", Title: "Movies", Agent: "tv.plex.agents.movie", Language: "en-US",
+		Location: []plexapi.Location{{Path: "/media/Movies"}},
+	}}, ss)
 
 	for _, c := range *calls {
 		assert.Equal(t, "tok", c.Token, "%s %s carries the token", c.Method, c.Path)
@@ -66,9 +68,11 @@ func TestItSendsWritesWithTheirParameters(t *testing.T) {
 	require.NoError(t, c.AddProvider(ctx, "http://x/plex/movies"))
 	require.NoError(t, c.UpdateProvider(ctx, 9, "http://y/plex/movies"))
 	require.NoError(t, c.AddGroup(ctx, "Clustarr Movies", "tv.plex.agents.custom.clustarr.movies"))
-	require.NoError(t, c.CreateSection(ctx, plexapi.NewSection{Name: "Movies", Type: "movie",
+	require.NoError(t, c.CreateSection(ctx, plexapi.NewSection{
+		Name: "Movies", Type: "movie",
 		Agent: "tv.plex.agents.custom.clustarr.movies", Scanner: "Plex Movie", Language: "en-US",
-		GroupID: 7, Locations: []string{"/media/a", "/media/b"}}))
+		GroupID: 7, Locations: []string{"/media/a", "/media/b"},
+	}))
 	require.NoError(t, c.SetSectionAgent(ctx, "1", "tv.plex.agents.custom.clustarr.movies", 7))
 	require.NoError(t, c.RefreshSection(ctx, "1", "/media/a/Heat (1995)", false))
 	require.NoError(t, c.RefreshSection(ctx, "1", "", true))
@@ -92,9 +96,11 @@ func TestItSendsWritesWithTheirParameters(t *testing.T) {
 
 func TestCreateSectionFallsBackToTheOlderFormOnBadRequest(t *testing.T) {
 	c, calls := recorder(t, nil, map[string]int{"POST /library/sections/all": http.StatusBadRequest})
-	require.NoError(t, c.CreateSection(t.Context(), plexapi.NewSection{Name: "TV", Type: "show",
+	require.NoError(t, c.CreateSection(t.Context(), plexapi.NewSection{
+		Name: "TV", Type: "show",
 		Agent: "tv.plex.agents.custom.clustarr.tv", Scanner: "Plex TV Series", Language: "en-US",
-		GroupID: 8, Locations: []string{"/media/tv"}}))
+		GroupID: 8, Locations: []string{"/media/tv"},
+	}))
 	require.Len(t, *calls, 2)
 	last := (*calls)[1]
 	assert.Equal(t, "POST /library/sections", last.Method+" "+last.Path)

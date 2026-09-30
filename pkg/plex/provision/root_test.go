@@ -20,8 +20,11 @@ func TestFetchRoot(t *testing.T) {
 		want    plexprovision.Root
 		wantErr error
 	}{
-		{"a provider", 200, `{"MediaProvider":{"identifier":"tv.plex.agents.custom.clustarr.movies","title":"Clustarr Movies","Types":[{"type":1}]}}`,
-			plexprovision.Root{Identifier: "tv.plex.agents.custom.clustarr.movies", Title: "Clustarr Movies"}, nil},
+		{
+			"a provider", 200, `{"MediaProvider":{"identifier":"tv.plex.agents.custom.clustarr.movies","title":"Clustarr Movies","Types":[{"type":1}]}}`,
+			plexprovision.Root{Identifier: "tv.plex.agents.custom.clustarr.movies", Title: "Clustarr Movies"},
+			nil,
+		},
 		{"clustarr without --external-url", 503, `plex provider needs --external-url`, plexprovision.Root{}, plexprovision.ErrNotAProvider},
 		{"JSON without an identifier", 200, `{"MediaProvider":{"title":"x"}}`, plexprovision.Root{}, plexprovision.ErrNotAProvider},
 		{"an HTML page", 200, `<html>login</html>`, plexprovision.Root{}, plexprovision.ErrNotAProvider},

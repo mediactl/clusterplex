@@ -32,8 +32,11 @@ var (
 	kindField = []string{"spec", "mediaRef", "kind"}
 	// shown is what Plex displays of an item, and so what a refresh is for.
 	shown = [][]string{
-		{"status", "metadata"}, {"status", "overlay"},
-		{"status", "title"}, {"status", "overview"}, {"status", "airDate"},
+		{"status", "metadata"},
+		{"status", "overlay"},
+		{"status", "title"},
+		{"status", "overview"},
+		{"status", "airDate"},
 	}
 )
 
