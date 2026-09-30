@@ -48,6 +48,9 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/hashring/` | Consistent hashing, for both the fan-out and session pinning |
 | `pkg/mediaproxy/`, `pkg/proxy/` | Serving media, and the L4 proxy |
 | `pkg/remoteexec/` | Running helper binaries locally or on a worker pod |
+| `pkg/plex/api/` | A client for Plex's admin API: providers, agents, libraries, refreshes |
+| `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
+| `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
 
 ## Invariants
 
@@ -75,6 +78,12 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   schedulers, `PublishServerOnPlexOnlineKey`, `ManualPortMappingMode` and
   `customConnections` are written on every start and *refused* as configuration.
   See `pkg/plex/prefs/required.go` and the table in `docs/configuration.md`.
+- **Plex's configuration is provisioned through its API, never its
+  database.** Providers, agents and libraries are created (never deleted)
+  by the Lease holder from `plex.metadataProviders`/`plex.libraries`; a
+  library on another agent is only reported unless `switchAgent` is set.
+  The clustarr watch reads clustarr as unstructured objects and imports
+  none of its code.
 - **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
   CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
   failover is a failed Job that retries and shows up in `kubectl`.

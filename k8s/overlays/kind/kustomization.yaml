@@ -4,6 +4,11 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
+  # Stand-ins for clustarr: a provider root, its ui Service name and the
+  # catalog CRDs the manager watches.
+  - clustarr-fixture.yaml
+components:
+  - ../../components/clustarr
 patches:
   # kind is a throwaway test cluster, so it pins a fixed server identity: the
   # cluster stays reproducible and rebuilding it does not present a new server
@@ -52,3 +57,29 @@ patches:
       - op: replace
         path: /spec/resources/requests/storage
         value: 1Gi
+  # Provision a library on the fixture provider and follow the fixture
+  # catalog. Replaces config.yaml whole, so it repeats the base's FriendlyName.
+  - target:
+      kind: ConfigMap
+      name: clusterplex-config
+    patch: |-
+      - op: replace
+        path: /data/config.yaml
+        value: |
+          plex:
+            preferences:
+              - name: FriendlyName
+                value: Cluster Plex
+            metadataProviders:
+              - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/movies
+            libraries:
+              - name: Clustarr Fixture Movies
+                type: movie
+                provider: tv.plex.agents.custom.clustarr.movies
+                language: en-US
+                locations: [/media/fixture-movies]
+            clustarr:
+              enabled: true
+              namespace: clustarr-system
+              pathMappings:
+                - {clustarr: /data/media, plex: /media}

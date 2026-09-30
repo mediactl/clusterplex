@@ -332,6 +332,64 @@ plex-subnet: 10.255.0.0/30
 It must be IPv4 and hold at least two addresses, so `/30` or wider. The first
 usable address is the pod side, the second is Plex.
 
+## Provisioning libraries and following clustarr
+
+The manager can set up Plex's metadata agents and libraries itself, so that
+nothing is configured in the Plex UI, and keep a library current with a
+[clustarr](https://github.com/mediactl/clustarr) install. Three keys under
+`plex:` declare it (chart values of the same names):
+
+```yaml
+plex:
+  metadataProviders:
+    - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/movies
+    - uri: http://clustarr-ui.clustarr-system.svc:8080/plex/tv
+  libraries:
+    - name: Movies
+      type: movie            # movie | show
+      provider: tv.plex.agents.custom.clustarr.movies
+      language: en-US
+      locations: [/media/movies]
+      switchAgent: false
+  clustarr:
+    enabled: true
+    namespace: clustarr-system
+    pathMappings:
+      - {clustarr: /data/media, plex: /media}
+```
+
+- **Only the Lease holder acts,** so Plex's configuration has one writer at a
+  time. It provisions when it wins the Lease and every 10 minutes after,
+  backing off from 30 seconds while Plex or a provider is not answering yet.
+- **It creates and updates; it never deletes.** A provider is registered by
+  its root, one agent is created per provider (clustarr's alone, no Plex
+  fallback), and each library is created on its provider's agent. Removing an
+  entry leaves it in Plex.
+- **An existing library on another agent is only reported** unless
+  `switchAgent: true`: `clusterplex_library_agent_drift{library}` reads 1 and
+  the manager logs it. With `switchAgent` set, the library is moved onto the
+  agent and force-refreshed, since Plex otherwise applies a new agent only to
+  items added afterwards.
+- **Following clustarr** watches its MediaFiles, Movies, Series and Episodes
+  read-only (the chart grants `get`, `list` and `watch` in
+  `plex.clustarr.namespace`, nothing else). A file that appears, moves or
+  goes away rescans its folder, 30 seconds after the folder goes quiet; more
+  than 50 folders at once rescan the library instead. An item whose metadata
+  changes is refreshed. `pathMappings` translate clustarr's paths to Plex's,
+  longest prefix first.
+- **Plex has to see clustarr's files.** Set `storage.media.existingClaim` (and
+  `subPath` if needed) to the claim clustarr's library is on; the chart then
+  mounts it at `/media` instead of creating `<release>-media`.
+
+| Metric | Meaning |
+| --- | --- |
+| `clusterplex_provision_runs_total{result}` | Provisioning passes: `converged`, `pending` or `error` |
+| `clusterplex_library_agent_drift{library}` | 1 while a configured library is on another agent |
+| `clusterplex_clustarr_scans_total{scope}` | Rescans sent, `folder` or `section` |
+| `clusterplex_clustarr_refreshes_total` | Item refreshes sent |
+| `clusterplex_clustarr_unmappable_paths_total` | clustarr paths no mapping covers |
+| `clusterplex_clustarr_uncovered_paths_total` | Mapped paths no library covers |
+
 ## Applying a change
 
 The manager reads its configuration once, at startup. Editing the ConfigMap

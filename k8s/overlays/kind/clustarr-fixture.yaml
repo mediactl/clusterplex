@@ -1,0 +1,121 @@
+# Stand-ins for a clustarr install, so the end-to-end test can prove that a
+# library comes up on a clustarr agent from config.yaml alone and that a new
+# MediaFile makes the lease holder scan its folder. The provider answers only
+# its root and empty containers; the CRDs carry no schema beyond "an object",
+# which is all the watcher lists.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clustarr-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plex-provider-fixture
+  namespace: clustarr-system
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      location = /plex/movies {
+        default_type application/json;
+        return 200 '{"MediaProvider":{"identifier":"tv.plex.agents.custom.clustarr.movies","title":"Clustarr Movies","version":"1.0.0","Types":[{"type":1,"Scheme":[{"scheme":"tv.plex.agents.custom.clustarr.movies"}]}],"Feature":[{"type":"metadata","key":"/library/metadata"},{"type":"match","key":"/library/metadata/matches"}]}}';
+      }
+      location / {
+        default_type application/json;
+        return 200 '{"MediaContainer":{"size":0,"Metadata":[]}}';
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-provider-fixture
+  namespace: clustarr-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: plex-provider-fixture}
+  template:
+    metadata:
+      labels: {app: plex-provider-fixture}
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 8080}]
+          volumeMounts:
+            - {name: conf, mountPath: /etc/nginx/conf.d}
+      volumes:
+        - name: conf
+          configMap: {name: plex-provider-fixture}
+---
+# Named as clustarr's ui Service is, so the provider URI matches production's.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clustarr-ui
+  namespace: clustarr-system
+spec:
+  selector: {app: plex-provider-fixture}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mediafiles.catalog.clustarr.io
+spec:
+  group: catalog.clustarr.io
+  scope: Namespaced
+  names: {kind: MediaFile, listKind: MediaFileList, plural: mediafiles, singular: mediafile}
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: movies.catalog.clustarr.io
+spec:
+  group: catalog.clustarr.io
+  scope: Namespaced
+  names: {kind: Movie, listKind: MovieList, plural: movies, singular: movie}
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: series.catalog.clustarr.io
+spec:
+  group: catalog.clustarr.io
+  scope: Namespaced
+  names: {kind: Series, listKind: SeriesList, plural: series, singular: series}
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: episodes.catalog.clustarr.io
+spec:
+  group: catalog.clustarr.io
+  scope: Namespaced
+  names: {kind: Episode, listKind: EpisodeList, plural: episodes, singular: episode}
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}
