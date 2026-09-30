@@ -100,3 +100,43 @@ func TestAFailedScanIsTriedAgainNextFlush(t *testing.T) {
 	sch.Flush(t.Context())
 	assert.Equal(t, []string{"1:/media/movies/X"}, s.scans)
 }
+
+// TestAChangeDuringASendIsNotLost: a folder re-queued while its scan is in
+// flight has changed after the scan read it, so it is scanned again.
+func TestAChangeDuringASendIsNotLost(t *testing.T) {
+	sch, c, s := newScheduler()
+	inner := sch.Scan
+	requeued := false
+	sch.Scan = func(ctx context.Context, section, folder string) error {
+		if !requeued {
+			requeued = true
+			sch.EnqueueScan(section, folder)
+		}
+		return inner(ctx, section, folder)
+	}
+	sch.EnqueueScan("1", "/media/movies/X")
+	c.Advance(31 * time.Second)
+	sch.Flush(t.Context())
+	c.Advance(31 * time.Second)
+	sch.Flush(t.Context())
+	assert.Equal(t, []string{"1:/media/movies/X", "1:/media/movies/X"}, s.scans)
+}
+
+func TestARefreshQueuedDuringItsSendIsNotLost(t *testing.T) {
+	sch, c, s := newScheduler()
+	inner := sch.Refresh
+	requeued := false
+	sch.Refresh = func(ctx context.Context, guid string) error {
+		if !requeued {
+			requeued = true
+			sch.EnqueueRefresh(guid)
+		}
+		return inner(ctx, guid)
+	}
+	sch.EnqueueRefresh("g")
+	c.Advance(61 * time.Second)
+	sch.Flush(t.Context())
+	c.Advance(61 * time.Second)
+	sch.Flush(t.Context())
+	assert.Equal(t, []string{"g", "g"}, s.refs)
+}

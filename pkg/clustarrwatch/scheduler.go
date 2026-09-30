@@ -71,7 +71,7 @@ func (s *Scheduler) EnqueueRefresh(guid string) {
 }
 
 // Flush sends everything due. A send that fails stays queued for the next
-// Flush. It never logs a path.
+// Flush.
 func (s *Scheduler) Flush(ctx context.Context) {
 	threshold := s.Threshold
 	if threshold <= 0 {
@@ -79,24 +79,34 @@ func (s *Scheduler) Flush(ctx context.Context) {
 	}
 	now := s.now()
 
-	type scan struct{ section, folder string }
+	// Each send remembers the due times it was collected with, and clears
+	// only entries still carrying them: one re-queued during the send was
+	// changed after the send read it, so it stays for the next Flush.
+	type scan struct {
+		section, folder string
+		due             map[string]time.Time // folder -> due, as collected
+	}
 	var scans []scan
-	var refreshes []string
+	refreshes := map[string]time.Time{}
 	s.mu.Lock()
 	for section, folders := range s.scans {
 		if len(folders) > threshold {
-			scans = append(scans, scan{section, ""})
+			all := make(map[string]time.Time, len(folders))
+			for f, d := range folders {
+				all[f] = d
+			}
+			scans = append(scans, scan{section, "", all})
 			continue
 		}
 		for folder, due := range folders {
 			if !due.After(now) {
-				scans = append(scans, scan{section, folder})
+				scans = append(scans, scan{section, folder, map[string]time.Time{folder: due}})
 			}
 		}
 	}
 	for guid, due := range s.refreshes {
 		if !due.After(now) {
-			refreshes = append(refreshes, guid)
+			refreshes[guid] = due
 		}
 	}
 	s.mu.Unlock()
@@ -107,20 +117,25 @@ func (s *Scheduler) Flush(ctx context.Context) {
 			continue
 		}
 		s.mu.Lock()
-		if sc.folder == "" {
+		for folder, due := range sc.due {
+			if cur, ok := s.scans[sc.section][folder]; ok && cur.Equal(due) {
+				delete(s.scans[sc.section], folder)
+			}
+		}
+		if len(s.scans[sc.section]) == 0 {
 			delete(s.scans, sc.section)
-		} else {
-			delete(s.scans[sc.section], sc.folder)
 		}
 		s.mu.Unlock()
 	}
-	for _, g := range refreshes {
+	for g, due := range refreshes {
 		if err := s.Refresh(ctx, g); err != nil {
 			s.logger().Warn("refresh failed; will retry", "error", err)
 			continue
 		}
 		s.mu.Lock()
-		delete(s.refreshes, g)
+		if cur, ok := s.refreshes[g]; ok && cur.Equal(due) {
+			delete(s.refreshes, g)
+		}
 		s.mu.Unlock()
 	}
 }
