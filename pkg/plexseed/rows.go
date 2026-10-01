@@ -217,8 +217,11 @@ func ExtraData(kv map[string]string) string {
 		out[k] = kv[k]
 	}
 	out["url"] = strings.Join(parts, "&")
-	b, _ := json.Marshal(out)
-	return string(b)
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false) // Plex writes the url's '&' as is
+	_ = enc.Encode(out)
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func plexEscape(s string) string {

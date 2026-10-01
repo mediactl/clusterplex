@@ -88,6 +88,14 @@ func TestExtraDataMirrorsPlexsFormat(t *testing.T) {
 	assert.Equal(t, "ma%3AaudioChannelLayout=5%2E1&pv%3Afinal=1", m["url"])
 }
 
+// Byte for byte as Plex writes it (a credits marker its detector wrote on
+// kind-cluster-plex, 2026-10-01): the url's '&' is literal, not JSON's
+// HTML-safe \u0026.
+func TestExtraDataIsPlexsBytes(t *testing.T) {
+	assert.Equal(t, `{"pv:final":"1","pv:version":"4","url":"pv%3Afinal=1&pv%3Aversion=4"}`,
+		plexseed.ExtraData(map[string]string{"pv:final": "1", "pv:version": "4"}))
+}
+
 func TestMarkerRowsMapTheIntroDBKindsOntoPlexs(t *testing.T) {
 	rows := plexseed.MarkerRows(&plexseed.Markers{Result: "Found", Segments: []plexseed.Segment{
 		{Kind: "intro", StartMs: 0, EndMs: 23000},
