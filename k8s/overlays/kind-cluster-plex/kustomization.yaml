@@ -16,7 +16,7 @@ components:
   - ../../components/clustarr
 images:
   - name: ghcr.io/mediactl/cluster-plex
-    newTag: "ccbed80"
+    newTag: "f21fcb5"
 patches:
   - target:
       kind: StatefulSet
