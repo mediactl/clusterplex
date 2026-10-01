@@ -107,11 +107,18 @@ func TestARefusedSettingIsNotWrittenToTheFile(t *testing.T) {
 }
 
 // clustarr detects intros and credits itself (spec 2026-10-01 segment
-// detection): Plex keeps only its online markers and runs no detector, and
-// no commercial detector either.
+// detection): Plex runs no intro, credits or commercial detector. MarkerSource
+// alone was not enough: it governs credits only, and with the two Generate
+// behaviours left at "asap" every pod ran intro detection over 3,938 items
+// and plex-2 still ran its credits detector (live logs, 2026-10-01).
 func TestRequiredTurnsOffLocalMarkerDetection(t *testing.T) {
 	r := Required()
-	if r["MarkerSource"] != "cloud" || r["GenerateAdMarkerBehavior"] != "never" {
-		t.Errorf("Required() = MarkerSource %q, GenerateAdMarkerBehavior %q; want cloud, never", r["MarkerSource"], r["GenerateAdMarkerBehavior"])
+	for name, want := range map[string]string{
+		"MarkerSource":                  "cloud",
+		"GenerateIntroMarkerBehavior":   "never",
+		"GenerateCreditsMarkerBehavior": "never",
+		"GenerateAdMarkerBehavior":      "never",
+	} {
+		assert.Equal(t, want, r[name], name)
 	}
 }
