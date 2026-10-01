@@ -262,7 +262,16 @@ func probeHashMark(h string) string {
 	return `"` + ProbeHashKey + `":` + string(b)
 }
 
-func ours(extra string) bool { return strings.Contains(extra, `"`+MarkerKey+`":"`+MarkerSource+`"`) }
+// ours reports whether a marker row is the seeder's: tagged with any source
+// clustarr merges into status.markers.
+func ours(extra string) bool {
+	for _, src := range []string{MarkerSource, "chapters", "analysis"} {
+		if strings.Contains(extra, `"`+MarkerKey+`":"`+src+`"`) {
+			return true
+		}
+	}
+	return false
+}
 
 // markerTag is the library's marker tag (tag_type 12, empty name), created
 // as Plex's is when the library has none yet.

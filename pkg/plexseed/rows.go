@@ -244,6 +244,8 @@ type MarkerRow struct {
 	Index      int32
 	Start, End int64
 	Final      bool
+	// Source is the segment's source, written as pv:source.
+	Source string
 }
 
 // finalSlack is how near the end a credits segment must reach to be the
@@ -256,13 +258,14 @@ const finalSlack = 2000
 // Nil means "no answer, change nothing": never fetched, or the fetch
 // failed. A NotFound is an answer with no rows, which removes ours.
 func MarkerRows(m *Markers, durationMs int64) map[string][]MarkerRow {
-	if m == nil || (m.Result != "Found" && m.Result != "NotFound") {
+	if m == nil {
+		return nil
+	}
+	answered := func(r string) bool { return r == "Found" || r == "NotFound" }
+	if len(m.Segments) == 0 && !answered(m.Result) && (m.Analysis == nil || !answered(m.Analysis.Result)) {
 		return nil
 	}
 	out := map[string][]MarkerRow{"intro": nil, "credits": nil}
-	if m.Result != "Found" {
-		return out
-	}
 	segs := append([]Segment(nil), m.Segments...)
 	sort.SliceStable(segs, func(i, j int) bool { return segs[i].StartMs < segs[j].StartMs })
 	for _, s := range segs {
@@ -279,8 +282,12 @@ func MarkerRows(m *Markers, durationMs int64) map[string][]MarkerRow {
 		default:
 			continue
 		}
+		src := s.Source
+		if src == "" {
+			src = MarkerSource
+		}
 		out[text] = append(out[text], MarkerRow{
-			Text: text, Index: int32(len(out[text])), Start: s.StartMs, End: s.EndMs, Final: final,
+			Text: text, Index: int32(len(out[text])), Start: s.StartMs, End: s.EndMs, Final: final, Source: src,
 		})
 	}
 	return out
@@ -288,7 +295,11 @@ func MarkerRows(m *Markers, durationMs int64) map[string][]MarkerRow {
 
 // markerExtra is a seeded marker's extra_data.
 func markerExtra(r MarkerRow) string {
-	kv := map[string]string{MarkerKey: MarkerSource, "pv:version": markerVersion}
+	src := r.Source
+	if src == "" {
+		src = MarkerSource
+	}
+	kv := map[string]string{MarkerKey: src, "pv:version": markerVersion}
 	if r.Final {
 		kv["pv:final"] = "1"
 	}

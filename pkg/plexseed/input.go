@@ -57,10 +57,17 @@ type Subtitle struct {
 	HearingImpaired bool   `json:"hearingImpaired,omitempty"`
 }
 
-// Markers is status.markers.
+// Markers is status.markers: TheIntroDB's Result, clustarr's own Analysis,
+// and Segments, the merge of the two.
 type Markers struct {
 	Result   string    `json:"result"`
 	Segments []Segment `json:"segments,omitempty"`
+	Analysis *Analysis `json:"analysis,omitempty"`
+}
+
+// Analysis is status.markers.analysis: clustarr's own detection's result.
+type Analysis struct {
+	Result string `json:"result"`
 }
 
 // Segment is one skip segment: intro, recap, credits or preview.
@@ -68,4 +75,8 @@ type Segment struct {
 	Kind    string `json:"kind"`
 	StartMs int64  `json:"startMs"`
 	EndMs   int64  `json:"endMs"`
+	// Source is where clustarr got it: theintrodb, chapters or analysis;
+	// empty is theintrodb, which wrote segments before sources existed.
+	Source     string `json:"source,omitempty"`
+	Confidence int32  `json:"confidence,omitempty"`
 }

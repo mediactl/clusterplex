@@ -106,13 +106,13 @@ func TestMarkerRowsMapTheIntroDBKindsOntoPlexs(t *testing.T) {
 	}}, 6500000)
 	require.NotNil(t, rows)
 	assert.Equal(t, []plexseed.MarkerRow{
-		{Text: "intro", Index: 0, Start: 0, End: 23000},
-		{Text: "intro", Index: 1, Start: 25000, End: 134000},
+		{Text: "intro", Index: 0, Start: 0, End: 23000, Source: "theintrodb"},
+		{Text: "intro", Index: 1, Start: 25000, End: 134000, Source: "theintrodb"},
 	}, rows["intro"], "a recap is a second intro")
 	assert.Equal(t, []plexseed.MarkerRow{
-		{Text: "credits", Index: 0, Start: 1680000, End: 1740000},
-		{Text: "credits", Index: 1, Start: 5801777, End: 6371111},
-		{Text: "credits", Index: 2, Start: 6408000, End: 6500000, Final: true},
+		{Text: "credits", Index: 0, Start: 1680000, End: 1740000, Source: "theintrodb"},
+		{Text: "credits", Index: 1, Start: 5801777, End: 6371111, Source: "theintrodb"},
+		{Text: "credits", Index: 2, Start: 6408000, End: 6500000, Final: true, Source: "theintrodb"},
 	}, rows["credits"], "a preview is non-final credits; only the credits reaching the end are final")
 }
 
@@ -123,4 +123,33 @@ func TestMarkerRowsOwnNothingWithoutAResult(t *testing.T) {
 	require.NotNil(t, nf, "NotFound is an answer: our own rows go")
 	assert.Empty(t, nf["intro"])
 	assert.Empty(t, nf["credits"])
+}
+
+func TestMarkerRowsTagTheirSource(t *testing.T) {
+	rows := plexseed.MarkerRows(&plexseed.Markers{Result: "Found", Segments: []plexseed.Segment{
+		{Kind: "intro", StartMs: 0, EndMs: 30000, Source: "chapters"},
+		{Kind: "credits", StartMs: 100000, EndMs: 130000, Source: "analysis"},
+		{Kind: "recap", StartMs: 31000, EndMs: 60000},
+	}}, 130000)
+	assert.Equal(t, "chapters", rows["intro"][0].Source)
+	assert.Equal(t, "theintrodb", rows["intro"][1].Source, "untagged is TheIntroDB's")
+	assert.Equal(t, "analysis", rows["credits"][0].Source)
+}
+
+// status.markers.segments is the merge of TheIntroDB and clustarr's own
+// analysis, so TheIntroDB's NotFound -- or no TheIntroDB answer at all --
+// does not hide segments clustarr found.
+func TestSegmentsFoundLocallyAreWrittenWhateverTheIntroDBSaid(t *testing.T) {
+	seg := []plexseed.Segment{{Kind: "credits", StartMs: 100000, EndMs: 130000, Source: "analysis"}}
+	for name, m := range map[string]*plexseed.Markers{
+		"theintrodb not found":   {Result: "NotFound", Segments: seg, Analysis: &plexseed.Analysis{Result: "Found"}},
+		"theintrodb never asked": {Segments: seg, Analysis: &plexseed.Analysis{Result: "Found"}},
+	} {
+		rows := plexseed.MarkerRows(m, 130000)
+		require.Len(t, rows["credits"], 1, name)
+	}
+	empty := plexseed.MarkerRows(&plexseed.Markers{Analysis: &plexseed.Analysis{Result: "NotFound"}}, 130000)
+	require.NotNil(t, empty, "analysis looked and found none: an answer that removes ours")
+	assert.Empty(t, empty["credits"])
+	assert.Nil(t, plexseed.MarkerRows(&plexseed.Markers{Analysis: &plexseed.Analysis{Result: "Error"}}, 130000), "no answer")
 }

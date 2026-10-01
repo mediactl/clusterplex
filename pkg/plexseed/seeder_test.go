@@ -282,3 +282,31 @@ func TestTheMarkerTagIsCreatedWhenPlexHasNone(t *testing.T) {
 	assert.Equal(t, 1, count(t, conn, "SELECT count(*) FROM tags WHERE tag_type = 12 AND tag = ''"))
 	assert.Len(t, markerRows(t, conn, l.item), 1)
 }
+
+// clustarr's own analysis (source analysis) and chapters are markers of
+// the seeder's as much as TheIntroDB's: an analysis credits marker is
+// removed when clustarr no longer has credits, and a legacy row tagged
+// theintrodb is still recognized.
+func TestRowsOfEverySourceAreOurs(t *testing.T) {
+	conn := plexDB(t)
+	ctx := context.Background()
+	l := insertFile(t, conn, "Clustarr TV")
+	both := &plexseed.Markers{Result: "Found", Segments: []plexseed.Segment{
+		{Kind: "intro", StartMs: 61000, EndMs: 90000, Source: "theintrodb"},
+		{Kind: "credits", StartMs: 2100000, EndMs: 2138069, Source: "analysis"},
+	}}
+	_, err := seeder(conn).Seed(ctx, l.path, plexseed.Input{Probe: &andor, Markers: both})
+	require.NoError(t, err)
+	got := markerRows(t, conn, l.item)
+	require.Len(t, got, 2)
+	assert.Contains(t, got[0][4], `"pv:source":"analysis"`, "credits detected locally")
+	assert.Contains(t, got[1][4], `"pv:source":"theintrodb"`)
+
+	introOnly := &plexseed.Markers{Result: "Found", Segments: []plexseed.Segment{{Kind: "intro", StartMs: 61000, EndMs: 90000}}}
+	_, err = seeder(conn).Seed(ctx, l.path, plexseed.Input{Probe: &andor, Markers: introOnly})
+	require.NoError(t, err)
+	got = markerRows(t, conn, l.item)
+	require.Len(t, got, 1, "the analysis credits are ours to remove")
+	assert.Equal(t, "intro", got[0][0])
+	assert.Contains(t, got[0][4], `"pv:source":"theintrodb"`, "an untagged segment is TheIntroDB's")
+}

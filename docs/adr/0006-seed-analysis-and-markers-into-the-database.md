@@ -33,7 +33,9 @@ The Lease holder's clustarr watch writes clustarr's probe and TheIntroDB's marke
 - **A file Plex hasn't scanned yet, or a failed seed, is retried** after 1, 5 and 30 minutes, and after that by the 6-hour resync. Each seed is cut off after 30 seconds, because it runs on the watcher's tick, which also places scans.
 - **Seeded rows are identifiable:**
   - media rows carry `cp:source=clustarr` in `extra_data`;
-  - markers carry `pv:source=theintrodb`.
+  - markers carry `pv:source` as the segment's source: `theintrodb`, `chapters` or `analysis` (clustarr's own detection, 2026-10-01). A row of any of them is the seeder's.
+- **The segments are clustarr's merge.** `status.markers.segments` is TheIntroDB's segments with clustarr's own detection under them, per kind. A segment list is written whatever TheIntroDB's `result` says. An empty list removes the seeder's rows only when TheIntroDB or clustarr's analysis answered (Found or NotFound).
+- **Plex detects no markers locally.** cluster-plex requires `MarkerSource=cloud` ("only online (no local detection)") and `GenerateAdMarkerBehavior=never`. The names and options were read from a live `/:/prefs` on 2026-10-01. Plex still fetches its own online markers for the kinds clustarr has none of.
 - **Markers are reconciled per kind:**
   - If TheIntroDB has segments for a kind, it owns that kind, and Plex's detected rows of it are replaced.
   - If it has none, only the seeder's rows go, and Plex's stay.
