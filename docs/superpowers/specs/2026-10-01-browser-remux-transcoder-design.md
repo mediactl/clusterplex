@@ -1,6 +1,6 @@
 # Browser streams on our own transcoder
 
-Date: 2026-10-01. Status: proposed, awaiting approval.
+Date: 2026-10-01. Status: placement, engine and cache decided by the owner; awaiting review of this spec.
 
 ## Goal
 
@@ -85,72 +85,143 @@ when all of:
 
 Anything else is Plex's, exactly as today.
 
-### 2. Our transcoder (`cmd/remux`, new)
+### 2. The remux worker (`cmd/remux-worker`, ffgo in process)
 
-A Go binary that takes Plex's argv, so the classifier hands the request
-over unchanged:
+No subprocess. The worker follows clustarr's in-process engine
+(`app/squash/worker/inprocess`, `pkg/transcode/engine`): FFmpeg 9 loaded
+through ffgo, the pipeline in Go, packets moving through channels and
+bytes through `io.Writer`s.
 
-- Parses the argv into a typed job and refuses anything outside the shape
-  above (exit code distinct from ffmpeg's, so the manager falls back).
-- Runs stock ffmpeg with the stock options: the same inputs, maps, filter
-  and audio settings; `-f dash` writing the manifest to a local file;
-  `-progress pipe:` for progress.
-- **Renumbers after a seek:** stock ffmpeg numbers from 1, so each
-  finished segment is renamed `k → k + skip − 1` and the manifest's
-  `startNumber` rewritten to `skip` before it is published.
-- Publishes each manifest version only after the segments it lists are in
-  place, translates `-progress` into Plex's PUTs, and sends the stream
-  descriptions once at start, from ffprobe of the input.
+- **Job.** The manager parses Plex's argv into a typed `remux.Job`
+  (`pkg/remux`, which links no ffgo): input path, start time,
+  `skip_to_segment`, the video stream to copy, the audio stream with its
+  output channels, sample rate and bit rate, the segment duration and the
+  session's progress and manifest URLs. Anything outside the shape in §1
+  is refused, so Plex's transcoder runs it. Only the worker links ffgo:
+  the manager and shim stay static binaries, for the reason
+  `cmd/clustarr` never links ffgo (a dynamic loader the scratch image
+  cannot start).
+- **Segment boundaries are ours and deterministic.** Segment *n* starts at
+  the first video keyframe at or after `(n−1) × seg_duration` in source
+  time. A job starting at *n* seeks to the keyframe before that point and
+  drops packets up to the boundary; one running from the start cuts at the
+  same keyframes. Timestamps keep source time (`-copyts`), so a segment
+  remuxed twice is the same segment, which is what lets the cache (§4)
+  mix runs.
+- **Pipeline.** One ffgo Decoder demuxes. Video packets are copied; audio
+  is decoded, resampled to what the argv asks (stereo, its `osr`) and
+  encoded to AAC at its bit rate. Packets fan out through channels to the
+  muxers.
+- **Muxers write to Go writers.** Each representation (video 0, audio 1)
+  has its own ffgo Muxer producing fragmented MP4
+  (`movflags=frag_custom+empty_moov+default_base_moof`) into an
+  `io.Writer`. At each boundary the worker flushes a fragment on both, so
+  a segment is exactly one `moof`+`mdat` per representation. A Go
+  segmenter reads the init (`ftyp`+`moov`) and each fragment off the
+  stream and emits `init-streamR.m4s` and `chunk-streamR-NNNNN.m4s`,
+  numbered from `skip_to_segment` as Plex's binary numbers them.
+- **Tee.** Each muxer's writer is an `io.MultiWriter`: every byte also
+  appends to that representation's cache file. One demux and one audio
+  encode feed the client and the cache together.
+- **Manifest in Go.** The MPD is rendered from the segments produced, in
+  the captured shape: a `SegmentTemplate` with the two name patterns,
+  `startNumber`, and a `SegmentTimeline` of each segment's duration in the
+  representation's timescale; `dynamic` while running, `static` with
+  `mediaPresentationDuration` at the end.
+- **Progress** PUTs (`stream`, `streamDetail`, `duration`,
+  `width`/`height`, `progress`/`remaining`/`speed`) come from the
+  pipeline's own counters.
 
-The ffmpeg is a static upstream build in the worker image. clustarr's
-in-process engine (ffgo) could replace it later behind the same binary.
+ffgo gains two things in the mediactl fork, each offered upstream:
+`NewMuxerToWriter(w io.Writer, format string)` over its existing
+`CustomIOContext` (write-only, not seekable), and `Muxer.Flush()`
+(`av_write_frame(ctx, NULL)` then `avio_flush`) for `frag_custom`.
 
 ### 3. Placement and transport
 
-`cmd/remux` runs on a **remux pool**: a Deployment, its own image (ffmpeg,
-no Plex), selected by its own label, with an HPA on CPU. The existing
-gRPC `ExecuteRemote` carries the job there. Because the segments must
-reach the serving pod, the worker never writes them to a shared path and
-never talks to PMS about the manifest:
+The **remux pool** is a Deployment running `cmd/remux-worker`: an image
+with FFmpeg 9 and the ffgo shim (clustarr's transcoder image pattern), no
+Plex, its own label, an HPA on CPU. It serves a gRPC service of its own:
 
-- `TranscodeLog` gains a `File{name, data, last}` message. The worker
-  streams each finished segment and each manifest version back on the
-  stream it already has.
-- The serving pod's manager writes segment files into the job's `cwd`
-  (names checked against the two patterns, no separators) and POSTs each
-  manifest to its own PMS **after** the files it lists are written. PMS
-  never lists a segment it cannot serve.
-- Progress PUTs go straight from the worker to PMS through the rewritten
-  `-progressurl`, as today.
+```proto
+service Remux {
+  rpc Remux(RemuxJob) returns (stream RemuxEvent);  // File{name,data} | Manifest{xml} | Done{error}
+}
+```
 
-With no ready remux worker, the job runs on the serving pod, through the
-same code path, so nothing depends on the pool for correctness.
+The serving pod's manager, which received the job from the shim:
 
-### 4. Failure
+- picks the worker by consistent hash of the job's cache key
+  (`pkg/hashring`), so a file returns to the worker holding its cache;
+- writes each `File` into the job's `cwd` (names checked against the two
+  patterns, no separators);
+- POSTs each `Manifest` to its own PMS only **after** the files it lists
+  are written, so PMS never lists a segment it cannot serve;
+- answers the shim with exit code 0 on `Done`, non-zero on an error, as
+  Plex's transcoder would.
 
-- Classifier or session lookup fails: Plex's transcoder.
-- `cmd/remux` refuses the argv, or fails before its first segment: the
-  manager runs Plex's transcoder on the same request.
-- Fails after: the stream ends with ffmpeg's exit code, as a failed Plex
-  transcode would, and the client retries, which re-runs the classifier.
-- PMS kills a session (stop or seek): the manager cancels the stream; the
-  worker kills its ffmpeg process group.
+Progress PUTs go from the worker straight to the serving pod's PMS, at the
+address the dispatcher already rewrites `127.0.0.1` to. With no ready
+remux worker the job goes to Plex's transcoder: Plex pods carry no
+FFmpeg 9.
+
+### 4. Remux cache
+
+- **Key:** the input path with its size and modification time (read by the
+  worker), the audio stream index, and the output parameters (channels,
+  sample rate, bit rate, segment duration). A changed file or a different
+  audio choice is a different entry.
+- **Where:** a worker-local volume (an `emptyDir` with a size limit, or a
+  local PersistentVolume), never NFS. The hash ring sends a key to one
+  worker; a worker leaving the ring loses its share, which is acceptable
+  for a cache.
+- **Layout** per key: `video.mp4` and `audio.mp4`, fragmented MP4s (the
+  init, then fragments appended in the order produced), and `index.json`
+  mapping each segment number to its byte range, duration and start time
+  in each file, plus the init's range. A run that started after a seek
+  appends as well; the index finds segments by number wherever they lie.
+  The index is rewritten by rename after the fragment's bytes are synced.
+- **Serving:** a job for segment *n* is answered from the cache for as long
+  as the index holds *n*, *n+1*, …; at the first gap the pipeline starts
+  at that segment's boundary and tees from there. A file played through
+  once plays again with no decoding.
+- **Eviction:** least recently used, once the volume passes a high-water
+  mark.
+
+### 4a. Failure
+
+- Classifier, parse or session lookup fails, or no remux worker is ready:
+  Plex's transcoder.
+- The worker fails before its first `File`: the manager runs Plex's
+  transcoder on the same request.
+- Fails after: `Done` carries the error, the shim exits non-zero as a
+  failed Plex transcode would, and the client's retry re-runs the
+  classifier.
+- PMS kills a session (stop or seek): the shim's context ends, the manager
+  cancels the stream, and the worker's context stops the pipeline. A
+  partly written fragment never reaches the index.
 
 ### 5. Tests
 
-- Classifier: table from the 44 real argvs in plex-0's log, plus a burn-in,
-  an HLS (`-f segment`) and a video transcode, each with the expected
-  route.
-- `cmd/remux` argv parser and ffmpeg argv: golden files from the same
-  commands.
-- Protocol: a contract test runs `cmd/remux` on a generated clip against a
-  recording PMS and asserts what Plex's binary was recorded doing: file
-  names, manifest POST order (every listed segment present first),
-  `startNumber` after a seek, progress keys.
-- Transport: the manager writes streamed files into `cwd` and posts the
-  manifest only after them; a name outside the patterns is refused.
-- e2e on kind: Plex Web plays a file through the pool (a remux pod's log
-  shows the job, PMS serves its segments).
+- ffgo (in the fork): a writer-backed Muxer round-trips through a decoder;
+  each `Flush` emits exactly one `moof`.
+- Classifier and parser: a table from the 44 real argvs in plex-0's log,
+  plus a burn-in, an HLS (`-f segment`) and a video transcode, each with
+  its route and parsed `Job`.
+- Pipeline, on a generated clip with known keyframes: segments decode,
+  start at the boundary keyframes, are numbered from `skip_to_segment`,
+  and a seek run's segment *n* is byte-identical to a full run's.
+- Cache: a second run serves every segment with no decode (counted); a gap
+  is filled by a pipeline started at its boundary; a new mtime is a miss;
+  eviction removes the least recently used key.
+- Protocol: against a recording PMS, what Plex's own binary was recorded
+  doing: file names, every listed segment present before its manifest
+  POST, `startNumber` after a seek, the progress keys.
+- Transport: the manager writes streamed files into `cwd`, posts the
+  manifest only after them, refuses a name outside the patterns.
+- e2e on kind: Plex Web plays a file through the pool (the remux pod's
+  log shows the job, PMS serves its segments); a replay is served from
+  the cache.
 
 ## Out of scope
 
@@ -160,10 +231,11 @@ same code path, so nothing depends on the pool for correctness.
 - Subtitles: text sidecars are delivered by PMS; image subtitles cannot be
   burned in with video transcoding off.
 
-## Decisions for the owner
+## Decided (2026-10-01)
 
-1. Placement: the separate remux pool with segments streamed back
-   (recommended), or run `cmd/remux` only on the serving pod and keep
-   scaling to the proxy spreading sessions across Plex pods (simpler, no
-   proto change).
-2. Engine: stock ffmpeg now (recommended), ffgo later.
+1. Placement: the remux pool, with segments streamed back to the serving
+   pod.
+2. Engine: ffgo in process, after clustarr's engine, not a subprocess, so
+   the output is Go streams the client and the cache share.
+3. The MP4 written beside each stream is a remux cache on the pool, not a
+   library version.
