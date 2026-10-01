@@ -105,3 +105,13 @@ func TestARefusedSettingIsNotWrittenToTheFile(t *testing.T) {
 	_, ok := Enforced("https://plex.example.com", "/transcode")["allowedNetworks"]
 	assert.False(t, ok)
 }
+
+// clustarr detects intros and credits itself (spec 2026-10-01 segment
+// detection): Plex keeps only its online markers and runs no detector, and
+// no commercial detector either.
+func TestRequiredTurnsOffLocalMarkerDetection(t *testing.T) {
+	r := Required()
+	if r["MarkerSource"] != "cloud" || r["GenerateAdMarkerBehavior"] != "never" {
+		t.Errorf("Required() = MarkerSource %q, GenerateAdMarkerBehavior %q; want cloud, never", r["MarkerSource"], r["GenerateAdMarkerBehavior"])
+	}
+}

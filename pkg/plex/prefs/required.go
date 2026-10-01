@@ -38,6 +38,14 @@ var required = map[string]string{
 	// proxy — which is what pins its session. Clients find the server through
 	// plex.tv and customConnections instead.
 	"GdmEnabled": "0",
+	// Marker detection, local: clustarr detects intros and credits itself
+	// and seeds them (ADR 0006; clustarr's spec 2026-10-01 segment
+	// detection), so Plex's pods spend no CPU on it. "cloud" is "only online
+	// (no local detection)": Plex still fetches its own online markers for
+	// the kinds clustarr has none of. Read from a live /:/prefs, 2026-10-01.
+	"MarkerSource": "cloud",
+	// Commercial (ad) detection, likewise local analysis; no DVR here.
+	"GenerateAdMarkerBehavior": "never",
 }
 
 // scanScheduling are the settings that start a library scan without anyone
