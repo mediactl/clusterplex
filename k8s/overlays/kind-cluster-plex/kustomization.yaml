@@ -41,6 +41,9 @@ patches:
             preferences:
               - name: FriendlyName
                 value: Cluster Plex
+              # Debug logging was on (found 2026-10-01); nothing needs it.
+              - name: logDebug
+                value: "0"
             metadataProviders:
               - uri: http://clustarr-ui.clustarr-system.svc.cluster.local:8080/plex/movies
               - uri: http://clustarr-ui.clustarr-system.svc.cluster.local:8080/plex/tv

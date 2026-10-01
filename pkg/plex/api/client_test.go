@@ -130,3 +130,21 @@ func TestCreateSectionFallsBackWhenTheDocumentedFormIsNotServed(t *testing.T) {
 	require.Len(t, *calls, 2)
 	assert.Equal(t, "POST /library/sections", (*calls)[1].Method+" "+(*calls)[1].Path)
 }
+
+// The response is live PMS's for the Clustarr TV section (2026-10-01): every
+// value is a string, booleans as "true"/"false", which PUT reads back from
+// a "0" as "false".
+func TestItReadsAndSetsASectionsPreferences(t *testing.T) {
+	c, calls := recorder(t, map[string]string{
+		"GET /library/sections/3/prefs": `{"MediaContainer":{"Setting":[
+			{"id":"enableBIFGeneration","type":"bool","value":"true","default":"true"},
+			{"id":"enableAdMarkerGeneration","type":"int","value":"1","default":"1"}]}}`,
+	}, nil)
+	got, err := c.SectionPrefs(t.Context(), "3")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"enableBIFGeneration": "true", "enableAdMarkerGeneration": "1"}, got)
+
+	require.NoError(t, c.SetSectionPrefs(t.Context(), "3", map[string]string{"enableBIFGeneration": "0"}))
+	last := (*calls)[len(*calls)-1]
+	assert.Equal(t, "PUT /library/sections/3/prefs?enableBIFGeneration=0", last.Method+" "+last.Path+"?"+last.Query)
+}

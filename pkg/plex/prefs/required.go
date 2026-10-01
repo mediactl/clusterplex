@@ -53,6 +53,30 @@ var required = map[string]string{
 	"MarkerSource":                  "cloud",
 	// Commercial (ad) detection, likewise local analysis; no DVR here.
 	"GenerateAdMarkerBehavior": "never",
+	// Every other analysis Plex runs on its own. clustarr probes and
+	// detects, so Plex is a UI and API. A behaviour at "scheduled" runs in
+	// the maintenance window whatever the ButlerTask switches say: plex-2
+	// ran loudness analysis over 11,922 audio tracks and sonic analysis at
+	// 04:37 with every one of them off (live logs, 2026-10-01). Preview
+	// thumbnails and voice activity were "never" only by default.
+	"LoudnessAnalysisBehavior":     "never",
+	"MusicAnalysisBehavior":        "never",
+	"GenerateChapterThumbBehavior": "never",
+	"GenerateBIFBehavior":          "never",
+	"GenerateVADBehavior":          "never",
+	// Plex never re-encodes video. squasharr made the files playable, so a
+	// stream needs at most a remux and an audio conversion.
+	"TranscoderCanOnlyRemuxVideo": "1",
+	// A relayed connection is capped, so Plex would have to transcode the
+	// video down to it, which the setting above forbids: the stream would
+	// stall rather than fail to connect.
+	"RelayEnabled": "0",
+	// clustarr owns the files. A Plex user deleting one goes behind its
+	// back; an automatic trash empty after a scan that met a stalled NFS
+	// mount deletes the items whose files only looked missing. The
+	// empty-trash maintenance CronJob still empties it deliberately.
+	"allowMediaDeletion": "0",
+	"autoEmptyTrash":     "0",
 }
 
 // scanScheduling are the settings that start a library scan without anyone

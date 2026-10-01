@@ -171,6 +171,37 @@ func (c *Client) SetSectionAgent(ctx context.Context, key, agent string, groupID
 		url.Values{"agent": {agent}, "metadataAgentProviderGroupId": {strconv.Itoa(groupID)}}, nil)
 }
 
+// SectionPrefs reads a library section's advanced settings, by id. PMS
+// answers every value as a string, booleans as "true" or "false".
+func (c *Client) SectionPrefs(ctx context.Context, key string) (map[string]string, error) {
+	var out struct {
+		MediaContainer struct {
+			Setting []struct {
+				ID    string `json:"id"`
+				Value string `json:"value"`
+			} `json:"Setting"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/library/sections/"+url.PathEscape(key)+"/prefs", nil, &out); err != nil {
+		return nil, err
+	}
+	prefs := make(map[string]string, len(out.MediaContainer.Setting))
+	for _, s := range out.MediaContainer.Setting {
+		prefs[s.ID] = s.Value
+	}
+	return prefs, nil
+}
+
+// SetSectionPrefs writes advanced settings of a library section, leaving
+// the others as they are.
+func (c *Client) SetSectionPrefs(ctx context.Context, key string, prefs map[string]string) error {
+	q := url.Values{}
+	for name, value := range prefs {
+		q.Set(name, value)
+	}
+	return c.do(ctx, http.MethodPut, "/library/sections/"+url.PathEscape(key)+"/prefs", q, nil)
+}
+
 // RefreshSection scans a library. An empty path scans the whole library,
 // and force re-reads metadata for items already there.
 func (c *Client) RefreshSection(ctx context.Context, key, path string, force bool) error {

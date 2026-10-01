@@ -25,6 +25,12 @@ var ButlerTasks = []string{
 	"ButlerTaskRefreshLocalMedia",
 	"ButlerTaskRefreshPeriodicMetadata",
 	"ButlerTaskUpgradeMediaAnalysis",
+	// Not in the scheduler's original list, and each still ran or was
+	// scheduled by a pod on its own (live logs, 2026-10-01).
+	"ButlerTaskOptimizeDatabase",
+	"ButlerTaskGarbageCollectBlobs",
+	"ButlerTaskRefreshEpgGuides",
+	"ButlerTaskRefreshLibraries",
 }
 
 // DisabledButlerTasks returns every Butler task set to off.

@@ -20,6 +20,7 @@ type fakePMS struct {
 	providers []plexapi.Provider
 	groups    []plexapi.Group
 	sections  []plexapi.Section
+	prefs     map[string]map[string]string // section key -> its advanced settings
 	writes    []string
 	down      bool // answer every call 502, as a Plex that is not up yet reads
 }
@@ -82,10 +83,33 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		for _, l := range q["locations"] {
 			locs = append(locs, plexapi.Location{Path: l})
 		}
+		key := strconv.Itoa(len(f.sections) + 1)
+		if f.prefs == nil {
+			f.prefs = map[string]map[string]string{}
+		}
+		f.prefs[key] = newSectionPrefs(typ)
 		f.sections = append(f.sections, plexapi.Section{
-			Key: strconv.Itoa(len(f.sections) + 1), Type: typ,
+			Key: key, Type: typ,
 			Title: q.Get("name"), Agent: q.Get("agent"), Language: q.Get("language"), Location: locs,
 		})
+	case strings.HasPrefix(r.URL.Path, "/library/sections/") && strings.HasSuffix(r.URL.Path, "/prefs"):
+		key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/library/sections/"), "/prefs")
+		if r.Method == http.MethodGet {
+			var settings []map[string]string
+			for id, v := range f.prefs[key] {
+				settings = append(settings, map[string]string{"id": id, "value": v})
+			}
+			writeJSON(w, map[string]any{"MediaContainer": map[string]any{"Setting": settings}})
+			return
+		}
+		f.writes = append(f.writes, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		for id := range q {
+			v := q.Get(id)
+			if old := f.prefs[key][id]; old == "true" || old == "false" { // PMS reads a bool back as a word
+				v = map[string]string{"0": "false", "1": "true"}[v]
+			}
+			f.prefs[key][id] = v
+		}
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/library/sections/"):
 		write()
 		key := strings.TrimPrefix(r.URL.Path, "/library/sections/")
@@ -110,4 +134,21 @@ func writeJSON(w http.ResponseWriter, v any) {
 // last path element names it.
 func identifierOf(uri string) string {
 	return "tv.plex.agents.custom.clustarr." + uri[strings.LastIndex(uri, "/")+1:]
+}
+
+// newSectionPrefs are the analysis settings live PMS gives a new section of
+// each type (2026-10-01): a show has intro detection, a movie does not.
+func newSectionPrefs(typ string) map[string]string {
+	p := map[string]string{
+		"enableBIFGeneration":           "true",
+		"enableCreditsMarkerGeneration": "true",
+		"enableAdMarkerGeneration":      "1",
+		"enableVoiceActivityGeneration": "true",
+		"enableLoudnessAnalysis":        "true",
+		"enableCinemaTrailers":          "true",
+	}
+	if typ == "show" {
+		p["enableIntroMarkerGeneration"] = "true"
+	}
+	return p
 }

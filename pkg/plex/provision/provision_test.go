@@ -58,6 +58,8 @@ func TestAnEmptyServerGetsOneWriteOfEachAndThenNone(t *testing.T) {
 		"POST /media/providers/metadata", "POST /media/providers/metadata",
 		"POST /media/providers/metadata/group", "POST /media/providers/metadata/group",
 		"POST /library/sections/all", "POST /library/sections/all",
+		"PUT /library/sections/1/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableCreditsMarkerGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
+		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableCreditsMarkerGeneration=0&enableIntroMarkerGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
 	}, pms.Writes())
 
 	before := len(pms.Writes())
@@ -94,7 +96,10 @@ func TestTheLiveShapeIsAdoptedAndItsDriftOnlyReported(t *testing.T) {
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, []string{"POST /library/sections/all"}, pms.Writes(), "only TV is created; Movies is not touched")
+	assert.Equal(t, []string{
+		"POST /library/sections/all",
+		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableCreditsMarkerGeneration=0&enableIntroMarkerGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
+	}, pms.Writes(), "only TV is created and has its analysis turned off; Movies is not touched")
 	assert.Equal(t, map[string]bool{"Movies": true, "TV": false}, drift)
 }
 
@@ -193,4 +198,28 @@ func TestLibraryNamesAreTheProvisionedLibraries(t *testing.T) {
 	cfg := plexprovision.Config{Libraries: []plexprovision.Library{{Name: "Clustarr Movies"}, {Name: "Clustarr TV"}}}
 	assert.Equal(t, []string{"Clustarr Movies", "Clustarr TV"}, cfg.LibraryNames())
 	assert.Empty(t, plexprovision.Config{}.LibraryNames())
+}
+
+// Plex is a UI and API: clustarr probes and detects, so no library analyses
+// its own media. The server-wide behaviours are forced to "never" as well,
+// but the section switches are what a library falls back to if one of
+// those is reset. Settings that are not analysis are left alone.
+func TestEveryLibrarysOwnAnalysisIsTurnedOff(t *testing.T) {
+	pms := &fakePMS{}
+	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+
+	_, err := p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"enableBIFGeneration": "false", "enableCreditsMarkerGeneration": "false",
+		"enableAdMarkerGeneration": "0", "enableVoiceActivityGeneration": "false",
+		"enableLoudnessAnalysis": "false", "enableCinemaTrailers": "true",
+	}, pms.prefs["1"], "the movie library, which has no intro detection to turn off")
+	assert.Equal(t, "false", pms.prefs["2"]["enableIntroMarkerGeneration"])
+	assert.Equal(t, "false", pms.prefs["2"]["enableLoudnessAnalysis"])
+
+	before := len(pms.Writes())
+	_, err = p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, pms.Writes(), before, "settings already off are not written again")
 }

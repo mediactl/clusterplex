@@ -122,3 +122,44 @@ func TestRequiredTurnsOffLocalMarkerDetection(t *testing.T) {
 		assert.Equal(t, want, r[name], name)
 	}
 }
+
+// Plex is a UI and API here: clustarr probes, detects and transcodes, so no
+// pod analyses media on its own. The behaviours left at "scheduled" ran in
+// plex-2's maintenance window with every ButlerTask switched off: loudness
+// analysis over 11,922 audio tracks and sonic analysis at 04:37
+// (live logs, 2026-10-01). BIF and VAD were "never" only by default.
+func TestRequiredTurnsOffEveryOtherLocalAnalysis(t *testing.T) {
+	r := Required()
+	for _, name := range []string{
+		"LoudnessAnalysisBehavior",
+		"MusicAnalysisBehavior",
+		"GenerateChapterThumbBehavior",
+		"GenerateBIFBehavior",
+		"GenerateVADBehavior",
+	} {
+		assert.Equal(t, "never", r[name], name)
+	}
+}
+
+// Video is never re-encoded by Plex: squasharr made every file playable, so a
+// stream needs at most a remux and an audio conversion. It was set by hand
+// in the Plex UI until now, so nothing held it.
+func TestRequiredKeepsPlexFromTranscodingVideo(t *testing.T) {
+	assert.Equal(t, "1", Required()["TranscoderCanOnlyRemuxVideo"])
+}
+
+// clustarr owns the files: a Plex user deleting one bypasses it, and an
+// automatic trash empty after a scan that met a stalled NFS mount deletes
+// the items whose files only looked missing.
+func TestRequiredLeavesTheFilesToClustarr(t *testing.T) {
+	r := Required()
+	assert.Equal(t, "0", r["allowMediaDeletion"])
+	assert.Equal(t, "0", r["autoEmptyTrash"])
+}
+
+// A relayed connection is capped, so Plex would transcode the video down to
+// fit it, which TranscoderCanOnlyRemuxVideo forbids: the stream would stall
+// instead of failing to connect.
+func TestRequiredTurnsTheRelayOff(t *testing.T) {
+	assert.Equal(t, "0", Required()["RelayEnabled"])
+}

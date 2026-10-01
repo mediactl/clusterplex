@@ -54,3 +54,17 @@ func TestIsButlerTaskRecognisesTheScheduledJobs(t *testing.T) {
 	assert.False(t, IsButlerTask("FriendlyName"))
 	assert.False(t, IsButlerTask(""))
 }
+
+// Each of these ran, or was scheduled, on its own in plex-2's maintenance
+// window with the rest of the list switched off (live logs, 2026-10-01):
+// every pod would run its own copy against the shared library.
+func TestTheButlerListCoversEveryTaskAPodSchedulesItself(t *testing.T) {
+	for _, task := range []string{
+		"ButlerTaskOptimizeDatabase",
+		"ButlerTaskGarbageCollectBlobs",
+		"ButlerTaskRefreshEpgGuides",
+		"ButlerTaskRefreshLibraries",
+	} {
+		assert.True(t, IsButlerTask(task), task)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"path"
@@ -167,6 +168,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 		return Errored, err
 	}
 	var errs []error
+	var ensured []string
 	for _, lib := range p.Config.Libraries {
 		if _, ok := roots[lib.Provider]; !ok {
 			if pending {
@@ -177,6 +179,19 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 		}
 		if err := p.ensureLibrary(ctx, log, lib, groups[lib.Provider], sections); err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		ensured = append(ensured, lib.Name)
+	}
+	if len(ensured) > 0 {
+		// Listed again: a library created above has a key only now.
+		if sections, err = p.PMS.Sections(ctx); err != nil {
+			return Errored, err
+		}
+		for _, name := range ensured {
+			if err := p.ensureAnalysisOff(ctx, log, name, sections); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -268,6 +283,59 @@ func (p *Provisioner) ensureLibrary(ctx context.Context, log *slog.Logger, lib L
 	log.Info("moved library onto its configured agent", "library", lib.Name, "from", s.Agent, "to", lib.Provider)
 	p.drift(lib.Name, false)
 	return nil
+}
+
+// analysisOff are the section settings that make a library analyse its own
+// media: preview thumbnails, intro, credits and ad detection, voice
+// activity and loudness. clustarr probes and detects, so every one is off.
+// A section without one of them (a movie library has no intro detection)
+// is not sent it.
+var analysisOff = map[string]string{
+	"enableBIFGeneration":           "0",
+	"enableIntroMarkerGeneration":   "0",
+	"enableCreditsMarkerGeneration": "0",
+	"enableAdMarkerGeneration":      "0",
+	"enableVoiceActivityGeneration": "0",
+	"enableLoudnessAnalysis":        "0",
+}
+
+// ensureAnalysisOff writes the analysis settings of the named library that
+// are not off yet, and nothing when all are.
+func (p *Provisioner) ensureAnalysisOff(ctx context.Context, log *slog.Logger, name string, sections []plexapi.Section) error {
+	i := slices.IndexFunc(sections, func(s plexapi.Section) bool { return s.Title == name })
+	if i < 0 {
+		return nil
+	}
+	key := sections[i].Key
+	have, err := p.PMS.SectionPrefs(ctx, key)
+	if err != nil {
+		return fmt.Errorf("library %q: read settings: %w", name, err)
+	}
+	set := map[string]string{}
+	for pref, want := range analysisOff {
+		if v, ok := have[pref]; ok && boolish(v) != want {
+			set[pref] = want
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	if err := p.PMS.SetSectionPrefs(ctx, key, set); err != nil {
+		return fmt.Errorf("library %q: turn off analysis: %w", name, err)
+	}
+	log.Info("turned off the library's own analysis", "library", name, "settings", slices.Sorted(maps.Keys(set)))
+	return nil
+}
+
+// boolish reads PMS's "true" and "false" as the "1" and "0" it is sent.
+func boolish(v string) string {
+	switch v {
+	case "true":
+		return "1"
+	case "false":
+		return "0"
+	}
+	return v
 }
 
 func (p *Provisioner) drift(lib string, drifted bool) {
