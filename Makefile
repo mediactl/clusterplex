@@ -37,11 +37,12 @@ tidy: ## go mod tidy
 	go mod tidy
 
 .PHONY: build
-build: ## Build the manager, shim, proxy and maintenance trigger into bin/
+build: ## Build the manager, shim, proxy, maintenance trigger and remux worker into bin/
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/remux-worker ./cmd/remux-worker
 
 .PHONY: test
 test: ## Unit tests
