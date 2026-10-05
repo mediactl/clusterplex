@@ -34,14 +34,14 @@ type Manifest struct {
 func seconds(d time.Duration) string { return fmt.Sprintf("PT%.1fS", d.Seconds()) }
 
 func (r Representation) longest() time.Duration {
-	var max int64
+	var d int64
 	for _, e := range r.Timeline {
-		max = max(max, e.D)
+		d = max(d, e.D)
 	}
 	if r.Timescale == 0 {
 		return 0
 	}
-	return time.Duration(max) * time.Second / time.Duration(r.Timescale)
+	return time.Duration(d) * time.Second / time.Duration(r.Timescale)
 }
 
 func (m Manifest) Render() []byte {
