@@ -1,0 +1,56 @@
+syntax = "proto3";
+package remux;
+option go_package = "github.com/mediactl/clusterplex/proto/remuxpb";
+
+// Remux runs one browser remux on a remux worker. The worker never talks to
+// Plex: segments, manifests and progress all come back on the stream, and
+// the serving pod's manager delivers them.
+service Remux {
+    rpc Remux(Job) returns (stream Event);
+}
+
+message Job {
+    string input = 1;
+    int64 start_ms = 2;
+    int32 skip_to_segment = 3;
+    int64 segment_ms = 4;
+    int32 video_stream = 5;
+    int32 audio_stream = 6;
+    bool audio_copy = 7;
+    int32 audio_channels = 8;
+    int32 audio_sample_rate = 9;
+    int64 audio_bit_rate = 10;
+    string audio_language = 11;
+}
+
+message Event {
+    oneof kind {
+        File file = 1;
+        Manifest manifest = 2;
+        Progress progress = 3;
+        Done done = 4;
+    }
+}
+
+// File is a segment file to write into the session directory.
+message File {
+    string name = 1;
+    bytes data = 2;
+}
+
+// Manifest is posted to Plex once the files it lists are written.
+message Manifest {
+    bytes mpd = 1;
+}
+
+// Progress is a PUT under the job's progress URL: path "" , "stream" or
+// "streamDetail", query the already-encoded query string.
+message Progress {
+    string path = 1;
+    string query = 2;
+}
+
+// Done ends the stream; an empty error is success.
+message Done {
+    string error = 1;
+}
