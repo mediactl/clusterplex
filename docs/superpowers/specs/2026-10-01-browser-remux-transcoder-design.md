@@ -101,13 +101,14 @@ bytes through `io.Writer`s.
   the manager and shim stay static binaries, for the reason
   `cmd/clustarr` never links ffgo (a dynamic loader the scratch image
   cannot start).
-- **Segment boundaries are ours and deterministic.** Segment *n* starts at
-  the first video keyframe at or after `(n−1) × seg_duration` in source
-  time. A job starting at *n* seeks to the keyframe before that point and
-  drops packets up to the boundary; one running from the start cuts at the
-  same keyframes. Timestamps keep source time (`-copyts`), so a segment
-  remuxed twice is the same segment, which is what lets the cache (§4)
-  mix runs.
+- **Segment boundaries are ours and deterministic.** A job starting at
+  segment *n* starts at the first video keyframe at or after
+  `(n−1) × seg_duration`; each later segment *k* starts at the first
+  keyframe at or after `(k−1) × seg_duration` that is later than segment
+  *k−1*'s start, so numbers stay contiguous when a keyframe interval is
+  longer than a segment. Timestamps keep source time (`-copyts`). A
+  segment's video is the same in every run that gives it the same start;
+  its audio is re-encoded per run and decodes the same.
 - **Pipeline.** One ffgo Decoder demuxes. Video packets are copied; audio
   is decoded, resampled to what the argv asks (stereo, its `osr`) and
   encoded to AAC at its bit rate. Packets fan out through channels to the
@@ -120,9 +121,8 @@ bytes through `io.Writer`s.
   segmenter reads the init (`ftyp`+`moov`) and each fragment off the
   stream and emits `init-streamR.m4s` and `chunk-streamR-NNNNN.m4s`,
   numbered from `skip_to_segment` as Plex's binary numbers them.
-- **Tee.** Each muxer's writer is an `io.MultiWriter`: every byte also
-  appends to that representation's cache file. One demux and one audio
-  encode feed the client and the cache together.
+- **Tee.** Every segment the splitter cuts goes to the client stream and
+  to the cache in the same step; one demux and one audio encode feed both.
 - **Manifest in Go.** The MPD is rendered from the segments produced, in
   the captured shape: a `SegmentTemplate` with the two name patterns,
   `startNumber`, and a `SegmentTimeline` of each segment's duration in the
@@ -160,10 +160,11 @@ The serving pod's manager, which received the job from the shim:
 - answers the shim with exit code 0 on `Done`, non-zero on an error, as
   Plex's transcoder would.
 
-Progress PUTs go from the worker straight to the serving pod's PMS, at the
-address the dispatcher already rewrites `127.0.0.1` to. With no ready
-remux worker the job goes to Plex's transcoder: Plex pods carry no
-FFmpeg 9.
+Progress is an event on the same stream (`Progress{path, query}`), and the
+manager PUTs it to its own PMS, as it does the manifest: the worker never
+reaches Plex and never holds the session's token, which the manager sends
+as `X-Plex-Token` from the job's `X_PLEX_TOKEN`. With no ready remux worker
+the job goes to Plex's transcoder: Plex pods carry no FFmpeg 9.
 
 ### 4. Remux cache
 
@@ -179,7 +180,9 @@ FFmpeg 9.
   init, then fragments appended in the order produced), and `index.json`
   mapping each segment number to its byte range, duration and start time
   in each file, plus the init's range. A run that started after a seek
-  appends as well; the index finds segments by number wherever they lie.
+  appends as well; the index finds segments by number wherever they lie,
+  and records each segment's start and end so a chain is served from the
+  cache only while each segment starts where the previous one ended.
   The index is rewritten by rename after the fragment's bytes are synced.
 - **Serving:** a job for segment *n* is answered from the cache for as long
   as the index holds *n*, *n+1*, …; at the first gap the pipeline starts
