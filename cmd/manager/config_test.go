@@ -426,3 +426,16 @@ func TestConfigRefusesAClustarrWatchItCannotUse(t *testing.T) {
 		})
 	}
 }
+
+// The remux pool is on by default and found by its pods' label; an empty
+// selector turns it off, leaving every browser stream to Plex's transcoder.
+func TestTheRemuxPoolDefaults(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "app=plex-remux", c.RemuxSelector)
+	assert.Equal(t, 50052, c.RemuxPort)
+	c, err = loadConfig([]string{"--remux-selector="})
+	require.NoError(t, err)
+	assert.Empty(t, c.RemuxSelector)
+}

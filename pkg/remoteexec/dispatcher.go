@@ -42,12 +42,19 @@ func GRPCDialer(_ context.Context, addr string) (pb.ManagerClient, io.Closer, er
 	return pb.NewManagerClient(conn), conn, nil
 }
 
+// RemuxRoute takes a browser remux off Plex's transcoder (pkg/remux/relay).
+type RemuxRoute interface {
+	// Execute runs req when it is a browser remux; done=false leaves it to Plex.
+	Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) (done bool, err error)
+}
+
 // Dispatcher decides where a shimmed job runs. Eligible jobs go to a ready
 // worker in round-robin order; everything else, and anything a worker fails
 // to accept, runs on the local Executor.
 type Dispatcher struct {
 	Local   *Executor
 	Workers WorkerLister // nil means never dispatch remotely
+	Remux   RemuxRoute   // nil leaves every job to Plex's helpers
 	Dial    Dialer
 	// PMSAddr is how workers reach this node's Plex Media Server (host:port).
 	// Loopback references in the job's arguments are rewritten to it.
@@ -68,6 +75,12 @@ func RemoteEligible(req *pb.ExecRequest) bool {
 
 // Execute runs the job remotely when it can, locally otherwise.
 func (d *Dispatcher) Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) error {
+	if d.Remux != nil && req.GetTargetBinary() == Transcoder {
+		if done, err := d.Remux.Execute(ctx, req, sink); done {
+			d.route(req.GetTargetBinary(), "remux")
+			return err
+		}
+	}
 	if RemoteEligible(req) {
 		if done, err := d.tryRemote(ctx, req, sink); done {
 			return err

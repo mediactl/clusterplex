@@ -130,3 +130,20 @@ func TestPickWorkerRoundRobin(t *testing.T) {
 	assert.Equal(t, "b", d.pick(ws).Name)
 	assert.Equal(t, "a", d.pick(ws).Name)
 }
+
+type remuxRoute struct {
+	handled bool
+	calls   int
+}
+
+func (r *remuxRoute) Execute(context.Context, *pb.ExecRequest, Sink) (bool, error) {
+	r.calls++
+	return r.handled, nil
+}
+
+func TestABrowserRemuxNeverReachesPlexsTranscoder(t *testing.T) {
+	route := &remuxRoute{handled: true}
+	d := &Dispatcher{Remux: route}
+	require.NoError(t, d.Execute(t.Context(), &pb.ExecRequest{TargetBinary: Transcoder}, nil))
+	assert.Equal(t, 1, route.calls)
+}

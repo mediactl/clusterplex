@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/mediactl/clusterplex/pkg/remoteexec"
+	"github.com/mediactl/clusterplex/pkg/remux/relay"
 	pb "github.com/mediactl/clusterplex/proto"
 )
 
@@ -113,6 +114,21 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 		PMSAddr: cfg.PMSAddr(),
 		Logger:  m.Logger.With("component", "dispatcher"),
 		OnRoute: func(target, mode string) { m.Metrics.JobsRouted.WithLabelValues(target, mode).Inc() },
+	}
+	// Plex Web's DASH streams go to the remux pool (pkg/remux), which
+	// streams their segments back; the relay talks to Plex at its own
+	// address with the session's token, never through the proxy.
+	if cfg.RemuxSelector != "" {
+		dispatcher.Remux = &relay.Relay{
+			Players: m.pms(),
+			Workers: &remoteexec.PodWorkerLister{
+				Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,
+				Selector: cfg.RemuxSelector, Port: cfg.RemuxPort,
+			},
+			Dial:   relay.GRPCDialer,
+			PMS:    "http://" + m.plexAddr,
+			Logger: m.Logger.With("component", "remux"),
+		}
 	}
 	active := func(delta int) { m.Metrics.ActiveJobs.Add(float64(delta)) }
 	return &remoteexec.Service{Execute: dispatcher.Execute, OnActive: active},

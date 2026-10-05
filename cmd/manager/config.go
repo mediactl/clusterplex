@@ -121,6 +121,10 @@ type Config struct {
 	PlexSubnet netip.Prefix
 	// WorkerPort is the gRPC port on which a worker accepts jobs.
 	WorkerPort int
+	// RemuxSelector picks the remux pool's pods; empty turns the pool off.
+	RemuxSelector string
+	// RemuxPort is the remux workers' gRPC port.
+	RemuxPort int
 	// ProbePort serves the health probes and metrics.
 	ProbePort int
 	// DrainTimeout is how long a stopping pod lets the client connections it
@@ -158,6 +162,8 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("pms-port", 32400, "port Plex Media Server listens on")
 	fs.String("plex-subnet", "169.254.1.0/30", "point-to-point subnet joining the pod to Plex's network namespace")
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
+	fs.String("remux-selector", "app=plex-remux", "label selector of the remux pool's pods; empty leaves every browser stream to Plex's transcoder")
+	fs.Int("remux-port", 50052, "gRPC port of the remux workers")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
 	fs.Duration("drain-timeout", 2*time.Minute, "how long a stopping pod lets the client connections it holds finish before Plex is stopped; the pod's termination grace period must cover it plus Plex's own 30s")
 	fs.String("postgres-host", "", "host of the shared Plex library database")
@@ -230,6 +236,8 @@ func loadConfig(args []string) (Config, error) {
 		WorkersService:   v.GetString("workers-service"),
 		PMSPort:          port("pms-port"),
 		WorkerPort:       port("worker-port"),
+		RemuxSelector:    strings.TrimSpace(v.GetString("remux-selector")),
+		RemuxPort:        port("remux-port"),
 		ProbePort:        port("probe-port"),
 		DrainTimeout:     v.GetDuration("drain-timeout"),
 		BlockPlexTV:      v.GetBool("block-plex-tv"),
