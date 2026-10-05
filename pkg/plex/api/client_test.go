@@ -148,3 +148,19 @@ func TestItReadsAndSetsASectionsPreferences(t *testing.T) {
 	last := (*calls)[len(*calls)-1]
 	assert.Equal(t, "PUT /library/sections/3/prefs?enableBIFGeneration=0", last.Method+" "+last.Path+"?"+last.Query)
 }
+
+// /status/sessions as PMS answers it: each playback names its player and,
+// while transcoding, its transcode session's key.
+func TestItFindsThePlayerOfATranscodeSession(t *testing.T) {
+	c, _ := recorder(t, map[string]string{
+		"GET /status/sessions": `{"MediaContainer":{"Metadata":[
+			{"Player":{"product":"Plex for Android (TV)"},"TranscodeSession":{"key":"/transcode/sessions/other"}},
+			{"Player":{"product":"Plex Web","platform":"Firefox"},"TranscodeSession":{"key":"/transcode/sessions/f168tc7vl2desp78pov5ktwu"}}]}}`,
+	}, nil)
+	got, err := c.PlayerProduct(t.Context(), "f168tc7vl2desp78pov5ktwu")
+	require.NoError(t, err)
+	assert.Equal(t, "Plex Web", got)
+	got, err = c.PlayerProduct(t.Context(), "missing")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}

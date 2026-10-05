@@ -202,6 +202,33 @@ func (c *Client) SetSectionPrefs(ctx context.Context, key string, prefs map[stri
 	return c.do(ctx, http.MethodPut, "/library/sections/"+url.PathEscape(key)+"/prefs", q, nil)
 }
 
+// PlayerProduct is the product of the player whose playback is transcode
+// session id (e.g. "Plex Web"), from /status/sessions; "" when no playback
+// names that session.
+func (c *Client) PlayerProduct(ctx context.Context, id string) (string, error) {
+	var out struct {
+		MediaContainer struct {
+			Metadata []struct {
+				Player struct {
+					Product string `json:"product"`
+				} `json:"Player"`
+				TranscodeSession struct {
+					Key string `json:"key"`
+				} `json:"TranscodeSession"`
+			} `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/status/sessions", nil, &out); err != nil {
+		return "", err
+	}
+	for _, m := range out.MediaContainer.Metadata {
+		if k := m.TranscodeSession.Key; k == id || k == "/transcode/sessions/"+id {
+			return m.Player.Product, nil
+		}
+	}
+	return "", nil
+}
+
 // RefreshSection scans a library. An empty path scans the whole library,
 // and force re-reads metadata for items already there.
 func (c *Client) RefreshSection(ctx context.Context, key, path string, force bool) error {
