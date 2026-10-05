@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,4 +128,16 @@ func mustStat(t *testing.T, p string) os.FileInfo {
 	fi, err := os.Stat(p)
 	require.NoError(t, err)
 	return fi
+}
+
+// The e2e test reads the pool's log to tell a replay from a remux.
+func TestAReplayLogsThatTheCacheServedIt(t *testing.T) {
+	var log bytes.Buffer
+	f := &fakeRun{}
+	srv := &Server{Cache: &cache.Cache{Dir: t.TempDir()}, Run: f.Run, Logger: slog.New(slog.NewTextHandler(&log, nil))}
+	j := remux.Job{Input: input(t), SkipToSegment: 1, SegmentDuration: 5 * time.Second, AudioStream: 1, AudioChannels: 2}
+	require.NoError(t, srv.Remux(j.Proto(), &stream{ctx: t.Context()}))
+	assert.NotContains(t, log.String(), "served from cache")
+	require.NoError(t, srv.Remux(j.Proto(), &stream{ctx: t.Context()}))
+	assert.Contains(t, log.String(), "remux served from cache")
 }

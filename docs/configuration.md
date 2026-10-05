@@ -409,6 +409,20 @@ plex:
 | `clusterplex_clustarr_uncovered_paths_total` | Mapped paths no library covers |
 | `clusterplex_clustarr_watch_synced` | 1 once the clustarr watch has synced |
 
+## The remux pool
+
+Plex Web's DASH streams run on the remux pool rather than on Plex's
+transcoder (ADR-0007). The manager finds the pool's pods by label and dials
+their gRPC port:
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--remux-selector` | `app=plex-remux` | Label selector of the pool's pods. Empty turns the pool off: every browser stream stays on Plex's transcoder. The chart renders it empty when `remux.enabled` is false. |
+| `--remux-port` | `50052` | The remux workers' gRPC port. |
+
+With no ready remux pod, or for any job the pool refuses, Plex's transcoder
+runs the stream as before.
+
 ## Applying a change
 
 The manager reads its configuration once, at startup. Editing the ConfigMap

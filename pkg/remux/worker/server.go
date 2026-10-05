@@ -104,6 +104,9 @@ func (s *Server) remux(ctx context.Context, j remux.Job, out remuxpb.Remux_Remux
 				ok = found && next.Start == seg.End
 				seg = next
 			}
+			if s.Logger != nil {
+				s.Logger.Info("remux served from cache", "input", j.Input, "from", j.SkipToSegment, "to", n-1)
+			}
 			if last := e.Last(); last > 0 && n > last {
 				return ss.finish()
 			}

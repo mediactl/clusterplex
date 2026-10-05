@@ -52,6 +52,8 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/plex/api/` | A client for Plex's admin API: providers, agents, libraries, refreshes |
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
+| `pkg/remux/` | Plex Web's DASH streams on the remux pool: classify and parse a shimmed job, the manifest, the fMP4 splitter (`remux`), the cache (`cache`), the ffgo pipeline (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
+| `cmd/remux-worker/` | The remux pool's binary; the only one that links ffgo |
 
 ## Invariants
 
@@ -91,6 +93,10 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   reconciles TheIntroDB's markers, only in the provisioned libraries, never
   over Plex's own analysis, with every row marked (`cp:source`,
   `pv:source=theintrodb`). Configuration stays API-only.
+- **Only `cmd/remux-worker` links ffgo.** The manager, shim, proxy and
+  maintenance binaries are static and run from a scratch image; ffgo
+  (purego) would make them dynamic. `TestNoStaticBinaryLinksFFgo` holds it.
+  Browser streams reach the pool through `pkg/remux/relay` (ADR-0007).
 - **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
   CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
   failover is a failed Job that retries and shows up in `kubectl`.
