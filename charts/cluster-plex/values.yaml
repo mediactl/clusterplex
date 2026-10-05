@@ -170,3 +170,19 @@ postgres:
   passwordSecret:
     name: ""
     key: password
+
+# The remux pool: Plex Web's DASH streams (the video copied, the audio
+# converted to stereo AAC) run here, in process with ffgo, instead of on
+# Plex's transcoder; each pod keeps a cache of what it remuxed. Off, every
+# browser stream stays on Plex's transcoder.
+remux:
+  enabled: true
+  image:
+    repository: ghcr.io/mediactl/cluster-plex-remux
+    tag: ""
+  replicas: 2
+  autoscaling: {minReplicas: 1, maxReplicas: 6, targetCPU: 70}
+  cache: {sizeLimit: 25Gi, maxBytes: 21474836480}
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {memory: 1Gi}

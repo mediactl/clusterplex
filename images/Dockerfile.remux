@@ -1,0 +1,99 @@
+# The remux worker: Plex Web's DASH streams remuxed in process with ffgo
+# (docs/superpowers/specs/2026-10-01-browser-remux-transcoder-design.md).
+#
+# The build and ffmpeg stages are clustarr's images/Dockerfile.transcoder's
+# (same owner): BtbN's FFmpeg 9 shared build, and the ffgo shim compiled
+# against its headers. There is no Intel or NVIDIA stage: the pool decodes
+# and encodes audio only, and copies the video.
+#
+# Build with ffgo as a named context while go.mod replaces it with ../ffgo:
+#   docker build -f images/Dockerfile.remux --build-context ffgo=../ffgo .
+# (make docker-build-remux passes it.)
+
+ARG GO_VERSION=1.27
+ARG FFMPEG_BRANCH=9.0
+
+# ---------------------------------------------------------------------------
+# build: the worker (CGO_ENABLED=0) and the ffgo shim's source
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+ENV CGO_ENABLED=0 GOFLAGS=-trimpath
+COPY --from=ffgo . /ffgo
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags "-s -w" \
+      -o /out/remux-worker ./cmd/remux-worker \
+ && mkdir -p /out/ffgo /out/licenses/ffgo \
+ && ffgo="$(go list -m -f '{{.Dir}}' github.com/obinnaokechukwu/ffgo)" \
+ && cp -r "$ffgo/shim" /out/ffgo/ \
+ && cp "$ffgo/LICENSE" /out/licenses/ffgo/LICENSE
+
+# ---------------------------------------------------------------------------
+# ffmpeg: BtbN's shared build into /usr, and the shim against its headers
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS ffmpeg
+ARG TARGETARCH
+ARG FFMPEG_BRANCH
+# One dated BtbN build, checked by its published SHA-256 (clustarr's pin).
+ARG FFMPEG_RELEASE=autobuild-2026-09-30-13-08
+ARG FFMPEG_VERSION=n9.0.2-17-g2a571b6068
+ARG FFMPEG_SHA256_AMD64=01a9764d0b5364b66cfeb4617557c64321b0e232e172ec73f0a701c5f7694326
+ARG FFMPEG_SHA256_ARM64=706ccdbc8b0537646345532713a9b6750c0a6258cc001ec1c0379754f0ae730a
+ARG FFMPEG_URL=""
+ARG FFMPEG_SHA256=""
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/ffgo/shim /src/shim
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) a=linux64; sum="${FFMPEG_SHA256_AMD64}" ;; \
+      arm64) a=linuxarm64; sum="${FFMPEG_SHA256_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE}/ffmpeg-${FFMPEG_VERSION}-${a}-gpl-shared-${FFMPEG_BRANCH}.tar.xz"; \
+    if [ -n "${FFMPEG_URL}" ]; then url="${FFMPEG_URL}"; sum="${FFMPEG_SHA256}"; fi; \
+    curl -fsSL -o /tmp/ff.tar.xz "${url}"; \
+    if [ -n "${sum}" ]; then echo "${sum}  /tmp/ff.tar.xz" | sha256sum -c -; fi; \
+    mkdir -p /opt/ffmpeg; \
+    tar -xJf /tmp/ff.tar.xz --strip-components=1 -C /opt/ffmpeg; \
+    mkdir -p /out/usr/lib; \
+    cp -a /opt/ffmpeg/lib/lib*.so* /out/usr/lib/; \
+    mkdir -p /out/usr/share/licenses/ffmpeg; \
+    cp /opt/ffmpeg/LICENSE.txt /out/usr/share/licenses/ffmpeg/LICENSE.txt; \
+    printf 'FFmpeg %s, built by BtbN/FFmpeg-Builds (GPL, shared): %s\nSource: https://github.com/FFmpeg/FFmpeg (the commit after the last "g" in the version)\nBuild scripts: https://github.com/BtbN/FFmpeg-Builds\n' \
+      "$(LD_LIBRARY_PATH=/opt/ffmpeg/lib /opt/ffmpeg/bin/ffmpeg -hide_banner -version 2>/dev/null | head -n1 || echo "${FFMPEG_VERSION}")" "${url}" \
+      > /out/usr/share/licenses/ffmpeg/SOURCE; \
+    gcc -shared -fPIC -O2 -Wall -DFFSHIM_HAVE_AVDEVICE=1 -DFFSHIM_HAVE_AVFILTER=1 \
+      -I/opt/ffmpeg/include -o /out/usr/lib/libffshim.so /src/shim/ffshim.c \
+      -L/opt/ffmpeg/lib -lavutil -lavcodec -lavformat -lavdevice -lavfilter
+
+# ---------------------------------------------------------------------------
+# staging: lddtree everything the worker loads into /staging
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim AS staging
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pax-utils ca-certificates gcc \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /out/ /
+COPY --from=build /out/remux-worker /usr/bin/remux-worker
+COPY --from=build /out/licenses/ /usr/share/licenses/
+COPY images/stage.sh /stage.sh
+RUN /stage.sh /staging
+
+# ---------------------------------------------------------------------------
+# remux: FROM scratch
+# ---------------------------------------------------------------------------
+FROM scratch AS remux
+LABEL org.opencontainers.image.source="https://github.com/mediactl/cluster-plex" \
+      org.opencontainers.image.title="cluster-plex-remux"
+COPY --from=staging /staging/ /
+ENV FFGO_SHIM_DIR=/usr/lib
+USER 1000:1000
+ENTRYPOINT ["/usr/bin/remux-worker"]

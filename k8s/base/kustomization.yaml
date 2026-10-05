@@ -9,3 +9,4 @@ resources:
   - pvc.yaml
   - statefulset.yaml
   - pdb.yaml
+  - remux.yaml

@@ -17,7 +17,23 @@ components:
 images:
   - name: ghcr.io/mediactl/cluster-plex
     newTag: "f21fcb5"
+  - name: ghcr.io/mediactl/cluster-plex-remux
+    newTag: "dev"
 patches:
+  # The remux pool reads files at the paths Plex names, so it gets the same
+  # /library mount as the Plex StatefulSet.
+  - target:
+      kind: Deployment
+      name: plex-remux
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: clustarr-library
+          persistentVolumeClaim: {claimName: plex-clustarr-library, readOnly: true}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: clustarr-library, mountPath: /library, subPath: media, readOnly: true}
   - target:
       kind: StatefulSet
       name: plex

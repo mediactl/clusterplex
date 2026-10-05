@@ -1,0 +1,55 @@
+{{- if .Values.remux.enabled }}
+# The remux pool: Plex Web's DASH streams, remuxed in process with ffgo
+# (docs/superpowers/specs/2026-10-01-browser-remux-transcoder-design.md).
+# Managers find these pods by app=plex-remux and dial :50052; the cache is
+# per pod, and the managers' hash ring sends a file back to the pod holding it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-remux
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.remux.replicas }}
+  selector:
+    matchLabels: {app: plex-remux, app.kubernetes.io/instance: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app: plex-remux, app.kubernetes.io/instance: {{ .Release.Name }}}
+    spec:
+      securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, runAsNonRoot: true}
+      containers:
+        - name: remux
+          image: {{ .Values.remux.image.repository }}:{{ .Values.remux.image.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--cache-dir=/cache", "--cache-max-bytes={{ int64 .Values.remux.cache.maxBytes }}"]
+          ports:
+            - {name: grpc, containerPort: 50052}
+            - {name: probe, containerPort: 8080}
+          readinessProbe: {httpGet: {path: /readyz, port: probe}}
+          livenessProbe: {httpGet: {path: /healthz, port: probe}}
+          resources: {{- toYaml .Values.remux.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+            - {name: media, mountPath: /media, readOnly: true{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
+      volumes:
+        - name: cache
+          emptyDir: {sizeLimit: {{ .Values.remux.cache.sizeLimit }}}
+        - name: media
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.media.existingClaim | default (printf "%s-media" .Release.Name) }}
+            readOnly: true
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-remux
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ .Release.Name }}-remux}
+  minReplicas: {{ .Values.remux.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.remux.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: {{ .Values.remux.autoscaling.targetCPU }}}}
+{{- end }}

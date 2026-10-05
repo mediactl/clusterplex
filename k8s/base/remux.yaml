@@ -1,0 +1,50 @@
+# The remux pool: Plex Web's DASH streams, remuxed in process with ffgo
+# (docs/superpowers/specs/2026-10-01-browser-remux-transcoder-design.md).
+# Managers find these pods by app=plex-remux and dial :50052; the cache is
+# per pod, and the managers' hash ring sends a file back to the pod holding it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-remux
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: plex-remux}
+  template:
+    metadata:
+      labels: {app: plex-remux}
+    spec:
+      securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, runAsNonRoot: true}
+      containers:
+        - name: remux
+          image: ghcr.io/mediactl/cluster-plex-remux:dev
+          args: ["--cache-dir=/cache", "--cache-max-bytes=21474836480"]
+          ports:
+            - {name: grpc, containerPort: 50052}
+            - {name: probe, containerPort: 8080}
+          readinessProbe: {httpGet: {path: /readyz, port: probe}}
+          livenessProbe: {httpGet: {path: /healthz, port: probe}}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+            - {name: media, mountPath: /media, readOnly: true}
+      volumes:
+        - name: cache
+          emptyDir: {sizeLimit: 25Gi}
+        - name: media
+          persistentVolumeClaim: {claimName: plex-media, readOnly: true}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: plex-remux
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: plex-remux}
+  minReplicas: 1
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}

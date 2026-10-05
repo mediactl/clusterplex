@@ -58,3 +58,7 @@ data:
           {{- range .Values.plex.clustarr.pathMappings }}
           - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}
           {{- end }}
+    {{- if not .Values.remux.enabled }}
+    # No remux pool: every browser stream stays on Plex's transcoder.
+    remux-selector: ""
+    {{- end }}
