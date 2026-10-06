@@ -666,6 +666,33 @@ also load the pool: a forced refresh during a library-wide extras refresh
 exhausted all 100 slots on plex-2 and Plex crashed (`fake value from different
 thread`, 2026-10-06 09:03), the pool-exhaustion path below.
 
+## Fixed: a parameter bound NULL kept the previous row's integer
+
+Plex saves every item through one cached statement,
+
+```sql
+UPDATE metadata_items SET `library_section_id`=:U1,`parent_id`=:U2,...
+```
+
+rebound per row: an episode binds its season to `:U2`, the next movie or show
+binds NULL. The shim writes an int or a double into the statement's
+preallocated `param_buffers`, and clearing a parameter freed only heap values,
+so `sqlite3_bind_null` after an integer was a no-op and the movie was sent with
+the episode's season as its parent. PostgreSQL's triggers refused the save
+(`Cross-section parent link prevented: child section 2 cannot have parent in
+section 3`, `Show N cannot have non-collection parent (type 3)`), so a Fix
+Match changed the GUID in memory and lost it on disk. It read as a
+cross-thread leak, because the stale season always belonged to the show
+refreshed just before, and matching one item at a time did not stop it: 21 of
+298 movies were lost in a serial pass on 2026-10-06. Fixed in
+`v1.3.17-clusterplex.24`: every bind starts from an empty parameter, a NULL
+pointer to `bind_text`/`bind_blob` binds NULL, and `sqlite3_clear_bindings`
+makes every parameter NULL; reset keeps its bindings as before.
+
+Verified on kind-cluster-plex (`e6ae877`): the 74 items still off their Plex
+GUID after the old shim's passes all moved in one serial re-run, and no pod
+logged a rejected write, a write error or a crash after the roll.
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
