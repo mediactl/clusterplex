@@ -630,6 +630,42 @@ The statement that crashed never reached PostgreSQL: its backtrace runs through
 bind their paths and titles as parameters, so the statement log holds no
 non-ASCII text from them at all.
 
+## Fixed: every scan of a changed folder aborted
+
+From at least 2026-10-06 03:40, every library scan that had to record a
+changed folder's time ended in `Caught exception while scanning Clustarr
+Movies: std::exception`, on every pod, and new files never reached the
+library. Plex records the time with
+
+```sql
+UPDATE directories SET `updated_at`=:U1,`updated_at`=:U2 WHERE `id`=:C1
+```
+
+and binds `:U1`, `:U2` and `:C1` by name. The translator's `dedup` pass kept
+the last assignment, as PostgreSQL requires, and dropped `:U1` with the first,
+so `sqlite3_bind_parameter_index(":U1")` found nothing and Plex threw before
+the UPDATE ran. PostgreSQL never saw the statement, which is why its log held
+no error. Fixed in `v1.3.17-clusterplex.23`: a dropped value's named
+parameters stay referenced from an always-true predicate ANDed onto WHERE,
+
+```sql
+UPDATE directories SET "updated_at" = $1 WHERE ("id" = $2) AND (CAST(($3) AS TEXT) <> '' OR true)
+```
+
+so every name binds and the last assignment still wins. A positional `?` in a
+dropped value is dropped as before, since a trailing predicate would shift the
+positions after it. Plex binds by name: for a PostgreSQL-routed statement the
+shim's bind accepts any index, so a positional bind would have run the UPDATE
+rather than fail before it.
+
+Verified: the statement ran on the cluster's PostgreSQL in a rolled-back
+transaction with untyped text parameters, `:U1` NULL included; on
+kind-cluster-plex a scan of a changed folder completes and records the
+folder's time (`directories` row 71, Arrival). The scans that now run further
+also load the pool: a forced refresh during a library-wide extras refresh
+exhausted all 100 slots on plex-2 and Plex crashed (`fake value from different
+thread`, 2026-10-06 09:03), the pool-exhaustion path below.
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
