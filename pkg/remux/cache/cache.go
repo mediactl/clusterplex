@@ -49,6 +49,7 @@ type part struct {
 type record struct {
 	Start, End   time.Duration
 	Video, Audio part
+	OnGrid       bool
 }
 
 type index struct {
@@ -283,7 +284,7 @@ func (e *Entry) Segment(n int) (remux.Segment, bool, error) {
 	}
 	e.idx.Used = e.c.now()
 	return remux.Segment{
-		N: n, Start: r.Start, End: r.End,
+		N: n, Start: r.Start, End: r.End, OnGrid: r.OnGrid,
 		Video: remux.Fragment{Data: v, T: r.Video.T, D: r.Video.D},
 		Audio: remux.Fragment{Data: a, T: r.Audio.T, D: r.Audio.D},
 	}, true, nil
@@ -310,7 +311,7 @@ func (e *Entry) Put(s remux.Segment) error {
 		return err
 	}
 	e.idx.Segments[strconv.Itoa(s.N)] = record{
-		Start: s.Start, End: s.End,
+		Start: s.Start, End: s.End, OnGrid: s.OnGrid,
 		Video: part{span: vs, T: s.Video.T, D: s.Video.D}, Audio: part{span: as, T: s.Audio.T, D: s.Audio.D},
 	}
 	e.idx.Used = e.c.now()

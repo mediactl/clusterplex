@@ -46,7 +46,7 @@ func (f *fakeRun) Run(_ context.Context, _ remux.Job, o pipeline.Options, sink p
 		f.decoded++
 		start := time.Duration(n-1) * 5 * time.Second
 		if err := sink.Segment(remux.Segment{
-			N: n, Start: start, End: start + 5*time.Second,
+			N: n, Start: start, End: start + 5*time.Second, OnGrid: true,
 			Video: remux.Fragment{Data: []byte{'v', byte(n)}, T: int64(n-1) * 61440, D: 61440},
 			Audio: remux.Fragment{Data: []byte{'a', byte(n)}, T: int64(n-1) * 240000, D: 240000},
 		}); err != nil {
@@ -120,7 +120,7 @@ func TestAGapIsFilledFromTheEndOfTheLastCachedSegment(t *testing.T) {
 	e, err := srv.Cache.Open(srv.key(j, mustStat(t, in)))
 	require.NoError(t, err)
 	require.NoError(t, e.SetInit([]byte("vinit"), []byte("ainit"), [2]int32{12288, 48000}, remux.StreamInfo{}))
-	require.NoError(t, e.Put(remux.Segment{N: 1, End: 5 * time.Second, Video: remux.Fragment{Data: []byte("v1")}, Audio: remux.Fragment{Data: []byte("a1")}}))
+	require.NoError(t, e.Put(remux.Segment{N: 1, End: 5 * time.Second, OnGrid: true, Video: remux.Fragment{Data: []byte("v1")}, Audio: remux.Fragment{Data: []byte("a1")}}))
 	require.NoError(t, srv.Remux(j.Proto(), &stream{ctx: t.Context()}))
 	assert.Equal(t, pipeline.Options{From: 2, StartAt: 5 * time.Second}, got)
 }
@@ -202,4 +202,27 @@ func TestAFullCacheStillPlays(t *testing.T) {
 	got := files(s)
 	assert.Equal(t, "done:", got[len(got)-1])
 	assert.Contains(t, got, "chunk-stream0-00004.m4s")
+}
+
+// Review finding I6: a seek is served from the cache only from a segment
+// that starts where the seek would start it; a full run's segment that fell
+// behind the grid (a long keyframe interval) is not.
+func TestASeekIsServedFromTheCacheOnlyFromAGridSegment(t *testing.T) {
+	for _, onGrid := range []bool{false, true} {
+		f := &fakeRun{}
+		srv := &Server{Cache: &cache.Cache{Dir: t.TempDir()}, Run: f.Run}
+		in := input(t)
+		j := remux.Job{Input: in, SkipToSegment: 3, SegmentDuration: 5 * time.Second, AudioStream: 1, AudioChannels: 2}
+		e, err := srv.Cache.Open(srv.key(j, mustStat(t, in)))
+		require.NoError(t, err)
+		require.NoError(t, e.SetInit([]byte("vinit"), []byte("ainit"), [2]int32{12288, 48000}, remux.StreamInfo{}))
+		require.NoError(t, e.Put(remux.Segment{
+			N: 3, Start: 20 * time.Second, End: 30 * time.Second, OnGrid: onGrid,
+			Video: remux.Fragment{Data: []byte("v3")}, Audio: remux.Fragment{Data: []byte("a3")},
+		}))
+		require.NoError(t, e.SetLast(3))
+		e.Close()
+		require.NoError(t, srv.Remux(j.Proto(), &stream{ctx: t.Context()}))
+		assert.Equal(t, map[bool]int{false: 1, true: 0}[onGrid], f.runs, "on grid %t", onGrid)
+	}
 }

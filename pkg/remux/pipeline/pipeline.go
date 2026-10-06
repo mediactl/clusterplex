@@ -215,6 +215,7 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 	began := time.Now()
 	n := o.From
 	last := time.Duration(-1)
+	grid := false
 	var demuxErr error
 	for {
 		if demuxErr = ctx.Err(); demuxErr != nil {
@@ -258,13 +259,20 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 				continue
 			}
 			last = ts
+			// A run's first segment is on the grid when the rule placed it;
+			// one continuing a cache chain (an explicit StartAt) may not be.
+			grid = o.StartAt < 0
 			b.add(ts)
 		case key && ts >= time.Duration(n)*job.SegmentDuration && ts > last:
 			f, err := video.cut()
 			if err != nil {
 				demuxErr = err
 			}
-			segs.video(n, f, last, ts)
+			segs.video(n, f, last, ts, grid)
+			// Segment n+1 starts where a seek to it would only if segment
+			// n began before n+1's grid point: otherwise the rule's "later
+			// than the last start" pushed it past the grid's keyframe.
+			grid = last < time.Duration(n)*job.SegmentDuration
 			n++
 			last = ts
 			b.add(ts)
@@ -285,7 +293,7 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 		if err != nil {
 			demuxErr = err
 		}
-		segs.video(n, f, last, toTime(video.end, video.scale))
+		segs.video(n, f, last, toTime(video.end, video.scale), grid)
 	}
 	b.finish()
 	wg.Wait()
@@ -335,8 +343,8 @@ func newPairs(sink Sink, from int) *pairs {
 	return &pairs{sink: sink, next: from, pending: map[int]*remux.Segment{}, have: map[int]int{}}
 }
 
-func (p *pairs) video(n int, f remux.Fragment, start, end time.Duration) {
-	p.put(n, func(s *remux.Segment) { s.Video, s.Start, s.End = f, start, end })
+func (p *pairs) video(n int, f remux.Fragment, start, end time.Duration, onGrid bool) {
+	p.put(n, func(s *remux.Segment) { s.Video, s.Start, s.End, s.OnGrid = f, start, end, onGrid })
 }
 
 func (p *pairs) audio(n int, f remux.Fragment) { p.put(n, func(s *remux.Segment) { s.Audio = f }) }

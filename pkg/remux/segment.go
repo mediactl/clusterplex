@@ -15,6 +15,11 @@ type Segment struct {
 	N            int
 	Start, End   time.Duration
 	Video, Audio Fragment
+	// OnGrid is a segment that starts where a job seeking to it starts it:
+	// at the first keyframe at or after (N-1) × the segment duration. A
+	// run's later segments fall behind that grid when a keyframe interval
+	// is longer than a segment, and must not answer a seek.
+	OnGrid bool
 }
 
 // StreamInfo is what the manifest says of the streams; the cache keeps it

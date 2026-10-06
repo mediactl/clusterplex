@@ -87,10 +87,10 @@ func (s *Server) remux(ctx context.Context, j remux.Job, out remuxpb.Remux_Remux
 	if v, a, ts, info, ok := e.Init(); ok {
 		if seg, ok, err := e.Segment(n); err != nil {
 			return err
-		} else if ok && (n == 1 && seg.Start == 0 || n > 1) {
-			// A segment from a run that started elsewhere has the start the
-			// rule gives only when that run reached it from the same
-			// keyframe; a chain from the cache is trusted from n onwards.
+		} else if ok && seg.OnGrid {
+			// The first segment must start where a seek to it would; the
+			// chain after it is trusted while each starts where the last
+			// ended.
 			ss.info = info
 			ss.manifest.Duration = info.Duration
 			if err := ss.sendInit(v, a, ts, info); err != nil {

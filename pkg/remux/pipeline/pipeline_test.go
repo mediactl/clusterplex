@@ -116,6 +116,15 @@ func TestLongGOPSegmentsAreContiguous(t *testing.T) {
 	// a seek to segment 3 (10 s) starts at the boundary the rule gives
 	seek := run(t, job(clip(t, 30, 240), 3), Options{From: 3, StartAt: -1})
 	assert.Equal(t, 10*time.Second, seek.segments[0].Start)
+	// Review finding I6: only a segment that starts where a seek to it
+	// would start it may answer that seek from the cache. The full run's
+	// segment 3 (20 s) is not; the seek's own (10 s) is.
+	var grid []bool
+	for _, s := range r.segments {
+		grid = append(grid, s.OnGrid)
+	}
+	assert.Equal(t, []bool{true, true, false}, grid)
+	assert.True(t, seek.segments[0].OnGrid)
 }
 
 func TestASeekRunsVideoIsTheFullRunsVideo(t *testing.T) {
