@@ -5,10 +5,6 @@
 # (same owner): BtbN's FFmpeg 9 shared build, and the ffgo shim compiled
 # against its headers. There is no Intel or NVIDIA stage: the pool decodes
 # and encodes audio only, and copies the video.
-#
-# Build with ffgo as a named context while go.mod replaces it with ../ffgo:
-#   docker build -f images/Dockerfile.remux --build-context ffgo=../ffgo .
-# (make docker-build-remux passes it.)
 
 ARG GO_VERSION=1.27
 ARG FFMPEG_BRANCH=9.0
@@ -21,7 +17,6 @@ ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath
-COPY --from=ffgo . /ffgo
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .

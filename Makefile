@@ -61,12 +61,12 @@ test-netns: ## pkg/plex/net against real network namespaces
 
 REMUX_IMG ?= ghcr.io/mediactl/cluster-plex-remux:dev
 .PHONY: docker-build-remux
-docker-build-remux: ## Build the remux worker's image (ffgo comes from ../ffgo while go.mod replaces it so)
-	docker build -f images/Dockerfile.remux --build-context ffgo=../ffgo --target remux -t $(REMUX_IMG) .
+docker-build-remux: ## Build the remux worker's image
+	docker build -f images/Dockerfile.remux --target remux -t $(REMUX_IMG) .
 
 .PHONY: docker-build
 docker-build: ## Build the image; DOCKER_TARGET=debug adds busybox, which make e2e needs
-	docker build -f Dockerfile --build-context ffgo=../ffgo --target $(DOCKER_TARGET) -t $(IMG) .
+	docker build -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
 
 .PHONY: helm-lint
 helm-lint: ## Lint and render the Helm chart
