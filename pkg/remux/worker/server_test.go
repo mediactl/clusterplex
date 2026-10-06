@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,4 +142,52 @@ func TestAReplayLogsThatTheCacheServedIt(t *testing.T) {
 	assert.NotContains(t, log.String(), "served from cache")
 	require.NoError(t, srv.Remux(j.Proto(), &stream{ctx: t.Context()}))
 	assert.Contains(t, log.String(), "remux served from cache")
+}
+
+// overlapStream fails if Send is entered while another Send is running, as
+// grpc-go forbids on one stream.
+type overlapStream struct {
+	stream
+	in      atomic.Int32
+	overlap atomic.Bool
+}
+
+func (s *overlapStream) Send(e *remuxpb.Event) error {
+	if s.in.Add(1) > 1 {
+		s.overlap.Store(true)
+	}
+	time.Sleep(time.Millisecond)
+	s.in.Add(-1)
+	return nil
+}
+
+// Review finding I8: the pipeline reports progress from its demuxer and
+// segments from its audio side, on different goroutines.
+func TestTheStreamIsNeverSentToConcurrently(t *testing.T) {
+	run := func(_ context.Context, _ remux.Job, o pipeline.Options, sink pipeline.Sink) (int, error) {
+		if err := sink.Init([]byte("v"), []byte("a"), [2]int32{12288, 48000}, remux.StreamInfo{}); err != nil {
+			return 0, err
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				sink.Progress("", "progress=1.0")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for n := o.From; n < o.From+50; n++ {
+				_ = sink.Segment(remux.Segment{N: n, Start: time.Duration(n-1) * 5 * time.Second, End: time.Duration(n) * 5 * time.Second})
+			}
+		}()
+		wg.Wait()
+		return o.From + 49, nil
+	}
+	srv := &Server{Cache: &cache.Cache{Dir: t.TempDir()}, Run: run}
+	s := &overlapStream{stream: stream{ctx: t.Context()}}
+	j := remux.Job{Input: input(t), SkipToSegment: 1, SegmentDuration: 5 * time.Second}
+	require.NoError(t, srv.Remux(j.Proto(), s))
+	assert.False(t, s.overlap.Load(), "two Sends overlapped")
 }

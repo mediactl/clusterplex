@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/remux"
@@ -41,6 +42,7 @@ func (s *Server) key(j remux.Job, fi os.FileInfo) cache.Key {
 
 // session is one job's stream: what was sent and the manifest's timelines.
 type session struct {
+	sendMu   sync.Mutex // the pipeline reports from two goroutines; grpc-go allows one Send at a time
 	srv      *Server
 	out      remuxpb.Remux_RemuxServer
 	job      remux.Job
@@ -123,7 +125,11 @@ func (s *Server) remux(ctx context.Context, j remux.Job, out remuxpb.Remux_Remux
 	return ss.finish()
 }
 
-func (ss *session) send(e *remuxpb.Event) error { return ss.out.Send(e) }
+func (ss *session) send(e *remuxpb.Event) error {
+	ss.sendMu.Lock()
+	defer ss.sendMu.Unlock()
+	return ss.out.Send(e)
+}
 
 func (ss *session) file(name string, data []byte) error {
 	return ss.send(&remuxpb.Event{Kind: &remuxpb.Event_File{File: &remuxpb.File{Name: name, Data: data}}})
