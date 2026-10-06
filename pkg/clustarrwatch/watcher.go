@@ -94,6 +94,9 @@ type Watcher struct {
 	// steps a queued file has taken. A change to the file starts it over.
 	seedRetry    map[string]seedRetry
 	seedAttempts map[string]int
+	// items are the Movie, Series and Episode caches a seed reads its
+	// item's original language from; set before the informers start.
+	items map[schema.GroupVersionResource]cache.Store
 }
 
 type seedRetry struct {
@@ -148,12 +151,21 @@ func (w *Watcher) Run(ctx context.Context) error {
 		{Series, "show", w.TVProvider},
 		{Episodes, "episode", w.TVProvider},
 	} {
-		if it.provider == "" {
+		var hs []cache.ResourceEventHandler
+		if it.provider != "" {
+			hs = append(hs, w.itemHandler(it.plexType, it.provider))
+		}
+		if len(hs) == 0 && w.Seed == nil {
 			continue
 		}
-		if _, err := add(it.gvr, w.itemHandler(it.plexType, it.provider)); err != nil {
+		inf, err := add(it.gvr, hs...)
+		if err != nil {
 			return err
 		}
+		if w.items == nil {
+			w.items = map[schema.GroupVersionResource]cache.Store{}
+		}
+		w.items[it.gvr] = inf.GetStore()
 	}
 	f.Start(ctx.Done())
 	if !w.waitForSync(ctx, synced) {
@@ -529,6 +541,20 @@ func (w *Watcher) retrySeed(u *unstructured.Unstructured, attempts int) {
 	w.seedRetry[u.GetName()] = seedRetry{u: u, at: time.Now().Add(steps[attempts]), attempts: attempts + 1}
 }
 
+// item is the cached clustarr object gvr names, if the watcher reads gvr.
+func (w *Watcher) item(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool) {
+	st := w.items[gvr]
+	if st == nil {
+		return nil, false
+	}
+	obj, ok, err := st.GetByKey(namespace + "/" + name)
+	if err != nil || !ok {
+		return nil, false
+	}
+	u, ok := obj.(*unstructured.Unstructured)
+	return u, ok
+}
+
 // flushSeeds seeds up to SeedBatch queued files. A file Plex has no part
 // for, or one that fails, is tried again on SeedRetry's backoff.
 func (w *Watcher) flushSeeds(ctx context.Context) {
@@ -559,6 +585,7 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 		if !ok {
 			continue
 		}
+		in.OriginalLanguage = OriginalLanguageOf(u, w.item)
 		mapped, ok := w.Mapper.Map(in.Path)
 		if !ok {
 			continue

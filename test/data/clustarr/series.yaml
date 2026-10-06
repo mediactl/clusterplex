@@ -1,0 +1,169 @@
+apiVersion: catalog.clustarr.io/v1alpha1
+kind: Series
+metadata:
+  creationTimestamp: '2026-09-23T18:35:17Z'
+  finalizers:
+  - catalog.clustarr.io/series
+  generation: 5
+  name: a-bona-fide-killer-82a2fb8eb6
+  namespace: clustarr-system
+  resourceVersion: '2957130'
+  uid: 83d503be-42bd-494d-be7b-2929e7bf55f2
+spec:
+  addOptions:
+    monitor: all
+    searchForCutoffUnmet: false
+    searchForMissing: false
+  episodeOrder: official
+  folder: A Bona Fide Killer (2026) {tvdb-464930}
+  monitorNewItems: all
+  monitored: true
+  qualityProfileRef: web-1080p
+  rootFolderRef: tv
+  seasonFolder: true
+  seriesType: standard
+  tvdbID: 464930
+status:
+  addOptionsApplied: true
+  artwork:
+  - digest: 037e41475cffeb4bfc1875c2872da38945790a1e7110e106772dc7b4e276cba1
+    sizeBytes: 141268
+    source: provider
+    sourceURL: https://artworks.thetvdb.com/banners/v4/series/464930/posters/6a4fed3786dd2.jpg
+    type: poster
+    updatedAt: '2026-09-24T21:02:19Z'
+  - digest: 9f243e4ac5e39bbe771d53070c5d1319fff8198ee7a5eb555f11433c56c121a2
+    sizeBytes: 291627
+    source: provider
+    sourceURL: https://artworks.thetvdb.com/banners/v4/series/464930/backgrounds/6a5fd1ec92e40.jpg
+    type: fanart
+    updatedAt: '2026-09-24T21:02:20Z'
+  - digest: ac766d8a24509798a34a24c124f3629cc7b5286e4b54749190703f44e4e55c5b
+    sizeBytes: 80205
+    source: provider
+    sourceURL: https://artworks.thetvdb.com/banners/v4/series/464930/banners/6a6f3124f2474.jpg
+    type: banner
+    updatedAt: '2026-09-24T21:02:21Z'
+  conditions:
+  - lastTransitionTime: '2026-09-23T18:35:17Z'
+    message: metadata task published
+    observedGeneration: 5
+    reason: Published
+    status: 'False'
+    type: QueueFull
+  - lastTransitionTime: '2026-09-29T18:32:45Z'
+    message: metadata is fresh
+    observedGeneration: 5
+    reason: Reconciled
+    status: 'True'
+    type: MetadataReady
+  - lastTransitionTime: '2026-10-06T15:12:10Z'
+    message: episodes synced
+    observedGeneration: 5
+    reason: Reconciled
+    status: 'True'
+    type: EpisodesSynced
+  - lastTransitionTime: '2026-10-06T15:12:10Z'
+    message: phase=Ready
+    observedGeneration: 5
+    reason: Reconciled
+    status: 'True'
+    type: Ready
+  downloadingEpisodeCount: 0
+  episodeCount: 14
+  episodeFileCount: 14
+  metadata:
+    airTime: '21:45'
+    alternateTitles:
+    - title: "\uC720\uBD80\uB140 \uD0AC\uB7EC"
+    - title: Married Woman Killer
+    - title: La Justiciera
+    certification: TV-14
+    certificationCountry: US
+    certifications:
+    - country: KR
+      rating: '15'
+    - country: US
+      rating: TV-14
+    countries:
+    - South Korea
+    externalIDs:
+      imdb: tt43616775
+      plex: 6855a914e4e26a2cdf94a2fd
+      tmdb: '294095'
+      tvdb: '464930'
+    firstAired: '2026-07-31T00:00:00Z'
+    genres:
+    - Drama
+    - Action
+    - Romance
+    - Mystery
+    images:
+    - type: poster
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/posters/6a4fed3786dd2.jpg
+    - type: fanart
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/backgrounds/6a5fd1ec92e40.jpg
+    - type: fanart
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/backgrounds/6a5f9076884db.jpg
+    - type: fanart
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/backgrounds/6a4dec002a35d.jpg
+    - type: fanart
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/backgrounds/6a9ae1519c5fc.jpg
+    - type: fanart
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/backgrounds/6a58058c86264.jpg
+    - type: poster
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/posters/6a5a8080ed595.jpg
+    - type: poster
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/posters/6a4de9596f240.jpg
+    - type: poster
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/posters/6a4dea7465256.jpg
+    - type: poster
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/posters/6a58080f8e931.jpg
+    - type: banner
+      url: https://artworks.thetvdb.com/banners/v4/series/464930/banners/6a6f3124f2474.jpg
+    language: en
+    network: MBC
+    networks:
+    - MBC
+    originalLanguage: ko
+    overview: A contract killer for a covert organization returns after a three-year
+      maternity leave. Her journalist husband grows increasingly suspicious and aims
+      to uncover her secret life.
+    plexSeasons:
+    - id: 6855a916e4e26a2cdf94a304
+      number: 1
+    ratings:
+    - source: imdb
+      valueCentis: 760
+      votes: 689
+    - source: letterboxd
+      valueCentis: 740
+      votes: 785
+    - source: tmdb
+      valueCentis: 820
+      votes: 16
+    - source: trakt
+      valueCentis: 840
+      votes: 119
+    refreshedAt: '2026-10-06T14:35:08Z'
+    runtimeMinutes: 65
+    schemaVersion: 3
+    seasonTypes:
+    - id: official
+      name: Aired Order
+    - id: absolute
+      name: Absolute Order
+    sortTitle: ''
+    status: ended
+    tagline: The perfect housewife. The perfect double life.
+    title: A Bona Fide Killer
+    year: 2026
+  missingEpisodeCount: 0
+  observedGeneration: 5
+  path: /data/media/tv/A Bona Fide Killer (2026) {tvdb-464930}
+  phase: Ready
+  seasons:
+  - episodeCount: 14
+    episodeFileCount: 14
+    monitored: false
+    number: 1

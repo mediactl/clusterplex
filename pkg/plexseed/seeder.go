@@ -108,9 +108,31 @@ SELECT mp.id, mi.id, mi.metadata_item_id
 	return res, nil
 }
 
+// setAudioLanguages sets the language of the seeded audio streams the probe
+// they were written from does not tag to the item's original language, in
+// place: a viewer's chosen track names a stream by id. It is how a file
+// seeded before the seeder knew the original language, or whose item's
+// original language changed, catches up.
+func (s *Seeder) setAudioLanguages(ctx context.Context, tx pgx.Tx, t target, in Input, now int64) error {
+	for _, a := range in.Probe.Audio {
+		if PlexLanguage(a.Language) != "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE media_streams SET language = $3, updated_at = $5
+ WHERE media_item_id = $1 AND stream_type_id = 2 AND "index" = $2 AND extra_data LIKE $4
+   AND language IS DISTINCT FROM $3`,
+			t.media, a.Index, AudioLanguage(a, in.OriginalLanguage), "%"+ourMark+"%", now); err != nil {
+			return fmt.Errorf("plexseed: audio language of media %d: %w", t.media, err)
+		}
+	}
+	return nil
+}
+
 // seedMedia fills an unanalysed media item from the probe, and refills one
 // whose streams are all ours from another probe (a file replaced in
-// place). One with any stream Plex analysed is left alone.
+// place). One with any stream Plex analysed is left alone; one seeded from
+// this probe has its untagged audio set to the original language.
 func (s *Seeder) seedMedia(ctx context.Context, tx pgx.Tx, t target, in Input, now int64) (bool, error) {
 	var streams, ourStreams int
 	var extra string
@@ -128,10 +150,12 @@ SELECT (SELECT count(*) FROM media_streams WHERE media_item_id = $1),
 			t.media, "%"+ourMark+"%"); err != nil {
 			return false, fmt.Errorf("plexseed: clear streams of media %d: %w", t.media, err)
 		}
+	case ourStreams == streams:
+		return false, s.setAudioLanguages(ctx, tx, t, in, now)
 	default:
 		return false, nil
 	}
-	m, rows := MediaRows(*in.Probe, in.ProbeHash)
+	m, rows := MediaRows(*in.Probe, in.ProbeHash, in.OriginalLanguage)
 	if _, err := tx.Exec(ctx, `
 UPDATE media_items SET container = $2, video_codec = $3, audio_codec = $4, width = $5, height = $6,
        duration = $7, bitrate = $8, frames_per_second = $9, display_aspect_ratio = $10,

@@ -162,6 +162,88 @@ func TestAStreamWithoutALanguageIsStoredEmptyNeverNull(t *testing.T) {
 		"the video stream, the untagged audio and the und subtitle")
 }
 
+// untaggedAAC is andor with its stereo track untagged.
+func untaggedAAC() plexseed.Probe {
+	p := andor
+	p.Audio = append([]plexseed.Audio(nil), andor.Audio...)
+	p.Audio[1].Language = ""
+	return p
+}
+
+func audioLanguages(t *testing.T, conn *pgx.Conn, media int64) map[int32]string {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		`SELECT "index", language FROM media_streams WHERE media_item_id = $1 AND stream_type_id = 2`, media)
+	require.NoError(t, err)
+	out := map[int32]string{}
+	for rows.Next() {
+		var i int32
+		var lang string
+		require.NoError(t, rows.Scan(&i, &lang))
+		out[i] = lang
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+func streamIDs(t *testing.T, conn *pgx.Conn, media int64) []int64 {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), "SELECT id FROM media_streams WHERE media_item_id = $1 ORDER BY id", media)
+	require.NoError(t, err)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	require.NoError(t, err)
+	return ids
+}
+
+func TestAnUntaggedAudioTrackIsSeededInTheOriginalLanguage(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	p := untaggedAAC()
+	_, err := seeder(conn).Seed(context.Background(), l.path,
+		plexseed.Input{ProbeHash: "h", Probe: &p, OriginalLanguage: "ja"})
+	require.NoError(t, err)
+	assert.Equal(t, map[int32]string{1: "en", 29: "ja"}, audioLanguages(t, conn, l.media))
+}
+
+// A file seeded before the seeder knew the item's original language, or
+// whose item's original language changed, has its untagged audio tracks
+// set in place: the stream ids stay, since a viewer's chosen track
+// (media_part_settings.selected_audio_stream_id) names one. A tagged track
+// is never touched.
+func TestSeededAudioFollowsTheOriginalLanguageInPlace(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	p := untaggedAAC()
+	_, err := seeder(conn).Seed(context.Background(), l.path, plexseed.Input{ProbeHash: "h", Probe: &p})
+	require.NoError(t, err)
+	require.Equal(t, map[int32]string{1: "en", 29: ""}, audioLanguages(t, conn, l.media))
+	ids := streamIDs(t, conn, l.media)
+
+	for _, c := range []struct{ original, want string }{{"en", "en"}, {"fr", "fr"}, {"", ""}} {
+		res, err := seeder(conn).Seed(context.Background(), l.path,
+			plexseed.Input{ProbeHash: "h", Probe: &p, OriginalLanguage: c.original})
+		require.NoError(t, err)
+		assert.Zero(t, res.MediaSeeded, "an update in place, not a seed")
+		assert.Equal(t, map[int32]string{1: "en", 29: c.want}, audioLanguages(t, conn, l.media), c.original)
+		assert.Equal(t, ids, streamIDs(t, conn, l.media), "the same rows")
+	}
+}
+
+// A file Plex analysed itself keeps Plex's languages: Plex reads only the
+// file's tags.
+func TestPlexsOwnAudioLanguageIsNeverGuessed(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	_, err := conn.Exec(context.Background(),
+		"INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, \"index\") VALUES (2, $1, $2, 'aac', '', 29)", l.media, l.part)
+	require.NoError(t, err)
+	p := untaggedAAC()
+	_, err = seeder(conn).Seed(context.Background(), l.path,
+		plexseed.Input{ProbeHash: "h", Probe: &p, OriginalLanguage: "ja"})
+	require.NoError(t, err)
+	assert.Equal(t, map[int32]string{29: ""}, audioLanguages(t, conn, l.media))
+}
+
 // squasharr and Tdarr rename an encode over its source: the same path, a
 // new probe. Streams the seeder wrote for the old probe are replaced, or
 // Plex would tell clients the old codecs for good.

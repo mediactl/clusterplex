@@ -16,6 +16,10 @@ type Input struct {
 	ProbeHash string
 	Probe     *Probe
 	Markers   *Markers
+	// OriginalLanguage is the BCP-47 original language of the file's item
+	// (a Movie's, or an Episode's Series' status.metadata.originalLanguage):
+	// the language of an audio track the file does not tag.
+	OriginalLanguage string
 }
 
 // Probe is status.mediaInfo.

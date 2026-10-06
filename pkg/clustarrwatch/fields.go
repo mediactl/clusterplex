@@ -34,6 +34,11 @@ var (
 	kindField    = []string{"spec", "mediaRef", "kind"}
 	sizeField    = []string{"spec", "sizeBytes"}
 	modTimeField = []string{"spec", "modTime"}
+	// mediaRefNameField and an Episode's seriesRefField lead a file to the
+	// item whose originalLanguageField its untagged audio is in.
+	mediaRefNameField     = []string{"spec", "mediaRef", "name"}
+	seriesRefField        = []string{"spec", "seriesRef"}
+	originalLanguageField = []string{"status", "metadata", "originalLanguage"}
 	// What the seeder writes into Plex (pkg/plexseed).
 	probeField     = []string{"status", "mediaInfo"}
 	probeHashField = []string{"status", "probeHash"}
@@ -100,7 +105,7 @@ func Trim(obj any) (any, error) {
 	out.SetName(u.GetName())
 	out.SetUID(u.GetUID())
 	out.SetResourceVersion(u.GetResourceVersion())
-	for _, f := range append([][]string{pathField, kindField, sizeField, modTimeField, probeField, probeHashField, markersField}, shown...) {
+	for _, f := range append([][]string{pathField, kindField, mediaRefNameField, seriesRefField, sizeField, modTimeField, probeField, probeHashField, markersField}, shown...) {
 		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
 			if err := unstructured.SetNestedField(out.Object, v, f...); err != nil {
 				return nil, err
@@ -163,4 +168,42 @@ func SeedKey(u *unstructured.Unstructured) string {
 	b, _ := json.Marshal(keep)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// ItemLookup finds a cached clustarr object by resource, namespace and name.
+type ItemLookup func(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool)
+
+// OriginalLanguageOf is the BCP-47 original language of the item file
+// backs: a Movie's status.metadata.originalLanguage, or for an Episode its
+// Series'; "" when the item, or its language, is not known yet.
+func OriginalLanguageOf(file *unstructured.Unstructured, item ItemLookup) string {
+	kind, _, _ := unstructured.NestedString(file.Object, kindField...)
+	name, _, _ := unstructured.NestedString(file.Object, mediaRefNameField...)
+	if name == "" {
+		return ""
+	}
+	ns := file.GetNamespace()
+	switch kind {
+	case "movie":
+	case "episode":
+		ep, ok := item(Episodes, ns, name)
+		if !ok {
+			return ""
+		}
+		if name, _, _ = unstructured.NestedString(ep.Object, seriesRefField...); name == "" {
+			return ""
+		}
+	default:
+		return ""
+	}
+	gvr := Movies
+	if kind == "episode" {
+		gvr = Series
+	}
+	it, ok := item(gvr, ns, name)
+	if !ok {
+		return ""
+	}
+	lang, _, _ := unstructured.NestedString(it.Object, originalLanguageField...)
+	return lang
 }

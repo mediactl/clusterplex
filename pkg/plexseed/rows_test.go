@@ -27,7 +27,7 @@ var andor = plexseed.Probe{
 }
 
 func TestMediaRowsDescribeTheFileAsPlexsAnalysisWould(t *testing.T) {
-	m, streams := plexseed.MediaRows(andor, "")
+	m, streams := plexseed.MediaRows(andor, "", "")
 	assert.Equal(t, "mkv", m.Container)
 	assert.Equal(t, "hevc", m.VideoCodec)
 	assert.Equal(t, "eac3", m.AudioCodec, "the default audio track's codec")
@@ -64,6 +64,34 @@ func TestMediaRowsDescribeTheFileAsPlexsAnalysisWould(t *testing.T) {
 	assert.EqualValues(t, 3, s.Type)
 	assert.Equal(t, "srt", s.Codec, "Plex names subrip srt")
 	assert.Equal(t, "cs", streams[5].Language, "a bibliographic code too")
+}
+
+// An audio track with no language, or "und", is the item's original
+// language, as clustarr reads it for subtitles: Plex showed every Mister
+// Rogers' Neighborhood episode's audio as "Unknown" (2026-10-06). A tagged
+// track keeps its own; a subtitle or the video stream is never guessed.
+func TestAnUntaggedAudioTrackTakesTheOriginalLanguage(t *testing.T) {
+	p := andor
+	p.Audio = append([]plexseed.Audio(nil), andor.Audio...)
+	p.Audio[0].Language = ""
+	p.Audio[1].Language = "und"
+	p.Audio = append(p.Audio, plexseed.Audio{Index: 30, Codec: "aac", Language: "fre", Channels: 2})
+	p.Subtitles = []plexseed.Subtitle{{Index: 2, Codec: "subrip"}}
+
+	_, streams := plexseed.MediaRows(p, "", "ja")
+	require.Len(t, streams, 5)
+	assert.Empty(t, streams[0].Language, "video")
+	assert.Equal(t, "ja", streams[1].Language, "untagged")
+	assert.Equal(t, "ja", streams[2].Language, "und")
+	assert.Equal(t, "fr", streams[3].Language, "a tagged track keeps its own")
+	assert.Empty(t, streams[4].Language, "subtitle")
+
+	_, streams = plexseed.MediaRows(p, "", "en-US")
+	assert.Equal(t, "en", streams[1].Language, "BCP-47 with a region")
+	_, streams = plexseed.MediaRows(p, "", "cn")
+	assert.Empty(t, streams[1].Language, "a code no language has (TMDB's Cantonese)")
+	_, streams = plexseed.MediaRows(p, "", "")
+	assert.Empty(t, streams[1].Language, "no original language")
 }
 
 func TestPlexNamesForCodecsAndLanguages(t *testing.T) {

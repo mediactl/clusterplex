@@ -50,8 +50,9 @@ type StreamRow struct {
 
 // MediaRows describes p as Plex's analysis would: the file, then one video
 // stream, each audio track and each subtitle track, in that order. The
-// media item records probeHash.
-func MediaRows(p Probe, probeHash string) (MediaRow, []StreamRow) {
+// media item records probeHash. An audio track p does not tag is in
+// originalLanguage, the item's (BCP-47).
+func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamRow) {
 	m := MediaRow{
 		Container: p.Container, VideoCodec: PlexCodec(p.VideoCodec),
 		Width: p.Width, Height: p.Height, Duration: p.RuntimeMillis,
@@ -120,7 +121,7 @@ func MediaRows(p Probe, probeHash string) (MediaRow, []StreamRow) {
 			x["ma:title"] = a.Title
 		}
 		streams = append(streams, StreamRow{
-			Type: streamAudio, Index: a.Index, Codec: PlexCodec(a.Codec), Language: PlexLanguage(a.Language),
+			Type: streamAudio, Index: a.Index, Codec: PlexCodec(a.Codec), Language: AudioLanguage(a, originalLanguage),
 			Channels: a.Channels, Bitrate: a.BitrateKbps * 1000, Default: a.Default, Extra: ExtraData(x),
 		})
 	}
@@ -180,6 +181,16 @@ func PlexCodec(c string) string {
 		return p
 	}
 	return c
+}
+
+// AudioLanguage is the language Plex stores for audio track a: its own
+// tag's, else the item's originalLanguage, as clustarr reads an untagged
+// track for subtitles; "" when neither names a language.
+func AudioLanguage(a Audio, originalLanguage string) string {
+	if l := PlexLanguage(a.Language); l != "" {
+		return l
+	}
+	return PlexLanguage(originalLanguage)
 }
 
 // PlexLanguage is the ISO 639-1 code Plex stores for an ISO 639-2 (or 639-1)

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
@@ -114,6 +115,36 @@ func TestSeedInputOfWantsAPath(t *testing.T) {
 	unstructured.RemoveNestedField(u.Object, "spec", "path")
 	_, ok := clustarrwatch.SeedInputOf(u)
 	assert.False(t, ok)
+}
+
+// OriginalLanguageOf reads a file's item's original language from real
+// objects, through Trim: a movie file's Movie's, an episode file's
+// Episode's Series'.
+func TestOriginalLanguageOfReadsRealObjects(t *testing.T) {
+	movie, episode, series := load(t, "movie.yaml"), load(t, "episode.yaml"), load(t, "series.yaml")
+	movieFile := load(t, "mediafile.yaml")
+	require.NoError(t, unstructured.SetNestedField(movieFile.Object, movie.GetName(), "spec", "mediaRef", "name"))
+	episodeFile := movieFile.DeepCopy()
+	require.NoError(t, unstructured.SetNestedField(episodeFile.Object, "episode", "spec", "mediaRef", "kind"))
+	require.NoError(t, unstructured.SetNestedField(episodeFile.Object, episode.GetName(), "spec", "mediaRef", "name"))
+
+	objs := map[schema.GroupVersionResource]*unstructured.Unstructured{
+		clustarrwatch.Movies: trimmed(t, movie), clustarrwatch.Episodes: trimmed(t, episode), clustarrwatch.Series: trimmed(t, series),
+	}
+	lookup := func(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool) {
+		o := objs[gvr]
+		if o == nil || o.GetNamespace() != namespace || o.GetName() != name {
+			return nil, false
+		}
+		return o, true
+	}
+	assert.Equal(t, "en", clustarrwatch.OriginalLanguageOf(trimmed(t, movieFile), lookup))
+	assert.Equal(t, "ko", clustarrwatch.OriginalLanguageOf(trimmed(t, episodeFile), lookup), "the series'")
+
+	missing := func(schema.GroupVersionResource, string, string) (*unstructured.Unstructured, bool) {
+		return nil, false
+	}
+	assert.Empty(t, clustarrwatch.OriginalLanguageOf(movieFile, missing), "an item not in the cache")
 }
 
 func trimmed(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {

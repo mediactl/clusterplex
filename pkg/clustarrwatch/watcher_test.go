@@ -3,6 +3,7 @@ package clustarrwatch_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -308,7 +309,8 @@ func TestAWatchThatCannotSyncSaysSo(t *testing.T) {
 
 type seeds struct {
 	mu    sync.Mutex
-	calls []string // plex path | markers result
+	calls []string          // plex path | markers result
+	langs map[string]string // plex path -> original language
 	err   error
 }
 
@@ -320,7 +322,17 @@ func (s *seeds) seed(_ context.Context, plexPath string, in plexseed.Input) erro
 		result = in.Markers.Result
 	}
 	s.calls = append(s.calls, plexPath+"|"+result)
+	if s.langs == nil {
+		s.langs = map[string]string{}
+	}
+	s.langs[plexPath] = in.OriginalLanguage
 	return s.err
+}
+
+func (s *seeds) Langs() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.langs)
 }
 
 func (s *seeds) Calls() []string {
@@ -355,6 +367,37 @@ func TestFilesAreSeededAtStartAndWhenTheirProbeOrMarkersChange(t *testing.T) {
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return len(s.Calls()) == 2 }, 5*time.Second, 10*time.Millisecond)
 	assert.Equal(t, "/media/movies/Heat/Heat.mkv|Found", s.Calls()[1])
+}
+
+// A seed carries the original language of the file's item: a movie's own,
+// an episode's series'. The items are read for seeding even when no
+// provider refreshes them (here the TV one is unset).
+func TestASeedCarriesItsItemsOriginalLanguage(t *testing.T) {
+	s := &seeds{}
+	heat := movie("m1", "A heist.")
+	require.NoError(t, unstructured.SetNestedField(heat.Object, "en", "status", "metadata", "originalLanguage"))
+	show := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Series",
+		"metadata": map[string]any{"name": "shogun", "namespace": ns, "uid": "s1"},
+		"status":   map[string]any{"metadata": map[string]any{"originalLanguage": "ja"}},
+	}}
+	ep := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Episode",
+		"metadata": map[string]any{"name": "shogun-s01e01", "namespace": ns, "uid": "e1"},
+		"spec":     map[string]any{"seriesRef": "shogun"},
+	}}
+	epFile := mediaFile("b", "/data/media/tv/Shogun/S01E01.mkv")
+	require.NoError(t, unstructured.SetNestedMap(epFile.Object, map[string]any{"kind": "episode", "name": "shogun-s01e01"}, "spec", "mediaRef"))
+
+	// The fake client files a Series object under its guessed resource,
+	// "serieses", so it is created under the real one.
+	startWith(t, &pms{}, func(w *clustarrwatch.Watcher) {
+		w.Seed = s.seed
+		_, err := w.Dynamic.Resource(clustarrwatch.Series).Namespace(ns).Create(t.Context(), show, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}, mediaFile("a", "/data/media/movies/Heat/Heat.mkv"), epFile, heat, ep)
+	require.Eventually(t, func() bool { return len(s.Calls()) == 2 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, map[string]string{"/media/movies/Heat/Heat.mkv": "en", "/media/tv/Shogun/S01E01.mkv": "ja"}, s.Langs())
 }
 
 // A file Plex has no part for yet is counted and not retried every tick.
