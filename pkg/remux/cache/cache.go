@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,15 +66,30 @@ type Cache struct {
 	MaxBytes int64
 	Now      func() time.Time
 
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	mu      sync.Mutex
+	entries map[string]*shared
+}
+
+// ErrFull is a segment refused because its entry alone would pass the
+// cache's limit; the job plays on, uncached from there.
+var ErrFull = errors.New("cache: the entry would pass the cache's limit")
+
+// shared is one key's index, held once per worker: two jobs on one key --
+// two viewers, or a seek's job starting while the old one stops -- write
+// through it, so neither erases the other's records.
+type shared struct {
+	mu     sync.Mutex
+	idx    index
+	loaded bool
+	refs   int
 }
 
 type Entry struct {
-	c   *Cache
-	dir string
-	mu  *sync.Mutex
-	idx index
+	c    *Cache
+	name string
+	dir  string
+	mu   *sync.Mutex
+	idx  *index
 }
 
 func (c *Cache) now() time.Time {
@@ -84,42 +100,67 @@ func (c *Cache) now() time.Time {
 }
 
 // Open returns k's entry, creating its directory; two jobs for one key on
-// one worker share its lock.
+// one worker share its index and lock. Close releases it.
 func (c *Cache) Open(k Key) (*Entry, error) {
 	c.mu.Lock()
-	if c.locks == nil {
-		c.locks = map[string]*sync.Mutex{}
+	if c.entries == nil {
+		c.entries = map[string]*shared{}
 	}
 	name := k.String()
-	l, ok := c.locks[name]
+	sh, ok := c.entries[name]
 	if !ok {
-		l = &sync.Mutex{}
-		c.locks[name] = l
+		sh = &shared{}
+		c.entries[name] = sh
 	}
+	sh.refs++
 	c.mu.Unlock()
-	e := &Entry{c: c, dir: filepath.Join(c.Dir, name), mu: l}
+	e := &Entry{c: c, name: name, dir: filepath.Join(c.Dir, name), mu: &sh.mu, idx: &sh.idx}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := os.MkdirAll(e.dir, 0o755); err != nil {
+		e.release()
 		return nil, err
 	}
-	if err := e.load(); err != nil {
-		return nil, err
+	if !sh.loaded {
+		if err := e.load(); err != nil {
+			e.release()
+			return nil, err
+		}
+		sh.loaded = true
 	}
 	e.idx.Used = c.now()
 	return e, e.save()
 }
 
+// Close releases the entry; once no job holds it, eviction may remove it.
+func (e *Entry) Close() { e.release() }
+
+func (e *Entry) release() {
+	e.c.mu.Lock()
+	defer e.c.mu.Unlock()
+	if sh, ok := e.c.entries[e.name]; ok && sh.refs > 0 {
+		sh.refs--
+	}
+}
+
+// open reports whether a job holds name's entry.
+func (c *Cache) open(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sh, ok := c.entries[name]
+	return ok && sh.refs > 0
+}
+
 func (e *Entry) load() error {
 	b, err := os.ReadFile(filepath.Join(e.dir, "index.json"))
 	if os.IsNotExist(err) {
-		e.idx = index{Segments: map[string]record{}}
+		*e.idx = index{Segments: map[string]record{}}
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(b, &e.idx); err != nil {
+	if err := json.Unmarshal(b, e.idx); err != nil {
 		return e.resetLocked()
 	}
 	if e.idx.Segments == nil {
@@ -147,7 +188,7 @@ func (e *Entry) resetLocked() error {
 			return err
 		}
 	}
-	e.idx = index{Segments: map[string]record{}, Used: e.c.now()}
+	*e.idx = index{Segments: map[string]record{}, Used: e.c.now()}
 	return nil
 }
 
@@ -257,6 +298,9 @@ func (e *Entry) Put(s remux.Segment) error {
 	if _, ok := e.idx.Segments[strconv.Itoa(s.N)]; ok {
 		return nil
 	}
+	if e.c.MaxBytes > 0 && e.size()+int64(len(s.Video.Data)+len(s.Audio.Data)) > e.c.MaxBytes {
+		return ErrFull
+	}
 	vs, err := appendTo(filepath.Join(e.dir, "video.mp4"), s.Video.Data)
 	if err != nil {
 		return err
@@ -270,7 +314,23 @@ func (e *Entry) Put(s remux.Segment) error {
 		Video: part{span: vs, T: s.Video.T, D: s.Video.D}, Audio: part{span: as, T: s.Audio.T, D: s.Audio.D},
 	}
 	e.idx.Used = e.c.now()
-	return e.save()
+	if err := e.save(); err != nil {
+		return err
+	}
+	// Evicted as the run writes, not after it: one 4K remux, or two fresh
+	// plays on a nearly full cache, would pass the volume's limit mid-run.
+	return e.c.Evict()
+}
+
+// size is the bytes the entry's files hold.
+func (e *Entry) size() int64 {
+	var n int64
+	for _, f := range []string{"video.mp4", "audio.mp4"} {
+		if fi, err := os.Stat(filepath.Join(e.dir, f)); err == nil {
+			n += fi.Size()
+		}
+	}
+	return n
 }
 
 // Last is the number of the file's final segment once a run reached its
@@ -326,6 +386,9 @@ func (c *Cache) Evict() error {
 	for _, e := range all {
 		if total <= c.MaxBytes {
 			break
+		}
+		if c.open(e.name) { // a job is writing or reading it
+			continue
 		}
 		if err := os.RemoveAll(filepath.Join(c.Dir, e.name)); err != nil {
 			return err

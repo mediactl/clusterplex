@@ -191,3 +191,15 @@ func TestTheStreamIsNeverSentToConcurrently(t *testing.T) {
 	require.NoError(t, srv.Remux(j.Proto(), s))
 	assert.False(t, s.overlap.Load(), "two Sends overlapped")
 }
+
+// Review finding I10: a full cache stops caching; it never fails playback.
+func TestAFullCacheStillPlays(t *testing.T) {
+	f := &fakeRun{}
+	srv := &Server{Cache: &cache.Cache{Dir: t.TempDir(), MaxBytes: 12}, Run: f.Run} // the inits fit, no segment does
+	s := &stream{ctx: t.Context()}
+	j := remux.Job{Input: input(t), SkipToSegment: 1, SegmentDuration: 5 * time.Second, AudioStream: 1, AudioChannels: 2}
+	require.NoError(t, srv.Remux(j.Proto(), s))
+	got := files(s)
+	assert.Equal(t, "done:", got[len(got)-1])
+	assert.Contains(t, got, "chunk-stream0-00004.m4s")
+}

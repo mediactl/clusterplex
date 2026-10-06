@@ -83,10 +83,58 @@ func TestEvictionRemovesTheLeastRecentlyUsed(t *testing.T) {
 		e, err := c.Open(key(name))
 		require.NoError(t, err)
 		require.NoError(t, e.SetInit(make([]byte, 10), make([]byte, 10), [2]int32{1, 1}, remux.StreamInfo{}))
+		e.Close() // an open entry is never evicted
 	}
 	require.NoError(t, c.Evict())
 	_, err := os.Stat(filepath.Join(c.Dir, key("/m/old.mkv").String()))
 	assert.True(t, os.IsNotExist(err), "the older entry goes")
 	_, err = os.Stat(filepath.Join(c.Dir, key("/m/new.mkv").String()))
 	assert.NoError(t, err)
+}
+
+// Review finding I10: two jobs on one key -- two viewers, or a seek's job
+// starting while the old one stops -- share one index, so neither erases
+// the other's records.
+func TestTwoOpensOfOneKeyShareTheirIndex(t *testing.T) {
+	c := &Cache{Dir: t.TempDir()}
+	e1, err := c.Open(key("/m/a.mkv"))
+	require.NoError(t, err)
+	e2, err := c.Open(key("/m/a.mkv"))
+	require.NoError(t, err)
+	require.NoError(t, e1.SetInit([]byte("v"), []byte("a"), [2]int32{1, 1}, remux.StreamInfo{}))
+	require.NoError(t, e1.Put(seg(1, 0)))
+	require.NoError(t, e2.Put(seg(2, 5*time.Second)))
+	e1.Close()
+	e2.Close()
+	e3, err := (&Cache{Dir: c.Dir}).Open(key("/m/a.mkv"))
+	require.NoError(t, err)
+	for _, n := range []int{1, 2} {
+		_, ok, err := e3.Segment(n)
+		require.NoError(t, err)
+		assert.True(t, ok, "segment %d survives the other job's writes", n)
+	}
+}
+
+// Review finding I10: the cache stays under its limit while a run writes,
+// not only after it; the entry being written is never evicted, and one that
+// alone would pass the limit stops taking segments.
+func TestTheCacheStaysUnderItsLimitDuringARun(t *testing.T) {
+	now := time.Unix(1000, 0)
+	c := &Cache{Dir: t.TempDir(), MaxBytes: 40, Now: func() time.Time { return now }}
+	old, err := c.Open(key("/m/old.mkv"))
+	require.NoError(t, err)
+	require.NoError(t, old.SetInit(make([]byte, 10), make([]byte, 10), [2]int32{1, 1}, remux.StreamInfo{}))
+	old.Close()
+	now = now.Add(time.Hour)
+	cur, err := c.Open(key("/m/new.mkv"))
+	require.NoError(t, err)
+	require.NoError(t, cur.SetInit(make([]byte, 10), make([]byte, 10), [2]int32{1, 1}, remux.StreamInfo{}))
+	require.NoError(t, cur.Put(seg(1, 0)), "40 bytes in all: the older entry goes to make room")
+	_, err = os.Stat(filepath.Join(c.Dir, key("/m/old.mkv").String()))
+	assert.True(t, os.IsNotExist(err), "evicted during the run")
+	big := seg(2, 5*time.Second)
+	big.Video.Data = make([]byte, 30)
+	assert.ErrorIs(t, cur.Put(big), ErrFull, "an entry past the limit on its own stops taking segments")
+	_, err = os.Stat(filepath.Join(c.Dir, key("/m/new.mkv").String()))
+	assert.NoError(t, err, "the entry being written is never evicted")
 }

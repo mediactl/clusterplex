@@ -47,6 +47,7 @@ type session struct {
 	out      remuxpb.Remux_RemuxServer
 	job      remux.Job
 	entry    *cache.Entry
+	uncached bool // the cache refused a write; this job plays on without it
 	start    time.Time
 	sentInit bool
 	scales   [2]int32
@@ -77,6 +78,7 @@ func (s *Server) remux(ctx context.Context, j remux.Job, out remuxpb.Remux_Remux
 	if err != nil {
 		return err
 	}
+	defer e.Close()
 	ss := &session{
 		srv: s, out: out, job: j, entry: e, start: s.now(),
 		manifest: remux.Manifest{StartNumber: j.SkipToSegment, SegmentDuration: j.SegmentDuration, Start: s.now()},
@@ -153,7 +155,7 @@ func (ss *session) sendInit(v, a []byte, ts [2]int32, info remux.StreamInfo) err
 func (ss *session) Init(v, a []byte, ts [2]int32, info remux.StreamInfo) error {
 	ss.info = info
 	if err := ss.entry.SetInit(v, a, ts, info); err != nil {
-		return err
+		ss.stopCaching(err)
 	}
 	if ss.sentInit && ts != ss.scales {
 		return errors.New("remux: the cached inits' timescales differ from this run's")
@@ -165,8 +167,10 @@ func (ss *session) Init(v, a []byte, ts [2]int32, info remux.StreamInfo) error {
 // Segment implements pipeline.Sink: into the cache, then to the client,
 // files before the manifest that lists them.
 func (ss *session) Segment(s remux.Segment) error {
-	if err := ss.entry.Put(s); err != nil {
-		return err
+	if !ss.uncached {
+		if err := ss.entry.Put(s); err != nil {
+			ss.stopCaching(err)
+		}
 	}
 	if err := ss.file(remux.ChunkFile(0, s.N), s.Video.Data); err != nil {
 		return err
@@ -179,6 +183,15 @@ func (ss *session) Segment(s remux.Segment) error {
 	ss.end = s.End
 	ss.manifest.Now = ss.srv.now()
 	return ss.send(&remuxpb.Event{Kind: &remuxpb.Event_Manifest{Manifest: &remuxpb.Manifest{Mpd: ss.manifest.Render()}}})
+}
+
+// stopCaching drops the cache for the rest of the job: a full cache, or a
+// disk error, must not fail playback.
+func (ss *session) stopCaching(err error) {
+	if !ss.uncached && ss.srv.Logger != nil {
+		ss.srv.Logger.Warn("remux stops caching this job", "input", ss.job.Input, "error", err)
+	}
+	ss.uncached = true
 }
 
 // Progress implements pipeline.Sink.
