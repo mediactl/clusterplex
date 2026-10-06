@@ -197,3 +197,20 @@ func abs(v int64) int64 {
 	}
 	return v
 }
+
+// Review finding C1: a run that fills a cache gap starts at o.From, past the
+// job's own first segment, and its audio must be numbered from there too.
+func TestAGapFillPairsEachSegmentWithItsOwnAudio(t *testing.T) {
+	in := clip(t, 20, 48)
+	full := run(t, job(in, 1), Options{From: 1, StartAt: -1})
+	j := job(in, 1) // the job asked for segment 1; segment 1 came from the cache
+	gap := run(t, j, Options{From: 2, StartAt: full.segments[0].End})
+	require.Len(t, gap.segments, len(full.segments)-1, "every remaining segment, the last included")
+	for i, s := range gap.segments {
+		want := full.segments[i+1]
+		assert.Equal(t, want.N, s.N)
+		assert.Equal(t, want.Start, s.Start)
+		start := time.Duration(s.Audio.T) * time.Second / time.Duration(gap.scales[1])
+		assert.InDelta(t, float64(s.Start), float64(start), float64(100*time.Millisecond), "segment %d's audio starts with its video", s.N)
+	}
+}

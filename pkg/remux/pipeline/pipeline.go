@@ -159,7 +159,7 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 	if err := video.header(); err != nil {
 		return 0, err
 	}
-	aud, err := newAudio(job, asrc, d)
+	aud, err := newAudio(job, asrc, d, o.From)
 	if err != nil {
 		return 0, err
 	}
@@ -438,12 +438,14 @@ type audio struct {
 	from  int
 }
 
-func newAudio(job remux.Job, src *ffgo.StreamInfo, d *ffgo.Decoder) (*audio, error) {
+// newAudio starts numbering at from, the run's first segment: a run that
+// fills a cache gap starts past the job's own first segment.
+func newAudio(job remux.Job, src *ffgo.StreamInfo, d *ffgo.Decoder, from int) (*audio, error) {
 	r, err := newRep()
 	if err != nil {
 		return nil, err
 	}
-	a := &audio{rep: r, queue: newQueue(), src: src, copy: job.AudioCopy, from: job.SkipToSegment}
+	a := &audio{rep: r, queue: newQueue(), src: src, copy: job.AudioCopy, from: from}
 	if a.copy {
 		if r.ms, err = r.m.AddCopyStream(&ffgo.CopyStreamConfig{
 			CodecParameters: src.CodecParameters(), TimeBase: src.TimeBase,
