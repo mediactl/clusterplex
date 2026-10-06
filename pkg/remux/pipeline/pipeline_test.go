@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,4 +224,44 @@ func TestAGapFillPairsEachSegmentWithItsOwnAudio(t *testing.T) {
 		start := time.Duration(s.Audio.T) * time.Second / time.Duration(gap.scales[1])
 		assert.InDelta(t, float64(s.Start), float64(start), float64(100*time.Millisecond), "segment %d's audio starts with its video", s.N)
 	}
+}
+
+// gate holds every segment until released, and counts the demuxer's
+// progress reports, one per segment boundary it passes.
+type gate struct {
+	recorder
+	release    chan struct{}
+	first      chan struct{}
+	once       sync.Once
+	boundaries atomic.Int32
+}
+
+func (g *gate) Segment(s remux.Segment) error {
+	g.once.Do(func() { close(g.first) })
+	<-g.release
+	return g.recorder.Segment(s)
+}
+
+func (g *gate) Progress(path, query string) {
+	if strings.HasPrefix(query, "progress=") {
+		g.boundaries.Add(1)
+	}
+}
+
+// Review finding C3: the demuxer waits while finished segments wait for
+// delivery, so a worker's memory is a few segments, not the file.
+func TestTheDemuxerWaitsForDelivery(t *testing.T) {
+	in := clip(t, 60, 48) // 12 segments at a keyframe every 2 s
+	g := &gate{release: make(chan struct{}), first: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), job(in, 1), Options{From: 1, StartAt: -1}, g)
+		done <- err
+	}()
+	<-g.first
+	time.Sleep(500 * time.Millisecond)
+	assert.LessOrEqual(t, int(g.boundaries.Load()), maxAhead+2, "the demuxer ran ahead of delivery")
+	close(g.release)
+	require.NoError(t, <-done)
+	assert.Len(t, g.segments, 12)
 }

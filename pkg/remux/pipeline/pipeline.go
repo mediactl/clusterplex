@@ -277,6 +277,11 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 			last = ts
 			b.add(ts)
 			progress(sink, ts, info.Duration, began)
+			// Memory stays a few segments, not the file: the AAC encode is
+			// slower than reading, and every undelivered fragment is held.
+			if err := segs.waitRoom(ctx, n); err != nil && demuxErr == nil {
+				demuxErr = err // the loop ends below, after this packet is freed
+			}
 		}
 		if demuxErr == nil {
 			demuxErr = video.write(c, vsrc.TimeBase)
@@ -328,6 +333,12 @@ func progress(sink Sink, at, total time.Duration, began time.Time) {
 	sink.Progress("", fmt.Sprintf("progress=%.1f&size=-1&remaining=%d&speed=%.1f", 100*at.Seconds()/total.Seconds(), int(remaining), speed))
 }
 
+// maxAhead is how many finished segments may wait for delivery before the
+// demuxer waits too. With the demuxer paused at segment n's start, the
+// audio side can still finish every segment up to n-2, so any value of 1
+// or more cannot deadlock; 3 keeps a worker's memory to a few segments.
+const maxAhead = 3
+
 // pairs joins each segment's video and audio fragments and hands whole
 // segments to the sink in order.
 type pairs struct {
@@ -337,10 +348,31 @@ type pairs struct {
 	pending map[int]*remux.Segment
 	have    map[int]int
 	e       error
+
+	// delivered is the next segment the sink has not yet returned from;
+	// the demuxer waits on it (waitRoom).
+	dmu       sync.Mutex
+	dcond     *sync.Cond
+	delivered int
 }
 
 func newPairs(sink Sink, from int) *pairs {
-	return &pairs{sink: sink, next: from, pending: map[int]*remux.Segment{}, have: map[int]int{}}
+	p := &pairs{sink: sink, next: from, delivered: from, pending: map[int]*remux.Segment{}, have: map[int]int{}}
+	p.dcond = sync.NewCond(&p.dmu)
+	return p
+}
+
+// waitRoom blocks the demuxer, about to start segment n, while more than
+// maxAhead finished segments wait for delivery, or until ctx ends.
+func (p *pairs) waitRoom(ctx context.Context, n int) error {
+	stop := context.AfterFunc(ctx, p.dcond.Broadcast)
+	defer stop()
+	p.dmu.Lock()
+	defer p.dmu.Unlock()
+	for n-p.delivered > maxAhead && ctx.Err() == nil {
+		p.dcond.Wait()
+	}
+	return ctx.Err()
 }
 
 func (p *pairs) video(n int, f remux.Fragment, start, end time.Duration, onGrid bool) {
@@ -367,6 +399,10 @@ func (p *pairs) put(n int, set func(*remux.Segment)) {
 		if p.e == nil {
 			p.e = p.sink.Segment(*s)
 		}
+		p.dmu.Lock()
+		p.delivered = s.N + 1
+		p.dmu.Unlock()
+		p.dcond.Broadcast()
 	}
 }
 
