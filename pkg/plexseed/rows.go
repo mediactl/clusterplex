@@ -194,9 +194,14 @@ func AudioLanguage(a Audio, originalLanguage string) string {
 }
 
 // PlexLanguage is the ISO 639-1 code Plex stores for an ISO 639-2 (or 639-1)
-// one; "" for none, "und" or a code no language has.
+// one; "" for none, a code no language has, or one that names no language:
+// undetermined, MP4's "unk", uncoded, no linguistic content, private use.
 func PlexLanguage(code string) string {
-	if code == "" || code == "und" {
+	switch code {
+	case "", "und", "unk", "mis", "zxx":
+		return ""
+	}
+	if len(code) == 3 && code >= "qaa" && code <= "qtz" {
 		return ""
 	}
 	// Parse, not ParseBase: it resolves bibliographic codes ("ger", "cze")

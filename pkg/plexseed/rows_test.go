@@ -74,7 +74,7 @@ func TestAnUntaggedAudioTrackTakesTheOriginalLanguage(t *testing.T) {
 	p := andor
 	p.Audio = append([]plexseed.Audio(nil), andor.Audio...)
 	p.Audio[0].Language = ""
-	p.Audio[1].Language = "und"
+	p.Audio[1].Language = "unk"
 	p.Audio = append(p.Audio, plexseed.Audio{Index: 30, Codec: "aac", Language: "fre", Channels: 2})
 	p.Subtitles = []plexseed.Subtitle{{Index: 2, Codec: "subrip"}}
 
@@ -82,7 +82,7 @@ func TestAnUntaggedAudioTrackTakesTheOriginalLanguage(t *testing.T) {
 	require.Len(t, streams, 5)
 	assert.Empty(t, streams[0].Language, "video")
 	assert.Equal(t, "ja", streams[1].Language, "untagged")
-	assert.Equal(t, "ja", streams[2].Language, "und")
+	assert.Equal(t, "ja", streams[2].Language, "MP4's unk")
 	assert.Equal(t, "fr", streams[3].Language, "a tagged track keeps its own")
 	assert.Empty(t, streams[4].Language, "subtitle")
 
@@ -101,7 +101,11 @@ func TestPlexNamesForCodecsAndLanguages(t *testing.T) {
 	} {
 		assert.Equal(t, want, plexseed.PlexCodec(in), in)
 	}
-	for in, want := range map[string]string{"eng": "en", "jpn": "ja", "ger": "de", "en": "en", "und": "", "": "", "zzz": ""} {
+	for in, want := range map[string]string{"eng": "en", "jpn": "ja", "ger": "de", "en": "en", "und": "", "": "", "zzz": "",
+		// Codes that name no language: MP4's "unk" (Mister Rogers' Neighborhood,
+		// 2026-10-06), uncoded, no linguistic content, private use.
+		"unk": "", "mis": "", "zxx": "", "qaa": "", "qtz": "", "mul": "mul",
+	} {
 		assert.Equal(t, want, plexseed.PlexLanguage(in), in)
 	}
 }
