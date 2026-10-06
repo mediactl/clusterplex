@@ -177,9 +177,14 @@ func (r *Relay) send(ctx context.Context, method, raw, sub, query string, body [
 	return nil
 }
 
+// maxSegmentBytes bounds one File event, a whole segment: grpc-go's 4 MiB
+// default is under 10 s of high-bitrate 1080p, and any 4K remux.
+const maxSegmentBytes = 256 << 20
+
 // GRPCDialer dials a remux worker over plaintext gRPC inside the cluster.
 func GRPCDialer(_ context.Context, addr string) (remuxpb.RemuxClient, io.Closer, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxSegmentBytes)))
 	if err != nil {
 		return nil, nil, err
 	}
