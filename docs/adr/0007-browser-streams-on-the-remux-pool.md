@@ -50,11 +50,14 @@ segment, runs on Plex's transcoder as before.
   maintenance binaries to that.
 - Browser streams scale with the remux Deployment's autoscaler instead of
   landing on Plex pods.
-- Matroska stores no decode timestamps, and libavformat's derivation of
-  them restarts after every seek a constant reorder delay off a run from
-  the start (measured: 3 frames). Segments of different runs therefore sit
-  ~0.13 s apart; a cached replay that crosses from one run's segments to
-  another's meets that gap once, which DASH players jump.
+- Matroska stores no decode timestamps, and libavformat's guesses differ
+  between a run from the start and one after a seek. Fragments are
+  therefore written without an edit list (`use_editlist=0`), so every
+  frame is presented at its own pts whatever its guessed decode time, and
+  every timestamp of both streams carries one 500 ms offset
+  (`pipeline.PresentationOffset`), since absolute fragments cannot carry
+  the negative decode times a B-frame stream starting at 0 has. Audio and
+  video stay together, and segments of different runs line up.
 - Browsers that cannot decode HEVC still cannot play an HEVC file: that
   needs a real-time video transcode, which this does not do.
 - The 5 browser jobs that also stream ASS subtitles stay on Plex's
