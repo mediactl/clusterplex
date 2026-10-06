@@ -35,10 +35,23 @@ type Options struct {
 // (-avoid_negative_ts disabled). The muxer's default shifts each run to
 // start at 0, which would put a seek's first segment at the start of the
 // timeline.
+//
+// use_editlist=0 keeps every fragment's decode times absolute, so a frame is
+// presented at its own pts: with an edit list, frag_discont shifts the track
+// by the first packet's pts-dts, which differs per run (82 ms from the
+// start, 208 ms after a seek) and put video that far behind audio.
 var fragmented = map[string]string{
 	"movflags":          "frag_custom+empty_moov+default_base_moof+frag_discont",
 	"avoid_negative_ts": "disabled",
+	"use_editlist":      "0",
 }
+
+// PresentationOffset is added to every video and audio timestamp, in every
+// run: a B-frame stream starting at 0 has decode times below 0, which
+// absolute fragments cannot carry. The same for every file and run, so audio
+// and video stay together and a segment's times do not depend on the run.
+// It covers a reorder delay of up to 12 frames at 24 fps.
+const PresentationOffset = 500 * time.Millisecond
 
 // rep is one representation's muxer and what it has cut.
 type rep struct {
@@ -142,6 +155,10 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 		return 0, fmt.Errorf("%w: video codec %s", remux.ErrNotRemux, vsrc.CodecName)
 	}
 	shift := map[int]int64{}
+	offset := map[int]int64{}
+	for _, s := range []*ffgo.StreamInfo{vsrc, asrc} {
+		offset[s.Index] = rescale(PresentationOffset.Microseconds(), ffgo.NewRational(1, 1000000), s.TimeBase)
+	}
 	if st := d.StartTime(); st > 0 {
 		for _, s := range []*ffgo.StreamInfo{vsrc, asrc} {
 			shift[s.Index] = rescale(st.Microseconds(), ffgo.NewRational(1, 1000000), s.TimeBase)
@@ -247,6 +264,7 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 			}
 		}
 		if idx == job.AudioStream {
+			present(c, offset[idx])
 			aud.queue.push(c)
 			continue
 		}
@@ -284,6 +302,7 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 			}
 		}
 		if demuxErr == nil {
+			present(c, offset[idx]) // after the boundary rule, which reads source time
 			demuxErr = video.write(c, vsrc.TimeBase)
 		}
 		_ = c.Free()
@@ -298,7 +317,7 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 		if err != nil {
 			demuxErr = err
 		}
-		segs.video(n, f, last, toTime(video.end, video.scale), grid)
+		segs.video(n, f, last, toTime(video.end, video.scale)-PresentationOffset, grid)
 	}
 	b.finish()
 	wg.Wait()
@@ -312,6 +331,17 @@ func Run(ctx context.Context, job remux.Job, o Options, sink Sink) (int, error) 
 		return 0, err
 	}
 	return n, nil
+}
+
+// present moves a packet's timestamps by off, the presentation offset in
+// its stream's time base.
+func present(p *ffgo.Packet, off int64) {
+	if ts := p.PTS(); ts != avutil.AV_NOPTS_VALUE {
+		avcodec.SetPacketPTS(p.Raw(), ts+off)
+	}
+	if ts := p.DTS(); ts != avutil.AV_NOPTS_VALUE {
+		avcodec.SetPacketDTS(p.Raw(), ts+off)
+	}
 }
 
 // announce sends what Plex's binary sends before its first progress.
@@ -544,7 +574,7 @@ func (a *audio) run(ctx context.Context, b *boundaries, segs *pairs) error {
 		tb = a.enc.TimeBase()
 	}
 	emit := func(p *ffgo.Packet) error {
-		t := toTime(p.PTS(), tb)
+		t := toTime(p.PTS(), tb) - PresentationOffset // the boundaries are source time
 		starts, err := b.wait(ctx, t)
 		if err != nil {
 			return err

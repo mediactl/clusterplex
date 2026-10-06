@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -160,7 +161,7 @@ func TestAudioFragmentsEndAtTheVideoBoundaries(t *testing.T) {
 	frame := time.Duration(1024) * time.Second / 48000
 	require.Len(t, r.segments, 4, "every segment pairs its audio with its video")
 	for _, s := range r.segments[:len(r.segments)-1] {
-		end := time.Duration(s.Audio.T+s.Audio.D) * time.Second / time.Duration(r.scales[1])
+		end := time.Duration(s.Audio.T+s.Audio.D)*time.Second/time.Duration(r.scales[1]) - PresentationOffset
 		assert.InDelta(t, float64(s.End), float64(end), float64(frame), "segment %d", s.N)
 	}
 	var a [][]byte
@@ -221,7 +222,7 @@ func TestAGapFillPairsEachSegmentWithItsOwnAudio(t *testing.T) {
 		want := full.segments[i+1]
 		assert.Equal(t, want.N, s.N)
 		assert.Equal(t, want.Start, s.Start)
-		start := time.Duration(s.Audio.T) * time.Second / time.Duration(gap.scales[1])
+		start := time.Duration(s.Audio.T)*time.Second/time.Duration(gap.scales[1]) - PresentationOffset
 		assert.InDelta(t, float64(s.Start), float64(start), float64(100*time.Millisecond), "segment %d's audio starts with its video", s.N)
 	}
 }
@@ -264,4 +265,46 @@ func TestTheDemuxerWaitsForDelivery(t *testing.T) {
 	close(g.release)
 	require.NoError(t, <-done)
 	assert.Len(t, g.segments, 12)
+}
+
+// Review finding I7: video is presented at its source time, within one
+// frame, in a run from the start and in a seek's -- the browser plays by
+// the media's own timestamps, and audio is at its source time already.
+func TestVideoPresentsAtItsSourceTime(t *testing.T) {
+	in := clip(t, 20, 48)
+	frame := time.Second / 24
+	for name, r := range map[string]struct {
+		rec *recorder
+		seg remux.Segment
+	}{
+		"full": func() struct {
+			rec *recorder
+			seg remux.Segment
+		} {
+			rec := run(t, job(in, 1), Options{From: 1, StartAt: -1})
+			return struct {
+				rec *recorder
+				seg remux.Segment
+			}{rec, rec.segments[2]}
+		}(),
+		"seek": func() struct {
+			rec *recorder
+			seg remux.Segment
+		} {
+			rec := run(t, job(in, 3), Options{From: 3, StartAt: -1})
+			return struct {
+				rec *recorder
+				seg remux.Segment
+			}{rec, rec.segments[0]}
+		}(),
+	} {
+		pts := framePTS(t, r.rec.init[0], r.seg.Video.Data)
+		require.NotEmpty(t, pts, name)
+		first := slices.Min(pts)
+		got := time.Duration(first) * time.Second / time.Duration(r.rec.scales[0])
+		want := r.seg.Start + PresentationOffset
+		assert.InDelta(t, float64(want), float64(got), float64(frame), "%s: segment %d's first frame at %v, want its source keyframe %v plus the offset", name, r.seg.N, got, r.seg.Start)
+		audio := time.Duration(r.seg.Audio.T) * time.Second / time.Duration(r.rec.scales[1])
+		assert.InDelta(t, float64(want), float64(audio), float64(frame), "%s: segment %d's audio at %v, with its video", name, r.seg.N, audio)
+	}
 }
