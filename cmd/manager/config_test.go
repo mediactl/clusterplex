@@ -439,3 +439,43 @@ func TestTheRemuxPoolDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, c.RemuxSelector)
 }
+
+// The Secret clustarr reads the server's token from is named in the
+// clustarr section, beside the namespace it lives in.
+func TestTheClustarrSectionNamesTheTokenSecret(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig([]string{"--config", writeConfig(t, `
+plex:
+  clustarr:
+    enabled: true
+    namespace: clustarr-system
+    tokenSecret: plex-token
+    pathMappings:
+      - {clustarr: /data/media, plex: /media}
+`)})
+	require.NoError(t, err)
+	assert.Equal(t, "plex-token", c.Clustarr.TokenSecret)
+}
+
+func TestConfigRefusesATokenSecretItCannotWrite(t *testing.T) {
+	podIdentity(t)
+	for name, body := range map[string]string{
+		"not a name":      "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    tokenSecret: Plex_Token\n    pathMappings: [{clustarr: /data, plex: /media}]\n",
+		"clustarr is off": "plex:\n  clustarr:\n    tokenSecret: plex-token\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadConfig([]string{"--config", writeConfig(t, body)})
+			require.Error(t, err)
+		})
+	}
+}
+
+// The claim code is a credential: it comes from the environment, which the
+// StatefulSet fills from a Secret, as CLUSTERPLEX_PLEX_CLAIM.
+func TestTheClaimCodeComesFromTheEnvironment(t *testing.T) {
+	podIdentity(t)
+	t.Setenv("CLUSTERPLEX_PLEX_CLAIM", " claim-abc\n")
+	c, err := loadConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "claim-abc", c.Claim)
+}

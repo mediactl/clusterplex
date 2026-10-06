@@ -1,5 +1,6 @@
 # Lets the manager read a clustarr install's catalog (get/list/watch only) so
-# the lease holder can rescan what clustarr's files change. Include it in an
+# the lease holder can rescan what clustarr's files change, and keep the
+# server's plex.tv token in the Secret named plex-token there. Include it in an
 # overlay that sets plex.clustarr.enabled in config.yaml.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component

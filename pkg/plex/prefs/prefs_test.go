@@ -3,7 +3,9 @@ package prefs
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,4 +245,55 @@ func TestValueReadsOneSettingAndIsEmptyWhenAbsent(t *testing.T) {
 	v, err = Value(filepath.Join(t.TempDir(), "absent.xml"), "PlexOnlineToken")
 	require.NoError(t, err, "no file is no value, not an error")
 	assert.Empty(t, v)
+}
+
+func TestUpdateDecidesFromTheFileAndMergesWhatItReturns(t *testing.T) {
+	p := writeFile(t, live)
+	changed, err := Update(p, func(current map[string]string) (map[string]string, error) {
+		assert.Equal(t, "secret-token", current["PlexOnlineToken"])
+		return map[string]string{"PlexOnlineToken": "new-token"}, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"PlexOnlineToken"}, changed)
+	got := attrs(t, p)
+	assert.Equal(t, "new-token", got["PlexOnlineToken"])
+	assert.Equal(t, "25648e79229b88b46fdb829e0bdabedf7c385304", got["ProcessedMachineIdentifier"])
+}
+
+func TestUpdateWritesNothingWhenTheDecisionFails(t *testing.T) {
+	p := writeFile(t, live)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+	_, err = Update(p, func(map[string]string) (map[string]string, error) {
+		return map[string]string{"PlexOnlineToken": "new-token"}, assert.AnError
+	})
+	require.ErrorIs(t, err, assert.AnError)
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
+}
+
+// The decision runs under the lock: every pod deciding from the file it read
+// would otherwise decide from a copy another pod is about to replace -- two
+// pods each finding no token would each spend the one-time claim code.
+func TestUpdateHoldsTheLockWhileDeciding(t *testing.T) {
+	p := writeFile(t, `<Preferences N="0"/>`)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := Update(p, func(current map[string]string) (map[string]string, error) {
+				n, err := strconv.Atoi(current["N"])
+				if err != nil {
+					return nil, err
+				}
+				time.Sleep(5 * time.Millisecond)
+				return map[string]string{"N": strconv.Itoa(n + 1)}, nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, "8", attrs(t, p)["N"])
 }

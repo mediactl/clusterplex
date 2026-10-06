@@ -42,6 +42,8 @@ const (
 	// rather than just another preference because it decides what clients and
 	// plex.tv see as the server, and because it is worth validating.
 	machineIDKey = "plex.machine-identifier"
+	// claimKey is the plex.tv claim code, CLUSTERPLEX_PLEX_CLAIM.
+	claimKey = "plex.claim"
 	// defaultConfigFile is read when --config is not given. It is optional.
 	defaultConfigFile = "/etc/clusterplex/config.yaml"
 )
@@ -134,6 +136,13 @@ type Config struct {
 	// pod's terminationGracePeriodSeconds has to cover it plus Plex's own
 	// grace.
 	DrainTimeout time.Duration
+
+	// Claim is a plex.tv claim code (https://plex.tv/claim), exchanged for
+	// the server's token before Plex starts when the server has none or the
+	// code is not the one Clustarr.TokenSecret records as spent. From the
+	// environment, CLUSTERPLEX_PLEX_CLAIM, filled from a Secret: it is a
+	// credential for the few minutes it lasts.
+	Claim string
 
 	// Preferences are the Plex settings the manager writes into
 	// Preferences.xml before each start. Keys not listed here are left as
@@ -248,6 +257,7 @@ func loadConfig(args []string) (Config, error) {
 		SubreaperBinary:  v.GetString("plex-subreaper"),
 		SchemaDir:        v.GetString("schema-dir"),
 		ShadowSyncTables: v.GetString("shadow-sync-tables"),
+		Claim:            strings.TrimSpace(v.GetString(claimKey)),
 		Postgres: plexdb.Config{
 			Host:     v.GetString("postgres-host"),
 			Port:     port("postgres-port"),

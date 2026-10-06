@@ -127,6 +127,42 @@ func Apply(path string, values map[string]string) ([]string, error) {
 	return changed, nil
 }
 
+// Update is Apply with the values decided from the file itself: decide is
+// given the current settings and returns the ones to merge, all under the
+// lock Apply takes, so no other pod reads or writes the file in between. An
+// error from decide writes nothing and is returned.
+func Update(path string, decide func(current map[string]string) (map[string]string, error)) ([]string, error) {
+	unlock, err := lockPreferences(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	current, err := read(path)
+	if err != nil {
+		return nil, err
+	}
+	settings := make(map[string]string, len(current))
+	for _, a := range current {
+		settings[a.Name] = a.Value
+	}
+	values, err := decide(settings)
+	if err != nil {
+		return nil, err
+	}
+	if err := writable(values); err != nil {
+		return nil, err
+	}
+	merged, changed := merge(current, values)
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	if err := writeAtomic(path, render(merged)); err != nil {
+		return nil, err
+	}
+	return changed, nil
+}
+
 // CreateIfAbsent writes content to path when there is no file there yet, and
 // reports whether it did.
 //

@@ -77,5 +77,8 @@ patches:
             clustarr:
               enabled: true
               namespace: clustarr-system
+              # The server's plex.tv token, for clustarr's Plex watchlist
+              # ImportList; the clustarr component grants this name.
+              tokenSecret: plex-token
               pathMappings:
                 - {clustarr: /data/media, plex: /library}

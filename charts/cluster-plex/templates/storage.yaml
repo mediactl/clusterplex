@@ -54,6 +54,9 @@ data:
       clustarr:
         enabled: {{ .Values.plex.clustarr.enabled }}
         namespace: {{ .Values.plex.clustarr.namespace | quote }}
+        {{- with .Values.plex.clustarr.tokenSecret }}
+        tokenSecret: {{ . | quote }}
+        {{- end }}
         pathMappings:
           {{- range .Values.plex.clustarr.pathMappings }}
           - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}

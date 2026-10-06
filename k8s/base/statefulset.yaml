@@ -93,6 +93,16 @@ spec:
                 secretKeyRef:
                   name: plex-postgres
                   key: password
+            # A plex.tv claim code (https://plex.tv/claim) claims or
+            # re-claims the server at the next start: create Secret
+            # plex-claim with it under "claim" and restart the pods within
+            # its four minutes. Optional, so its absence starts Plex as is.
+            - name: CLUSTERPLEX_PLEX_CLAIM
+              valueFrom:
+                secretKeyRef:
+                  name: plex-claim
+                  key: claim
+                  optional: true
           # Plex wants little at rest and several cores for a transcode. The
           # request is what the scheduler places by; the memory limit is what
           # keeps a runaway transcode from taking the node with it. No CPU

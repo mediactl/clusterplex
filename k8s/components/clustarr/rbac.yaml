@@ -1,4 +1,5 @@
-# Read-only, and only clustarr's catalog. It writes nothing to clustarr.
+# clustarr's catalog, read-only; the one Secret plex.clustarr.tokenSecret
+# names is the only thing the manager writes in clustarr's namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -8,6 +9,17 @@ rules:
   - apiGroups: ["catalog.clustarr.io"]
     resources: ["mediafiles", "movies", "series", "episodes"]
     verbs: ["get", "list", "watch"]
+  # The server's plex.tv token, kept by the lease holder in the Secret that
+  # plex.clustarr.tokenSecret names (clustarr's Plex watchlist ImportList
+  # reads it). Only that Secret is read or written; create cannot be limited
+  # by name, and the manager never lists or watches Secrets.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["plex-token"]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

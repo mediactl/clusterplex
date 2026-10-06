@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
@@ -24,6 +25,11 @@ type ClustarrConfig struct {
 	Enabled      bool                    `mapstructure:"enabled"`
 	Namespace    string                  `mapstructure:"namespace"`
 	PathMappings []clustarrwatch.Mapping `mapstructure:"pathMappings"`
+	// TokenSecret names a Secret in Namespace that the lease holder keeps
+	// holding the server's plex.tv token under "token" -- what clustarr's
+	// Plex watchlist ImportList reads -- and that records the claim codes
+	// spent. Empty writes none.
+	TokenSecret string `mapstructure:"tokenSecret"`
 }
 
 // loadProvisioning reads what the lease holder provisions into Plex and the
@@ -65,6 +71,14 @@ func loadProvisioning(v *viper.Viper) (plexprovision.Config, ClustarrConfig, err
 				errs = append(errs, fmt.Errorf("%s.pathMappings: %q is mapped twice", clustarrKey, m.Clustarr))
 			}
 			seen[from] = true
+		}
+	}
+	if cl.TokenSecret != "" {
+		if !cl.Enabled {
+			errs = append(errs, fmt.Errorf("%s.tokenSecret: needs %s.enabled", clustarrKey, clustarrKey))
+		}
+		for _, msg := range validation.IsDNS1123Subdomain(cl.TokenSecret) {
+			errs = append(errs, fmt.Errorf("%s.tokenSecret: %q: %s", clustarrKey, cl.TokenSecret, msg))
 		}
 	}
 	return prov, cl, errors.Join(errs...)

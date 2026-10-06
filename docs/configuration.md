@@ -109,6 +109,41 @@ recomputes it once written, so whenever the manager changes
 `MachineIdentifier` it deletes the derived value, and Plex regenerates a
 matching one on the next start.
 
+### Claiming the server and sharing its token
+
+The server's plex.tv token, `PlexOnlineToken`, lives in the one
+`Preferences.xml` every pod mounts, so every pod accepts it. Plex writes it
+there when the server is claimed; the manager can do the claiming too, as
+Plex's own image does with `PLEX_CLAIM`:
+
+- **Claim or re-claim.** Get a code from <https://plex.tv/claim> (it lasts
+  about four minutes and works once), put it in the Secret the StatefulSet
+  reads `CLUSTERPLEX_PLEX_CLAIM` from (`plex-claim`, key `claim`, in the
+  kustomize install; `plex.claimSecret` in the chart), and restart the
+  pods. Before Plex starts, the manager exchanges the code with plex.tv as
+  the server's `ProcessedMachineIdentifier` and writes the token into
+  `Preferences.xml`. It does so when the file has no token, or -- with a
+  token Secret, which records a hash of each code spent -- when the code
+  is not the one last spent, so a new code replaces a revoked token. The
+  exchange runs under the preferences lock: of pods starting together, one
+  spends the code. A refused exchange (an expired code) is logged and Plex
+  starts with the token it had. Delete the claim Secret afterwards; a spent
+  code is harmless but useless.
+- **Share it with clustarr.** `plex.clustarr.tokenSecret` names a Secret in
+  `plex.clustarr.namespace` that the lease holder keeps holding the token
+  under `token`, checked every minute -- the Secret clustarr's Plex
+  watchlist ImportList names in its `secretRef`. `Preferences.xml` is the
+  master copy: a sign-in through Plex Web lands in the file and reaches the
+  Secret at the next check, and the Secret never overwrites a token the
+  file holds. It is written back only into a file that has none (a lost
+  `plex-config`) when no claim code is given. The manager may `get` and
+  `update` that one Secret and `create` Secrets there; it never lists or
+  watches them. The kustomize clustarr component grants the name
+  `plex-token`; another name needs its Role edited to match.
+- After a re-claim through Plex Web, the pods other than the one signed in
+  keep the old token in memory until they restart; a claim through
+  `CLUSTERPLEX_PLEX_CLAIM` restarts them all anyway.
+
 ### Settings the manager refuses
 
 Besides `ProcessedMachineIdentifier` above, names that are not valid XML
@@ -383,7 +418,7 @@ plex:
   items added afterwards.
 - **Following clustarr** watches its MediaFiles, Movies, Series and Episodes
   read-only (the chart grants `get`, `list` and `watch` in
-  `plex.clustarr.namespace`, nothing else). A file that appears, moves or
+  `plex.clustarr.namespace`, plus the token Secret below when one is named). A file that appears, moves or
   goes away rescans its folder, 30 seconds after the folder goes quiet; more
   than 50 folders at once rescan the library instead. An item whose metadata
   changes is refreshed. `pathMappings` translate clustarr's paths to Plex's,

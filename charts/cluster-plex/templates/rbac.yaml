@@ -76,9 +76,10 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 {{- if .Values.plex.clustarr.enabled }}
 ---
-# Read-only, and only clustarr's catalog: the lease holder rescans the folders
-# its MediaFiles change and refreshes the items whose metadata changes. It
-# writes nothing to clustarr.
+# clustarr's catalog, read-only: the lease holder rescans the folders its
+# MediaFiles change and refreshes the items whose metadata changes. With
+# plex.clustarr.tokenSecret it also keeps that one Secret, the only thing it
+# writes in clustarr's namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -89,6 +90,17 @@ rules:
   - apiGroups: ["catalog.clustarr.io"]
     resources: ["mediafiles", "movies", "series", "episodes"]
     verbs: ["get", "list", "watch"]
+  {{- with .Values.plex.clustarr.tokenSecret }}
+  # The server's plex.tv token, kept in this one Secret; create cannot be
+  # limited by name, and the manager never lists or watches Secrets.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ . | quote }}]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

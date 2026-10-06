@@ -115,6 +115,12 @@ spec:
                 secretKeyRef:
                   name: {{ required "postgres.passwordSecret.name is required" .Values.postgres.passwordSecret.name }}
                   key: {{ .Values.postgres.passwordSecret.key }}
+            - name: CLUSTERPLEX_PLEX_CLAIM
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.plex.claimSecret.name | default (printf "%s-plex-claim" .Release.Name) }}
+                  key: {{ .Values.plex.claimSecret.key }}
+                  optional: true
           ports:
             # The manager's proxy holds this port in the pod namespace and
             # forwards to Plex, which binds it inside its own namespace. There

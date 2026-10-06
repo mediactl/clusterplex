@@ -24,10 +24,12 @@ func (m *Manager) pms() *plexapi.Client {
 
 // startLeaderWork starts what only the Lease holder does to Plex's
 // configuration: one writer at a time for providers, agents and libraries,
-// and one watcher of clustarr rather than one per pod.
+// one watcher of clustarr rather than one per pod, and one writer of the
+// server token's Secret.
 func (m *Manager) startLeaderWork(ctx context.Context) {
 	prov := m.Config.Provision
-	if len(prov.Providers) == 0 && len(prov.Libraries) == 0 && !m.Config.Clustarr.Enabled {
+	store := m.tokenStore()
+	if len(prov.Providers) == 0 && len(prov.Libraries) == 0 && !m.Config.Clustarr.Enabled && store == nil {
 		return
 	}
 	m.stopLeaderWork()
@@ -41,6 +43,9 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 	}
 	if m.Config.Clustarr.Enabled && m.Dynamic != nil {
 		go m.watchClustarr(ctx)
+	}
+	if store != nil {
+		go m.mirrorServerToken(ctx, store)
 	}
 }
 

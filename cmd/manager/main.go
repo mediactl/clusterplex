@@ -37,6 +37,7 @@ import (
 	plexnet "github.com/mediactl/clusterplex/pkg/plex/net"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
+	"github.com/mediactl/clusterplex/pkg/plex/servertoken"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
 )
@@ -81,6 +82,11 @@ type Manager struct {
 	stopLeader context.CancelFunc
 	// provisionEvery is the provisioner's resync period; zero is 10m.
 	provisionEvery time.Duration
+	// mirrorEvery is how often the lease holder copies the server's token
+	// into clustarr's Secret; zero is a minute.
+	mirrorEvery time.Duration
+	// claimExchange trades a claim code with plex.tv; nil is plex.tv itself.
+	claimExchange servertoken.Exchange
 	// Dynamic reads clustarr's objects; nil unless Clustarr.Enabled.
 	Dynamic dynamic.Interface
 
@@ -229,7 +235,7 @@ func run() int {
 			if len(changed) > 0 {
 				logger.Info("applied Plex preferences", "file", cfg.PreferencesFile(), "changed", changed)
 			}
-			return nil
+			return m.settleServerToken(ctx)
 		},
 		Proxy: &proxy.TCP{
 			// The proxy takes Plex's own port in the pod namespace. Anything
