@@ -86,7 +86,7 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 		ev, err := stream.Recv()
 		if err != nil {
 			if first {
-				log.Warn("remux worker failed before output; Plex runs the job", "error", err)
+				log.Warn("remux worker failed before writing a file; Plex runs the job", "error", err)
 				return false, nil
 			}
 			if errors.Is(err, io.EOF) {
@@ -94,9 +94,11 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 			}
 			return true, finish(sink, err)
 		}
-		first = false
 		switch k := ev.Kind.(type) {
 		case *remuxpb.Event_File:
+			// Until the first file the session directory is untouched, so a
+			// failure can still be handed to Plex's transcoder.
+			first = false
 			if err := writeFile(req.GetCwd(), k.File.GetName(), k.File.GetData()); err != nil {
 				return true, finish(sink, err)
 			}
@@ -111,6 +113,10 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 			var err error
 			if msg := k.Done.GetError(); msg != "" {
 				err = errors.New(msg)
+				if first {
+					log.Warn("remux worker refused the job before writing a file; Plex runs the job", "error", err)
+					return false, nil
+				}
 			}
 			return true, finish(sink, err)
 		}

@@ -212,3 +212,19 @@ func splitArgv(line string) []string {
 	}
 	return out
 }
+
+// Review finding I5: the worker reports a failure as Done{error}; one that
+// arrives before any file (the input not mounted on the pool, a codec the
+// pipeline refuses) leaves the job to Plex's transcoder.
+func TestAWorkerErrorBeforeAnyFileLeavesTheJobToPlex(t *testing.T) {
+	r, p, req := setup(t, []*remuxpb.Event{
+		{Kind: &remuxpb.Event_Progress{Progress: &remuxpb.Progress{Query: "duration=30.0"}}},
+		done("stat /library/a.mkv: no such file or directory"),
+	}, nil)
+	s := &sink{}
+	handled, err := r.Execute(t.Context(), req, s)
+	assert.False(t, handled)
+	assert.NoError(t, err)
+	assert.Empty(t, s.logs, "nothing reached the shim, so Plex can run the job")
+	_ = p
+}
