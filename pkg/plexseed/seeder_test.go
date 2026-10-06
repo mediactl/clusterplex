@@ -140,6 +140,28 @@ func TestAnUnanalysedFileIsSeededOnce(t *testing.T) {
 	assert.Equal(t, 6, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", l.media), "idempotent")
 }
 
+// A stream with no language is stored with an empty one, as Plex's own
+// scanner stores it: PMS reads an episode's audio and subtitle languages
+// for a show's preferences without a NULL indicator, so one NULL made the
+// show's page "Something went wrong" (Mister Rogers' Neighborhood and six
+// more on kind-cluster-plex, 2026-10-06).
+func TestAStreamWithoutALanguageIsStoredEmptyNeverNull(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	untagged := andor
+	untagged.Audio = append([]plexseed.Audio(nil), andor.Audio...)
+	untagged.Audio[1].Language = ""
+	untagged.Subtitles = append([]plexseed.Subtitle(nil), andor.Subtitles...)
+	untagged.Subtitles[0].Language = "und"
+	in := plexseed.Input{Path: "/data/media/x.mkv", SizeBytes: 1500000000, ProbeHash: "h", Probe: &untagged}
+
+	_, err := seeder(conn).Seed(context.Background(), l.path, in)
+	require.NoError(t, err)
+	assert.Zero(t, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND language IS NULL", l.media))
+	assert.Equal(t, 3, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND language = ''", l.media),
+		"the video stream, the untagged audio and the und subtitle")
+}
+
 // squasharr and Tdarr rename an encode over its source: the same path, a
 // new probe. Streams the seeder wrote for the old probe are replaced, or
 // Plex would tell clients the old codecs for good.

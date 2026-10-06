@@ -146,12 +146,14 @@ UPDATE media_parts SET duration = $2, size = CASE WHEN $3::bigint > 0 THEN $3::b
  WHERE id = $1`, t.part, m.Duration, in.SizeBytes, m.PartExtra, now); err != nil {
 		return false, fmt.Errorf("plexseed: media part %d: %w", t.part, err)
 	}
+	// language is "" for none, never NULL: Plex's scanner stores "", and PMS
+	// reads it without a NULL indicator (a NULL failed the show's page).
 	for _, r := range rows {
 		if _, err := tx.Exec(ctx, `
 INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, "index",
                            channels, bitrate, "default", forced, extra_data, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)`,
-			r.Type, t.media, t.part, r.Codec, nullString(r.Language), r.Index,
+			r.Type, t.media, t.part, r.Codec, r.Language, r.Index,
 			nullInt(r.Channels), nullInt(r.Bitrate), boolInt(r.Default), boolInt(r.Forced), r.Extra, now); err != nil {
 			return false, fmt.Errorf("plexseed: stream of media %d: %w", t.media, err)
 		}
