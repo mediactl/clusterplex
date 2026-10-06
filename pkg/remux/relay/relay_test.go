@@ -228,3 +228,21 @@ func TestAWorkerErrorBeforeAnyFileLeavesTheJobToPlex(t *testing.T) {
 	assert.Empty(t, s.logs, "nothing reached the shim, so Plex can run the job")
 	_ = p
 }
+
+// Review finding I9: the pool parses untrusted media, so a worker must not
+// be able to steer the token-bearing PUTs the relay makes for it.
+func TestProgressIsOnlyPlexsProgress(t *testing.T) {
+	r, p, req := setup(t, []*remuxpb.Event{
+		{Kind: &remuxpb.Event_Progress{Progress: &remuxpb.Progress{Path: "../../../../library/sections/1", Query: "x=1"}}},
+		{Kind: &remuxpb.Event_Progress{Progress: &remuxpb.Progress{Path: "stream", Query: "index=0&codec=hevc&type=video&X-Plex-Token=evil"}}},
+		{Kind: &remuxpb.Event_Progress{Progress: &remuxpb.Progress{Path: "streamDetail", Query: "index=1&codec=aac&type=audio&channels=2"}}},
+		{Kind: &remuxpb.Event_Progress{Progress: &remuxpb.Progress{Path: "", Query: "progress=12.5&size=-1&remaining=40&speed=3.1"}}},
+		file("init-stream0.m4s"), done(""),
+	}, nil)
+	_, err := r.Execute(t.Context(), req, &sink{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"PUT /video/:/transcode/session/s1/u1/progress/streamDetail?index=1&codec=aac&type=audio&channels=2",
+		"PUT /video/:/transcode/session/s1/u1/progress?progress=12.5&size=-1&remaining=40&speed=3.1",
+	}, p.calls, "an unknown path or query key is dropped, never sent")
+}

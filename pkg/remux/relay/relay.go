@@ -107,6 +107,10 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 				return true, finish(sink, fmt.Errorf("post manifest: %w", err))
 			}
 		case *remuxpb.Event_Progress:
+			if !progressAllowed(k.Progress.GetPath(), k.Progress.GetQuery()) {
+				log.Warn("dropped a progress report outside Plex's", "path", k.Progress.GetPath())
+				continue
+			}
 			// Plex's own transcoder carries on past a failed progress PUT too.
 			_ = r.send(ctx, http.MethodPut, job.ProgressURL, k.Progress.GetPath(), k.Progress.GetQuery(), nil, job.Token)
 		case *remuxpb.Event_Done:
@@ -121,6 +125,37 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 			return true, finish(sink, err)
 		}
 	}
+}
+
+// progressKeys are the query keys Plex's own transcoder sends under its
+// progress URL (recorded 2026-10-01); progressPaths its sub-paths.
+var (
+	progressPaths = map[string]bool{"": true, "stream": true, "streamDetail": true}
+	progressKeys  = map[string]bool{
+		"progress": true, "size": true, "remaining": true, "speed": true, "duration": true,
+		"width": true, "height": true, "index": true, "id": true, "codec": true, "type": true,
+		"profile": true, "language": true, "channels": true, "layout": true, "sampleRate": true,
+		"level": true, "frameRate": true, "interlaced": true, "sar": true,
+	}
+)
+
+// progressAllowed reports whether a worker's progress report is one of
+// Plex's: the pool parses untrusted media, and the relay sends these with
+// the session's token, so nothing else may be steered through it.
+func progressAllowed(path, query string) bool {
+	if !progressPaths[path] {
+		return false
+	}
+	q, err := url.ParseQuery(query)
+	if err != nil {
+		return false
+	}
+	for k := range q {
+		if !progressKeys[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // finish tells the shim how the job ended, as Plex's transcoder's exit code.
