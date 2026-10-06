@@ -16,7 +16,7 @@ components:
   - ../../components/clustarr
 images:
   - name: ghcr.io/mediactl/cluster-plex
-    newTag: "c3c5d91"
+    newTag: "3d34ef2"
   - name: ghcr.io/mediactl/cluster-plex-remux
     newTag: "dev"
 patches:
