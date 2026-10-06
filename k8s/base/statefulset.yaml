@@ -15,6 +15,10 @@ spec:
     metadata:
       labels:
         app: plex
+        # What the manager finds its peers by (route.DefaultPlexSelector):
+        # the maintenance fan-out and the request router list the pods
+        # running Plex with it. Not in the selector, which is immutable.
+        app.kubernetes.io/component: plex
     spec:
       serviceAccountName: clusterplex-sa
       # One pod per node where the cluster has the nodes. Every pod serves,

@@ -1,0 +1,120 @@
+# Plex's own scheduler is off on every pod (docs/configuration.md, the
+# ButlerTask* switches), so these are the only upkeep it gets: each asks a
+# manager to fan one task out across the pods serving Plex. The same schedule
+# as the chart's maintenance.schedules, held to it by test/manifests; a task
+# that fails (a failover, a pod still starting) fails its Job, which retries.
+#
+# No analysis is scheduled: clustarr probes the media and seeds streams and
+# markers (ADR 0006). New media is scanned as clustarr imports it
+# (pkg/clustarrwatch); refresh is the nightly full pass behind that.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: plex-maintenance-refresh
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: ghcr.io/mediactl/cluster-plex:dev
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/maintenance"]
+              args:
+                - -endpoint=http://plex-workers.media.svc.cluster.local:8080
+                - -task=refresh
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 64Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: plex-maintenance-empty-trash
+spec:
+  schedule: "30 1 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: ghcr.io/mediactl/cluster-plex:dev
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/maintenance"]
+              args:
+                - -endpoint=http://plex-workers.media.svc.cluster.local:8080
+                - -task=empty-trash
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 64Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: plex-maintenance-clean-bundles
+spec:
+  schedule: "0 4 * * 0"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: ghcr.io/mediactl/cluster-plex:dev
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/maintenance"]
+              args:
+                - -endpoint=http://plex-workers.media.svc.cluster.local:8080
+                - -task=clean-bundles
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 64Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: plex-maintenance-clean-cache
+spec:
+  schedule: "30 4 * * 0"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: ghcr.io/mediactl/cluster-plex:dev
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/maintenance"]
+              args:
+                - -endpoint=http://plex-workers.media.svc.cluster.local:8080
+                - -task=clean-cache
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 64Mi}

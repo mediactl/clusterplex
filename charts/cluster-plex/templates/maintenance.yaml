@@ -28,7 +28,9 @@ spec:
       backoffLimit: 6
       template:
         spec:
-          restartPolicy: OnFailure
+          # Never, so a failed attempt's pod and its log stay with the Job
+          # (failedJobsHistoryLimit) rather than being deleted with it.
+          restartPolicy: Never
           containers:
             - name: trigger
               image: {{ include "cluster-plex.image" $ }}

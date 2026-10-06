@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -103,7 +104,7 @@ func TestAServerWideTaskRunsOnOnePodOnly(t *testing.T) {
 
 	require.Len(t, rec.sorted(), 1)
 	assert.Equal(t, "POST", rec.sorted()[0].Method)
-	assert.Equal(t, "/butler/ButlerTaskBackupDatabase", rec.sorted()[0].Path)
+	assert.Equal(t, "/butler/BackupDatabase", rec.sorted()[0].Path)
 	assert.Len(t, result.Dispatched, 1)
 }
 
@@ -151,7 +152,8 @@ func TestEveryDisabledButlerTaskHasAReplacement(t *testing.T) {
 		"ButlerTaskCleanOldBundles",
 		"ButlerTaskCleanOldCacheFiles",
 		"ButlerTaskDeepMediaAnalysis",
-		"ButlerTaskGenerateAutoTags",
+		// ButlerTaskGenerateAutoTags is not here: Plex runs no such task now
+		// (GET /butler lists none), so its preference schedules nothing.
 		"ButlerTaskGenerateChapterThumbs",
 		"ButlerTaskGenerateMediaIndexFiles",
 		"ButlerTaskRefreshLocalMedia",
@@ -171,4 +173,30 @@ func TestLookupFindsAKnownTask(t *testing.T) {
 	task, ok := Lookup("analyze")
 	require.True(t, ok)
 	assert.True(t, task.PerLibrary)
+}
+
+// plexButlerTasks is GET /butler's task names, as kind-cluster-plex's Plex
+// answered it on 2026-10-06. POST /butler/{name} runs one; the preference
+// that schedules it (ButlerTaskCleanOldCacheFiles) is not its name, and
+// Plex answers 404 to it -- which every server-wide maintenance task got
+// until then, failing its CronJob.
+var plexButlerTasks = []string{
+	"AutomaticUpdates", "BackupDatabase", "ButlerTaskCleanSupplementalLogFiles",
+	"ButlerTaskGenerateAdMarkers", "ButlerTaskGenerateCreditsMarkers",
+	"ButlerTaskGenerateIntroMarkers", "ButlerTaskGenerateVoiceActivity",
+	"CleanOldBundles", "CleanOldCacheFiles", "DeepMediaAnalysis",
+	"GarbageCollectBlobs", "GarbageCollectLibraryMedia", "GenerateChapterThumbs",
+	"GenerateMediaIndexFiles", "LoudnessAnalysis", "MusicAnalysis",
+	"OptimizeDatabase", "ProcessAssets", "RefreshEpgGuides", "RefreshLibraries",
+	"RefreshLocalMedia", "RefreshPeriodicMetadata", "UpgradeMediaAnalysis",
+}
+
+func TestEveryButlerTaskNamesOnePlexRuns(t *testing.T) {
+	for name, task := range Tasks {
+		butler, ok := strings.CutPrefix(task.Path, "/butler/")
+		if !ok {
+			continue
+		}
+		assert.Contains(t, plexButlerTasks, butler, "%s posts to %s, which Plex answers 404", name, task.Path)
+	}
 }

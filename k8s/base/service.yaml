@@ -60,3 +60,7 @@ spec:
     - name: grpc
       port: 50051
       targetPort: grpc
+    # The manager's HTTP port, where the maintenance CronJobs ask for work.
+    - name: probes
+      port: 8080
+      targetPort: probes

@@ -43,7 +43,10 @@ type Task struct {
 // The per-library ones address Plex's library endpoints so the work divides.
 // The rest go through Plex's own butler endpoint, which runs a named scheduled
 // task on demand: those are server-wide, so spreading them would only mean
-// doing the same work several times.
+// doing the same work several times. A butler task's name is GET /butler's,
+// not the preference that schedules it: POST /butler/ButlerTaskCleanOldBundles
+// is a 404, /butler/CleanOldBundles runs it. Plex has no GenerateAutoTags
+// task any more, so ButlerTaskGenerateAutoTags has nothing to replace.
 var Tasks = map[string]Task{
 	"analyze": {
 		Name: "analyze", Method: "PUT", Path: "/library/sections/{id}/analyze", PerLibrary: true,
@@ -61,27 +64,23 @@ var Tasks = map[string]Task{
 		Name: "empty-trash", Method: "PUT", Path: "/library/sections/{id}/emptyTrash", PerLibrary: true,
 	},
 	"media-index": {
-		Name: "media-index", Method: "POST", Path: "/butler/ButlerTaskGenerateMediaIndexFiles",
+		Name: "media-index", Method: "POST", Path: "/butler/GenerateMediaIndexFiles",
 		Butler: []string{"ButlerTaskGenerateMediaIndexFiles"},
 	},
 	"chapter-thumbs": {
-		Name: "chapter-thumbs", Method: "POST", Path: "/butler/ButlerTaskGenerateChapterThumbs",
+		Name: "chapter-thumbs", Method: "POST", Path: "/butler/GenerateChapterThumbs",
 		Butler: []string{"ButlerTaskGenerateChapterThumbs"},
 	},
-	"auto-tags": {
-		Name: "auto-tags", Method: "POST", Path: "/butler/ButlerTaskGenerateAutoTags",
-		Butler: []string{"ButlerTaskGenerateAutoTags"},
-	},
 	"backup-database": {
-		Name: "backup-database", Method: "POST", Path: "/butler/ButlerTaskBackupDatabase",
+		Name: "backup-database", Method: "POST", Path: "/butler/BackupDatabase",
 		Butler: []string{"ButlerTaskBackupDatabase"},
 	},
 	"clean-bundles": {
-		Name: "clean-bundles", Method: "POST", Path: "/butler/ButlerTaskCleanOldBundles",
+		Name: "clean-bundles", Method: "POST", Path: "/butler/CleanOldBundles",
 		Butler: []string{"ButlerTaskCleanOldBundles"},
 	},
 	"clean-cache": {
-		Name: "clean-cache", Method: "POST", Path: "/butler/ButlerTaskCleanOldCacheFiles",
+		Name: "clean-cache", Method: "POST", Path: "/butler/CleanOldCacheFiles",
 		Butler: []string{"ButlerTaskCleanOldCacheFiles"},
 	},
 }

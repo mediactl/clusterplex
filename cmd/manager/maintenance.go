@@ -19,6 +19,7 @@ import (
 
 	"github.com/mediactl/clusterplex/pkg/maintenance"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
+	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
 // MaintenancePrefix is where a CronJob asks for work to be distributed.
@@ -125,7 +126,7 @@ func (m *Manager) plexLibraries(ctx context.Context) ([]string, error) {
 // podsServingPlex lists the pods whose Plex is accepting connections.
 func (m *Manager) podsServingPlex(ctx context.Context) ([]string, error) {
 	pods, err := m.K8sClient.CoreV1().Pods(m.Config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/component=plex",
+		LabelSelector: plexroute.DefaultPlexSelector,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)

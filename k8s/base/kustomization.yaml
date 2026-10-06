@@ -10,3 +10,4 @@ resources:
   - statefulset.yaml
   - pdb.yaml
   - remux.yaml
+  - maintenance.yaml
