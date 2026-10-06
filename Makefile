@@ -66,7 +66,7 @@ docker-build-remux: ## Build the remux worker's image (ffgo comes from ../ffgo w
 
 .PHONY: docker-build
 docker-build: ## Build the image; DOCKER_TARGET=debug adds busybox, which make e2e needs
-	docker build -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
+	docker build -f Dockerfile --build-context ffgo=../ffgo --target $(DOCKER_TARGET) -t $(IMG) .
 
 .PHONY: helm-lint
 helm-lint: ## Lint and render the Helm chart

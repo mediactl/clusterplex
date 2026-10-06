@@ -10,6 +10,10 @@ FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION} AS builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /app
+# go.mod replaces ffgo with ../ffgo until its tag is published, so the
+# build is given the checkout as a named context (make docker-build passes
+# --build-context ffgo=../ffgo). Only cmd/remux-worker links it.
+COPY --from=ffgo . /ffgo
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
