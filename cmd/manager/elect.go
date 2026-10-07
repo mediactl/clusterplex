@@ -213,6 +213,9 @@ func (m *Manager) start(ctx context.Context) {
 		m.Logger.Error("start Plex Media Server", "error", err)
 		return
 	}
+	m.mu.Lock()
+	m.pmsStarted = time.Now()
+	m.mu.Unlock()
 	go m.advertiseWhenAccepting(ctx)
 }
 

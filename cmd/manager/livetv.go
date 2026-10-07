@@ -48,6 +48,8 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	}
 	changes, unsubscribe := m.liveTV.subscribe()
 	defer unsubscribe()
+	restarts := newLiveTVRestarts()
+	go m.runLiveTVRestarts(ctx, restarts, m.Config.LiveTV.RestartEvery, conv.Record, log)
 
 	backoff := min(provisionBackoffStart, every)
 	var (
@@ -85,6 +87,9 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 				return
 			}
 			m.Metrics.ProvisionRuns.WithLabelValues("livetv-" + string(res.Status)).Inc()
+			if res.DVRChanged {
+				restarts.request(res.Changed)
+			}
 			switch res.Status {
 			case plexlivetv.Converged:
 				backoff = min(provisionBackoffStart, every)

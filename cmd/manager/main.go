@@ -111,6 +111,8 @@ type Manager struct {
 	// plexServing is whether Plex last answered a request. It starts false, so
 	// winning the election is never on its own enough to take traffic.
 	plexServing bool
+	// pmsStarted is when PMS last started, for Live TV's restarts.
+	pmsStarted time.Time
 }
 
 func main() {
@@ -322,6 +324,9 @@ func run() int {
 		m.startLiveTV(ctx)
 	}
 	m.runPlex(ctx)
+	if cfg.LiveTV.Enabled && m.Dynamic != nil {
+		go m.watchLiveTVRestart(ctx)
+	}
 
 	<-ctx.Done()
 	logger.Info("shutting down")
