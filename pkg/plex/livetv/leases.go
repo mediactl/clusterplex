@@ -32,8 +32,9 @@ var _ LeaseClient = (*Leases)(nil)
 
 // Acquire creates the Lease, or takes it when it has no holder, is ours, or
 // has expired, and renews it. An update races through resourceVersion: a
-// lost race is an error, and the next pass reads the winner.
-func (l *Leases) Acquire(ctx context.Context, namespace, name, identity string, labels map[string]string) (bool, string, error) {
+// lost race is an error, and the next pass reads the winner. A takeover
+// drops the old holder's AnnotationSaved, which described its own PMS.
+func (l *Leases) Acquire(ctx context.Context, namespace, name, identity string, labels map[string]string) (Lease, error) {
 	now := time.Now
 	if l.Now != nil {
 		now = l.Now
@@ -55,12 +56,12 @@ func (l *Leases) Acquire(ctx context.Context, namespace, name, identity string, 
 			},
 		}, metav1.CreateOptions{})
 		if err != nil {
-			return false, "", fmt.Errorf("create: %w", err)
+			return Lease{}, fmt.Errorf("create: %w", err)
 		}
-		return true, identity, nil
+		return Lease{Held: true, Holder: identity}, nil
 	}
 	if err != nil {
-		return false, "", fmt.Errorf("get: %w", err)
+		return Lease{}, fmt.Errorf("get: %w", err)
 	}
 
 	holder := ""
@@ -68,9 +69,10 @@ func (l *Leases) Acquire(ctx context.Context, namespace, name, identity string, 
 		holder = *lease.Spec.HolderIdentity
 	}
 	if holder != "" && holder != identity && !expired(lease, t.Time) {
-		return false, holder, nil
+		return Lease{Holder: holder}, nil
 	}
 	if holder != identity {
+		delete(lease.Annotations, AnnotationSaved)
 		lease.Spec.AcquireTime = &t
 		var n int32
 		if lease.Spec.LeaseTransitions != nil {
@@ -86,10 +88,31 @@ func (l *Leases) Acquire(ctx context.Context, namespace, name, identity string, 
 		lease.Labels = map[string]string{}
 	}
 	maps.Copy(lease.Labels, labels)
-	if _, err := api.Update(ctx, lease, metav1.UpdateOptions{}); err != nil {
-		return false, "", fmt.Errorf("update: %w", err)
+	updated, err := api.Update(ctx, lease, metav1.UpdateOptions{})
+	if err != nil {
+		return Lease{}, fmt.Errorf("update: %w", err)
 	}
-	return true, identity, nil
+	return Lease{Held: true, Holder: identity, Annotations: updated.Annotations}, nil
+}
+
+// Annotate sets annotations on a Lease identity holds.
+func (l *Leases) Annotate(ctx context.Context, namespace, name, identity string, annotations map[string]string) error {
+	api := l.Client.CoordinationV1().Leases(namespace)
+	lease, err := api.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get: %w", err)
+	}
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != identity {
+		return fmt.Errorf("lease %s/%s is not held by %s", namespace, name, identity)
+	}
+	if lease.Annotations == nil {
+		lease.Annotations = map[string]string{}
+	}
+	maps.Copy(lease.Annotations, annotations)
+	if _, err := api.Update(ctx, lease, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	return nil
 }
 
 // expired reports whether lease's holder let it lapse by now.

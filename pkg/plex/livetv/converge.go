@@ -7,13 +7,16 @@
 // block it holds the Lease for, creates its DVR, saves its channel map and
 // reloads its guide when they change. It manages only devices on the
 // link-local address or carrying a live block's device id (rule M), and
-// never deletes, saves or reloads while PMS loads a guide: a DVR deleted
-// during provider.epg.load deadlocked PMS (recorded).
+// never deletes, saves, reloads or creates a DVR while PMS loads a guide: a
+// DVR deleted during provider.epg.load deadlocked PMS (recorded). Creating
+// a DVR, saving a map and reloading a guide each start such a load, so a
+// pass starts at most one, and it asks PMS again before every such write.
 package livetv
 
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 )
@@ -52,6 +56,7 @@ const (
 	ReasonWaitingForGuide  = "DVRWaitingForGuide"
 	ReasonChannelMapTooBig = "DVRChannelMapTooLarge"
 	ReasonPodsRestarted    = "DVRPodsRestarted"
+	ReasonDVRListStale     = "DVRListStale"
 )
 
 // Status is how far a pass got.
@@ -59,8 +64,10 @@ type Status string
 
 const (
 	Converged Status = "converged"
-	Pending   Status = "pending"
-	Errored   Status = "error"
+	// Waiting is a pass that only waited for a guide load: nothing failed.
+	Waiting Status = "waiting"
+	Pending Status = "pending"
+	Errored Status = "error"
 )
 
 // Result is a pass's outcome.
@@ -72,6 +79,9 @@ type Result struct {
 	// Changed names the providers whose DVRs changed, for the restart's
 	// Event.
 	Changed []Provider
+	// RestartSelf is this PMS's DVR list found older than a DVR another
+	// pod made: this pod's PMS must restart to read it.
+	RestartSelf bool
 }
 
 // Block is one of a provider's blocks, as clustarr publishes it in
@@ -97,9 +107,23 @@ func (p Provider) key() string { return p.Namespace + "/" + p.Name }
 // LeaseClient takes and renews a block's Lease (leases.go).
 type LeaseClient interface {
 	// Acquire takes or renews the Lease name in namespace for identity.
-	// held is false when another holder has it, named by holder.
-	Acquire(ctx context.Context, namespace, name, identity string, labels map[string]string) (held bool, holder string, err error)
+	Acquire(ctx context.Context, namespace, name, identity string, labels map[string]string) (Lease, error)
+	// Annotate sets annotations on a Lease identity holds.
+	Annotate(ctx context.Context, namespace, name, identity string, annotations map[string]string) error
 }
+
+// Lease is a block's Lease as Acquire left it.
+type Lease struct {
+	// Held is identity holding it; Holder names whoever does.
+	Held   bool
+	Holder string
+	// Annotations are the holder's notes on it, none once it changed hands.
+	Annotations map[string]string
+}
+
+// AnnotationSaved is the note on a block's Lease of what its holder last
+// saved into PMS: the DVR, and its lineup and guide hashes (savedNote).
+const AnnotationSaved = "livetv.clusterplex.io/saved"
 
 // LeaseName is the Lease cluster-plex holds while it registers a block.
 func LeaseName(deviceID string) string { return "livetv-" + strings.ToLower(deviceID) }
@@ -123,8 +147,11 @@ type Converger struct {
 	// of the blocks' Leases: every pod of one installation shares it.
 	Identity string
 	Leases   LeaseClient
-	Logger   *slog.Logger
-	Record   func(Event)
+	// PMSStarted is when this pod's PMS last started, which tells a DVR
+	// list it reread from one it has not (nil: never).
+	PMSStarted func() time.Time
+	Logger     *slog.Logger
+	Record     func(Event)
 
 	mu sync.Mutex
 	// saved is, by device id, the lineup and guide hashes last sent to PMS.
@@ -132,9 +159,35 @@ type Converger struct {
 	saved map[string]savedHashes
 	// told dedupes the messages a pass would otherwise repeat every time.
 	told map[string]string
+	// held is, by device id, the Leases this converger holds, renewed even
+	// on a pass that cannot reach PMS: the device is still in PMS, and a
+	// lapse would let another installation register the block beside it.
+	held map[string]heldLease
+	// stale is, by device id, the devices staleList asked a restart for.
+	stale map[string]staleDVR
+}
+
+type heldLease struct {
+	namespace string
+	labels    map[string]string
+}
+
+// staleDVR is a device whose DVR this PMS did not list, and when this
+// converger asked for its PMS's restart.
+type staleDVR struct {
+	parent int
+	at     time.Time
 }
 
 type savedHashes struct{ lineup, guide string }
+
+// savedNote is AnnotationSaved's value: what was saved, and for which DVR,
+// so a DVR made again is saved again.
+type savedNote struct {
+	DVR    string `json:"dvr"`
+	Lineup string `json:"lineup"`
+	Guide  string `json:"guide"`
+}
 
 func (c *Converger) record(p Provider, reason, msg string, warning bool) {
 	if c.Logger != nil {
@@ -172,13 +225,34 @@ func (c *Converger) blockURI(b Block) string {
 // errWaiting is a step a guide load postponed; the pass is Pending.
 var errWaiting = errors.New("waiting for PMS to finish loading a guide")
 
+// idle is errWaiting while PMS loads a guide, this pass's own or one PMS
+// started itself. It asks PMS again every time: a pass runs for minutes,
+// and the look it began with is stale by the time it deletes.
+func (c *Converger) idle(ctx context.Context, ps *pass) error {
+	if ps.guideBusy {
+		return errWaiting
+	}
+	acts, err := c.PMS.Activities(ctx)
+	if err != nil {
+		return fmt.Errorf("list activities: %w", err)
+	}
+	for _, a := range acts {
+		if a.Type == plexapi.ActivityGuideLoad {
+			ps.guideBusy = true
+			return errWaiting
+		}
+	}
+	return nil
+}
+
 // pass is one Run's view of PMS.
 type pass struct {
 	devices map[string]plexapi.Device // by device id, HDHomeRun only
 	dvrs    []plexapi.DVR
 	// guideBusy is PMS loading a guide, or this pass having started one.
-	guideBusy bool
-	changed   map[string]Provider
+	guideBusy   bool
+	changed     map[string]Provider
+	restartSelf bool
 }
 
 // Run is one idempotent pass over every live provider (Live TV spec §6.1).
@@ -188,18 +262,21 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.saved == nil {
-		c.saved, c.told = map[string]savedHashes{}, map[string]string{}
+		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
+		c.renewHeld(ctx)
 		return Result{Status: Errored}, fmt.Errorf("list devices: %w", err)
 	}
 	dvrs, err := c.PMS.DVRs(ctx)
 	if err != nil {
+		c.renewHeld(ctx)
 		return Result{Status: Errored}, fmt.Errorf("list DVRs: %w", err)
 	}
 	acts, err := c.PMS.Activities(ctx)
 	if err != nil {
+		c.renewHeld(ctx)
 		return Result{Status: Errored}, fmt.Errorf("list activities: %w", err)
 	}
 	ps := &pass{devices: map[string]plexapi.Device{}, dvrs: dvrs, changed: map[string]Provider{}}
@@ -221,13 +298,14 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		}
 	}
 
-	pending := false
+	pending, waiting := false, false
 	var errs []error
 	fail := func(p Provider, what string, err error) {
-		pending = true
 		if errors.Is(err, errWaiting) {
+			waiting = true
 			return
 		}
+		pending = true
 		if p.UID != "" {
 			c.record(p, ReasonFailed, what+": "+err.Error(), true)
 		}
@@ -235,6 +313,13 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	}
 	for _, p := range live {
 		if !p.Ready || !p.Enabled || p.Address == "" {
+			// Left as it is, but its devices are still in this PMS: keep
+			// their Leases.
+			for _, b := range p.Blocks {
+				if err := c.keep(ctx, p, b, ps); err != nil {
+					fail(p, "block "+b.Start, err)
+				}
+			}
 			continue
 		}
 		bs := slices.Clone(p.Blocks)
@@ -260,28 +345,30 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		}
 	}
 	for _, d := range ps.ghosts(c.localAddress()) {
-		if ps.guideBusy {
-			pending = true
-			continue
-		}
-		if err := c.PMS.DeleteDVR(ctx, string(d.Key)); err != nil {
+		if err := c.idle(ctx, ps); err != nil {
 			fail(gone, "ghost DVR "+string(d.Key), err)
 			continue
 		}
-		ps.dropDVR(d.Key)
+		if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
+			fail(gone, "ghost DVR "+string(d.Key), err)
+			continue
+		}
 		ps.changed[gone.key()] = gone
 		c.log("deleted ghost DVR "+string(d.Key), "lineup", d.Lineup)
 	}
 
-	res := Result{Status: Converged, DVRChanged: len(ps.changed) > 0}
+	res := Result{Status: Converged, DVRChanged: len(ps.changed) > 0, RestartSelf: ps.restartSelf}
 	for _, p := range ps.changed {
 		if p.UID != "" {
 			res.Changed = append(res.Changed, p)
 		}
 	}
 	slices.SortFunc(res.Changed, func(a, b Provider) int { return strings.Compare(a.key(), b.key()) })
-	if pending {
+	switch {
+	case pending:
 		res.Status = Pending
+	case waiting:
+		res.Status = Waiting
 	}
 	return res, errors.Join(errs...)
 }
@@ -292,20 +379,69 @@ func (c *Converger) log(msg string, args ...any) {
 	}
 }
 
+// acquire takes or renews block b's Lease, reporting when another
+// installation holds it.
+func (c *Converger) acquire(ctx context.Context, p Provider, b Block, ps *pass) (Lease, error) {
+	id := strings.ToUpper(b.DeviceID)
+	labels := map[string]string{LabelProvider: p.Name, LabelBlock: b.Start}
+	lease, err := c.Leases.Acquire(ctx, p.Namespace, LeaseName(id), c.Identity, labels)
+	if err != nil {
+		return Lease{}, fmt.Errorf("lease %s: %w", LeaseName(id), err)
+	}
+	if holder := lease.Holder; !lease.Held {
+		delete(c.held, id)
+		if dev, ok := ps.devices[id]; ok && sameEndpoint(dev.URI, c.blockURI(b)) {
+			// Its DVR is left in place: deleting it deletes its
+			// recording rules, which is for a person to decide.
+			c.recordOnce("owned/"+id, p, ReasonBlockOwned,
+				fmt.Sprintf("block %s (device %s) is registered by %s, and this Plex has its device and DVR too: two installations now serve the block. Delete the DVR in one of them", b.Start, id, holder), true)
+			return lease, nil
+		}
+		c.recordOnce("owned/"+id, p, ReasonBlockOwned,
+			fmt.Sprintf("block %s (device %s) is registered by %s; skipping it", b.Start, id, holder), false)
+		return lease, nil
+	}
+	delete(c.told, "owned/"+id)
+	c.held[id] = heldLease{namespace: p.Namespace, labels: labels}
+	return lease, nil
+}
+
+// keep renews the Lease of a block whose provider is left as it is, while
+// this PMS has the block's device.
+func (c *Converger) keep(ctx context.Context, p Provider, b Block, ps *pass) error {
+	if b.DeviceID == "" || b.Port == 0 {
+		return nil
+	}
+	dev, ok := ps.devices[strings.ToUpper(b.DeviceID)]
+	if !ok || !sameEndpoint(dev.URI, c.blockURI(b)) {
+		return nil
+	}
+	_, err := c.acquire(ctx, p, b, ps)
+	return err
+}
+
+// renewHeld renews every Lease this converger holds, on a pass that could
+// not read PMS.
+func (c *Converger) renewHeld(ctx context.Context) {
+	for id, h := range c.held {
+		lease, err := c.Leases.Acquire(ctx, h.namespace, LeaseName(id), c.Identity, h.labels)
+		if err != nil {
+			c.log("renew a block's Lease while PMS cannot be read", "lease", LeaseName(id), "error", err)
+			continue
+		}
+		if !lease.Held {
+			delete(c.held, id)
+		}
+	}
+}
+
 // converge brings one block's device, DVR, channel map and guide into PMS.
 func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass) error {
 	id := strings.ToUpper(b.DeviceID)
-	held, holder, err := c.Leases.Acquire(ctx, p.Namespace, LeaseName(id), c.Identity,
-		map[string]string{LabelProvider: p.Name, LabelBlock: b.Start})
-	if err != nil {
-		return fmt.Errorf("lease %s: %w", LeaseName(id), err)
+	lease, err := c.acquire(ctx, p, b, ps)
+	if err != nil || !lease.Held {
+		return err
 	}
-	if !held {
-		c.recordOnce("owned/"+id, p, ReasonBlockOwned,
-			fmt.Sprintf("block %s (device %s) is registered by %s; skipping it", b.Start, id, holder), false)
-		return nil
-	}
-	delete(c.told, "owned/"+id)
 
 	uri := c.blockURI(b)
 	dev, ok := ps.devices[id]
@@ -333,15 +469,13 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 
 	dvrs := ps.dvrsOf(dev.UUID)
 	if extra := dvrs[min(1, len(dvrs)):]; len(extra) > 0 {
-		if ps.guideBusy {
-			c.waiting(p, b, "delete duplicate DVRs")
-			return errWaiting
-		}
 		for _, d := range extra {
-			if err := c.PMS.DeleteDVR(ctx, string(d.Key)); err != nil {
+			if err := c.idle(ctx, ps); err != nil {
+				return c.wait(p, b, "delete duplicate DVRs", err)
+			}
+			if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
 				return fmt.Errorf("delete duplicate DVR %s: %w", d.Key, err)
 			}
-			ps.dropDVR(d.Key)
 			ps.changed[p.key()] = p
 			c.record(p, ReasonRemoved, fmt.Sprintf("block %s: deleted duplicate DVR %s", b.Start, d.Key), false)
 		}
@@ -349,11 +483,20 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 	var dvr plexapi.DVR
 	if len(dvrs) > 0 {
 		dvr = dvrs[0]
+		delete(c.stale, id)
 	} else {
+		if dev.ParentID != 0 {
+			if err := c.staleList(p, b, dev, ps); err != nil {
+				return err
+			}
+		}
 		if p.EPGSource == "PMS" {
 			c.recordOnce("lineup/"+id, p, ReasonNeedsLineup,
 				fmt.Sprintf("block %s: epgSource is PMS: finish device %s's DVR once in Plex's setup wizard, choosing your location's lineup; the channel map is then kept for you", b.Start, id), false)
 			return nil
+		}
+		if err := c.idle(ctx, ps); err != nil {
+			return c.wait(p, b, "create the DVR", err)
 		}
 		lang := c.Language
 		if lang == "" {
@@ -383,11 +526,15 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 	}
 	delete(c.told, "lineup/"+id)
 
-	s := c.saved[id]
+	s, ok := c.saved[id]
+	if n := (savedNote{}); !ok && json.Unmarshal([]byte(lease.Annotations[AnnotationSaved]), &n) == nil && n.DVR == string(dvr.Key) {
+		// What the previous holder saved, in this installation's PMS.
+		s = savedHashes{lineup: n.Lineup, guide: n.Guide}
+		c.saved[id] = s
+	}
 	if s.lineup != b.LineupHash {
-		if ps.guideBusy {
-			c.waiting(p, b, "save the channel map")
-			return errWaiting
+		if err := c.idle(ctx, ps); err != nil {
+			return c.wait(p, b, "save the channel map", err)
 		}
 		m, err := c.PMS.EPGChannelMap(ctx, dev.UUID, dvr.Lineup)
 		if err != nil {
@@ -406,14 +553,17 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 			}
 			return fmt.Errorf("save the channel map (%d channels): %w", len(m), err)
 		}
-		s.lineup = b.LineupHash
+		// The save rebuilds the guide (recorded), which reads the block's
+		// guide as it is now: no reload follows it.
+		ps.guideBusy = true
+		s.lineup, s.guide = b.LineupHash, b.GuideHash
 		c.saved[id] = s
+		c.note(ctx, p, id, dvr.Key, s)
 		c.record(p, ReasonChannelMapSaved, fmt.Sprintf("block %s: saved the channel map: %d channels", b.Start, len(m)), false)
 	}
 	if b.GuideHash != "" && s.guide != b.GuideHash {
-		if ps.guideBusy {
-			c.waiting(p, b, "reload the guide")
-			return errWaiting
+		if err := c.idle(ctx, ps); err != nil {
+			return c.wait(p, b, "reload the guide", err)
 		}
 		if err := c.PMS.ReloadGuide(ctx, string(dvr.Key)); err != nil {
 			return fmt.Errorf("reload the guide: %w", err)
@@ -421,9 +571,46 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		ps.guideBusy = true
 		s.guide = b.GuideHash
 		c.saved[id] = s
+		c.note(ctx, p, id, dvr.Key, s)
 	}
 	delete(c.told, "wait/"+id)
 	return nil
+}
+
+// staleList holds back a DVR for a device the database already ties to one
+// this PMS does not list. Each PMS reads its DVRs once, at its start
+// (recorded), so its list predates a DVR another pod made, and a new one
+// would be a duplicate. It asks once for this pod's PMS to restart; a
+// parentID still unlisted after the restart names a DVR that is gone, and
+// the DVR is created.
+func (c *Converger) staleList(p Provider, b Block, dev plexapi.Device, ps *pass) error {
+	id := strings.ToUpper(b.DeviceID)
+	st, asked := c.stale[id]
+	if !asked || st.parent != dev.ParentID {
+		c.stale[id] = staleDVR{parent: dev.ParentID, at: time.Now()}
+		ps.restartSelf = true
+		c.record(p, ReasonDVRListStale, fmt.Sprintf("block %s: device %s belongs to DVR %d, which this Plex does not list yet; restarting this pod's Plex to read it rather than creating a second DVR", b.Start, id, dev.ParentID), true)
+		return errWaiting
+	}
+	var started time.Time
+	if c.PMSStarted != nil {
+		started = c.PMSStarted()
+	}
+	if !started.After(st.at) {
+		return errWaiting
+	}
+	delete(c.stale, id)
+	c.log("a device's DVR is still unlisted after this PMS restarted; creating one", "device", dev.UUID, "parentID", dev.ParentID)
+	return nil
+}
+
+// note records on the block's Lease what is saved, so the next holder does
+// not save it again. A failure costs one save and reload, so it is logged.
+func (c *Converger) note(ctx context.Context, p Provider, id string, dvr plexapi.Str, s savedHashes) {
+	v, _ := json.Marshal(savedNote{DVR: string(dvr), Lineup: s.lineup, Guide: s.guide})
+	if err := c.Leases.Annotate(ctx, p.Namespace, LeaseName(id), c.Identity, map[string]string{AnnotationSaved: string(v)}); err != nil {
+		c.log("note the saved channel map on the block's Lease; the next holder saves it again", "lease", LeaseName(id), "error", err)
+	}
 }
 
 // waiting records, once per step, that a guide load postponed it.
@@ -432,25 +619,46 @@ func (c *Converger) waiting(p Provider, b Block, what string) {
 		fmt.Sprintf("block %s: PMS is loading a guide; will %s once it ends", b.Start, what), false)
 }
 
+// wait passes on idle's err, recording the step a guide load postponed.
+func (c *Converger) wait(p Provider, b Block, what string, err error) error {
+	if errors.Is(err, errWaiting) {
+		c.waiting(p, b, what)
+	}
+	return err
+}
+
+// deleteDVR deletes a DVR, a 404 counting as done: a PMS whose DVR list
+// predates another pod's delete still lists the DVR.
+func (c *Converger) deleteDVR(ctx context.Context, ps *pass, key plexapi.Str) error {
+	if err := c.PMS.DeleteDVR(ctx, string(key)); err != nil && !errors.Is(err, plexapi.ErrNotFound) {
+		return err
+	}
+	ps.dropDVR(key)
+	return nil
+}
+
 // remove deletes a managed device's DVRs, then the device, unless a guide
 // is loading.
 func (c *Converger) remove(ctx context.Context, p Provider, dev plexapi.Device, ps *pass) error {
-	if ps.guideBusy {
-		return errWaiting
-	}
 	for _, d := range ps.dvrsOf(dev.UUID) {
-		if err := c.PMS.DeleteDVR(ctx, string(d.Key)); err != nil {
+		if err := c.idle(ctx, ps); err != nil {
+			return err
+		}
+		if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
 			return fmt.Errorf("delete DVR %s: %w", d.Key, err)
 		}
-		ps.dropDVR(d.Key)
 		ps.changed[p.key()] = p
 	}
-	if err := c.PMS.DeleteDevice(ctx, string(dev.Key)); err != nil {
+	if err := c.idle(ctx, ps); err != nil {
+		return err
+	}
+	if err := c.PMS.DeleteDevice(ctx, string(dev.Key)); err != nil && !errors.Is(err, plexapi.ErrNotFound) {
 		return fmt.Errorf("delete device %s: %w", dev.Key, err)
 	}
 	id := deviceID(dev)
 	delete(ps.devices, id)
 	delete(c.saved, id)
+	delete(c.held, id)
 	c.log("deleted the DVRs and device of a block no provider names", "device", dev.UUID, "uri", dev.URI)
 	return nil
 }

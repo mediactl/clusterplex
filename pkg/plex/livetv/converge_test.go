@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,7 +127,7 @@ func TestThreeBlocksGetALeaseADeviceOnTheLinkLocalPortAndADVREach(t *testing.T) 
 	for _, d := range devs {
 		assert.Equal(t, 1, r.pms.saves[string(d.Key)], "one map save for device %s", d.DeviceID)
 	}
-	assert.Equal(t, 3, count(writes, "POST /livetv/dvrs/"), "one guide reload per block")
+	assert.Equal(t, 0, count(writes, "POST /livetv/dvrs/"), "no reload: each save's rebuild loaded the guide")
 	for i := range 3 {
 		k := fmt.Sprintf("%s/livetv-b000000%d", ns, i)
 		assert.Equal(t, "machine-a", r.leases.holder[k])
@@ -147,6 +148,7 @@ func TestThreeBlocksGetALeaseADeviceOnTheLinkLocalPortAndADVREach(t *testing.T) 
 		require.NoError(t, err)
 		assert.Equal(t, livetv.Converged, res.Status)
 		assert.Equal(t, []string{"PUT /media/grabbers/devices/" + string(devs[1].Key) + "/channelmap"}, r.pms.takeWrites())
+		r.pms.endLoad()
 	})
 
 	t.Run("a new block adds one device and one DVR", func(t *testing.T) {
@@ -190,7 +192,7 @@ func TestNothingIsDeletedSavedOrReloadedWhileAGuideLoads(t *testing.T) {
 	p.Blocks = p.Blocks[:1]
 	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
 	require.NoError(t, err)
-	assert.Equal(t, livetv.Pending, res.Status)
+	assert.Equal(t, livetv.Waiting, res.Status, "only waiting: the loop polls soon")
 	assert.False(t, res.DVRChanged)
 	assert.Empty(t, r.pms.takeWrites(), "no delete, save or reload while provider.epg.load runs")
 	assert.Contains(t, r.ev.reasons(), livetv.ReasonWaitingForGuide)
@@ -310,4 +312,199 @@ func TestAChannelMapOverPMSsBudgetIsReportedNotSent(t *testing.T) {
 	require.ErrorIs(t, err, plexapi.ErrChannelMapTooLarge)
 	assert.Contains(t, r.ev.reasons(), livetv.ReasonChannelMapTooBig)
 	assert.Equal(t, 0, count(r.pms.takeWrites(), "PUT "))
+}
+
+func TestASavedMapIsAGuideLoadSoNothingElseFollowsItInThePass(t *testing.T) {
+	// A save rebuilds the guide (recorded): the pass that saves block 0's
+	// new map must not go on to delete removed block 1's DVR -- the
+	// recorded deadlock -- nor reload the guide that rebuild reads.
+	r := newRig(t)
+	p := provider(r.block(0), r.block(1))
+	r.converge(t, 8, p)
+	r.pms.takeWrites()
+
+	p.Blocks[0].LineupHash, p.Blocks[0].GuideHash = "new", "new"
+	p.Blocks = p.Blocks[:1]
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.NotEqual(t, livetv.Converged, res.Status, "the removal waits for the save's load")
+	writes := r.pms.takeWrites()
+	require.Len(t, writes, 1, "%v", writes)
+	assert.True(t, strings.HasSuffix(writes[0], "/channelmap"), "%v", writes)
+
+	r.pms.endLoad()
+	res = r.converge(t, 2, p)
+	assert.True(t, res.DVRChanged)
+	assert.Equal(t, 0, count(r.pms.takeWrites(), "POST /livetv/dvrs/"), "no reload after the save")
+}
+
+func TestAGuideLoadPMSStartsMidPassPostponesTheDelete(t *testing.T) {
+	// A pass runs for minutes and PMS refreshes guides on its own, so the
+	// look at /activities the pass began with is not enough for a delete.
+	r := newRig(t)
+	p := provider(r.block(0), r.block(1))
+	r.converge(t, 8, p)
+	r.pms.takeWrites()
+
+	p.Blocks = p.Blocks[:1]
+	r.pms.startLoadAfter(1)
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.NotEqual(t, livetv.Converged, res.Status)
+	assert.Empty(t, r.pms.takeWrites(), "the delete asked PMS again and waited")
+}
+
+func TestOneGuideLoadIsStartedPerPass(t *testing.T) {
+	r := newRig(t)
+	p := provider(r.block(0), r.block(1), r.block(2))
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, 1, count(r.pms.takeWrites(), "POST /livetv/dvrs"), "one DVR, and so one load, per pass")
+}
+
+func TestAHeldBlocksLeaseIsRenewedWhileItsProviderIsNotReady(t *testing.T) {
+	// Its device stays in this PMS, so its Lease must too: a lapse lets
+	// another installation register the block beside it.
+	r := newRig(t)
+	p := provider(r.block(0))
+	r.converge(t, 4, p)
+	r.pms.takeWrites()
+	k := ns + "/livetv-b0000000"
+	before := r.leases.acquired(k)
+
+	p.Ready = false
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, before+1, r.leases.acquired(k), "not Ready")
+
+	p.Ready, p.Enabled = true, false
+	_, err = r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, before+2, r.leases.acquired(k), "disabled")
+	assert.Empty(t, r.pms.takeWrites(), "and nothing in PMS changes")
+}
+
+func TestHeldLeasesAreRenewedWhilePMSCannotBeListed(t *testing.T) {
+	r := newRig(t)
+	p := provider(r.block(0))
+	r.converge(t, 4, p)
+	k := ns + "/livetv-b0000000"
+	before := r.leases.acquired(k)
+
+	r.pms.failOnce("GET", "/media/grabbers/devices", 500)
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.Error(t, err)
+	assert.Equal(t, before+1, r.leases.acquired(k))
+}
+
+func TestABlockAnotherInstallationTookWhileThisPMSHasItIsAWarning(t *testing.T) {
+	r := newRig(t)
+	p := provider(r.block(0))
+	r.converge(t, 4, p)
+	r.pms.takeWrites()
+	r.leases.holder[ns+"/livetv-b0000000"] = "machine-b" // taken while ours lapsed
+
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	last := r.ev.all[len(r.ev.all)-1]
+	assert.Equal(t, livetv.ReasonBlockOwned, last.Reason)
+	assert.True(t, last.Warning, "two installations serve one block: %s", last.Message)
+	assert.Empty(t, r.pms.takeWrites(), "its DVR stays: deleting it is the owner's call")
+}
+
+func TestADeleteAnsweredNotFoundIsAlreadyGone(t *testing.T) {
+	// A PMS whose DVR list predates another pod's delete still lists the
+	// DVR, and deleting it again answers 404.
+	r := newRig(t)
+	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "70", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:47009/xmltv.xml#old"})
+	r.pms.failOnce("DELETE", "/livetv/dvrs/70", 404)
+	res, err := r.conv.Run(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, livetv.Converged, res.Status)
+}
+
+// staleRig is a rig whose PMS started an hour ago and lists block 0's
+// device, its parentID naming DVR 30, but not DVR 30: another pod made it.
+func staleRig(t *testing.T) (*rig, livetv.Provider, *time.Time) {
+	r := newRig(t)
+	started := time.Now().Add(-time.Hour)
+	r.conv.PMSStarted = func() time.Time { return started }
+	b := r.block(0)
+	r.pms.devices = append(r.pms.devices, plexapi.Device{Key: "29", UUID: "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID, URI: "http://169.254.47.1:47000", DeviceID: b.DeviceID, ParentID: 30})
+	return r, provider(b), &started
+}
+
+func TestADeviceWhoseDVRThisPMSDoesNotListGetsNoSecondDVR(t *testing.T) {
+	// Each PMS reads its DVRs once, at its start, but its devices from the
+	// database, whose parentID names the DVR.
+	r, p, started := staleRig(t)
+
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.True(t, res.RestartSelf, "this PMS restarts to read its DVRs")
+	assert.NotEqual(t, livetv.Converged, res.Status)
+	assert.Empty(t, r.pms.takeWrites(), "no second DVR")
+	assert.Contains(t, r.ev.reasons(), livetv.ReasonDVRListStale)
+
+	res, err = r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.False(t, res.RestartSelf, "asked once")
+	assert.Empty(t, r.pms.takeWrites())
+
+	*started = time.Now()
+	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "30", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:47000/xmltv.xml#polutv 1000+", Devices: []plexapi.Device{r.pms.devices[0]}})
+	res = r.converge(t, 3, p)
+	assert.False(t, res.DVRChanged, "restarted, it lists DVR 30 and keeps it")
+	assert.Equal(t, 0, count(r.pms.takeWrites(), "POST /livetv/dvrs"))
+}
+
+func TestAParentIDStillUnlistedAfterARestartNamesAGoneDVR(t *testing.T) {
+	r, p, started := staleRig(t)
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	require.True(t, res.RestartSelf)
+
+	*started = time.Now()
+	r.converge(t, 4, p)
+	_, dvrs := r.pms.state()
+	assert.Len(t, dvrs, 1, "the restarted PMS lists no DVR 30 either: one is created")
+}
+
+func TestANewLeaderSkipsTheSavesTheOldOneMade(t *testing.T) {
+	// Every rolling update moves the lease: saving every block's map again
+	// would rebuild every guide, one load at a time.
+	r := newRig(t)
+	p := provider(r.block(0), r.block(1))
+	r.converge(t, 8, p)
+	r.pms.takeWrites()
+
+	next := &livetv.Converger{PMS: r.conv.PMS, Identity: "machine-a", Leases: r.leases, Record: r.ev.record}
+	res, err := next.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, livetv.Converged, res.Status)
+	assert.Empty(t, r.pms.takeWrites(), "the Leases say what is saved")
+
+	t.Run("not for a DVR made again", func(t *testing.T) {
+		_, dvrs := r.pms.state()
+		r.pms.dvrs = dvrs[1:] // block 0's DVR deleted in Plex
+		r.pms.devices[0].ParentID = 0
+		next := &livetv.Converger{PMS: r.conv.PMS, Identity: "machine-a", Leases: r.leases, Record: r.ev.record}
+		for range 3 {
+			_, err := next.Run(t.Context(), []livetv.Provider{p})
+			require.NoError(t, err)
+			r.pms.endLoad()
+		}
+		assert.Equal(t, 1, count(r.pms.takeWrites(), "PUT "), "the new DVR's map is saved")
+	})
+
+	t.Run("nor for another installation's", func(t *testing.T) {
+		r.leases.expired[ns+"/livetv-b0000001"] = true
+		other := &livetv.Converger{PMS: r.conv.PMS, Identity: "machine-b", Leases: r.leases, Record: r.ev.record}
+		for range 2 {
+			_, err := other.Run(t.Context(), []livetv.Provider{p})
+			require.NoError(t, err)
+			r.pms.endLoad()
+		}
+		assert.Equal(t, 1, count(r.pms.takeWrites(), "PUT "), "a takeover drops the note")
+	})
 }
