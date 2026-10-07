@@ -188,8 +188,6 @@ with `PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED=0`) can tell them apart.
   stream path is the same HTTP client path as the guide and lineup
   fetches, which did reach the forward. A real playback is left to the
   end-to-end check.
-- **Whether another pod sees a map change.** Not run: the corruption below
-  stopped the spike.
 
 **Devices without a DVR are not in the database.** With two devices
 registered and no DVR, `media_provider_resources` had no rows; the owner's
@@ -208,9 +206,28 @@ is written to the database once a DVR is on it.
 - **After a pod restart** on fresh per-pod storage, the DVRs were deleted
   through that pod and nothing more was logged.
 
-This is the second time Live TV activity under the `v1.3.17-clusterplex.25`
-shim has been followed by SQLite corruption on that pod (see "A guide
-database corrupted" above). Live TV must not ship until it is explained.
+This was the second time Live TV activity under the `v1.3.17-clusterplex.25`
+shim had been followed by SQLite corruption on that pod (see "A guide
+database corrupted" above).
+
+**Root-caused and fixed in `v1.3.17-clusterplex.26`** (cluster-plex
+`hack/plex-postgresql/README.md`, "Fixed: guide databases corrupted after a
+Live TV DVR"):
+- **What went wrong:** leaked statements kept PMS's guide staging database
+  (`<uuid>-loading.db`) from closing, so its WAL outlived the rename that
+  swaps it in.
+- **Why they leaked:** the shim's finalize guard skipped live statements.
+  Its ring held many records of one reused address, and `sqlite3_close`
+  ran outside the connection scope.
+- **Verified on kind-cluster-plex (`dffe3f2`):** two link-local DVRs on the
+  lease holder, five minutes with no corruption, swap failure or I/O error.
+
+**A channel-map change reaches the other pods without a restart.**
+- **What was run:** plex-0, restarted so it knew the DVRs, then device 23's
+  map saved on the lease holder with 25 of its 50 channels.
+- **What plex-0 showed:** 25 on both `GET /media/grabbers/devices/<key>` and
+  `GET /livetv/dvrs/<key>` within 5 s, and still at 90 s.
+- **So:** only creating or deleting a DVR needs the other pods restarted.
 
 ## What the wizard is needed for
 
