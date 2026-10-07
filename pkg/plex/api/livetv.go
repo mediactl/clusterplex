@@ -57,6 +57,17 @@ type DVR struct {
 	LineupTitle   string   `json:"lineupTitle"`
 	EPGIdentifier string   `json:"epgIdentifier"`
 	Devices       []Device `json:"Device"`
+	// Lineups is the same lineup as a list, which PMS sends as "Lineup"
+	// beside "lineup". It must have a field of its own: encoding/json
+	// matches keys case-insensitively, and without one the list was decoded
+	// into Lineup and failed every DVR listing (recorded 06-dvrs.json).
+	Lineups []DVRLineup `json:"Lineup"`
+}
+
+// DVRLineup is one entry of a DVR's "Lineup" list.
+type DVRLineup struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 // ChannelMapping pairs a device channel with a lineup channel, as PMS's EPG
