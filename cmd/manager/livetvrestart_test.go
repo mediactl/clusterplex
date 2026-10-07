@@ -169,3 +169,44 @@ func TestPMSStartedAfterIsMeasuredFromTheRoundsStart(t *testing.T) {
 	assert.True(t, m.pmsStartedAfter(gen))
 	assert.False(t, m.pmsStartedAfter("not-a-number"))
 }
+
+func TestAFailedInPlaceRestartLeavesThePodToTheHealthWatch(t *testing.T) {
+	// A restart withdraws the pod and stops its health watch first. Plex
+	// failing to come back must not leave it like that, with nothing to
+	// restart Plex or replace the pod (main.go's onPlexLost).
+	ctx, _ := fastRestarts(t)
+	start, interval := liveTVPMSStartTimeout, liveTVHealthInterval
+	liveTVPMSStartTimeout, liveTVHealthInterval = 50*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { liveTVPMSStartTimeout, liveTVHealthInterval = start, interval })
+	m := newTestManager()
+	m.plexAddr = "127.0.0.1:1"          // nothing answers
+	m.Config.Postgres.SSLMode = "bogus" // so the start fails preparing the databases
+	m.sup = &Supervisor{Binary: fakePMS(t, gracefulPMS), Logger: m.Logger, Grace: time.Second}
+	lost := make(chan error, 1)
+	m.onPlexLost = func(err error) {
+		select {
+		case lost <- err:
+		default:
+		}
+	}
+
+	require.Error(t, m.restartPMSInPlace(ctx))
+	select {
+	case <-lost:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing took the pod over after the failed restart")
+	}
+}
+
+func TestALeaderWhoseDVRListIsStaleRestartsItsOwnPMS(t *testing.T) {
+	m := newTestManager()
+	m.K8sClient = fake.NewSimpleClientset(plexPod("plex-0"))
+	before := time.Now()
+
+	require.NoError(t, m.restartOwnPMS(t.Context()))
+	p, err := m.K8sClient.CoreV1().Pods("media").Get(t.Context(), "plex-0", metav1.GetOptions{})
+	require.NoError(t, err)
+	gen, err := strconv.ParseInt(p.Annotations[liveTVRestartAnnotation], 10, 64)
+	require.NoError(t, err, "a generation watchLiveTVRestart acts on")
+	assert.False(t, time.Unix(0, gen).Before(before))
+}

@@ -40,7 +40,20 @@ var (
 	// liveTVSelfPoll how often each pod reads its own annotation.
 	liveTVRestartPoll = 5 * time.Second
 	liveTVSelfPoll    = 10 * time.Second
+	// liveTVPMSStartTimeout bounds an in-place restart's wait for PMS, and
+	// liveTVHealthInterval is the health watch it hands a failed one to.
+	liveTVPMSStartTimeout = pmsStartTimeout
+	liveTVHealthInterval  = healthInterval
 )
+
+// restartOwnPMS asks this pod's own watchLiveTVRestart to restart its PMS:
+// the lease holder's, when its DVR list predates a DVR another pod made.
+func (m *Manager) restartOwnPMS(ctx context.Context) error {
+	gen := strconv.FormatInt(time.Now().UnixNano(), 10)
+	payload := fmt.Appendf(nil, `{"metadata":{"annotations":{%q:%q}}}`, liveTVRestartAnnotation, gen)
+	_, err := m.patchPod(ctx, payload)
+	return err
+}
 
 // liveTVRestarts gathers the providers whose DVRs changed until the next
 // round; a change during a round is taken by the one after.
@@ -244,17 +257,26 @@ func (m *Manager) pmsStartedAfter(gen string) bool {
 // restartPMSInPlace stops and starts PMS the way a pod does at shutdown and
 // boot, without replacing the pod: the health watch first, so it does not
 // count the stop as a failure, then the routing withdrawal and the drain.
-func (m *Manager) restartPMSInPlace(ctx context.Context) error {
+// A restart that fails hands the pod back to the health watch, which
+// restarts Plex and, if it keeps failing, the pod (main.go's onPlexLost),
+// and to advertiseWhenAccepting, which routes to it again once it serves.
+func (m *Manager) restartPMSInPlace(ctx context.Context) (err error) {
 	m.stopHealthWatch()
+	defer func() {
+		if err != nil && ctx.Err() == nil {
+			m.startHealthWatch(ctx, liveTVHealthInterval)
+			go m.advertiseWhenAccepting(ctx)
+		}
+	}()
 	m.withdraw(ctx)
 	if err := m.sup.Stop(ctx); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
 	m.start(ctx)
-	if err := plexroute.WaitServing(ctx, m.plexURL(), pmsStartTimeout); err != nil {
+	if err := plexroute.WaitServing(ctx, m.plexURL(), liveTVPMSStartTimeout); err != nil {
 		return fmt.Errorf("PMS did not serve again: %w", err)
 	}
-	deadline := time.Now().Add(pmsStartTimeout)
+	deadline := time.Now().Add(liveTVPMSStartTimeout)
 	for {
 		_, err := m.pms().Sections(ctx)
 		if err == nil {

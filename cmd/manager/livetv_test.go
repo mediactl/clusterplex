@@ -69,3 +69,18 @@ func TestTheLeaseHolderRunsLiveTVRecordsOnTheProviderAndStopsWhenItLetsGo(t *tes
 	time.Sleep(200 * time.Millisecond)
 	assert.Equal(t, stopped, calls.Load(), "no more passes once the lease is gone")
 }
+
+func TestAPassThatOnlyWaitsForAGuideLoadPollsSoonAndResetsTheBackoff(t *testing.T) {
+	every := 10 * time.Minute
+	wait, backoff := nextLiveTVPass(plexlivetv.Waiting, 8*time.Minute, every)
+	assert.Equal(t, liveTVGuidePoll, wait, "a guide load ends on its own: no backoff")
+	assert.Equal(t, provisionBackoffStart, backoff)
+
+	wait, backoff = nextLiveTVPass(plexlivetv.Pending, 2*time.Minute, every)
+	assert.Equal(t, 2*time.Minute, wait, "a failure backs off")
+	assert.Equal(t, 4*time.Minute, backoff)
+
+	wait, backoff = nextLiveTVPass(plexlivetv.Converged, 4*time.Minute, every)
+	assert.Equal(t, every, wait)
+	assert.Equal(t, provisionBackoffStart, backoff)
+}

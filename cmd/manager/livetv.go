@@ -43,6 +43,11 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		LocalAddress: m.Config.LiveTV.LocalAddress,
 		// A pass renews the Leases; three periods ride out a slow PMS.
 		Leases: &plexlivetv.Leases{Client: m.K8sClient, Duration: max(plexlivetv.DefaultLeaseDuration, 3*every)},
+		PMSStarted: func() time.Time {
+			m.mu.RLock()
+			defer m.mu.RUnlock()
+			return m.pmsStarted
+		},
 		Logger: log,
 		Record: func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
 	}
@@ -90,13 +95,15 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 			if res.DVRChanged {
 				restarts.request(res.Changed)
 			}
-			switch res.Status {
-			case plexlivetv.Converged:
-				backoff = min(provisionBackoffStart, every)
-			default:
-				log.Warn("Live TV did not converge; retrying", "error", err, "in", backoff)
-				wait, backoff = backoff, min(backoff*2, every)
+			if res.RestartSelf {
+				if err := m.restartOwnPMS(ctx); err != nil {
+					log.Warn("Live TV: ask this pod's PMS to restart so it lists every DVR", "error", err)
+				}
 			}
+			if res.Status == plexlivetv.Pending || res.Status == plexlivetv.Errored {
+				log.Warn("Live TV did not converge; retrying", "error", err, "in", backoff)
+			}
+			wait, backoff = nextLiveTVPass(res.Status, backoff, every)
 		}
 		if !timer.Stop() {
 			select {
@@ -106,6 +113,24 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		}
 		timer.Reset(wait)
 	}
+}
+
+// liveTVGuidePoll is how soon a pass that only waited for a guide load runs
+// again.
+var liveTVGuidePoll = 20 * time.Second
+
+// nextLiveTVPass is how long the loop waits after a pass of status, and the
+// backoff after that.
+func nextLiveTVPass(status plexlivetv.Status, backoff, every time.Duration) (wait, next time.Duration) {
+	switch status {
+	case plexlivetv.Converged:
+		return every, min(provisionBackoffStart, every)
+	case plexlivetv.Waiting:
+		// A guide load ends on its own, in minutes; backing off to
+		// provisionEvery made a 32-block provider take hours.
+		return min(liveTVGuidePoll, every), min(provisionBackoffStart, every)
+	}
+	return backoff, min(backoff*2, every)
 }
 
 // liveTVSyncWait bounds how long PMS waits at start for the first list of
@@ -236,6 +261,7 @@ var liveTVActions = map[string]string{
 	plexlivetv.ReasonWaitingForGuide:  "AwaitGuideLoad",
 	plexlivetv.ReasonChannelMapTooBig: "SaveChannelMap",
 	plexlivetv.ReasonPodsRestarted:    "RestartPMS",
+	plexlivetv.ReasonDVRListStale:     "RestartPMS",
 }
 
 // recordLiveTVEvent records e on its IPTVProvider through client-go's
