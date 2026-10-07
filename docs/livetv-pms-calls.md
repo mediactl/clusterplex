@@ -114,6 +114,20 @@ through the API. Spec §3.1's "no channel cap" does not hold for the API path.
   - plex-2, restarted afterwards, listed only the DVR it had made.
 
   A client that `plex-main` sends to another pod sees that pod's DVRs.
+- **No call refreshes another pod.** With a DVR made on the lease holder,
+  the other pod still did not list it after any of these:
+  - `GET /livetv/dvrs/<key>` (it answered 404);
+  - `GET /media/grabbers/devices`, `GET /media/grabbers/devices/<key>` and
+    `GET /media/grabbers`;
+  - `POST /media/providers/refresh` (200) and `PUT /media/providers/refresh`
+    (404);
+  - `POST /butler/RefreshEpgGuides` (200);
+  - 180 seconds of waiting.
+
+  It learns the DVR only when it restarts.
+- **A DVR can drop out of the list and come back.** One whose guide failed
+  to load could disappear from the creating PMS's list while its rows stayed
+  in the database. A PMS that started later listed it again, and deleted it.
 
 ## Deleting while the guide loads deadlocks PMS
 
@@ -129,6 +143,21 @@ through the API. Spec §3.1's "no channel cap" does not hold for the API path.
 - **The fix.** Only a pod restart cleared it.
 - **The rule.** Never delete a DVR (and do not save its map again) while
   `GET /activities` lists a `provider.epg.load`. Wait for it to end first.
+
+## A guide database corrupted, and PMS crashed
+
+In the same session, plex-2's PMS logged `database disk image is malformed`
+for guide-database queries (`media_items` airings, `library_sections`). This
+started two minutes after a DVR was made, its map saved, and its guide's URL
+then made unreachable. Two minutes later PMS crashed on a null read in its
+own code, and cluster-plex's supervisor restarted it. That PMS then no longer
+listed the DVRs whose guide databases were affected.
+
+The cause is not established. The shim's `v1.3.17-clusterplex.25` change is
+one candidate: inside SQLite's own calls it now really finalizes a statement
+the old guard skipped. PMS's handling of a guide it can no longer fetch is
+another. An A/B test in the fork's standalone compose (`.25` against `.24`
+with `PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED=0`) can tell them apart.
 
 ## What the wizard is needed for
 
