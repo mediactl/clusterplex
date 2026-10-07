@@ -561,8 +561,12 @@ order:
 1. **The Lease.** It takes, or renews, the Lease `livetv-<device id>` in
    clustarr's namespace, held as the server's `machineIdentifier`: one
    installation registers each block. A block another installation holds is
-   reported (`DVRBlockOwned`) and skipped. clustarr shows the holder as
-   `status.blocks[].owner`.
+   reported (`DVRBlockOwned`) and skipped; if this Plex has that block's
+   device too, the Event is a Warning, and the DVR is left for you to
+   delete in one of the two. clustarr shows the holder as
+   `status.blocks[].owner`. It keeps renewing the Lease while this Plex has
+   the block's device: while the provider is not Ready or is disabled, and
+   while PMS cannot be read.
 2. **The device.** It registers the device at
    `http://<localAddress>:<port>`, once. A device PMS already lists is never
    registered again: registering again is how duplicate and empty DVR rows
@@ -575,18 +579,30 @@ order:
    - **Under `PMS`:** it records `DVRNeedsLineup` and waits. Finish each
      block's DVR once in Plex's setup wizard, choosing your location's
      lineup.
+   - **A device whose DVR this Plex does not list,** though the database
+     ties it to one (its `parentID`), gets no second DVR: the lease
+     holder's Plex read its DVRs before another pod made that one. It
+     records `DVRListStale` and restarts its own PMS, once; a DVR still
+     unlisted after that restart is gone, and a new one is created.
 4. **The channel map.** It saves the block's whole channel map whenever its
    `lineupHash` changes, in one request: Plex replaces the whole map on each
    save. A map over 30,000 bytes is refused (`DVRChannelMapTooLarge`);
    clustarr's blocks keep under it.
 5. **The guide.** It reloads the block's guide whenever its `guideHash`
-   changes.
+   changes. A map save rebuilds the guide, so no reload follows one.
+
+What it saved is noted on the block's Lease (annotation
+`livetv.clusterplex.io/saved`: the DVR and both hashes), so the next lease
+holder, after a rolling update, saves and reloads nothing it need not. A
+Lease that changes installation drops the note.
 
 **While PMS loads a guide** (`/activities` lists `provider.epg.load`), it
-deletes nothing, saves no map and reloads no guide: a DVR deleted during a
-load deadlocked PMS (recorded). The step waits for a later pass
-(`DVRWaitingForGuide`). Creating a DVR starts a load, so a pass finishes at
-most one block's DVR; the next passes follow on the retry backoff.
+deletes nothing, saves no map, reloads no guide and creates no DVR: a DVR
+deleted during a load deadlocked PMS (recorded). It asks `/activities` again
+before each of those, since PMS refreshes guides on its own. The step waits
+for a later pass (`DVRWaitingForGuide`), 20 seconds on. Creating a DVR,
+saving a map and reloading a guide each start a load, so a pass starts at
+most one.
 
 **What it manages:** only HDHomeRun devices on `localAddress`, or carrying a
 live block's device ID. Every other tuner and DVR is left alone.
@@ -608,11 +624,14 @@ answer for its library again, at most once per `restartEvery`
 (`DVRPodsRestarted`). A channel-map save reaches the other pods without a
 restart.
 
+A pod whose in-place restart fails is handed back to its health watch,
+which restarts Plex and, if it keeps failing, the pod.
+
 **Events:** it records `DVRProvisioned`, `DVRChannelMapSaved`,
 `DVRNeedsLineup`, `DVRBlockOwned`, `DVRDeviceIDTaken`,
-`DVRWaitingForGuide`, `DVRChannelMapTooLarge`, `DVRProvisionFailed`,
-`DVRRemoved` and `DVRPodsRestarted` as `events.k8s.io` Events on the
-provider (`kubectl describe iptv`).
+`DVRWaitingForGuide`, `DVRChannelMapTooLarge`, `DVRListStale`,
+`DVRProvisionFailed`, `DVRRemoved` and `DVRPodsRestarted` as
+`events.k8s.io` Events on the provider (`kubectl describe iptv`).
 - **RBAC:** in clustarr's namespace the chart grants `get`, `list` and
   `watch` on `iptvproviders.clustarr.io`, `create` and `patch` on
   `events.k8s.io` Events, and `get`, `create` and `update` on
