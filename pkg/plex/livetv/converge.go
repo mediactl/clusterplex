@@ -268,6 +268,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 			fail(gone, "ghost DVR "+string(d.Key), err)
 			continue
 		}
+		ps.dropDVR(d.Key)
 		ps.changed[gone.key()] = gone
 		c.log("deleted ghost DVR "+string(d.Key), "lineup", d.Lineup)
 	}
@@ -340,6 +341,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 			if err := c.PMS.DeleteDVR(ctx, string(d.Key)); err != nil {
 				return fmt.Errorf("delete duplicate DVR %s: %w", d.Key, err)
 			}
+			ps.dropDVR(d.Key)
 			ps.changed[p.key()] = p
 			c.record(p, ReasonRemoved, fmt.Sprintf("block %s: deleted duplicate DVR %s", b.Start, d.Key), false)
 		}
@@ -440,6 +442,7 @@ func (c *Converger) remove(ctx context.Context, p Provider, dev plexapi.Device, 
 		if err := c.PMS.DeleteDVR(ctx, string(d.Key)); err != nil {
 			return fmt.Errorf("delete DVR %s: %w", d.Key, err)
 		}
+		ps.dropDVR(d.Key)
 		ps.changed[p.key()] = p
 	}
 	if err := c.PMS.DeleteDevice(ctx, string(dev.Key)); err != nil {
@@ -450,6 +453,12 @@ func (c *Converger) remove(ctx context.Context, p Provider, dev plexapi.Device, 
 	delete(c.saved, id)
 	c.log("deleted the DVRs and device of a block no provider names", "device", dev.UUID, "uri", dev.URI)
 	return nil
+}
+
+// dropDVR forgets a DVR this pass deleted, so no later step of the pass
+// deletes it again.
+func (ps *pass) dropDVR(key plexapi.Str) {
+	ps.dvrs = slices.DeleteFunc(ps.dvrs, func(d plexapi.DVR) bool { return d.Key == key })
 }
 
 func (ps *pass) addDevices(devices []plexapi.Device) {
