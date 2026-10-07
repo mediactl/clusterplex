@@ -49,12 +49,15 @@ test: ## Unit tests
 	go test ./... -coverprofile cover.out
 
 .PHONY: test-netns
-test-netns: ## pkg/plex/net against real network namespaces
+test-netns: ## pkg/plex/net and Live TV's link-local address against real network namespaces
 	# Provisioning a namespace needs CAP_SYS_ADMIN. unshare gives it over the
 	# namespaces it creates without needing actual root, and keeps the test's
 	# veth pairs and nftables rules off the developer's own network.
 	go test -tags netns -c -o $(NETNS_TEST_BIN) ./pkg/plex/net
 	unshare --user --map-root-user --net $(NETNS_TEST_BIN) -test.v
+	rm -f $(NETNS_TEST_BIN)
+	go test -tags netns -c -o $(NETNS_TEST_BIN) ./pkg/plex/livetv
+	unshare --user --map-root-user --net $(NETNS_TEST_BIN) -test.v -test.run '^TestTheLinkLocalAddress'
 	rm -f $(NETNS_TEST_BIN)
 
 ##@ Images and clusters

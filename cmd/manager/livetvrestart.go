@@ -27,15 +27,19 @@ import (
 const (
 	liveTVRestartAnnotation   = "livetv.clusterplex.io/restart"
 	liveTVRestartedAnnotation = "livetv.clusterplex.io/restarted"
+	// liveTVStartMargin: a PMS started this long after a round began
+	// already read the DVRs that round restarts for, so it need not restart.
+	liveTVStartMargin = 30 * time.Second
+)
+
+// Variables so the tests can shorten them.
+var (
 	// liveTVRestartWait bounds the wait for one pod's answer.
 	liveTVRestartWait = 5 * time.Minute
 	// liveTVRestartPoll is how often the lease holder reads that answer, and
 	// liveTVSelfPoll how often each pod reads its own annotation.
 	liveTVRestartPoll = 5 * time.Second
 	liveTVSelfPoll    = 10 * time.Second
-	// liveTVStartMargin: a PMS started this long after a round began
-	// already read the DVRs that round restarts for, so it need not restart.
-	liveTVStartMargin = 30 * time.Second
 )
 
 // liveTVRestarts gathers the providers whose DVRs changed until the next
