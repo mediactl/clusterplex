@@ -1,0 +1,31 @@
+# The probe's Deployment and Service in media, beside Plex, for the
+# recording only; hack/record-livetv.sh applies and deletes it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hdhrprobe
+  namespace: media
+  labels: {app: hdhrprobe}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: hdhrprobe}}
+  template:
+    metadata: {labels: {app: hdhrprobe}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 65534, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: probe
+          image: clusterplex-hdhrprobe:dev
+          imagePullPolicy: Never
+          args: ["--addr=:5004", "--channels=100"]
+          ports: [{name: http, containerPort: 5004}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdhrprobe
+  namespace: media
+spec:
+  selector: {app: hdhrprobe}
+  ports: [{name: http, port: 80, targetPort: http}]
