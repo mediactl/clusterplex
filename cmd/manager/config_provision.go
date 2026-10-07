@@ -3,13 +3,16 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path"
+	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
+	plexlivetv "github.com/mediactl/clusterplex/pkg/plex/livetv"
 	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
 )
 
@@ -94,7 +97,20 @@ type LiveTVConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 	// Language is the DVRs' guide language. Default "eng".
 	Language string `mapstructure:"language"`
+	// LocalAddress is the link-local address every Plex pod adds to lo and
+	// serves the blocks' ports on. Default 169.254.47.1.
+	LocalAddress string `mapstructure:"localAddress"`
+	// RestartEvery bounds how often the lease holder restarts PMS on the
+	// other pods after a DVR change. Default 10m.
+	RestartEvery time.Duration `mapstructure:"restartEvery"`
 }
+
+// defaultRestartEvery is plex.liveTV.restartEvery's default.
+const defaultRestartEvery = 10 * time.Minute
+
+// metadataAddress is the cloud metadata service's link-local address,
+// which a Live TV address must never shadow.
+var metadataAddress = netip.MustParseAddr("169.254.169.254")
 
 // loadLiveTV reads plex.liveTV; it needs the clustarr namespace it watches.
 func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
@@ -104,6 +120,16 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	}
 	if lt.Language == "" {
 		lt.Language = "eng"
+	}
+	if lt.LocalAddress == "" {
+		lt.LocalAddress = plexlivetv.DefaultLocalAddress
+	}
+	addr, err := netip.ParseAddr(lt.LocalAddress)
+	if err != nil || !addr.Is4() || !addr.IsLinkLocalUnicast() || addr == metadataAddress {
+		return lt, fmt.Errorf("%s.localAddress: %q: must be an IPv4 link-local address (169.254.0.0/16) other than %s", liveTVKey, lt.LocalAddress, metadataAddress)
+	}
+	if lt.RestartEvery <= 0 {
+		lt.RestartEvery = defaultRestartEvery
 	}
 	if lt.Enabled && cl.Namespace == "" {
 		return lt, fmt.Errorf("%s.enabled: needs %s.namespace, where clustarr's IPTVProviders live", liveTVKey, clustarrKey)

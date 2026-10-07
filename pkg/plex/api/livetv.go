@@ -212,6 +212,24 @@ func (c *Client) Activities(ctx context.Context) ([]Activity, error) {
 	return out.MediaContainer.Activity, err
 }
 
+// Identity is the server's machineIdentifier (GET /identity): the same on
+// every pod of one installation, so it names the installation that holds a
+// Live TV block's Lease.
+func (c *Client) Identity(ctx context.Context) (string, error) {
+	var out struct {
+		MediaContainer struct {
+			MachineIdentifier string `json:"machineIdentifier"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/identity", nil, &out); err != nil {
+		return "", err
+	}
+	if out.MediaContainer.MachineIdentifier == "" {
+		return "", errors.New("plexapi: /identity names no machineIdentifier")
+	}
+	return out.MediaContainer.MachineIdentifier, nil
+}
+
 // ReloadGuide asks PMS to fetch a DVR's guide again.
 func (c *Client) ReloadGuide(ctx context.Context, dvrKey string) error {
 	return c.do(ctx, http.MethodPost, "/livetv/dvrs/"+url.PathEscape(dvrKey)+"/reloadGuide", nil, nil)

@@ -29,11 +29,18 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	defer broadcaster.Shutdown()
 	recorder := broadcaster.NewRecorder(scheme.Scheme, "cluster-plex")
 
+	every := m.provisionEvery
+	if every <= 0 {
+		every = defaultProvisionEvery
+	}
 	conv := &plexlivetv.Converger{
-		PMS:      &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: liveTVTimeout}},
-		Language: m.Config.LiveTV.Language,
-		Logger:   log,
-		Record:   func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
+		PMS:          &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: liveTVTimeout}},
+		Language:     m.Config.LiveTV.Language,
+		LocalAddress: m.Config.LiveTV.LocalAddress,
+		// A pass renews the Leases; three periods ride out a slow PMS.
+		Leases: &plexlivetv.Leases{Client: m.K8sClient, Duration: max(plexlivetv.DefaultLeaseDuration, 3*every)},
+		Logger: log,
+		Record: func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
 	}
 	changes := make(chan []plexlivetv.Provider, 1)
 	w := &plexlivetv.Watcher{
@@ -59,10 +66,6 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		}
 	}()
 
-	every := m.provisionEvery
-	if every <= 0 {
-		every = defaultProvisionEvery
-	}
 	backoff := min(provisionBackoffStart, every)
 	var (
 		live   []plexlivetv.Provider
@@ -79,7 +82,21 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		case <-timer.C:
 		}
 		wait := every
-		if synced {
+		if synced && conv.Identity == "" {
+			// The Leases' holder: the server's machineIdentifier.
+			id, err := conv.PMS.Identity(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				log.Warn("Live TV waits for the server's identity", "error", err, "in", backoff)
+				m.Metrics.ProvisionRuns.WithLabelValues("livetv-" + string(plexlivetv.Errored)).Inc()
+				wait, backoff = backoff, min(backoff*2, every)
+			} else {
+				conv.Identity = id
+			}
+		}
+		if synced && conv.Identity != "" {
 			res, err := conv.Run(ctx, live)
 			if ctx.Err() != nil {
 				return

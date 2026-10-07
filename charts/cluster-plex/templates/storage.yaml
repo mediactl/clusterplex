@@ -64,6 +64,8 @@ data:
       liveTV:
         enabled: {{ .Values.plex.liveTV.enabled }}
         language: {{ .Values.plex.liveTV.language | default "eng" | quote }}
+        localAddress: {{ .Values.plex.liveTV.localAddress | default "169.254.47.1" | quote }}
+        restartEvery: {{ .Values.plex.liveTV.restartEvery | default "10m" | quote }}
     {{- if not .Values.remux.enabled }}
     # No remux pool: every browser stream stays on Plex's transcoder.
     remux-selector: ""

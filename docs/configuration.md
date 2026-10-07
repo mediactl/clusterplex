@@ -526,9 +526,8 @@ plex:
 ## Live TV: clustarr's IPTVProviders as DVRs
 
 With `plex.liveTV.enabled` the lease holder adds each of clustarr's
-`IPTVProvider`s in `plex.clustarr.namespace` to Plex as a DVR (clustarr's
-Live TV spec 2026-10-07 §6.1). Each provider is an emulated HDHomeRun at its
-Service address, `status.address`.
+`IPTVProvider`s in `plex.clustarr.namespace` to Plex as DVRs (clustarr's
+Live TV spec 2026-10-07 §6.1).
 
 ```yaml
 plex:
@@ -536,50 +535,89 @@ plex:
     namespace: clustarr-system
   liveTV:
     enabled: true
-    language: eng   # the DVRs' guide language
+    language: eng              # the DVRs' guide language
+    localAddress: 169.254.47.1 # link-local, never 169.254.169.254
+    restartEvery: 10m          # PMS restarts on the other pods, at most this often
 ```
 
-**What it does,** for each provider that is Ready and enabled:
+**Blocks.** PMS takes one device's channel map in one request, capped at
+32 KiB of request line: about 454 channels (`docs/livetv-pms-calls.md`).
+clustarr therefore splits a provider's channels into blocks of contiguous
+numbers and publishes them in `status.blocks`. Each block is one emulated
+HDHomeRun and one Plex DVR, with its own device ID, port, lineup and slice of
+the guide. Its boundaries are sticky, so a channel rarely changes DVR and
+keeps its recording rules.
 
-1. **The device.** It registers the device at `http://<status.address>`, once.
-   A device PMS already lists is never registered again: registering again
-   is how duplicate and empty DVR rows arise. A listed device at another
-   address is reported (`DVRDeviceAddressChanged`) and left alone.
-2. **The DVR.**
-   - **Under `epgSource: XEPG`:** it creates the DVR over the provider's XMLTV
-     guide (`status.guideURL`).
-   - **Under `PMS`:** it records `DVRNeedsLineup` and waits. Finish the DVR
-     once in Plex's setup wizard, choosing your location's lineup.
-3. **The channel map.** It saves the full channel map whenever
-   `status.lineup.hash` changes, in one request. Plex replaces the whole map
-   on each save, so a batch would leave only its own channels. This is what
-   carries more than the setup wizard's 480 channels, under either guide
-   source.
-4. **The guide.** It reloads the DVR's guide whenever `status.guideHash`
+**The address.** Every Plex pod adds `localAddress` to `lo` and, before PMS
+starts, listens on `localAddress:<port>` for each block, proxying to
+clustarr's one `livetv` Service (`status.address`). The tuner tells the
+blocks apart by the port in the request's `Host`. PMS registers each block
+at `http://<localAddress>:<port>`, so every pod reaches every device the
+same way, and the address is never one a person's network uses.
+
+**What it does,** for each provider that is Ready and enabled, each block in
+order:
+
+1. **The Lease.** It takes, or renews, the Lease `livetv-<device id>` in
+   clustarr's namespace, held as the server's `machineIdentifier`: one
+   installation registers each block. A block another installation holds is
+   reported (`DVRBlockOwned`) and skipped. clustarr shows the holder as
+   `status.blocks[].owner`.
+2. **The device.** It registers the device at
+   `http://<localAddress>:<port>`, once. A device PMS already lists is never
+   registered again: registering again is how duplicate and empty DVR rows
+   arise. A listed device at another address is reported
+   (`DVRDeviceIDTaken`) and left alone.
+3. **The DVR.**
+   - **Under `epgSource: XEPG`:** it creates the DVR over the block's guide
+     (`http://<localAddress>:<port>/xmltv.xml`), a subset of the provider's
+     feeds holding only the block's channels.
+   - **Under `PMS`:** it records `DVRNeedsLineup` and waits. Finish each
+     block's DVR once in Plex's setup wizard, choosing your location's
+     lineup.
+4. **The channel map.** It saves the block's whole channel map whenever its
+   `lineupHash` changes, in one request: Plex replaces the whole map on each
+   save. A map over 30,000 bytes is refused (`DVRChannelMapTooLarge`);
+   clustarr's blocks keep under it.
+5. **The guide.** It reloads the block's guide whenever its `guideHash`
    changes.
 
-**What it manages:** only HDHomeRun devices whose identifier carries a
-provider's `status.deviceID`. Every other tuner and DVR is left alone.
+**While PMS loads a guide** (`/activities` lists `provider.epg.load`), it
+deletes nothing, saves no map and reloads no guide: a DVR deleted during a
+load deadlocked PMS (recorded). The step waits for a later pass
+(`DVRWaitingForGuide`). Creating a DVR starts a load, so a pass finishes at
+most one block's DVR; the next passes follow on the retry backoff.
+
+**What it manages:** only HDHomeRun devices on `localAddress`, or carrying a
+live block's device ID. Every other tuner and DVR is left alone.
 
 **The deletion exception:** this is the provisioner's one deletion (the
 owner's ruling, 2026-10-07). It deletes:
-- a deleted provider's DVR and device, which takes the DVR's recording rules
-  with it;
+- the DVR and device of a block no live provider names: a removed block, or
+  a deleted provider's. That takes the DVR's recording rules with it;
 - duplicate DVR rows on a managed device;
-- orphans, the DVRs whose XMLTV lineup URL names a provider of the namespace
-  that no longer exists.
+- ghosts: DVRs whose guide is on `localAddress` but which list no device
+  PMS has.
 
-A PMS-mode provider deleted while cluster-plex was down leaves no such URL,
-so its DVR is not found: delete it in Plex. `enabled: false` deletes
-nothing; Plex shows the device offline.
+`enabled: false` deletes nothing; Plex shows the devices offline.
+
+**The other pods.** Each PMS reads its DVRs once, at its start, and no call
+refreshes them (recorded). After a pass that created or deleted a DVR, the
+lease holder restarts PMS on each other pod in turn, waiting for each to
+answer for its library again, at most once per `restartEvery`
+(`DVRPodsRestarted`). A channel-map save reaches the other pods without a
+restart.
 
 **Events:** it records `DVRProvisioned`, `DVRChannelMapSaved`,
-`DVRNeedsLineup`, `DVRDeviceAddressChanged`, `DVRProvisionFailed` and
-`DVRRemoved` as `events.k8s.io` Events on the provider (`kubectl describe
-iptv`).
-- **RBAC:** the chart grants `get`, `list` and `watch` on
-  `iptvproviders.clustarr.io`, and `create` and `patch` on `events.k8s.io`
-  Events, in clustarr's namespace.
+`DVRNeedsLineup`, `DVRBlockOwned`, `DVRDeviceIDTaken`,
+`DVRWaitingForGuide`, `DVRChannelMapTooLarge`, `DVRProvisionFailed`,
+`DVRRemoved` and `DVRPodsRestarted` as `events.k8s.io` Events on the
+provider (`kubectl describe iptv`).
+- **RBAC:** in clustarr's namespace the chart grants `get`, `list` and
+  `watch` on `iptvproviders.clustarr.io`, `create` and `patch` on
+  `events.k8s.io` Events, and `get`, `create` and `update` on
+  `coordination.k8s.io` Leases. In Plex's namespace it grants `patch` on
+  Pods, for the restart annotations.
 - **Before the CRD exists:** the watch logs once and checks again every 5
   minutes. It never holds up the catalog watch.
 

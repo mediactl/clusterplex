@@ -9,14 +9,18 @@ rules:
   - apiGroups: ["catalog.clustarr.io"]
     resources: ["mediafiles", "movies", "series", "episodes"]
     verbs: ["get", "list", "watch"]
-  # Live TV (plex.liveTV): clustarr's IPTVProviders, read-only, and the
-  # Events the lease holder records on them.
+  # Live TV (plex.liveTV): clustarr's IPTVProviders, read-only; the Events
+  # the lease holder records on them; and one Lease per block, held as the
+  # server's machineIdentifier so one installation registers each block.
   - apiGroups: ["clustarr.io"]
     resources: ["iptvproviders"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
   # The server's plex.tv token, kept by the lease holder in the Secret that
   # plex.clustarr.tokenSecret names (clustarr's Plex watchlist ImportList
   # reads it). Only that Secret is read or written; create cannot be limited

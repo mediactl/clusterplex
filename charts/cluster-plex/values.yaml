@@ -81,6 +81,12 @@ plex:
   liveTV:
     enabled: false
     language: eng
+    # The link-local address every Plex pod adds to lo and serves each
+    # block's port on (169.254.0.0/16, never 169.254.169.254).
+    localAddress: 169.254.47.1
+    # At most one round of PMS restarts on the other pods per this, after a
+    # DVR is created or deleted (each PMS caches its DVRs from its start).
+    restartEvery: 10m
   # A Secret holding a plex.tv claim code (https://plex.tv/claim) under
   # claimSecret.key, exchanged for the server's token at the next start when
   # the server has none or, with plex.clustarr.tokenSecret, when the code is
