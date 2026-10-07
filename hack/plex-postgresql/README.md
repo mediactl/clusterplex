@@ -716,6 +716,37 @@ PMS created XMLTV DVRs over 100- and 1,000-channel guides, each guide
 database migrating to the end, VACUUM included (docs/livetv-pms-calls.md on
 the livetv branch records the calls).
 
+## Fixed: guide databases corrupted after a Live TV DVR (a regression of `.25`)
+
+After `.25`, a pod that created XMLTV DVRs logged
+`EPG: We caught an exception trying to swap out the database: … file is not
+a database` within a minute, then `database disk image is malformed`, both
+for the guide and for the shim's local `com.plexapp.plugins.library.db`.
+Request handlers then failed on that pod, and once PMS crashed (twice on
+kind-cluster-plex, 2026-10-07).
+
+**How PMS swaps a guide:** it builds the guide in `<uuid>-loading.db` (WAL
+mode), closes it, and renames it to `<uuid>.db`. A leaked statement kept
+the staging connection from closing, so its `-wal` stayed behind with the
+newest pages. The renamed file was then read against the old guide's WAL.
+
+**Why statements leaked:**
+
+- **The finalize guard's ring held many records of one address.** `.25`
+  really finalizes SQLite's own statements, and VACUUM's copy of the schema
+  reuses one address hundreds of times. A prepare the shim saw at that
+  address cleared only the first record, so Plex's own finalize of the new
+  statement was skipped: 350 times in one guide build.
+- **`sqlite3_close` ran outside the connection scope.** FTS3 finalizes its
+  cached statements when a connection closes, and those finalizes were
+  skipped too.
+
+**Fixed in `v1.3.17-clusterplex.26`:** a seen prepare clears every record of
+its address, and both closes enter the scope. Reproduced in the fork's
+standalone compose under load, then verified there: 10 minutes after two
+DVRs, with no corruption, swap or I/O error, no orphaned staging file,
+every database passing `integrity_check`, and no finalize skipped.
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
