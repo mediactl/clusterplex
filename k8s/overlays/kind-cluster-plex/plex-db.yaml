@@ -1,0 +1,47 @@
+# Plex's library database on CloudNativePG (2026-10-07), replacing the
+# hand-made postgres:15 Deployment of hack/kind-postgres.yaml. The operator
+# runs cluster-wide on kind-cluster-plex (Helm release cnpg, cnpg-system).
+#
+# Postgres 15, as the shim requires: its schema dump is taken from 15, and a
+# dump does not necessarily restore cleanly into a newer server. The
+# parameters are hack/kind-postgres.yaml's; max_connections covers Plex's
+# POOL_MAX (100) times the three replicas, with room left.
+#
+# bootstrap.initdb.import copied the library from plex-postgres once, with
+# Plex stopped, when the Cluster was created; CNPG ignores bootstrap after
+# that, so it stays here as the record of where the data came from. The app
+# owner's password is CNPG's, in Secret plex-db-app (key password).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: plex-db
+  namespace: media
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:15.19-standard-trixie
+  postgresql:
+    parameters:
+      max_connections: "400"
+      shared_buffers: 256MB
+      work_mem: 16MB
+      maintenance_work_mem: 128MB
+  storage:
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: plex
+      owner: plex
+      import:
+        type: microservice
+        databases: [plex]
+        source:
+          externalCluster: plex-postgres
+  externalClusters:
+    - name: plex-postgres
+      connectionParameters:
+        host: plex-postgres
+        user: plex
+        dbname: plex
+      password:
+        name: plex-postgres
+        key: password
