@@ -30,26 +30,23 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	recorder := broadcaster.NewRecorder(scheme.Scheme, "cluster-plex")
 
 	conv := &plexlivetv.Converger{
-		PMS:       &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: liveTVTimeout}},
-		Namespace: ns,
-		Language:  m.Config.LiveTV.Language,
-		Logger:    log,
-		Record:    func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
+		PMS:      &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: liveTVTimeout}},
+		Language: m.Config.LiveTV.Language,
+		Logger:   log,
+		Record:   func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
 	}
-	type change struct{ live, gone []plexlivetv.Provider }
-	changes := make(chan change, 1)
+	changes := make(chan []plexlivetv.Provider, 1)
 	w := &plexlivetv.Watcher{
 		Dynamic: m.Dynamic, Discovery: m.K8sClient.Discovery(), Namespace: ns, Logger: log,
-		OnChange: func(live, gone []plexlivetv.Provider) {
-			// Latest wins, but a deletion is never lost.
+		OnChange: func(live []plexlivetv.Provider) {
+			// Latest wins.
 			for {
 				select {
-				case old := <-changes:
-					gone = append(old.gone, gone...)
+				case <-changes:
 				default:
 				}
 				select {
-				case changes <- change{live: live, gone: gone}:
+				case changes <- live:
 					return
 				default:
 				}
@@ -68,8 +65,8 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	}
 	backoff := min(provisionBackoffStart, every)
 	var (
-		live, gone []plexlivetv.Provider
-		synced     bool
+		live   []plexlivetv.Provider
+		synced bool
 	)
 	timer := time.NewTimer(every)
 	defer timer.Stop()
@@ -77,20 +74,20 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case c := <-changes:
-			live, gone, synced = c.live, append(gone, c.gone...), true
+		case live = <-changes:
+			synced = true
 		case <-timer.C:
 		}
 		wait := every
 		if synced {
-			res, err := conv.Run(ctx, live, gone)
+			res, err := conv.Run(ctx, live)
 			if ctx.Err() != nil {
 				return
 			}
-			m.Metrics.ProvisionRuns.WithLabelValues("livetv-" + string(res)).Inc()
-			switch res {
+			m.Metrics.ProvisionRuns.WithLabelValues("livetv-" + string(res.Status)).Inc()
+			switch res.Status {
 			case plexlivetv.Converged:
-				gone, backoff = nil, min(provisionBackoffStart, every)
+				backoff = min(provisionBackoffStart, every)
 			default:
 				log.Warn("Live TV did not converge; retrying", "error", err, "in", backoff)
 				wait, backoff = backoff, min(backoff*2, every)
@@ -109,12 +106,16 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 // liveTVActions names what the lease holder did for each reason, the
 // events.k8s.io Event's action.
 var liveTVActions = map[string]string{
-	plexlivetv.ReasonProvisioned:     "Provision",
-	plexlivetv.ReasonChannelMapSaved: "SaveChannelMap",
-	plexlivetv.ReasonNeedsLineup:     "AwaitWizard",
-	plexlivetv.ReasonAddressChanged:  "CompareAddress",
-	plexlivetv.ReasonFailed:          "Provision",
-	plexlivetv.ReasonRemoved:         "Delete",
+	plexlivetv.ReasonProvisioned:      "Provision",
+	plexlivetv.ReasonChannelMapSaved:  "SaveChannelMap",
+	plexlivetv.ReasonNeedsLineup:      "AwaitWizard",
+	plexlivetv.ReasonFailed:           "Provision",
+	plexlivetv.ReasonRemoved:          "Delete",
+	plexlivetv.ReasonBlockOwned:       "AcquireLease",
+	plexlivetv.ReasonDeviceIDTaken:    "CompareAddress",
+	plexlivetv.ReasonWaitingForGuide:  "AwaitGuideLoad",
+	plexlivetv.ReasonChannelMapTooBig: "SaveChannelMap",
+	plexlivetv.ReasonPodsRestarted:    "RestartPMS",
 }
 
 // recordLiveTVEvent records e on its IPTVProvider through client-go's

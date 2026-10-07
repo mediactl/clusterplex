@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,9 +27,10 @@ type Watcher struct {
 	Discovery discovery.DiscoveryInterface
 	Namespace string
 	Logger    *slog.Logger
-	// OnChange is told the providers now, and those deleted since the last
-	// call, after Debounce of quiet.
-	OnChange func(live, gone []Provider)
+	// OnChange is told the providers after Debounce of quiet. A deleted
+	// provider is simply absent: its blocks' devices are on the link-local
+	// address, which is how the converger finds them.
+	OnChange func(live []Provider)
 	// Retry is how often a missing CRD is looked for again. Default 5m.
 	Retry time.Duration
 	// Debounce gathers a burst of changes. Default 2s.
@@ -60,10 +60,6 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 	f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
 	inf := f.ForResource(GVR).Informer()
-	var (
-		mu   sync.Mutex
-		gone = map[string]Provider{}
-	)
 	poke := make(chan struct{}, 1)
 	wake := func() {
 		select {
@@ -74,18 +70,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if _, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(any) { wake() },
 		UpdateFunc: func(any, any) { wake() },
-		DeleteFunc: func(obj any) {
-			if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
-				obj = t.Obj
-			}
-			if u, ok := obj.(*unstructured.Unstructured); ok {
-				p := ProviderOf(u)
-				mu.Lock()
-				gone[p.key()] = p
-				mu.Unlock()
-			}
-			wake()
-		},
+		DeleteFunc: func(any) { wake() },
 	}); err != nil {
 		return err
 	}
@@ -111,14 +96,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 				live = append(live, ProviderOf(u))
 			}
 		}
-		mu.Lock()
-		var g []Provider
-		for k, p := range gone {
-			g = append(g, p)
-			delete(gone, k)
-		}
-		mu.Unlock()
-		w.OnChange(live, g)
+		w.OnChange(live)
 	}
 }
 
@@ -138,22 +116,14 @@ func (w *Watcher) installed() bool {
 	return false
 }
 
-// ProviderOf reads the fields the converger needs from an IPTVProvider.
+// ProviderOf reads the fields the converger needs from an IPTVProvider:
+// status.address and status.blocks, as clustarr publishes them.
 func ProviderOf(u *unstructured.Unstructured) Provider {
-	str := func(path ...string) string {
-		v, _, _ := unstructured.NestedString(u.Object, path...)
-		return v
-	}
 	p := Provider{
 		Namespace: u.GetNamespace(), Name: u.GetName(), UID: string(u.GetUID()),
-		DeviceID:     strings.ToUpper(str("status", "deviceID")),
-		Address:      str("status", "address"),
-		GuideURL:     str("status", "guideURL"),
-		FriendlyName: str("spec", "device", "friendlyName"),
-		EPGSource:    str("spec", "epgSource"),
-		LineupHash:   str("status", "lineup", "hash"),
-		GuideHash:    str("status", "guideHash"),
-		Enabled:      true,
+		Address:   nestedString(u.Object, "status", "address"),
+		EPGSource: nestedString(u.Object, "spec", "epgSource"),
+		Enabled:   true,
 	}
 	if v, found, _ := unstructured.NestedBool(u.Object, "spec", "enabled"); found {
 		p.Enabled = v
@@ -161,8 +131,22 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 	if p.EPGSource == "" {
 		p.EPGSource = "XEPG"
 	}
-	if p.FriendlyName == "" {
-		p.FriendlyName = "Clustarr " + p.Name
+	blocks, _, _ := unstructured.NestedSlice(u.Object, "status", "blocks")
+	for _, o := range blocks {
+		m, ok := o.(map[string]any)
+		if !ok {
+			continue
+		}
+		port, _, _ := unstructured.NestedInt64(m, "port")
+		p.Blocks = append(p.Blocks, Block{
+			Start:        nestedString(m, "start"),
+			DeviceID:     strings.ToUpper(nestedString(m, "deviceID")),
+			FriendlyName: nestedString(m, "friendlyName"),
+			GuidePath:    nestedString(m, "guidePath"),
+			LineupHash:   nestedString(m, "lineupHash"),
+			GuideHash:    nestedString(m, "guideHash"),
+			Port:         int32(port),
+		})
 	}
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	for _, c := range conds {
@@ -172,4 +156,9 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 		}
 	}
 	return p
+}
+
+func nestedString(obj map[string]any, path ...string) string {
+	v, _, _ := unstructured.NestedString(obj, path...)
+	return v
 }
