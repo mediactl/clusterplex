@@ -2,11 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** For each clustarr `IPTVProvider`, cluster-plex's leader registers
-the HDHomeRun device in PMS, creates its DVR and saves the full channel
-map, which carries more than 480 channels. It also reloads the guide on
-change, removes the DVR when the provider is deleted, and records what it
-did as Kubernetes Events on the provider.
+**Goal:** For each block of each clustarr `IPTVProvider`, cluster-plex's
+leader registers an HDHomeRun device in PMS, creates its DVR and saves its
+channel map. A block holds up to ~450 channels, so a provider of any size
+is several DVRs with contiguous numbers (spec §3.1, amended 2026-10-07).
+
+It also:
+- reloads each guide on change;
+- removes a block's DVR when the block or provider goes;
+- restarts PMS on the other pods after a DVR change;
+- records what it did as Kubernetes Events on the provider.
+
+Every Plex pod serves the blocks' ports on a link-local address, through
+the supervisor's TCP proxy (spec §5.0).
 
 **Architecture:**
 - **`pkg/plex/api`** gains the Live TV calls, pinned by responses
@@ -25,7 +33,16 @@ did as Kubernetes Events on the provider.
 `net/http`, testify, httptest.
 
 **Spec:** `/home/appkins/src/mediactl/clustarr/docs/superpowers/specs/2026-10-07-iptv-live-tv-design.md`.
-- §6.1 is this plan's part, and §3.1 says why there is no channel cap.
+- §6.1 and §5.0's cluster-plex side are this plan's part. §3.1 says why a
+  provider is several DVRs.
+- **Amended 2026-10-07** (main `195d1ef7`, `006e8bca`) and approved:
+  - blocks and link-local ports;
+  - one Lease per block;
+  - the guide-load rule;
+  - restarting PMS on the other pods.
+- **What is built:** Tasks 2-4 were built for one device per provider
+  (`b666889` on `livetv`), and Task 1 is recorded (`1cdf7cb`, `1793865`).
+  The tasks below amend that code.
 - The owner approved it on 2026-10-07, including §10.1: deleting a
   provider removes its DVR and that DVR's recording rules.
 - clustarr's half is `/home/appkins/src/mediactl/clustarr/docs/superpowers/plans/2026-10-07-livetv-phase1.md`.
@@ -37,10 +54,17 @@ did as Kubernetes Events on the provider.
   clustarr code (CLAUDE.md):
   - `spec.enabled`, a bool where absent means true;
   - `spec.epgSource`: `XEPG` (also when absent) or `PMS`;
-  - `spec.device.friendlyName`;
-  - `status.deviceID`, `status.address`, `status.guideURL`,
-    `status.lineup.hash`, `status.guideHash`;
+  - `status.address`, the tuner Service;
+  - `status.blocks[]`: `start`, `deviceID`, `port`, `friendlyName`,
+    `guidePath`, `lineupHash`, `guideHash`;
   - `status.conditions[type=Ready].status`.
+- **Never delete a DVR, or save a map or reload a guide again, while
+  `GET /activities` lists a `provider.epg.load`.** One such delete
+  deadlocked PMS (recorded).
+- **The link-local address** (`plex.liveTV.localAddress`, default
+  `169.254.47.1`) is the only address Plex is given for a block.
+- **Tests after implementation (the owner, 2026-10-07):** each task is
+  implemented first; Task 7 writes and runs every test.
 - **Plex is configured through its API only,** never its database.
 - **Only the Lease holder writes Plex's config.** The loop runs inside
   `startLeaderWork` alone.
@@ -51,13 +75,10 @@ did as Kubernetes Events on the provider.
   - for a deleted IPTVProvider, or as a duplicate or orphan row on a
     managed device.
   Task 4 amends both documents to say so.
-- **Rule M, what is managed:** a PMS device is managed when its
-  `deviceIdentifier` is `device://tv.plex.grabbers.hdhomerun/<id>`, and
-  either:
-  - `<id>` is a live provider's `status.deviceID`; or
-  - a DVR on it has an XMLTV lineup whose URL path matches
-    `^/livetv/<clustarr namespace>/[^/]+/xmltv\.xml$` (the orphan case).
-  Nothing else is ever touched.
+- **Rule M, what is managed (amended):** a PMS device is managed when its
+  URI host is the link-local address, or its DeviceID is a live block's.
+  A DVR is managed when it is on a managed device, or when its lineup URL's
+  host is the link-local address (a ghost). Nothing else is ever touched.
 - **Never register a device whose identifier PMS already lists.**
   Registering again is how duplicate and empty DVR rows arise.
 - **The channel map is one PUT, never batched.** PMS replaces the whole
@@ -75,23 +96,22 @@ did as Kubernetes Events on the provider.
 
 ## Review Focus
 
-1. **A provider that turns Ready, then not Ready (its playlist fails):**
-   nothing is deleted or re-registered, and the DVR stays.
-   Covered by Task 3, `TestANotReadyProviderIsLeftAsItIs`.
-2. **cluster-plex restarts, and loses the hashes it last saved:** the
-   first pass saves the channel map and reloads the guide once each, then
-   is idle. Covered by Task 3, `TestAFreshConvergerSavesOnceThenIdles`.
-3. **A provider deleted while cluster-plex was down:** its XEPG DVR is
-   found as an orphan by its lineup URL and removed. A PMS-mode one cannot
-   be found, and is left; Task 4's docs say so.
-   Covered by Task 3, `TestAnOrphanXEPGDVRIsRemoved`.
-4. **The IPTVProvider CRD is not installed:** the catalog watch still syncs
-   and works, and the Live TV watcher logs once and retries.
-   Covered by Task 4, `TestAMissingCRDNeverStallsTheCatalogWatch`.
-5. **PMS answers 5xx in the middle of a pass:** the pass returns `Pending`,
-   records `DVRProvisionFailed` with PMS's snippet, and a retry later
-   completes without duplicating anything.
-   Covered by Task 3, `TestAFailedPassRetriesWithoutDuplicates`.
+1. **A block splits** (clustarr adds a block in the middle of the
+   lineup). One device and one DVR are added, the old block's map is saved
+   once, and PMS restarts once on each other pod, and no other DVR is
+   touched. Covered by Task 7, `TestASplitAddsOneDVRAndRestartsTheOthersOnce`.
+2. **A guide is loading when a delete is due.** Nothing is deleted on
+   that pass, `DVRWaitingForGuide` is recorded, and the delete happens on
+   a later pass. Covered by Task 7, `TestNothingIsDeletedWhileAGuideLoads`.
+3. **Another installation holds a block's Lease.** No device or DVR is
+   written for that block, and the others converge. Covered by Task 7,
+   `TestABlockAnotherInstallationOwnsIsLeftAlone`.
+4. **A provider turns Ready=False with its last good blocks kept**
+   (clustarr's overlap rule). No DVR is deleted. Covered by Task 7,
+   `TestANotReadyProviderIsLeftAsItIs`.
+5. **A Plex pod starts before the IPTVProvider watch syncs.** PMS still
+   starts within 30 s, and the proxies follow without restarting it.
+   Covered by Task 7, `TestPMSStartsWhenTheFirstSyncIsLate`.
 
 ---
 
@@ -173,263 +193,286 @@ This task creates and deletes a test DVR on the owner's real Plex.
     in place of Tasks 2-4 as written.
 - [ ] **Step 5: Commit.** `git add hack/hdhrprobe hack/record-livetv.sh pkg/plex/api/testdata/livetv docs/livetv-pms-calls.md && git commit -m "docs(livetv): PMS's Live TV calls, recorded against PMS 1.43.4 -- the probe, the script, the fixtures and the channel-map size limit" -- hack/hdhrprobe hack/record-livetv.sh pkg/plex/api/testdata/livetv docs/livetv-pms-calls.md`
 
-### Task 2: `pkg/plex/api`: the Live TV calls
+### Task 1b: Prove link-local devices and a proxied stream (spike; needs the owner's OK)
+
+Task 1's recording settled the calls (`docs/livetv-pms-calls.md`). The
+spec as amended (§5.0) adds four claims to prove on the owner's PMS before
+Tasks 5-6 are built:
+- **A link-local address:** PMS registers a device at
+  `http://169.254.47.1:<port>`.
+- **One address, two ports:** two devices on that address, at once, with
+  different DeviceIDs.
+- **A proxied stream:** a stream plays through a proxy port.
+- **The other pods:** whether a channel-map change on the lease holder
+  shows on another pod that already knows the DVR, without a restart.
 
 **Files:**
-- Create: `pkg/plex/api/livetv.go`, `pkg/plex/api/livetv_test.go`
-
-**Interfaces:**
-- Consumes: Task 1's fixtures and findings. The JSON keys below are the
-  expected ones from iptvtunerr's code. Where a fixture differs, the
-  fixture wins: change the struct tags and ledger a ruling.
-- Produces:
-  - **Types:**
-    - `plexapi.Device{Key, UUID, URI, DeviceIdentifier string}`
-    - `plexapi.DVR{Key, UUID, Lineup string; Devices []Device}`
-    - `plexapi.ChannelMapping{DeviceIdentifier, ChannelKey, LineupIdentifier string}`
-  - **Methods:**
-    - `(*Client) Devices(ctx) ([]Device, error)`
-    - `DiscoverDevice(ctx, uri string) ([]Device, error)`
-    - `AddDevice(ctx, uri string) error`
-    - `DeleteDevice(ctx, key string) error`
-    - `DVRs(ctx) ([]DVR, error)`
-    - `CreateDVR(ctx, language, deviceUUID, lineup string) (DVR, error)`
-    - `DeleteDVR(ctx, key string) error`
-    - `EPGChannelMap(ctx, deviceUUID, lineup string) ([]ChannelMapping, error)`
-    - `SaveChannelMap(ctx, deviceKey string, m []ChannelMapping) error`
-    - `ReloadGuide(ctx, dvrKey string) error`
-  - **Lineups:** `plexapi.XMLTVLineup(guideURL, title string) string`
-    returns `"lineup://tv.plex.providers.epg.xmltv/" + guideURL + "#" + title`.
-    `url.Values` encodes it; never pre-encode it.
-
-- [ ] **Step 1: Write the failing tests** with the existing `recorder(t, bodies, status)` helper (`pkg/plex/api/client_test.go:16`), feeding it Task 1's recorded bodies, `os.ReadFile("testdata/livetv/<step>.json")`. One test per method asserts:
-  - the method, the path, and the exact query keys, values and order;
-  - the decoded result against the recorded body;
-  - that the token travels in the header.
-
-  Plus two tests:
-  - **`TestSaveChannelMapSendsEveryPairInOneRequest`:** 2,000 mappings
-    produce one call, whose query holds 2,000 `channelMappingByKey[...]`
-    and 2,000 `channelMapping[...]` keys, and a `channelsEnabled` value
-    listing all 2,000 identifiers comma-separated.
-  - **`TestXMLTVLineupIsEncodedOnce`:** the recorded query of `CreateDVR`
-    holds `lineup=lineup%3A%2F%2Ftv.plex.providers.epg.xmltv%2Fhttp%3A%2F%2F10.96.0.5%2Flivetv%2Fmedia%2Fnews%2Fxmltv.xml%23Clustarr+news`.
-- [ ] **Step 2: Run.** `go test ./pkg/plex/api/`. Expected: FAIL to compile.
-- [ ] **Step 3: Implement.**
-  - **The calls:** each method follows `Providers`/`AddProvider` (`client.go:89-103`): an anonymous `MediaContainer` wrapper, `c.do(...)`.
-  - **`SaveChannelMap`:** builds `url.Values` with `channelsEnabled` as the
-    comma-joined device identifiers, and both indexed keys per mapping.
-    - **If Task 1 found** that PMS takes the map only as a form body past
-      some size, add an unexported `doForm` beside `do` that sends
-      `application/x-www-form-urlencoded`, and use it here. Ledger that.
-  - **A slower client:** a Live TV client gets
-    `HTTP: &http.Client{Timeout: 2 * time.Minute}` from its caller
-    (Task 4), since the 30 s default is short for a large map.
-    `pkg/plex/api` keeps its default.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit.** `git add pkg/plex/api/livetv.go pkg/plex/api/livetv_test.go && git commit -m "feat(plexapi): Live TV device, DVR, channel-map and guide calls, pinned by recorded PMS responses" -- pkg/plex/api`
-
-### Task 3: `pkg/plex/livetv`: the converger
-
-**Files:**
-- Create:
-  - `pkg/plex/livetv/converge.go`
-  - `pkg/plex/livetv/converge_test.go`
-  - `pkg/plex/livetv/fakepms_test.go`
-
-**Interfaces:**
-- Consumes: Task 2's client.
-- Produces:
-  - `plexlivetv.Provider{Name, Namespace, DeviceID, Address, GuideURL, FriendlyName, EPGSource, LineupHash, GuideHash string; Ready, Enabled bool}`
-  - `plexlivetv.Event{Namespace, Name, Reason, Message string; Warning bool}`
-  - The reasons:
-    - `ReasonProvisioned = "DVRProvisioned"`
-    - `ReasonChannelMapSaved = "DVRChannelMapSaved"`
-    - `ReasonNeedsLineup = "DVRNeedsLineup"`
-    - `ReasonAddressChanged = "DVRDeviceAddressChanged"`
-    - `ReasonFailed = "DVRProvisionFailed"`
-    - `ReasonRemoved = "DVRRemoved"`
-  - **The converger:**
-    - `plexlivetv.Converger{PMS *plexapi.Client; Namespace, Language string; Logger *slog.Logger; Record func(Event)}`
-    - `(*Converger).Run(ctx, live []Provider, gone []Provider) (Result, error)`,
-      where `Result` is `"converged"`, `"pending"` or `"error"`, as
-      `provision.Result`.
-  - **Its memory:** the converger keeps
-    `saved map[string]struct{ lineup, guide string }`, keyed by device ID,
-    in memory only. A restart therefore saves once (Review Focus 2).
-
-- [ ] **Step 1: Write the fake PMS.** `fakepms_test.go`, in the shape of
-  `pkg/plex/provision/fakepms_test.go`:
-  - **State:** `devices`, `dvrs` and `maps` in memory.
-  - **Responses:** answers shaped like Task 1's fixtures. Load the recorded
-    bodies as templates where practical.
-  - **Writes:** each one appended to `writes []string` as
-    `"METHOD /path"`; for the channel-map PUT, as
-    `"PUT /media/grabbers/devices/<key>/channelmap n=<pairs>"`.
-  - **`down bool`:** gives 502.
-  - **Anything unmatched:** 418.
-- [ ] **Step 2: Write the failing tests,** each with a `Provider` built in the test:
-  - **`TestAReadyXEPGProviderGetsADeviceADVRAndItsChannelMap`:**
-    - the writes, in order: discover, `POST /media/grabbers/devices`,
-      `POST /livetv/dvrs`, the channelmap PUT with `n` equal to the fake
-      EPG map's size, then `POST …/reloadGuide`;
-    - the Events: `DVRProvisioned`, then `DVRChannelMapSaved`.
-  - **`TestASecondPassWritesNothing`.**
-  - **`TestANewLineupHashSavesTheMapOnce`:** a single PUT.
-  - **`TestANewGuideHashReloadsTheGuideOnce`.**
-  - **`TestAFreshConvergerSavesOnceThenIdles`:** a new converger meets an
-    existing device and DVR. It makes one PUT and one reload, then nothing
-    on the next pass.
-  - **`TestAPMSProviderGetsADeviceOnlyThenIsAdopted`:** first a device
-    write and `DVRNeedsLineup`, with no DVR created. After the test adds a
-    DVR on that device to the fake (the wizard), the next pass makes one
-    PUT.
-  - **`TestAnExistingDeviceIsNeverRegisteredAgain`:** the device listed
-    under another URI gives `DVRDeviceAddressChanged`, with zero writes.
-  - **`TestADuplicateDVROnAManagedDeviceIsRemoved`:** two DVRs on the
-    device; the one with the higher key is `DELETE`d, the other kept.
-  - **`TestADeletedProviderLosesItsDVRAndDevice`:** with the provider in
-    `gone`, the writes are `DELETE /livetv/dvrs/<k>`, then
-    `DELETE /media/grabbers/devices/<k>`, and `DVRRemoved` is recorded.
-  - **`TestAnOrphanXEPGDVRIsRemoved`:** a DVR whose lineup is
-    `…/livetv/<Namespace>/old/xmltv.xml`, with no live or gone provider
-    `old`, is deleted with its device.
-  - **`TestAnUnmanagedDVRIsNeverTouched`:** a real HDHomeRun device and
-    its DVR are never touched; nor is a DVR whose lineup names another
-    namespace.
-  - **`TestANotReadyProviderIsLeftAsItIs`:** with the provider not Ready,
-    or disabled, an existing device and DVR give zero writes.
-  - **`TestAFailedPassRetriesWithoutDuplicates`:** the fake goes down
-    after the device write, so the pass is `pending` and records
-    `DVRProvisionFailed`. Once it is up, the next pass creates the DVR
-    once: one device and one DVR in the fake.
-  - **`TestTwoThousandChannelsGoInOnePUT`.**
-- [ ] **Step 3: Run.** Expected: FAIL to compile.
-- [ ] **Step 4: Implement `Run`.**
-  1. **Read PMS:** list the devices and DVRs once per pass.
-  2. **Index by device ID:** take the ID from `DeviceIdentifier`, after its
-     last `/`.
-  3. **For each live provider that is Ready and Enabled,** in name order:
-     1. **The device.** When it is absent: discover, then add, then list
-        again to get its key and UUID. When present with a URI host other
-        than `Address`, record `ReasonAddressChanged` once per pass and go
-        on to the next provider.
-     2. **The DVR.**
-        - Under XEPG with no DVR on the device: `CreateDVR(Language, uuid, XMLTVLineup(GuideURL, FriendlyName))`
-          and record `ReasonProvisioned`.
-        - Under PMS with no DVR: record `ReasonNeedsLineup` and go on to
-          the next provider.
-        - With more than one DVR on the device: keep the lowest key and
-          delete the rest.
-     3. **The channel map,** when `saved[id].lineup != LineupHash`:
-        `EPGChannelMap(uuid, dvr.Lineup)`, then `SaveChannelMap(device.Key, all)`,
-        then record `ReasonChannelMapSaved` with the count. Do any rescan
-        Task 1 found necessary before the GET.
-     4. **The guide,** when `saved[id].guide != GuideHash` and the hash is
-        non-empty: `ReloadGuide`.
-  4. **For each gone provider,** and each orphan by rule M: delete its DVRs,
-     then its device, and record `ReasonRemoved`.
-  5. **Errors:** each is recorded as `ReasonFailed` with the error's text,
-     which already holds PMS's `snippet`, and makes the result `pending`.
-     The pass goes on to the next provider.
-- [ ] **Step 5: Run.** `go test -race ./pkg/plex/livetv/`. Expected: PASS.
-- [ ] **Step 6: Commit.** `git add pkg/plex/livetv && git commit -m "feat(livetv): converge each IPTVProvider's Plex device, DVR, channel map and guide -- one PUT per map, never a second registration, deletion only of managed rows" -- pkg/plex/livetv`
-
-### Task 4: The watcher, Events, wiring, RBAC, config and docs
-
-**Files:**
-- Create:
-  - `pkg/plex/livetv/watch.go`
-  - `pkg/plex/livetv/watch_test.go`
-  - `cmd/manager/livetv.go`
-  - `cmd/manager/livetv_test.go`
 - Modify:
-  - `cmd/manager/leaderwork.go` (`startLeaderWork`'s early return, and
-    `go m.liveTVLoop(ctx)`)
-  - `cmd/manager/config_provision.go` (`plex.liveTV.enabled`, default
-    false, and `plex.liveTV.language`, default `eng`)
-  - `cmd/manager/main.go` (build `Dynamic` when either clustarr or Live TV
-    is enabled)
-  - `charts/cluster-plex/templates/rbac.yaml` and
-    `k8s/components/clustarr/rbac.yaml` (in the clustarr namespace:
-    `clustarr.io` `iptvproviders` get;list;watch, and core `events`
-    create;patch)
-  - `charts/cluster-plex/values.yaml` (`plex.liveTV`)
-  - `docs/configuration.md` (a Live TV section, and the deletion exception)
-  - `CLAUDE.md` (the same exception, in one paragraph)
+  - `hack/hdhrprobe/main.go`: `--device-id`, plus `--listen` that may
+    repeat, so one probe serves several devices;
+  - `hack/record-livetv.sh`: a `link-local` mode.
+
+**How it runs:**
+- On the lease holder and on one other pod, an ephemeral debug container
+  (`--profile=netadmin`, an image already on the node) shares the pod's
+  network namespace. There it adds `169.254.47.1/32` to `lo`, and runs the
+  probe on `169.254.47.1:47000` and `:47001`.
+- Then the script registers both devices and creates both DVRs, and plays
+  one stream through `curl` from the debug container.
+- It restarts PMS on the other pod (a restart is the only refresh), then
+  changes the map on the lease holder and reads the other pod's channels.
+- It removes everything under the guide-load rule.
+
+**Before it runs:** ask the owner, and wait for an explicit yes. It
+creates and deletes two DVRs and restarts one pod's PMS.
+
+- [ ] **Step 1:** the probe and script changes.
+- [ ] **Step 2:** ask, then run.
+- [ ] **Step 3:** add the findings to `docs/livetv-pms-calls.md`. If PMS
+  refuses a link-local or same-address device, stop and report: §5.0 then
+  needs another address scheme. Commit with
+  `git commit -m "docs(livetv): link-local devices, two on one address, a proxied stream" -- hack docs`.
+
+### Task 2: `pkg/plex/api` as recorded
+
+The calls exist (`b666889`). Make them match the recording.
+
+**Files:** `pkg/plex/api/livetv.go`
+
+**The changes:**
+- **`Device`:** `Key Str`, `UUID`, `URI`, `DeviceID` (`deviceId`),
+  `Model` (`model`, the FriendlyName), `State`, and `ParentID int`
+  (`parentID`, a number). `Name` goes.
+- **`DVR`:** `Key Str`, `UUID`, `Language`, `Lineup`, `LineupTitle`
+  (`lineupTitle`), `EPGIdentifier` (`epgIdentifier`) and `Devices []Device`
+  (`Device`). `Title` goes.
+- **`ChannelMapping`:** adds `Favorite` and `Enabled` (`favorite` and
+  `enabled`, strings).
+- **`DiscoverDevice` goes.** The converger never calls it (the recording:
+  `size: 0`).
+- **New: `Activities(ctx) ([]Activity, error)`,** with
+  `Activity{UUID, Type, Title, Subtitle string; Progress int}` from
+  `GET /activities`.
+- **New: `MapBytes(m []ChannelMapping) int`.** It is the length of
+  `SaveChannelMap`'s encoded query, computed from the same `url.Values`.
+  `SaveChannelMap` refuses a query over `MaxChannelMapBytes = 30000` with
+  `ErrChannelMapTooLarge`, before any request.
+- **Never an empty map:** `SaveChannelMap` refuses an empty `m` with
+  `ErrEmptyChannelMap`. A save without the map cleared it in the
+  recording.
+
+- [ ] **Step 1:** implement. `go build ./... && go vet ./pkg/plex/api/`.
+- [ ] **Step 2:** commit. `git commit -m "feat(plexapi): the Live TV types as recorded, Activities, and a channel map refused when empty or over 30,000 bytes" -- pkg/plex/api`.
+
+### Task 3: The converger, per block
+
+**Files:** `pkg/plex/livetv/converge.go`
 
 **Interfaces:**
 - Produces:
-  - `plexlivetv.Watcher{Dynamic dynamic.Interface; Discovery discovery.DiscoveryInterface; Namespace string; Logger *slog.Logger; OnChange func(live []Provider, gone []Provider)}`
-  - `(*Watcher).Run(ctx) error`
-  - `plexlivetv.ProviderOf(u *unstructured.Unstructured) Provider`
+  - **`Provider`:** `{Namespace, Name, UID string; Ready, Enabled bool; EPGSource, Address string; Blocks []Block}`.
+  - **`Block`:** `{Start, DeviceID, FriendlyName, GuidePath, LineupHash, GuideHash string; Port int32}`.
+  - **`Converger`** gains:
+    - `LocalAddress string`, default `169.254.47.1`;
+    - `Identity string`: this installation's PMS machine identifier;
+    - `Leases LeaseClient`:
+      `interface{ Acquire(ctx, namespace, name, identity string, labels map[string]string) (held bool, holder string, err error) }`,
+      implemented in Task 4 over `coordination.k8s.io` Leases.
+  - **`Result`** gains `DVRChanged bool`: a DVR was created or deleted on
+    this pass.
+  - **New reasons:**
+    - `DVRBlockOwned`;
+    - `DVRDeviceIDTaken`;
+    - `DVRWaitingForGuide`: a delete, save or reload postponed by a guide
+      load;
+    - `DVRChannelMapTooLarge`.
 
-- [ ] **Step 1: Write the failing tests.**
-  - **`TestProviderOfReadsEveryField`:** an unstructured object with every
-    field set, and one with `spec.enabled` and `spec.epgSource` absent,
-    which read `true` and `XEPG`.
-  - **`TestTheWatcherReportsLiveAndGone`:** with
-    `dynamicfake.NewSimpleDynamicClientWithCustomListKinds`, a create, an
-    update and a delete call `OnChange` with the right sets. A deletion
-    passes its last-known `Provider` in `gone`, read through
-    `cache.DeletedFinalStateUnknown` too.
-  - **`TestAMissingCRDNeverStallsTheCatalogWatch`:**
-    - a fake discovery without `clustarr.io/v1alpha1`, so `Run` logs one
-      `iptvproviders.clustarr.io is not installed` line and retries every
-      5 min (an injected interval);
-    - it never calls `OnChange`, and returns on context cancel;
-    - and a `clustarrwatch.Watcher` started beside it still reaches its
-      synced state (`Counters.Synced(true)`).
-  - **`cmd/manager/livetv_test.go`, `TestTheLeaseHolderRunsLiveTVAndStopsWhenItLetsGo`:**
-    modelled on `TestTheLeaseHolderProvisionsAndStopsWhenItLetsGo`
-    (`leaderwork_test.go:18`). After `takePlexTV`, a provider in the
-    dynamic fake reaches the httptest PMS as a discover call; after
-    `releasePlexTV`, no further calls arrive.
-  - **`TestEventsAreRecordedOnTheProvider`:** a fake clientset's actions
-    include a `create events` in the clustarr namespace, whose
-    `involvedObject` is the IPTVProvider (apiVersion `clustarr.io/v1alpha1`,
-    kind, name, UID) and whose reason is `DVRProvisioned`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-  - **`watch.go`:**
-    - check `Discovery.ServerResourcesForGroupVersion("clustarr.io/v1alpha1")`
-      for `iptvproviders`;
-    - its own `dynamicinformer.NewFilteredDynamicSharedInformerFactory(…, 0, Namespace, nil)`,
-      with no `Trim` transform;
-    - every handler calls a debounced (2 s) `OnChange` with the current
-      store's providers, plus the gone set since the last call.
-  - **`cmd/manager/livetv.go`, `liveTVLoop(ctx)`:**
-    - builds a `Converger` with `PMS: &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: 2 * time.Minute}}`;
-    - **records Events** through `record.NewBroadcaster()` with
-      `StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: m.K8sClient.CoreV1().Events(ns)})`,
-      as source component `cluster-plex`. `Record` maps an `Event` to
-      `recorder.Event(objRef, type, reason, msg)`, with an
-      `ObjectReference` built from the provider's identity, which the
-      watcher keeps by name;
-    - **runs a pass** on every `OnChange`, and also every
-      `m.provisionEvery`, with the same backoff as `provisionLoop`;
-    - counts passes in
-      `m.Metrics.ProvisionRuns.WithLabelValues("livetv-" + string(res))`.
-  - **`startLeaderWork`:** its early return at `leaderwork.go:32` also
-    checks `!m.Config.LiveTV.Enabled`, and it adds
-    `if m.Config.LiveTV.Enabled && m.Dynamic != nil { go m.liveTVLoop(ctx) }`.
-  - **The RBAC:** add the rules to the chart's clustarr-reader Role and to
-    the kustomize component's Role.
-  - **The docs:**
-    - **Live TV in `docs/configuration.md`:** what is managed (rule M);
-      the deletion exception and why; that a PMS-mode provider deleted
-      while cluster-plex was down is not found; the Events.
-    - **One paragraph in CLAUDE.md,** naming
-      `docs/livetv-pms-calls.md`.
-- [ ] **Step 4: Run.** `go test -race ./...` and `make lint`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git add pkg/plex/livetv/watch.go pkg/plex/livetv/watch_test.go cmd/manager/livetv.go cmd/manager/livetv_test.go && git commit -m "feat(livetv): the lease holder converges Plex's DVRs from IPTVProviders and records Events on them -- plex.liveTV config, RBAC, docs (the provisioner's one deletion exception)" -- pkg/plex/livetv cmd/manager charts k8s docs CLAUDE.md`
+**`Run`, per pass:**
+1. **Read PMS once:** the devices, the DVRs, and the activities.
+   `guideBusy` is any activity of type `provider.epg.load`.
+2. **For each Ready, enabled provider, each block in `start` order:**
+   1. **The Lease:** `livetv-<lower-case DeviceID>` in the provider's
+      namespace, labelled `clustarr.io/iptv-provider=<name>` and
+      `clustarr.io/iptv-block=<start>`, acquired as `Identity`. When
+      another holder has it, record `DVRBlockOwned`, and skip the block.
+   2. **The device:** identifier `device://tv.plex.grabbers.hdhomerun/<DeviceID>`.
+      - **Absent:** `AddDevice("http://<LocalAddress>:<Port>")`, then list
+        again.
+      - **Present at another URI:** record `DVRDeviceIDTaken`, and skip.
+   3. **The DVR:**
+      - **Under XEPG with none:** `CreateDVR(Language, uuid, XMLTVLineup("http://<LocalAddress>:<Port><GuidePath>", FriendlyName))`,
+        and set `DVRChanged`.
+      - **Under PMS:** `DVRNeedsLineup` as before.
+      - **More than one DVR on the device:** keep the lowest key and delete
+        the rest, but only when not `guideBusy`.
+   4. **The map,** when the saved hash differs: `EPGChannelMap`, then
+      `SaveChannelMap`, but only when not `guideBusy`, else
+      `DVRWaitingForGuide`. Over budget: record `DVRChannelMapTooLarge`,
+      which clustarr's blocks prevent.
+   5. **The guide,** when its hash differs: `ReloadGuide`, under the same
+      rule.
+3. **Managed rows that no block names:** devices whose URI host is
+   `LocalAddress` but whose DeviceID is in no live block, and DVRs on them.
+   That covers a removed block and a gone provider. They are deleted, DVR
+   first, only when not `guideBusy`, and set `DVRChanged`.
+4. **Ghosts, every pass:** a DVR whose lineup URL host is `LocalAddress`,
+   on no managed device, is deleted under the same rule.
+5. **Rule M, amended:** a device is managed when its URI host is
+   `LocalAddress` or its DeviceID is a live block's. Nothing else is
+   touched.
 
-### Task 5: Gate and hand-off
+- [ ] **Step 1:** implement over the built converger. `go build ./... && go vet ./pkg/plex/livetv/`.
+- [ ] **Step 2:** commit. `git commit -m "feat(livetv): converge per block -- one Lease per block, a device on the link-local proxy port, nothing deleted or saved while a guide loads, ghosts swept every pass" -- pkg/plex/livetv`.
 
-- [ ] **Step 1: Gate.** In a clean worktree, run `go test ./...` and `make lint`. Expected: exit 0.
-- [ ] **Step 2: End-to-end check.** It needs clustarr's phase 1 deployed on
-  kind-cluster-plex, and so the owner's OK. Do not deploy. Report as ready,
-  and name the overlay change it will need:
-  - `plex.liveTV.enabled: true` in
-    `k8s/overlays/kind-cluster-plex/kustomization.yaml`'s config;
-  - the `newTag` bump as its own `deploy:` commit.
+### Task 4: Watcher, Leases, wiring, RBAC, config
+
+**Files:**
+- Modify:
+  - `pkg/plex/livetv/watch.go`: `ProviderOf` reads `status.address` and
+    `status.blocks[]`;
+  - `cmd/manager/livetv.go`;
+  - `cmd/manager/config_provision.go`;
+  - the chart, `k8s/components/clustarr/rbac.yaml`, and
+    `docs/configuration.md`.
+- Create: `pkg/plex/livetv/leases.go`
+
+**The changes:**
+- **`leases.go`:** `LeaseClient` over `coordination/v1`:
+  - get the Lease, or create it;
+  - take it when its holder is empty, is us, or has expired
+    (`renewTime + leaseDurationSeconds`);
+  - renew it on every pass. The duration is 10 minutes.
+- **Config:**
+  - `plex.liveTV.localAddress`, default `169.254.47.1`. It is validated as
+    link-local `169.254.0.0/16` other than `169.254.169.254`.
+  - `plex.liveTV.restartEvery`, default `10m`.
+- **`Identity`:** the server's `machineIdentifier`, from `GET /identity`.
+- **RBAC** in clustarr's namespace: `coordination.k8s.io` `leases`
+  `get;create;update`, beside `iptvproviders` `get;list;watch`.
+
+- [ ] **Step 1:** implement. `go build ./... && make lint`.
+- [ ] **Step 2:** commit. `git commit -m "feat(livetv): block Leases held as the server's identity, the blocks read from clustarr's status, and plex.liveTV.localAddress" -- pkg cmd charts k8s docs`.
+
+### Task 5: The proxies in every Plex pod
+
+**Files:**
+- Create:
+  - `pkg/plex/livetv/proxies.go`;
+  - `pkg/plex/livetv/linklocal_linux.go`, adding the address to `lo`
+    through `github.com/vishvananda/netlink`, already in `go.mod`.
+- Modify:
+  - `cmd/manager/supervisor.go`: the proxies start before PMS;
+  - `cmd/manager/main.go`: every pod, not only the lease holder, runs a
+    read-only `Watcher` when `plex.liveTV.enabled`.
+
+**Interfaces:**
+- `ProxySet{LocalAddress string; Logger *slog.Logger}`
+- `(*ProxySet).Apply(providers []Provider)`: one `proxy.TCP` per block,
+  listening on `<LocalAddress>:<Port>` and targeting `Provider.Address`.
+  Listeners are added and removed as blocks come and go; an existing one
+  is never restarted.
+- `(*ProxySet).Close()`
+- `EnsureLinkLocal(addr string) error`: `netlink.AddrAdd(lo, addr/32)`.
+  `EEXIST` is success.
+
+**The order at start:**
+1. `EnsureLinkLocal`.
+2. The watcher's first sync, waited for up to 30 s. Past that, PMS starts
+   anyway, and the proxies follow.
+3. `ProxySet.Apply`.
+4. PMS.
+
+- [ ] **Step 1:** implement. `go build ./... && make lint`.
+- [ ] **Step 2:** commit. `git commit -m "feat(livetv): every Plex pod serves each block's port on the link-local address, through the supervisor's TCP proxy, before PMS starts" -- pkg cmd`.
+
+### Task 6: Restarting PMS on the other pods after a DVR change
+
+Each PMS caches its DVRs from its start (recorded). After a pass with
+`DVRChanged`, the lease holder restarts PMS on each other pod, one at a
+time, at most once per `restartEvery`.
+
+**Files:**
+- Create: `cmd/manager/livetvrestart.go`
+- Modify:
+  - `cmd/manager/livetv.go`;
+  - `cmd/manager/supervisor.go`, so a restart can be requested;
+  - the RBAC: core `pods` `get;list;watch;patch` in Plex's namespace.
+
+**How:**
+- **The lease holder** writes annotation
+  `livetv.clusterplex.io/restart: <generation>` on one other pod. It waits,
+  up to 5 minutes, for that pod to write
+  `livetv.clusterplex.io/restarted: <generation>`, then moves to the next
+  pod.
+- **Each pod's manager** watches its own Pod. On a new generation it
+  restarts PMS in place (the supervisor's restart, not the pod). Once Plex
+  answers for its library again, it writes the `restarted` annotation.
+- **Changes during the wait** set a pending flag, which the next round
+  takes.
+- **The Event:** `DVRPodsRestarted`, on each provider whose DVRs changed.
+
+- [ ] **Step 1:** implement. `go build ./... && make lint`.
+- [ ] **Step 2:** commit. `git commit -m "feat(livetv): after a DVR change the lease holder restarts PMS on each other pod in turn, at most once per 10 minutes" -- cmd charts k8s`.
+
+### Task 7: The test pass (the owner's rule: tests once the feature is complete)
+
+Every test the earlier tasks deferred is now written and run against the
+recorded fixtures (`pkg/plex/api/testdata/livetv`). A fake PMS shaped like
+them backs the converger tests.
+
+- **`pkg/plex/api`:**
+  - each call's method, path, query and decoding against its fixture;
+  - `MapBytes` of a 454-mapping map is 32,701;
+  - over 30,000 bytes is `ErrChannelMapTooLarge`, with no request;
+  - an empty map is `ErrEmptyChannelMap`;
+  - `Activities` decodes `provider.epg.load`.
+- **The converger:**
+  - a provider of three blocks gets three Leases, devices on
+    `169.254.47.1:<port>`, three DVRs, and one PUT per block;
+  - a second pass writes nothing;
+  - a block's new hash saves only that block's map;
+  - a new block adds one device and one DVR, and sets `DVRChanged`;
+  - a removed block's DVR and device are deleted;
+  - with `provider.epg.load` listed, no delete, save or reload happens, and
+    `DVRWaitingForGuide` is recorded; the next pass completes;
+  - another installation's live Lease gives `DVRBlockOwned` and no write;
+    an expired one is taken;
+  - a DeviceID at another URI gives `DVRDeviceIDTaken` and no write;
+  - a ghost DVR whose lineup host is the link-local address is deleted;
+    a real HDHomeRun and its DVR are never touched;
+  - a not-Ready provider is left as it is;
+  - a failed pass retries without duplicates.
+- **The watcher:**
+  - `ProviderOf` reads `status.blocks[]`;
+  - live and gone sets are reported;
+  - a missing CRD never stalls the catalog watch.
+- **`ProxySet`:**
+  - blocks added and removed open and close listeners on the given
+    address. Test it on `127.0.0.1` with distinct ports, since
+    `EnsureLinkLocal` needs `CAP_NET_ADMIN`; that one is covered by
+    `make test-netns`, which exists for network namespaces;
+  - a connection is piped to the target, and an existing listener
+    survives an `Apply` that keeps its block.
+- **The restarts:**
+  - one round restarts each other pod in turn, the next only after the
+    previous answers `restarted`;
+  - a second change within `restartEvery` waits;
+  - the lease holder never restarts itself.
+- **Wiring:** the lease holder runs Live TV and stops when it lets go;
+  Events land on the provider.
+
+- [ ] **Step 1:** write them. Falsify each once, by reverting the line it
+  guards and watching it fail by name.
+- [ ] **Step 2:** `go test -race ./...` and `make lint`. Expected: PASS.
+- [ ] **Step 3:** commit. `git add` every new test, then
+  `git commit -m "test(livetv): the deferred tests -- recorded calls, the per-block converger, Leases, the guide-load rule, ghosts, proxies and restarts" -- pkg cmd`.
+
+### Task 8: Gate and hand-off
+
+- [ ] **Step 1: Gate.** In a clean worktree, run `go test ./...` and
+  `make lint`. Expected: exit 0.
+- [ ] **Step 2: The end-to-end check.** It needs clustarr's Part A2
+  deployed on kind-cluster-plex, so it needs the owner's OK. Do not
+  deploy. Report as ready, and name the overlay changes it will need:
+  - `plex.liveTV.enabled: true`;
+  - the `newTag` bump, as its own `deploy:` commit.
