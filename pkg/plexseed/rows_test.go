@@ -101,7 +101,8 @@ func TestPlexNamesForCodecsAndLanguages(t *testing.T) {
 	} {
 		assert.Equal(t, want, plexseed.PlexCodec(in), in)
 	}
-	for in, want := range map[string]string{"eng": "en", "jpn": "ja", "ger": "de", "en": "en", "und": "", "": "", "zzz": "",
+	for in, want := range map[string]string{
+		"eng": "en", "jpn": "ja", "ger": "de", "en": "en", "und": "", "": "", "zzz": "",
 		// Codes that name no language: MP4's "unk" (Mister Rogers' Neighborhood,
 		// 2026-10-06), uncoded, no linguistic content, private use.
 		"unk": "", "mis": "", "zxx": "", "qaa": "", "qtz": "", "mul": "mul",
