@@ -159,6 +159,59 @@ the old guard skipped. PMS's handling of a guide it can no longer fetch is
 another. An A/B test in the fork's standalone compose (`.25` against `.24`
 with `PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED=0`) can tell them apart.
 
+## Link-local devices, two on one address (Task 1b, 2026-10-07)
+
+**Setup:**
+- On the lease holder and one other pod, a debug container in the pod's
+  network namespace added `169.254.47.1/32` to `lo`.
+- It ran `hack/hdhrprobe` with two devices on `127.0.0.1:48000` and
+  `:48001` (DeviceIDs `CAFE0A00` and `CAFE0A01`, channels 2000-2049 and
+  2050-2099), behind byte-level forwards from `169.254.47.1:47000` and
+  `:47001`, as cluster-plex's proxies will.
+
+**What held:**
+- **PMS registers a device at a link-local address.**
+  `POST /media/grabbers/devices?uri=http://169.254.47.1:47000` answered 200,
+  and the device listed as `alive`.
+- **Two devices on one address, at once:** keys 17 and 18, URIs
+  `http://169.254.47.1:47000` and `:47001`, distinct UUIDs.
+- **A DVR on each:** 19 (`probe 2000+`) and 21 (`probe 2050+`), each map
+  saved in one PUT with 50 enabled. The guides were fetched from
+  `http://169.254.47.1:<port>/xmltv.xml`.
+- **The `Host` header survives the forward.** The device built its URLs
+  from `Host: 169.254.47.1:<port>`, which the tuner's routing relies on.
+
+**What was not settled:**
+- **A tune.** `POST /livetv/dvrs/<key>/channels/<number>/tune` needs
+  `X-Plex-Client-Identifier` (400 without it) and a playback session
+  identifier ("A session identifier is required for this request"). The
+  stream path is the same HTTP client path as the guide and lineup
+  fetches, which did reach the forward. A real playback is left to the
+  end-to-end check.
+- **Whether another pod sees a map change.** Not run: the corruption below
+  stopped the spike.
+
+**Devices without a DVR are not in the database.** With two devices
+registered and no DVR, `media_provider_resources` had no rows; the owner's
+own HDHomeRun FLEX QUATRO, listed as device 16, had none either. A device
+is written to the database once a DVR is on it.
+
+**The corruption came back, on the pod that ran the DVRs.**
+- **When:** about a minute after the two DVRs were created on plex-2.
+- **What its PMS logged:** `database disk image is malformed`, for the
+  `Database analyze` task on `com.plexapp.plugins.library.db` (the shim's
+  local SQLite file), and for guide queries; also `EPG: We caught an
+  exception trying to swap out the database: … file is not a database`.
+- **Request handlers failed** on it.
+- **The other pod,** with the same probes and link-local address but no
+  DVR activity, logged none.
+- **After a pod restart** on fresh per-pod storage, the DVRs were deleted
+  through that pod and nothing more was logged.
+
+This is the second time Live TV activity under the `v1.3.17-clusterplex.25`
+shim has been followed by SQLite corruption on that pod (see "A guide
+database corrupted" above). Live TV must not ship until it is explained.
+
 ## What the wizard is needed for
 
 Nothing. Steps 3, 5 and 8 make a working DVR with no setup wizard. A device
