@@ -44,7 +44,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/plex/net/` | Plex's network namespace and the plex.tv egress filter |
 | `pkg/plex/prefs/` | Merging settings into Plex's `Preferences.xml` |
 | `pkg/plex/claim/` | Exchanging a plex.tv claim code for the server's token |
-| `pkg/plex/servertoken/` | Claiming before Plex starts, and mirroring `PlexOnlineToken` into clustarr's Secret |
+| `pkg/plex/servertoken/` | Claiming before Plex starts, and holding every replica to the plex.tv account in clustarr's Secret (the master copy once it holds a token) |
 | `pkg/plex/route/` | Finding the pods to send traffic to |
 | `pkg/lease/` | Leader election on a Kubernetes Lease |
 | `pkg/maintenance/` | The task catalogue and the fan-out across pods |

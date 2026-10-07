@@ -1,14 +1,23 @@
-// Package servertoken keeps the server's plex.tv token, PlexOnlineToken: it
-// claims the server from a claim code before Plex starts, and mirrors the
-// token into a Secret that clustarr reads (its Plex watchlist ImportList), so
-// one sign-in serves both.
+// Package servertoken keeps the server's plex.tv account -- PlexOnlineToken,
+// PlexOnlineUsername and PlexOnlineMail -- in a Secret clustarr reads (its
+// Plex watchlist ImportList), and holds every replica to it.
 //
-// Preferences.xml is the master copy. Every pod mounts the one file, and
-// Plex itself writes the token there on a sign-in through Plex Web, so the
-// Secret follows the file and never overwrites a token the file holds. The
-// Secret is written back into the file only when the file has none -- a lost
-// plex-config -- and it records which claim code was spent, which is what
-// lets a new code re-claim a server whose old token was revoked.
+// The Secret is the master copy once it holds a token (2026-10-07; until
+// then Preferences.xml was, and the Secret only followed it). With no
+// Secret, or one without a token, the lease holder writes the file's
+// account into it -- one pod at a time, so the first lease holder's. After
+// that every pod forces the Secret's values into Preferences.xml before
+// Plex starts, so every replica starts signed in as the same account, and
+// the lease holder puts them back whenever the file drifts, as a sign-in
+// through Plex Web makes it. A Plex already running keeps the account it
+// read until it restarts. An empty value is never forced: a field the
+// Secret lacks is filled from the file instead.
+//
+// To change the account, edit or delete the Secret, or spend a new claim
+// code. A code is exchanged before Plex starts, for a server with no token
+// or, with a Secret, for any code other than the one it records as spent;
+// the fresh token replaces the old in both, and the new account's username
+// and email fill in from the file once Plex has written them.
 package servertoken
 
 import (
@@ -31,10 +40,16 @@ const (
 	// TokenKey is the Secret key holding the token; clustarr's Plex
 	// ImportList reads "token".
 	TokenKey = "token"
+	// UsernameKey and EmailKey hold the account's PlexOnlineUsername and
+	// PlexOnlineMail.
+	UsernameKey = "username"
+	EmailKey    = "email"
 	// ClaimAnnotation records the SHA-256 of the last claim code spent.
 	ClaimAnnotation = "clusterplex.mediactl.io/claim-sha256"
 
 	tokenPref    = "PlexOnlineToken"
+	usernamePref = "PlexOnlineUsername"
+	mailPref     = "PlexOnlineMail"
 	clientIDPref = "ProcessedMachineIdentifier"
 
 	// exchangeTimeout bounds the call to plex.tv, which runs while the
@@ -51,7 +66,34 @@ func Hash(claim string) string {
 // Stored is what the Secret holds.
 type Stored struct {
 	Token     string
+	Username  string
+	Email     string
 	ClaimHash string
+}
+
+// account is the preferences s forces into Preferences.xml: its token,
+// username and email, each only when it has one.
+func (s Stored) account() map[string]string {
+	out := map[string]string{}
+	for pref, v := range map[string]string{tokenPref: s.Token, usernamePref: s.Username, mailPref: s.Email} {
+		if v != "" {
+			out[pref] = v
+		}
+	}
+	return out
+}
+
+// accountIn is the account Preferences.xml at path holds.
+func accountIn(path string) (Stored, error) {
+	var a Stored
+	for pref, v := range map[string]*string{tokenPref: &a.Token, usernamePref: &a.Username, mailPref: &a.Email} {
+		got, err := plexprefs.Value(path, pref)
+		if err != nil {
+			return Stored{}, err
+		}
+		*v = got
+	}
+	return a, nil
 }
 
 // Store is where the token is kept outside the file.
@@ -78,9 +120,9 @@ type Starter struct {
 
 // Run claims the server when Claim is a code not spent yet -- for a server
 // with no token, or with a Store, any code other than the one it recorded --
-// and otherwise restores the Store's token into a file that has none. It
-// never fails Plex's start: a refused claim or an unreadable Secret is
-// logged and Plex starts with what the file has.
+// and otherwise forces the Store's account into the file when the Store
+// holds a token. It never fails Plex's start: a refused claim or an
+// unreadable Secret is logged and Plex starts with what the file has.
 func (s Starter) Run(ctx context.Context) error {
 	_, err := plexprefs.Update(s.Prefs, func(current map[string]string) (map[string]string, error) {
 		return s.decide(ctx, current), nil
@@ -95,28 +137,40 @@ func (s Starter) decide(ctx context.Context, current map[string]string) map[stri
 	if haveStore {
 		var err error
 		if stored, err = s.Store.Get(ctx); err != nil {
-			s.Logger.Warn("read the server token Secret; neither claiming over a token nor restoring one", "error", err)
+			s.Logger.Warn("read the server token Secret; neither claiming over a token nor forcing its account", "error", err)
 			haveStore = false
 		}
 	}
-
 	if s.Claim != "" {
 		hash := Hash(s.Claim)
 		if token == "" || (haveStore && stored.ClaimHash != hash) {
 			if fresh, ok := s.claim(ctx, current[clientIDPref]); ok {
 				if haveStore {
+					// The code may sign in another account, so the old
+					// one's username and email go: the new ones fill in
+					// from the file once Plex has written them.
 					if err := s.Store.Put(ctx, Stored{Token: fresh, ClaimHash: hash}); err != nil {
 						s.Logger.Warn("record the claim in the server token Secret", "error", err)
 					}
 				}
-				return map[string]string{tokenPref: fresh}
+				out := map[string]string{tokenPref: fresh}
+				for _, pref := range []string{usernamePref, mailPref} {
+					if current[pref] != "" {
+						out[pref] = ""
+					}
+				}
+				return out
 			}
 		}
 	}
-
-	if token == "" && haveStore && stored.Token != "" {
-		s.Logger.Info("restored the server token from its Secret")
-		return map[string]string{tokenPref: stored.Token}
+	if haveStore && stored.Token != "" {
+		want := stored.account()
+		for pref, v := range want {
+			if current[pref] != v {
+				s.Logger.Info("forced the server's account from its Secret", "preference", pref)
+			}
+		}
+		return want
 	}
 	return nil
 }
@@ -137,28 +191,58 @@ func (s Starter) claim(ctx context.Context, clientID string) (string, bool) {
 	return token, true
 }
 
-// Mirror copies the file's token into the Store.
-type Mirror struct {
-	Prefs string
-	Store Store
+// Keeper holds the Store and Preferences.xml to one account; the lease
+// holder runs Sync every minute.
+type Keeper struct {
+	Prefs  string
+	Store  Store
+	Logger *slog.Logger
 }
 
-// Sync writes the file's token into the Store when they differ. A file with
-// no token leaves the Store alone: it is the copy a restore comes from.
-func (m Mirror) Sync(ctx context.Context) error {
-	token, err := plexprefs.Value(m.Prefs, tokenPref)
-	if err != nil || token == "" {
-		return err
-	}
-	stored, err := m.Store.Get(ctx)
+// Sync writes the file's account into a Store that holds no token -- the
+// first lease holder does, once -- and otherwise fills a field the Store
+// lacks from the file and puts the Store's account back into a file that
+// drifted from it. A file with no token leaves an empty Store alone.
+func (k Keeper) Sync(ctx context.Context) error {
+	file, err := accountIn(k.Prefs)
 	if err != nil {
 		return err
 	}
-	if stored.Token == token {
-		return nil
+	stored, err := k.Store.Get(ctx)
+	if err != nil {
+		return err
 	}
-	stored.Token = token
-	return m.Store.Put(ctx, stored)
+	if stored.Token == "" {
+		if file.Token == "" {
+			return nil
+		}
+		file.ClaimHash = stored.ClaimHash
+		k.Logger.Info("wrote the server's account into its Secret")
+		return k.Store.Put(ctx, file)
+	}
+	filled := stored
+	if filled.Username == "" {
+		filled.Username = file.Username
+	}
+	if filled.Email == "" {
+		filled.Email = file.Email
+	}
+	if filled != stored {
+		if err := k.Store.Put(ctx, filled); err != nil {
+			return err
+		}
+	}
+	changed, err := plexprefs.Update(k.Prefs, func(map[string]string) (map[string]string, error) {
+		return filled.account(), nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		k.Logger.Warn("Preferences.xml held another account; put the Secret's back (a running Plex keeps the one it read until it restarts)",
+			"preferences", changed)
+	}
+	return nil
 }
 
 // Secret is a Store in a Kubernetes Secret, the token under TokenKey.
@@ -176,11 +260,16 @@ func (s Secret) Get(ctx context.Context) (Stored, error) {
 	if err != nil {
 		return Stored{}, fmt.Errorf("get secret %s/%s: %w", s.Namespace, s.Name, err)
 	}
-	return Stored{Token: string(sec.Data[TokenKey]), ClaimHash: sec.Annotations[ClaimAnnotation]}, nil
+	return Stored{
+		Token:     string(sec.Data[TokenKey]),
+		Username:  string(sec.Data[UsernameKey]),
+		Email:     string(sec.Data[EmailKey]),
+		ClaimHash: sec.Annotations[ClaimAnnotation],
+	}, nil
 }
 
-// Put creates the Secret or updates its token and claim record, keeping
-// every other key and annotation. An update carries the resourceVersion it
+// Put creates the Secret or updates its account and claim record, keeping
+// every other key and annotation; an empty field removes its key. An update carries the resourceVersion it
 // read, so a concurrent writer is a conflict, retried by the next sync.
 func (s Secret) Put(ctx context.Context, st Stored) error {
 	secrets := s.Client.CoreV1().Secrets(s.Namespace)
@@ -194,7 +283,7 @@ func (s Secret) Put(ctx context.Context, st Stored) error {
 				Annotations: claimAnnotations(nil, st.ClaimHash),
 			},
 			Type: corev1.SecretTypeOpaque,
-			Data: map[string][]byte{TokenKey: []byte(st.Token)},
+			Data: accountData(nil, st),
 		}, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("create secret %s/%s: %w", s.Namespace, s.Name, err)
@@ -204,15 +293,28 @@ func (s Secret) Put(ctx context.Context, st Stored) error {
 	if err != nil {
 		return fmt.Errorf("get secret %s/%s: %w", s.Namespace, s.Name, err)
 	}
-	if sec.Data == nil {
-		sec.Data = map[string][]byte{}
-	}
-	sec.Data[TokenKey] = []byte(st.Token)
+	sec.Data = accountData(sec.Data, st)
 	sec.Annotations = claimAnnotations(sec.Annotations, st.ClaimHash)
 	if _, err := secrets.Update(ctx, sec, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("update secret %s/%s: %w", s.Namespace, s.Name, err)
 	}
 	return nil
+}
+
+// accountData sets st's fields in data under their keys, removing the key
+// of an empty one.
+func accountData(data map[string][]byte, st Stored) map[string][]byte {
+	if data == nil {
+		data = map[string][]byte{}
+	}
+	for key, v := range map[string]string{TokenKey: st.Token, UsernameKey: st.Username, EmailKey: st.Email} {
+		if v == "" {
+			delete(data, key)
+			continue
+		}
+		data[key] = []byte(v)
+	}
+	return data
 }
 
 func claimAnnotations(a map[string]string, hash string) map[string]string {

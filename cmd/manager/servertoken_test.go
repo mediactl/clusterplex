@@ -60,7 +60,7 @@ func TestNoTokenSecretWritesNoSecret(t *testing.T) {
 	m := tokenManager(t, "server-token")
 	m.Config.Clustarr.TokenSecret = ""
 	require.NoError(t, m.settleServerToken(t.Context()))
-	m.mirrorEvery = 10 * time.Millisecond
+	m.tokenSyncEvery = 10 * time.Millisecond
 	m.takePlexTV(t.Context())
 	defer m.stopLeaderWork()
 	time.Sleep(50 * time.Millisecond)
@@ -69,16 +69,29 @@ func TestNoTokenSecretWritesNoSecret(t *testing.T) {
 	assert.Empty(t, list.Items)
 }
 
-// The lease holder keeps clustarr's Secret holding the file's token, and
-// follows the file when the token changes there (a sign-in through Plex Web).
-func TestTheLeaseHolderMirrorsTheTokenIntoClustarrsSecret(t *testing.T) {
+// The first lease holder writes the file's account into clustarr's absent
+// Secret; from then on the Secret is the master, so a sign-in through Plex
+// Web that lands in the file is put back, and the next start of every pod
+// is held to the Secret's account too.
+func TestTheLeaseHolderWritesTheSecretOnceThenHoldsTheFileToIt(t *testing.T) {
 	m := tokenManager(t, "server-token")
-	m.mirrorEvery = 10 * time.Millisecond
+	_, err := plexprefs.Apply(m.Config.PreferencesFile(), map[string]string{"PlexOnlineUsername": "appkins", "PlexOnlineMail": "me@example.com"})
+	require.NoError(t, err)
+	m.tokenSyncEvery = 10 * time.Millisecond
 	m.takePlexTV(t.Context())
 	defer m.stopLeaderWork()
 	require.Eventually(t, func() bool { return secretToken(t, m) == "server-token" }, 5*time.Second, 10*time.Millisecond)
-
-	_, err := plexprefs.Apply(m.Config.PreferencesFile(), map[string]string{"PlexOnlineToken": "signed-in-again"})
+	sec, err := m.K8sClient.CoreV1().Secrets("clustarr-system").Get(t.Context(), "plex-token", metav1.GetOptions{})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return secretToken(t, m) == "signed-in-again" }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, "appkins", string(sec.Data[servertoken.UsernameKey]))
+	assert.Equal(t, "me@example.com", string(sec.Data[servertoken.EmailKey]))
+
+	_, err = plexprefs.Apply(m.Config.PreferencesFile(), map[string]string{"PlexOnlineToken": "signed-in-again", "PlexOnlineUsername": "someone-else"})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		tok, _ := plexprefs.Value(m.Config.PreferencesFile(), "PlexOnlineToken")
+		user, _ := plexprefs.Value(m.Config.PreferencesFile(), "PlexOnlineUsername")
+		return tok == "server-token" && user == "appkins"
+	}, 5*time.Second, 10*time.Millisecond, "the Secret's account is put back")
+	assert.Equal(t, "server-token", secretToken(t, m), "the Secret does not follow the file")
 }

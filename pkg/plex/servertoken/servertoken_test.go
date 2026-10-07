@@ -32,6 +32,27 @@ func prefsFile(t *testing.T, token string) string {
 	return p
 }
 
+// accountFile is a Preferences.xml signed in as an account.
+func accountFile(t *testing.T, token, username, mail string) string {
+	t.Helper()
+	p := prefsFile(t, token)
+	_, err := plexprefs.Apply(p, map[string]string{"PlexOnlineUsername": username, "PlexOnlineMail": mail})
+	require.NoError(t, err)
+	return p
+}
+
+// accountOf is the account the file holds.
+func accountOf(t *testing.T, p string) [3]string {
+	t.Helper()
+	var out [3]string
+	for i, pref := range []string{"PlexOnlineToken", "PlexOnlineUsername", "PlexOnlineMail"} {
+		v, err := plexprefs.Value(p, pref)
+		require.NoError(t, err)
+		out[i] = v
+	}
+	return out
+}
+
 func tokenIn(t *testing.T, p string) string {
 	t.Helper()
 	v, err := plexprefs.Value(p, "PlexOnlineToken")
@@ -154,14 +175,46 @@ func TestALostTokenIsRestoredFromTheSecret(t *testing.T) {
 	assert.Equal(t, "server-token", tokenIn(t, p))
 }
 
-// The file is the master copy: a Secret holding another token never
-// overwrites one the file has. A sign-in through Plex Web lands in the file,
-// and the Secret catches up through the mirror.
-func TestTheSecretNeverOverwritesATokenTheFileHas(t *testing.T) {
-	p := prefsFile(t, "newer")
+// The Secret is the master copy once it holds a token: every pod starts
+// with its account, whatever the file says -- a sign-in through Plex Web on
+// one replica does not move the others.
+func TestTheSecretsAccountIsForcedBeforePlexStarts(t *testing.T) {
+	p := accountFile(t, "newer", "someone-else", "else@example.com")
+	store := &memStore{stored: Stored{Token: "older", Username: "appkins", Email: "me@example.com"}}
+	require.NoError(t, starter(p, "", store, &plexTV{}).Run(context.Background()))
+	assert.Equal(t, [3]string{"older", "appkins", "me@example.com"}, accountOf(t, p))
+	assert.Zero(t, store.puts)
+}
+
+// An empty field is never forced: a Secret without a username leaves the
+// file's.
+func TestAnEmptyFieldIsNeverForced(t *testing.T) {
+	p := accountFile(t, "older", "appkins", "me@example.com")
 	store := &memStore{stored: Stored{Token: "older"}}
 	require.NoError(t, starter(p, "", store, &plexTV{}).Run(context.Background()))
-	assert.Equal(t, "newer", tokenIn(t, p))
+	assert.Equal(t, [3]string{"older", "appkins", "me@example.com"}, accountOf(t, p))
+}
+
+// Without a Secret, or with one that holds no token, a start forces
+// nothing: the lease holder writes the file's account into it first.
+func TestAStartWithoutASecretTokenLeavesTheFileAlone(t *testing.T) {
+	p := accountFile(t, "server-token", "appkins", "me@example.com")
+	store := &memStore{stored: Stored{Username: "stale"}}
+	require.NoError(t, starter(p, "", store, &plexTV{}).Run(context.Background()))
+	assert.Equal(t, [3]string{"server-token", "appkins", "me@example.com"}, accountOf(t, p))
+}
+
+// A new claim code may sign in another account: the fresh token replaces
+// the old in both, and the old account's username and email go from both,
+// to be filled from the file once Plex has written the new ones.
+func TestANewClaimResetsTheAccountItReplaces(t *testing.T) {
+	p := accountFile(t, "old-token", "appkins", "me@example.com")
+	store := &memStore{stored: Stored{Token: "old-token", Username: "appkins", Email: "me@example.com", ClaimHash: Hash("claim-1")}}
+	tv := &plexTV{token: "fresh"}
+	require.NoError(t, starter(p, "claim-2", store, tv).Run(context.Background()))
+	assert.Equal(t, 1, tv.calls)
+	assert.Equal(t, [3]string{"fresh", "", ""}, accountOf(t, p))
+	assert.Equal(t, Stored{Token: "fresh", ClaimHash: Hash("claim-2")}, store.stored)
 }
 
 // A Secret that cannot be read is no reason to keep Plex from starting.
@@ -193,21 +246,51 @@ func TestPodsStartingTogetherSpendTheClaimOnce(t *testing.T) {
 	assert.Equal(t, "server-token", tokenIn(t, p))
 }
 
-func TestTheMirrorCopiesTheFilesTokenIntoTheSecret(t *testing.T) {
-	p := prefsFile(t, "server-token")
-	store := &memStore{stored: Stored{Token: "older", ClaimHash: Hash("claim-1")}}
-	require.NoError(t, Mirror{Prefs: p, Store: store}.Sync(context.Background()))
-	assert.Equal(t, Stored{Token: "server-token", ClaimHash: Hash("claim-1")}, store.stored)
+func keeper(p string, store Store) Keeper { return Keeper{Prefs: p, Store: store, Logger: quiet()} }
 
-	require.NoError(t, Mirror{Prefs: p, Store: store}.Sync(context.Background()))
-	assert.Equal(t, 1, store.puts, "an unchanged token is not written again")
+// With no Secret token the lease holder writes the file's whole account
+// into it, keeping the claim record; then the two agree and nothing is
+// written again.
+func TestTheFirstLeaseHolderWritesTheFilesAccountIntoTheSecret(t *testing.T) {
+	p := accountFile(t, "server-token", "appkins", "me@example.com")
+	store := &memStore{stored: Stored{ClaimHash: Hash("claim-1")}}
+	require.NoError(t, keeper(p, store).Sync(context.Background()))
+	assert.Equal(t, Stored{Token: "server-token", Username: "appkins", Email: "me@example.com", ClaimHash: Hash("claim-1")}, store.stored)
+
+	require.NoError(t, keeper(p, store).Sync(context.Background()))
+	assert.Equal(t, 1, store.puts, "an account that agrees is not written again")
 }
 
-func TestTheMirrorLeavesTheSecretAloneWithoutAToken(t *testing.T) {
+func TestTheKeeperLeavesAnEmptySecretAloneWithoutAToken(t *testing.T) {
 	p := prefsFile(t, "")
-	store := &memStore{stored: Stored{Token: "server-token"}}
-	require.NoError(t, Mirror{Prefs: p, Store: store}.Sync(context.Background()))
+	store := &memStore{}
+	require.NoError(t, keeper(p, store).Sync(context.Background()))
 	assert.Zero(t, store.puts)
+}
+
+// Once the Secret holds a token it is the master: a file that drifted --
+// a sign-in through Plex Web -- gets the Secret's account back, and the
+// Secret is not touched.
+func TestTheKeeperPutsTheSecretsAccountBackIntoAFileThatDrifted(t *testing.T) {
+	p := accountFile(t, "signed-in-again", "someone-else", "else@example.com")
+	store := &memStore{stored: Stored{Token: "server-token", Username: "appkins", Email: "me@example.com"}}
+	require.NoError(t, keeper(p, store).Sync(context.Background()))
+	assert.Equal(t, [3]string{"server-token", "appkins", "me@example.com"}, accountOf(t, p))
+	assert.Zero(t, store.puts)
+
+	lost := prefsFile(t, "")
+	require.NoError(t, keeper(lost, store).Sync(context.Background()))
+	assert.Equal(t, [3]string{"server-token", "appkins", "me@example.com"}, accountOf(t, lost), "a lost token is restored")
+}
+
+// A field the Secret lacks -- a Secret written before it held the
+// username and email, or after a claim -- is filled from the file.
+func TestTheKeeperFillsAFieldTheSecretLacks(t *testing.T) {
+	p := accountFile(t, "server-token", "appkins", "me@example.com")
+	store := &memStore{stored: Stored{Token: "server-token", ClaimHash: Hash("claim-1")}}
+	require.NoError(t, keeper(p, store).Sync(context.Background()))
+	assert.Equal(t, Stored{Token: "server-token", Username: "appkins", Email: "me@example.com", ClaimHash: Hash("claim-1")}, store.stored)
+	assert.Equal(t, [3]string{"server-token", "appkins", "me@example.com"}, accountOf(t, p))
 }
 
 func TestTheSecretIsCreatedThenUpdatedKeepingWhatElseItHolds(t *testing.T) {
@@ -229,10 +312,19 @@ func TestTheSecretIsCreatedThenUpdatedKeepingWhatElseItHolds(t *testing.T) {
 	_, err = cs.CoreV1().Secrets("clustarr-system").Update(ctx, sec, metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	require.NoError(t, s.Put(ctx, Stored{Token: "t2", ClaimHash: "h1"}))
+	require.NoError(t, s.Put(ctx, Stored{Token: "t2", Username: "appkins", Email: "me@example.com", ClaimHash: "h1"}))
 	got, err = s.Get(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, Stored{Token: "t2", ClaimHash: "h1"}, got)
+	assert.Equal(t, Stored{Token: "t2", Username: "appkins", Email: "me@example.com", ClaimHash: "h1"}, got)
+	sec, err = cs.CoreV1().Secrets("clustarr-system").Get(ctx, "plex-token", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "appkins", string(sec.Data[UsernameKey]))
+	assert.Equal(t, "me@example.com", string(sec.Data[EmailKey]))
+
+	require.NoError(t, s.Put(ctx, Stored{Token: "t3", ClaimHash: "h2"}))
+	got, err = s.Get(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, Stored{Token: "t3", ClaimHash: "h2"}, got, "an empty field removes its key")
 	sec, err = cs.CoreV1().Secrets("clustarr-system").Get(ctx, "plex-token", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "someone-elses", string(sec.Data["clientID"]))

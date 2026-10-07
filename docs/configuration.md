@@ -129,19 +129,30 @@ Plex's own image does with `PLEX_CLAIM`:
   spends the code. A refused exchange (an expired code) is logged and Plex
   starts with the token it had. Delete the claim Secret afterwards; a spent
   code is harmless but useless.
-- **Share it with clustarr.** `plex.clustarr.tokenSecret` names a Secret in
-  `plex.clustarr.namespace` that the lease holder keeps holding the token
-  under `token`, checked every minute -- the Secret clustarr's Plex
-  watchlist ImportList names in its `secretRef`. `Preferences.xml` is the
-  master copy: a sign-in through Plex Web lands in the file and reaches the
-  Secret at the next check, and the Secret never overwrites a token the
-  file holds. It is written back only into a file that has none (a lost
-  `plex-config`) when no claim code is given. The manager may `get` and
-  `update` that one Secret and `create` Secrets there; it never lists or
-  watches them. The kustomize clustarr component grants the name
-  `plex-token`; another name needs its Role edited to match.
-- After a re-claim through Plex Web, the pods other than the one signed in
-  keep the old token in memory until they restart; a claim through
+- **Share it with clustarr, and hold every replica to it.**
+  `plex.clustarr.tokenSecret` names a Secret in `plex.clustarr.namespace`
+  holding the server's plex.tv account: `token` (the key clustarr's Plex
+  watchlist ImportList reads through its `secretRef`), `username` and
+  `email` -- `PlexOnlineToken`, `PlexOnlineUsername` and `PlexOnlineMail`.
+  While the Secret is absent, or holds no token, the lease holder writes
+  the file's account into it (one pod holds the lease at a time, so the
+  first lease holder's), checked every minute. From then on **the Secret is
+  the master copy** (since 2026-10-07; before, the file was): every pod
+  forces the Secret's account into `Preferences.xml` before Plex starts, so
+  every replica starts signed in as the same account, and the lease holder
+  puts it back whenever the file drifts -- a sign-in through Plex Web lands
+  in the file and is undone within a minute. An empty field is never
+  forced: one the Secret lacks is filled from the file. To change the
+  account, edit or delete the Secret (deleting it lets the next check take
+  the file's), or spend a new claim code, which replaces the token in both
+  and lets the new account's username and email fill in from the file. The
+  manager may `get` and `update` that one Secret and `create` Secrets
+  there; it never lists or watches them. The kustomize clustarr component
+  grants the name `plex-token`; another name needs its Role edited to
+  match.
+- A Plex already running keeps the account it read until it restarts: a
+  sign-in through Plex Web changes that one process until its next start,
+  when the Secret's account is forced back; a claim through
   `CLUSTERPLEX_PLEX_CLAIM` restarts them all anyway.
 
 ### Settings the manager refuses

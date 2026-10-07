@@ -45,10 +45,12 @@ plex:
     namespace: clustarr-system
     pathMappings: []
     #  - {clustarr: /data/media, plex: /media}
-    # A Secret in that namespace the lease holder keeps holding the
-    # server's plex.tv token under "token", for clustarr's Plex watchlist
-    # ImportList; it also records the claim codes spent. Grants get and
-    # update on that one Secret, and create on Secrets there.
+    # A Secret in that namespace holding the server's plex.tv account --
+    # "token" (for clustarr's Plex watchlist ImportList), "username",
+    # "email" -- and the claim code last spent. The first lease holder
+    # writes it from Preferences.xml; from then on every replica is held to
+    # it (docs/configuration.md). Grants get and update on that one Secret,
+    # and create on Secrets there.
     tokenSecret: ""
   # A Secret holding a plex.tv claim code (https://plex.tv/claim) under
   # claimSecret.key, exchanged for the server's token at the next start when

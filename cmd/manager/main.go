@@ -82,9 +82,9 @@ type Manager struct {
 	stopLeader context.CancelFunc
 	// provisionEvery is the provisioner's resync period; zero is 10m.
 	provisionEvery time.Duration
-	// mirrorEvery is how often the lease holder copies the server's token
-	// into clustarr's Secret; zero is a minute.
-	mirrorEvery time.Duration
+	// tokenSyncEvery is how often the lease holder holds the Secret and
+	// Preferences.xml to one account; zero is defaultTokenSyncEvery.
+	tokenSyncEvery time.Duration
 	// claimExchange trades a claim code with plex.tv; nil is plex.tv itself.
 	claimExchange servertoken.Exchange
 	// Dynamic reads clustarr's objects; nil unless Clustarr.Enabled.

@@ -45,7 +45,7 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 		go m.watchClustarr(ctx)
 	}
 	if store != nil {
-		go m.mirrorServerToken(ctx, store)
+		go m.keepServerToken(ctx, store)
 	}
 }
 

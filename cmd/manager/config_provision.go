@@ -25,10 +25,12 @@ type ClustarrConfig struct {
 	Enabled      bool                    `mapstructure:"enabled"`
 	Namespace    string                  `mapstructure:"namespace"`
 	PathMappings []clustarrwatch.Mapping `mapstructure:"pathMappings"`
-	// TokenSecret names a Secret in Namespace that the lease holder keeps
-	// holding the server's plex.tv token under "token" -- what clustarr's
-	// Plex watchlist ImportList reads -- and that records the claim codes
-	// spent. Empty writes none.
+	// TokenSecret names a Secret in Namespace holding the server's plex.tv
+	// account: its token under "token" -- what clustarr's Plex watchlist
+	// ImportList reads -- and its username and email, and the claim code
+	// last spent. The first lease holder writes it from Preferences.xml when
+	// it has no token; from then on it is the master copy every replica is
+	// held to (servertoken). Empty keeps none.
 	TokenSecret string `mapstructure:"tokenSecret"`
 }
 
