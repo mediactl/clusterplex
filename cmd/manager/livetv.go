@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -18,12 +20,14 @@ import (
 // channels takes longer than the client's 30 s default.
 const liveTVTimeout = 2 * time.Minute
 
-// liveTVLoop is the lease holder's Live TV work: watch clustarr's
-// IPTVProviders and converge Plex's DVRs on every change and every
+// liveTVLoop is the lease holder's Live TV work: converge Plex's DVRs on
+// every change the pod's watch (startLiveTV) reports and every
 // provisionEvery, recording Events on the providers.
 func (m *Manager) liveTVLoop(ctx context.Context) {
 	log := m.Logger.With("component", "livetv")
-	ns := m.Config.Clustarr.Namespace
+	if m.liveTV == nil {
+		return
+	}
 	broadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: m.K8sClient.EventsV1()})
 	broadcaster.StartRecordingToSink(ctx.Done())
 	defer broadcaster.Shutdown()
@@ -42,29 +46,8 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		Logger: log,
 		Record: func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
 	}
-	changes := make(chan []plexlivetv.Provider, 1)
-	w := &plexlivetv.Watcher{
-		Dynamic: m.Dynamic, Discovery: m.K8sClient.Discovery(), Namespace: ns, Logger: log,
-		OnChange: func(live []plexlivetv.Provider) {
-			// Latest wins.
-			for {
-				select {
-				case <-changes:
-				default:
-				}
-				select {
-				case changes <- live:
-					return
-				default:
-				}
-			}
-		},
-	}
-	go func() {
-		if err := w.Run(ctx); err != nil {
-			log.Error("the IPTVProvider watch ended", "error", err)
-		}
-	}()
+	changes, unsubscribe := m.liveTV.subscribe()
+	defer unsubscribe()
 
 	backoff := min(provisionBackoffStart, every)
 	var (
@@ -118,6 +101,121 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		}
 		timer.Reset(wait)
 	}
+}
+
+// liveTVSyncWait bounds how long PMS waits at start for the first list of
+// IPTVProviders, so the blocks' proxies are up before PMS asks its devices.
+const liveTVSyncWait = 30 * time.Second
+
+// liveTVRetry is how often a proxy that could not bind is tried again.
+const liveTVRetry = 30 * time.Second
+
+// startLiveTV runs on every pod, leader or not, before PMS starts (Live TV
+// spec §5.0): it adds the link-local address to lo, watches clustarr's
+// IPTVProviders, and serves every block's port through m.proxies. It waits
+// for the first list up to liveTVSyncWait; past that PMS starts anyway and
+// the proxies follow. The lease holder's liveTVLoop reads the same feed.
+func (m *Manager) startLiveTV(ctx context.Context) {
+	log := m.Logger.With("component", "livetv")
+	addr := m.Config.LiveTV.LocalAddress
+	if err := plexlivetv.EnsureLinkLocal(addr); err != nil {
+		log.Error("add the Live TV address; PMS cannot reach the tuner's blocks", "address", addr, "error", err)
+	}
+	m.proxies = &plexlivetv.ProxySet{LocalAddress: addr, Logger: log}
+	m.liveTV = &liveTVFeed{}
+	first, unsubscribe := m.liveTV.subscribe()
+
+	w := &plexlivetv.Watcher{
+		Dynamic: m.Dynamic, Discovery: m.K8sClient.Discovery(), Namespace: m.Config.Clustarr.Namespace, Logger: log,
+		OnChange: m.liveTV.set,
+	}
+	go func() {
+		if err := w.Run(ctx); err != nil {
+			log.Error("the IPTVProvider watch ended", "error", err)
+		}
+	}()
+	go m.serveLiveTVProxies(ctx, log)
+
+	defer unsubscribe()
+	select {
+	case <-first:
+	case <-time.After(liveTVSyncWait):
+		log.Warn("no list of IPTVProviders yet; starting Plex, the blocks' proxies follow", "waited", liveTVSyncWait)
+	case <-ctx.Done():
+	}
+}
+
+// serveLiveTVProxies applies every change to the proxies, retrying a port
+// that could not be bound.
+func (m *Manager) serveLiveTVProxies(ctx context.Context, log *slog.Logger) {
+	changes, unsubscribe := m.liveTV.subscribe()
+	defer unsubscribe()
+	defer m.proxies.Close()
+	var (
+		live  []plexlivetv.Provider
+		retry <-chan time.Time
+	)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case live = <-changes:
+		case <-retry:
+		}
+		retry = nil
+		if err := m.proxies.Apply(live); err != nil {
+			log.Warn("a block's proxy could not listen; retrying", "error", err, "in", liveTVRetry)
+			retry = time.After(liveTVRetry)
+		}
+	}
+}
+
+// liveTVFeed hands the latest IPTVProviders to every subscriber: the
+// proxies on every pod, and the lease holder's loop. A slow subscriber sees
+// only the latest list.
+type liveTVFeed struct {
+	mu     sync.Mutex
+	live   []plexlivetv.Provider
+	synced bool
+	subs   map[chan []plexlivetv.Provider]struct{}
+}
+
+func (f *liveTVFeed) set(live []plexlivetv.Provider) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.live, f.synced = live, true
+	for ch := range f.subs {
+		offer(ch, live)
+	}
+}
+
+// subscribe returns a channel that receives the current list, once there is
+// one, and every later one.
+func (f *liveTVFeed) subscribe() (<-chan []plexlivetv.Provider, func()) {
+	ch := make(chan []plexlivetv.Provider, 1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.subs == nil {
+		f.subs = map[chan []plexlivetv.Provider]struct{}{}
+	}
+	f.subs[ch] = struct{}{}
+	if f.synced {
+		offer(ch, f.live)
+	}
+	return ch, func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.subs, ch)
+	}
+}
+
+// offer replaces whatever ch holds with live.
+func offer(ch chan []plexlivetv.Provider, live []plexlivetv.Provider) {
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- live
 }
 
 // liveTVActions names what the lease holder did for each reason, the
