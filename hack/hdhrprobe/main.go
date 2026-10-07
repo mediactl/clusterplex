@@ -95,23 +95,23 @@ func deviceMux(deviceID string, first int, count *atomic.Int64) *http.ServeMux {
 	mux.HandleFunc("/lineup.post", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/device.xml", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><URLBase>%s</URLBase><device><deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType><friendlyName>clustarr probe</friendlyName><manufacturer>Silicondust</manufacturer><modelName>HDTC-2US</modelName><modelNumber>HDTC-2US</modelNumber><serialNumber>%s</serialNumber><UDN>uuid:%s</UDN></device></root>`, base(r), deviceID, deviceID)
+		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><URLBase>%s</URLBase><device><deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType><friendlyName>clustarr probe</friendlyName><manufacturer>Silicondust</manufacturer><modelName>HDTC-2US</modelName><modelNumber>HDTC-2US</modelNumber><serialNumber>%s</serialNumber><UDN>uuid:%s</UDN></device></root>`, base(r), deviceID, deviceID)
 	})
 	guide := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		start := time.Now().UTC().Truncate(time.Hour)
-		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<tv generator-info-name="hdhrprobe">`+"\n")
+		_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<tv generator-info-name="hdhrprobe">`+"\n")
 		for i := 0; i < int(count.Load()); i++ {
-			fmt.Fprintf(w, `<channel id="%d"><display-name>Probe %d</display-name></channel>`+"\n", first+i, first+i)
+			_, _ = fmt.Fprintf(w, `<channel id="%d"><display-name>Probe %d</display-name></channel>`+"\n", first+i, first+i)
 		}
 		for i := 0; i < int(count.Load()); i++ {
 			for h := 0; h < 48; h += 2 {
 				s, e := start.Add(time.Duration(h)*time.Hour), start.Add(time.Duration(h+2)*time.Hour)
-				fmt.Fprintf(w, `<programme start="%s" stop="%s" channel="%d"><title>Probe %d</title></programme>`+"\n",
+				_, _ = fmt.Fprintf(w, `<programme start="%s" stop="%s" channel="%d"><title>Probe %d</title></programme>`+"\n",
 					s.Format("20060102150405 -0700"), e.Format("20060102150405 -0700"), first+i, first+i)
 			}
 		}
-		fmt.Fprint(w, "</tv>\n")
+		_, _ = fmt.Fprint(w, "</tv>\n")
 	}
 	mux.HandleFunc("/livetv/probe/probe/xmltv.xml", guide)
 	mux.HandleFunc("/xmltv.xml", guide)
@@ -139,7 +139,7 @@ func deviceMux(deviceID string, first int, count *atomic.Int64) *http.ServeMux {
 		if v, err := strconv.Atoi(r.URL.Query().Get("n")); err == nil && v >= 0 {
 			count.Store(int64(v))
 		}
-		fmt.Fprintln(w, count.Load())
+		_, _ = fmt.Fprintln(w, count.Load())
 	})
 	return mux
 }
@@ -158,13 +158,13 @@ func forward(listen, target string) {
 			log.Fatalf("forward %s: %v", listen, err)
 		}
 		go func() {
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 			u, err := net.DialTimeout("tcp", target, 5*time.Second)
 			if err != nil {
 				log.Printf("forward %s: %v", target, err)
 				return
 			}
-			defer u.Close()
+			defer func() { _ = u.Close() }()
 			go func() { _, _ = io.Copy(u, c) }()
 			_, _ = io.Copy(c, u)
 		}()
