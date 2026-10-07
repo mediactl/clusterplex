@@ -168,9 +168,6 @@ func (c *Converger) converge(ctx context.Context, p Provider, st *state) error {
 	uri := "http://" + p.Address
 	dev, ok := st.devices[p.DeviceID]
 	if !ok {
-		if _, err := c.PMS.DiscoverDevice(ctx, uri); err != nil {
-			return fmt.Errorf("discover %s: %w", uri, err)
-		}
 		if err := c.PMS.AddDevice(ctx, uri); err != nil && !errors.Is(err, plexapi.ErrConflict) {
 			return fmt.Errorf("add device %s: %w", uri, err)
 		}

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,34 +32,71 @@ func (s *Str) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Device is a tuner device PMS knows (GET /media/grabbers/devices). UUID is
-// its identifier, "device://tv.plex.grabbers.hdhomerun/<DeviceID>".
+// Device is a tuner device PMS knows (GET /media/grabbers/devices), as
+// recorded from PMS 1.43.4 (docs/livetv-pms-calls.md). UUID is its
+// identifier, "device://tv.plex.grabbers.hdhomerun/<DeviceID>"; Model is the
+// device's FriendlyName; ParentID is its DVR's key once it has one (a number
+// on the wire).
 type Device struct {
 	Key      Str    `json:"key"`
 	UUID     string `json:"uuid"`
 	URI      string `json:"uri"`
-	Name     string `json:"name"`
 	DeviceID string `json:"deviceId"`
+	Model    string `json:"model"`
 	State    string `json:"state"`
+	ParentID int    `json:"parentID"`
 }
 
 // DVR is a PMS DVR (GET /livetv/dvrs): a lineup over one or more devices.
+// It has no title; LineupTitle is the lineup's.
 type DVR struct {
-	Key     Str      `json:"key"`
-	UUID    string   `json:"uuid"`
-	Title   string   `json:"title"`
-	Lineup  string   `json:"lineup"`
-	Devices []Device `json:"Device"`
+	Key           Str      `json:"key"`
+	UUID          string   `json:"uuid"`
+	Language      string   `json:"language"`
+	Lineup        string   `json:"lineup"`
+	LineupTitle   string   `json:"lineupTitle"`
+	EPGIdentifier string   `json:"epgIdentifier"`
+	Devices       []Device `json:"Device"`
 }
 
 // ChannelMapping pairs a device channel with a lineup channel, as PMS's EPG
 // matched them (GET /livetv/epg/channelmap) and as a channel-map save sends
-// them back.
+// them back. Enabled is "1" for a channel a saved map turned on, as a device
+// lists them.
 type ChannelMapping struct {
 	ChannelKey       string `json:"channelKey"`
 	DeviceIdentifier string `json:"deviceIdentifier"`
 	LineupIdentifier string `json:"lineupIdentifier"`
+	Favorite         string `json:"favorite,omitempty"`
+	Enabled          string `json:"enabled,omitempty"`
 }
+
+// Activity is one of PMS's running activities (GET /activities). A guide
+// load is type ActivityGuideLoad.
+type Activity struct {
+	UUID     string `json:"uuid"`
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle"`
+	Progress int    `json:"progress"`
+}
+
+// ActivityGuideLoad is the activity of a DVR's guide being rebuilt. A DVR
+// deleted, or its map saved again, while one runs deadlocked PMS (recorded):
+// callers wait for it to end.
+const ActivityGuideLoad = "provider.epg.load"
+
+// MaxChannelMapBytes keeps a channel-map query under PMS's 32 KiB request
+// line, with room for the path (recorded: 454 four-digit channels are a
+// 32,738-byte path and query, 455 a 400).
+const MaxChannelMapBytes = 30000
+
+// ErrChannelMapTooLarge is a channel map PMS would refuse; nothing is sent.
+var ErrChannelMapTooLarge = errors.New("plexapi: channel map over 30,000 bytes")
+
+// ErrEmptyChannelMap is a save with no channel: one cleared a device's whole
+// map in the recording, so it is never sent.
+var ErrEmptyChannelMap = errors.New("plexapi: empty channel map")
 
 // XMLTVLineup is the lineup id of an XMLTV guide at guideURL, titled title.
 // url.Values encodes it once; it must not be encoded beforehand.
@@ -73,17 +112,6 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 		} `json:"MediaContainer"`
 	}
 	err := c.doLimit(ctx, http.MethodGet, "/media/grabbers/devices", nil, &out, maxLiveTVBody)
-	return out.MediaContainer.Device, err
-}
-
-// DiscoverDevice asks PMS to probe uri, returning the device found there.
-func (c *Client) DiscoverDevice(ctx context.Context, uri string) ([]Device, error) {
-	var out struct {
-		MediaContainer struct {
-			Device []Device `json:"Device"`
-		} `json:"MediaContainer"`
-	}
-	err := c.do(ctx, http.MethodPost, "/media/grabbers/devices/discover", url.Values{"uri": {uri}}, &out)
 	return out.MediaContainer.Device, err
 }
 
@@ -142,10 +170,8 @@ func (c *Client) EPGChannelMap(ctx context.Context, deviceUUID, lineup string) (
 	return out.MediaContainer.ChannelMapping, err
 }
 
-// SaveChannelMap enables every mapping's channel on the device, in one
-// request: PMS replaces the whole map on each save, so a batch would leave
-// only its own channels (iptvtunerr's finding).
-func (c *Client) SaveChannelMap(ctx context.Context, deviceKey string, m []ChannelMapping) error {
+// channelMapQuery is SaveChannelMap's query for m.
+func channelMapQuery(m []ChannelMapping) url.Values {
 	q := url.Values{}
 	enabled := make([]string, 0, len(m))
 	for _, cm := range m {
@@ -154,7 +180,36 @@ func (c *Client) SaveChannelMap(ctx context.Context, deviceKey string, m []Chann
 		q.Set("channelMapping["+cm.DeviceIdentifier+"]", cm.LineupIdentifier)
 	}
 	q.Set("channelsEnabled", strings.Join(enabled, ","))
+	return q
+}
+
+// MapBytes is the length of SaveChannelMap's encoded query for m.
+func MapBytes(m []ChannelMapping) int { return len(channelMapQuery(m).Encode()) }
+
+// SaveChannelMap enables every mapping's channel on the device, in one
+// request: PMS replaces the whole map on each save, so a batch would leave
+// only its own channels (iptvtunerr's finding). An empty map, or one over
+// MaxChannelMapBytes, is refused before anything is sent.
+func (c *Client) SaveChannelMap(ctx context.Context, deviceKey string, m []ChannelMapping) error {
+	if len(m) == 0 {
+		return ErrEmptyChannelMap
+	}
+	q := channelMapQuery(m)
+	if n := len(q.Encode()); n > MaxChannelMapBytes {
+		return fmt.Errorf("%w: %d bytes for %d channels", ErrChannelMapTooLarge, n, len(m))
+	}
 	return c.do(ctx, http.MethodPut, "/media/grabbers/devices/"+url.PathEscape(deviceKey)+"/channelmap", q, nil)
+}
+
+// Activities lists PMS's running activities.
+func (c *Client) Activities(ctx context.Context) ([]Activity, error) {
+	var out struct {
+		MediaContainer struct {
+			Activity []Activity `json:"Activity"`
+		} `json:"MediaContainer"`
+	}
+	err := c.do(ctx, http.MethodGet, "/activities", nil, &out)
+	return out.MediaContainer.Activity, err
 }
 
 // ReloadGuide asks PMS to fetch a DVR's guide again.
