@@ -17,6 +17,7 @@ const (
 	providersKey = "plex.metadataProviders"
 	librariesKey = "plex.libraries"
 	clustarrKey  = "plex.clustarr"
+	liveTVKey    = "plex.liveTV"
 )
 
 // ClustarrConfig is the clustarr install whose changes Plex follows
@@ -84,4 +85,28 @@ func loadProvisioning(v *viper.Viper) (plexprovision.Config, ClustarrConfig, err
 		}
 	}
 	return prov, cl, errors.Join(errs...)
+}
+
+// LiveTVConfig adds clustarr's IPTVProviders to Plex as DVRs (clustarr's
+// Live TV spec 2026-10-07 §6.1), watching plex.clustarr.namespace. Off, no
+// DVR is touched.
+type LiveTVConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Language is the DVRs' guide language. Default "eng".
+	Language string `mapstructure:"language"`
+}
+
+// loadLiveTV reads plex.liveTV; it needs the clustarr namespace it watches.
+func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
+	var lt LiveTVConfig
+	if err := v.UnmarshalKey(liveTVKey, &lt, func(dc *mapstructure.DecoderConfig) { dc.WeaklyTypedInput = true }); err != nil {
+		return lt, fmt.Errorf("read %s: %w", liveTVKey, err)
+	}
+	if lt.Language == "" {
+		lt.Language = "eng"
+	}
+	if lt.Enabled && cl.Namespace == "" {
+		return lt, fmt.Errorf("%s.enabled: needs %s.namespace, where clustarr's IPTVProviders live", liveTVKey, clustarrKey)
+	}
+	return lt, nil
 }

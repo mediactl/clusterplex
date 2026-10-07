@@ -61,6 +61,9 @@ data:
           {{- range .Values.plex.clustarr.pathMappings }}
           - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}
           {{- end }}
+      liveTV:
+        enabled: {{ .Values.plex.liveTV.enabled }}
+        language: {{ .Values.plex.liveTV.language | default "eng" | quote }}
     {{- if not .Values.remux.enabled }}
     # No remux pool: every browser stream stays on Plex's transcoder.
     remux-selector: ""

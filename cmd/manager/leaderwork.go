@@ -49,6 +49,9 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 	if m.Config.Clustarr.Enabled && m.Dynamic != nil {
 		go m.watchClustarr(ctx)
 	}
+	if m.Config.LiveTV.Enabled && m.Dynamic != nil {
+		go m.liveTVLoop(ctx)
+	}
 	if store != nil {
 		go m.keepServerToken(ctx, store)
 	}

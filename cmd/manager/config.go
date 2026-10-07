@@ -154,6 +154,8 @@ type Config struct {
 	Provision plexprovision.Config
 	// Clustarr is the clustarr install whose changes Plex follows.
 	Clustarr ClustarrConfig
+	// LiveTV adds clustarr's IPTVProviders to Plex as DVRs.
+	LiveTV LiveTVConfig
 }
 
 // newFlagSet declares every flag and the default for each setting.
@@ -294,6 +296,11 @@ func loadConfig(args []string) (Config, error) {
 		errs = append(errs, err)
 	}
 	c.Provision, c.Clustarr = prov, cl
+	lt, err := loadLiveTV(v, cl)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	c.LiveTV = lt
 
 	if c.PodName == "" || c.Namespace == "" {
 		errs = append(errs, errors.New("pod-name and pod-namespace must be set (use the downward API as POD_NAME and POD_NAMESPACE)"))

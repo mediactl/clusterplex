@@ -255,6 +255,12 @@ func (c *Client) Get(ctx context.Context, path string, q url.Values, out any) er
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, out any) error {
+	return c.doLimit(ctx, method, path, q, out, maxBody)
+}
+
+// doLimit is do with its own body cap: a Live TV channel map carries a row
+// per channel, past the 1 MiB every other answer fits.
+func (c *Client) doLimit(ctx context.Context, method, path string, q url.Values, out any, limit int) error {
 	u := strings.TrimRight(c.BaseURL, "/") + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
@@ -278,11 +284,11 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, out 
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return fmt.Errorf("%s %s: read: %w", method, path, err)
 	}
-	if len(body) > maxBody {
+	if len(body) > limit {
 		return fmt.Errorf("%s %s: %w", method, path, ErrResponseTooLarge)
 	}
 	switch {

@@ -88,7 +88,8 @@ type Manager struct {
 	tokenSyncEvery time.Duration
 	// claimExchange trades a claim code with plex.tv; nil is plex.tv itself.
 	claimExchange servertoken.Exchange
-	// Dynamic reads clustarr's objects; nil unless Clustarr.Enabled.
+	// Dynamic reads clustarr's objects; nil unless Clustarr or LiveTV is
+	// enabled.
 	Dynamic dynamic.Interface
 
 	mu         sync.RWMutex
@@ -183,7 +184,7 @@ func run() int {
 		pool:       pool,
 		isStarting: true,
 	}
-	if cfg.Clustarr.Enabled {
+	if cfg.Clustarr.Enabled || cfg.LiveTV.Enabled {
 		if m.Dynamic, err = dynamic.NewForConfig(restCfg); err != nil {
 			logger.Error("build the clustarr client", "error", err)
 			return 1

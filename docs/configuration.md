@@ -489,7 +489,7 @@ plex:
 - **It creates and updates; it never deletes.** A provider is registered by
   its root, one agent is created per provider (clustarr's alone, no Plex
   fallback), and each library is created on its provider's agent. Removing an
-  entry leaves it in Plex.
+  entry leaves it in Plex. Live TV is the one exception, below.
 - **An existing library on another agent is only reported** unless
   `switchAgent: true`: `clusterplex_library_agent_drift{library}` reads 1 and
   the manager logs it. With `switchAgent` set, the library is moved onto the
@@ -522,6 +522,69 @@ plex:
 | `clusterplex_clustarr_unmappable_paths_total` | clustarr paths no mapping covers |
 | `clusterplex_clustarr_uncovered_paths_total` | Mapped paths no library covers |
 | `clusterplex_clustarr_watch_synced` | 1 once the clustarr watch has synced |
+
+## Live TV: clustarr's IPTVProviders as DVRs
+
+With `plex.liveTV.enabled` the lease holder adds each of clustarr's
+`IPTVProvider`s in `plex.clustarr.namespace` to Plex as a DVR (clustarr's
+Live TV spec 2026-10-07 §6.1). Each provider is an emulated HDHomeRun at its
+Service address, `status.address`.
+
+```yaml
+plex:
+  clustarr:
+    namespace: clustarr-system
+  liveTV:
+    enabled: true
+    language: eng   # the DVRs' guide language
+```
+
+**What it does,** for each provider that is Ready and enabled:
+
+1. **The device.** It registers the device at `http://<status.address>`, once.
+   A device PMS already lists is never registered again: registering again
+   is how duplicate and empty DVR rows arise. A listed device at another
+   address is reported (`DVRDeviceAddressChanged`) and left alone.
+2. **The DVR.**
+   - **Under `epgSource: XEPG`:** it creates the DVR over the provider's XMLTV
+     guide (`status.guideURL`).
+   - **Under `PMS`:** it records `DVRNeedsLineup` and waits. Finish the DVR
+     once in Plex's setup wizard, choosing your location's lineup.
+3. **The channel map.** It saves the full channel map whenever
+   `status.lineup.hash` changes, in one request. Plex replaces the whole map
+   on each save, so a batch would leave only its own channels. This is what
+   carries more than the setup wizard's 480 channels, under either guide
+   source.
+4. **The guide.** It reloads the DVR's guide whenever `status.guideHash`
+   changes.
+
+**What it manages:** only HDHomeRun devices whose identifier carries a
+provider's `status.deviceID`. Every other tuner and DVR is left alone.
+
+**The deletion exception:** this is the provisioner's one deletion (the
+owner's ruling, 2026-10-07). It deletes:
+- a deleted provider's DVR and device, which takes the DVR's recording rules
+  with it;
+- duplicate DVR rows on a managed device;
+- orphans, the DVRs whose XMLTV lineup URL names a provider of the namespace
+  that no longer exists.
+
+A PMS-mode provider deleted while cluster-plex was down leaves no such URL,
+so its DVR is not found: delete it in Plex. `enabled: false` deletes
+nothing; Plex shows the device offline.
+
+**Events:** it records `DVRProvisioned`, `DVRChannelMapSaved`,
+`DVRNeedsLineup`, `DVRDeviceAddressChanged`, `DVRProvisionFailed` and
+`DVRRemoved` as `events.k8s.io` Events on the provider (`kubectl describe
+iptv`).
+- **RBAC:** the chart grants `get`, `list` and `watch` on
+  `iptvproviders.clustarr.io`, and `create` and `patch` on `events.k8s.io`
+  Events, in clustarr's namespace.
+- **Before the CRD exists:** the watch logs once and checks again every 5
+  minutes. It never holds up the catalog watch.
+
+**The calls** are recorded against the owner's PMS in
+`docs/livetv-pms-calls.md`.
 
 ## The remux pool
 

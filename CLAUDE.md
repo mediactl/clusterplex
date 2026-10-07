@@ -92,6 +92,16 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   library on another agent is only reported unless `switchAgent` is set.
   The clustarr watch reads clustarr as unstructured objects and imports
   none of its code.
+- **Live TV is the provisioner's one deletion** (owner, 2026-10-07).
+  `pkg/plex/livetv`, behind `plex.liveTV`, adds each of clustarr's
+  IPTVProviders to Plex as a DVR: one device registration, the DVR, and the
+  full channel map in one PUT (more than the wizard's 480 channels).
+  - It deletes only the DVRs and devices of managed HDHomeRun devices: a
+    deleted provider's, duplicates, and orphans named by their lineup URL.
+  - It never registers a listed device again.
+  - Its own informer keeps a missing CRD from stalling the clustarr watch.
+  - The PMS calls are in `docs/livetv-pms-calls.md`, recorded against the
+    owner's PMS.
 - **Media analysis and skip markers are seeded into Plex's database**
   (ADR 0006), the one exception to API-only: Plex's API can write neither.
   `pkg/plexseed` writes clustarr's probe into an unanalysed media item and

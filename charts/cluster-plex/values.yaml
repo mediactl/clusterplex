@@ -72,6 +72,15 @@ plex:
     # it (docs/configuration.md). Grants get and update on that one Secret,
     # and create on Secrets there.
     tokenSecret: ""
+  # Live TV: add each of clustarr's IPTVProviders (in plex.clustarr.namespace)
+  # to Plex as a DVR -- its HDHomeRun device, its XMLTV guide and the full
+  # channel map, which carries more than the setup wizard's 480 channels.
+  # Deleting a provider deletes its DVR and that DVR's recording rules.
+  # Grants get, list and watch on iptvproviders.clustarr.io and create and
+  # patch on events.k8s.io Events there.
+  liveTV:
+    enabled: false
+    language: eng
   # A Secret holding a plex.tv claim code (https://plex.tv/claim) under
   # claimSecret.key, exchanged for the server's token at the next start when
   # the server has none or, with plex.clustarr.tokenSecret, when the code is
