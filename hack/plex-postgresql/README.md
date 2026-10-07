@@ -693,6 +693,29 @@ Verified on kind-cluster-plex (`e6ae877`): the 74 items still off their Plex
 GUID after the old shim's passes all moved in one serial re-run, and no pod
 logged a rejected write, a write error or a crash after the roll.
 
+## Fixed: creating a Live TV DVR with an XMLTV guide answered 500
+
+`POST /livetv/dvrs` with an XMLTV lineup creates the guide's own SQLite
+database, `tv.plex.providers.epg.xmltv-<uuid>.db`, which the shim does not
+redirect. Its migration ended in `cannot VACUUM - SQL statements in progress`
+(after ~300 `SQLITE_SCHEMA` retries of `select * from metadata_items limit 1`),
+so PMS answered 500 and no DVR was made. The statement in progress was FTS3's
+`PRAGMA 'main'.page_size`: libsqlite3 prepares it itself when a `CREATE VIRTUAL
+TABLE` step creates an FTS4 table or a prepare connects one, so the shim never
+sees the prepare, but the finalize goes through the shim. When it reused the
+address of a statement finalized within the last 2 s, the double-finalize
+guard (`PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED`, on by default) skipped the
+real finalize and left it stepped and open. With the guard off the DVR was
+created, which located it. Fixed in `v1.3.17-clusterplex.25`: the guard skips
+only an address that is no live statement of the connection the shim is
+running real SQLite on in that thread (exec, prepare, the prepare worker,
+step), walked with `sqlite3_next_stmt`, so a freed statement is still never
+finalized twice and never read. Verified in the fork's standalone compose
+with the guard on, and on kind-cluster-plex (`2c6ab53`): the lease holder's
+PMS created XMLTV DVRs over 100- and 1,000-channel guides, each guide
+database migrating to the end, VACUUM included (docs/livetv-pms-calls.md on
+the livetv branch records the calls).
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
