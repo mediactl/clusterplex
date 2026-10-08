@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -123,6 +124,25 @@ func run() int {
 		return 2
 	}
 	tracer, metrics := telemetry.InitTelemetry()
+	metrics.Activity.Logger = logger.With("component", "activity")
+	otelShutdown, signals, err := telemetry.OTel{
+		ServiceName: "clusterplex-manager", PodName: cfg.PodName, Namespace: cfg.Namespace,
+		Gatherer: prometheus.DefaultGatherer, Logger: logger,
+	}.Setup(context.Background())
+	switch {
+	case err != nil:
+		// Plex serves without it: an exporter is not worth an outage.
+		logger.Error("OpenTelemetry export is off", "error", err)
+	case signals.Traces || signals.Metrics:
+		logger.Info("exporting OpenTelemetry over OTLP", "traces", signals.Traces, "metrics", signals.Metrics)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelShutdown(ctx); err != nil {
+			logger.Warn("flush OpenTelemetry", "error", err)
+		}
+	}()
 
 	restCfg, err := newRestConfig()
 	if err != nil {

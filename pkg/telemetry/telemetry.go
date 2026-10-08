@@ -6,6 +6,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/mediactl/clusterplex/pkg/plex/activity"
 )
 
 // Metrics are the manager's Prometheus series.
@@ -42,6 +44,9 @@ type Metrics struct {
 	// SeedFiles counts the seeder's outcomes per file (pkg/plexseed): seeded,
 	// unmatched (Plex has no part for it) or error.
 	SeedFiles *prometheus.CounterVec
+	// Activity is what Tautulli would report about this pod's Plex: its
+	// streams, plays, watch time, library and version (pkg/plex/activity).
+	Activity *activity.Monitor
 }
 
 // InitTelemetry returns the tracer and registers the metrics.
@@ -110,5 +115,7 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Help: "1 once the lease holder's clustarr watch has synced, 0 while it has not within its timeout",
 		}),
 	}
+	metrics.Activity = activity.NewMonitor()
+	prometheus.MustRegister(metrics.Activity)
 	return tracer, metrics
 }

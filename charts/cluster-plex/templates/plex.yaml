@@ -121,6 +121,18 @@ spec:
                   name: {{ .Values.plex.claimSecret.name | default (printf "%s-plex-claim" .Release.Name) }}
                   key: {{ .Values.plex.claimSecret.key }}
                   optional: true
+            {{- with .Values.otel.endpoint }}
+            # The manager exports spans and its metrics over OTLP/gRPC here;
+            # the exporters read the standard variables themselves.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ $.Values.otel.insecure | quote }}
+            {{- end }}
+            {{- with .Values.otel.resourceAttributes }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ . | quote }}
+            {{- end }}
           ports:
             # The manager's proxy holds this port in the pod namespace and
             # forwards to Plex, which binds it inside its own namespace. There

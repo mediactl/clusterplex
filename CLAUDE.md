@@ -52,6 +52,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/mediaproxy/`, `pkg/proxy/` | Serving media, and the L4 proxy |
 | `pkg/remoteexec/` | Running helper binaries locally or on a worker pod |
 | `pkg/plex/api/` | A client for Plex's admin API: providers, agents, libraries, refreshes |
+| `pkg/plex/activity/` | What Tautulli reads from Plex, read by the manager: streams, plays, watch time, library counts, as Prometheus series and a span per finished play |
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
 | `pkg/remux/` | Plex Web's DASH streams on the remux pool: classify and parse a shimmed job, the manifest, the fMP4 splitter (`remux`), the cache (`cache`), the ffgo pipeline (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |

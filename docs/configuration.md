@@ -330,6 +330,64 @@ The manager serves Prometheus metrics on the probe port, `/metrics`:
 Three pods splitting one library are invisible without these: nothing else
 says which pod holds how many streams.
 
+#### Tautulli's view
+
+The same read of `/status/sessions` is taken apart the way Tautulli takes it
+apart (`pkg/plex/activity`), so a dashboard can show what Tautulli would:
+
+| Series | Meaning |
+| --- | --- |
+| `clusterplex_plex_streams{user,media_type,decision,location,player,platform,state,resolution}` | Playbacks being served. `decision` is Tautulli's: `transcode` when the video or audio is transcoded, `direct_stream` when either is copied into a new container, else `direct_play`. `media_type` is Plex's, or `live` for Live TV; `resolution` is the source's |
+| `clusterplex_plex_stream_bandwidth_bytes_per_second{user,location}` | What Plex budgets for those playbacks, LAN and WAN |
+| `clusterplex_plex_transcodes{video,audio,subtitle,hw_decode,hw_encode}` | Transcode sessions by decision and by hardware decoder and encoder (`none` is software) |
+| `clusterplex_plex_transcodes_throttled` | Transcodes far enough ahead of their player that Plex throttled them |
+| `clusterplex_plex_transcodes_lagging` | Transcodes slower than real time and not finished: a player waiting on them |
+| `clusterplex_plex_plays_total{user,media_type,decision,player}` | Finished plays. A video play under two minutes is not counted (Tautulli's ignore interval); a track always is |
+| `clusterplex_plex_plays_watched_total{user,media_type}` | Finished plays that got at least 85% through the item |
+| `clusterplex_plex_watch_seconds_total{user,media_type}` | Time spent playing, paused time excluded |
+| `clusterplex_plex_library_items{section,section_type,type}` | Items per library section: movies; shows, seasons and episodes; artists, albums and tracks. Counted every five minutes by the lease holder alone, so the series do not repeat per pod |
+| `clusterplex_plex_server_info{version,platform}` | 1, labelled with this pod's Plex version |
+
+Everything but the library is per pod, because each pod's Plex lists only
+the sessions it serves: sum across pods for the cluster. A play starts when
+a read first lists it and ends when one no longer does, so a play shorter
+than the ten-second health check can go unseen, and a client a drain moves
+to another pod starts a new play there. Watch time is credited per interval
+by what the previous read saw, and at most 30 s per interval, so reads that
+failed for a while are not counted as watching. A pod whose Plex has not
+answered for 45 s reports no streams rather than the ones it last saw.
+
+The `user` label carries Plex usernames, and `/metrics` is unauthenticated
+on the probe port.
+
+#### OpenTelemetry
+
+Titles are unbounded as Prometheus labels, so each finished play is also an
+OpenTelemetry span, `plex.play`, from the read that first listed it to the
+last one that did, each its own trace: `plex.title` (Tautulli's form, "Show -
+S01E02 - Episode"), `plex.user`, `plex.player.*`, `plex.decision`,
+`plex.transcode.*`, `plex.watch_seconds`, `plex.paused_seconds`,
+`plex.progress_percent`, `plex.watched`, `client.address` and more. The
+manager logs the same play as `play ended`.
+
+Spans go nowhere unless an OTLP endpoint is configured, through the standard
+environment the chart's `otel` values render:
+
+| Value | Variable | |
+| --- | --- | --- |
+| `otel.endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | An OTLP/gRPC collector, e.g. `http://otel-collector.observability:4317`. Empty exports nothing. gRPC only: `OTEL_EXPORTER_OTLP_PROTOCOL` set to anything else is refused, logged, and leaves export off |
+| `otel.insecure` | `OTEL_EXPORTER_OTLP_INSECURE` | Plain-text gRPC (default `true`) |
+| `otel.resourceAttributes` | `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes; `service.name` (`clusterplex-manager`), `k8s.pod.name` and `k8s.namespace.name` are set already |
+
+With an endpoint, every series of `/metrics` -- these and the ones above --
+is pushed as OTLP metrics too, through OpenTelemetry's Prometheus bridge,
+every `OTEL_METRIC_EXPORT_INTERVAL` (default 60 s). The other standard
+variables apply: `OTEL_TRACES_EXPORTER=none` or `OTEL_METRICS_EXPORTER=none`
+turns one signal off, `OTEL_SDK_DISABLED=true` both, and the
+`OTEL_EXPORTER_OTLP_TRACES_*` and `_METRICS_*` variants set one signal's
+endpoint and options. The remote-execution spans the shim carries
+(`ExecuteRemote`) export the same way.
+
 ### Settings that are per-pod, not per-cluster
 
 Rate limits apply to one Plex process, and every pod runs one. `WanTotalMaxUploadRate`

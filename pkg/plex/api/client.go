@@ -247,6 +247,13 @@ func (c *Client) RefreshItem(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodPut, "/library/metadata/"+strconv.FormatInt(id, 10)+"/refresh", nil, nil)
 }
 
+// Get reads path and decodes Plex's JSON answer into out: what
+// pkg/plex/activity reads, through the same token, cap and errors as the
+// rest.
+func (c *Client) Get(ctx context.Context, path string, q url.Values, out any) error {
+	return c.do(ctx, http.MethodGet, path, q, out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, out any) error {
 	u := strings.TrimRight(c.BaseURL, "/") + path
 	if len(q) > 0 {

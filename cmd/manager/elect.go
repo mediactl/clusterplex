@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/lease"
+	"github.com/mediactl/clusterplex/pkg/plex/activity"
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 )
 
@@ -40,6 +41,8 @@ const (
 	// the pod is given up on and restarted. One miss is a slow request or a
 	// restarting proxy; three in a row is Plex gone.
 	unhealthyRestartAfter = 3
+	// serverInfoEvery is how often the health watch re-reads Plex's version.
+	serverInfoEvery = 5 * time.Minute
 )
 
 // plexHealth folds the health checks together and decides when this pod is
@@ -391,24 +394,41 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Du
 // recordSessions publishes what this pod's Plex is serving, on the health
 // watch's tick. Three pods splitting one library are invisible without it:
 // nothing else says which pod holds how many streams, or how many of them it
-// is transcoding.
+// is transcoding. The same read is what Tautulli would make of it
+// (pkg/plex/activity): every stream's user, player, decision and bandwidth,
+// and each play from its first sighting to its end.
 func (m *Manager) recordSessions(ctx context.Context) {
 	if m.Metrics == nil {
 		return
 	}
-	token := m.plexToken()
-	if token == "" {
+	if m.plexToken() == "" {
 		return
 	}
-	s, err := plexroute.ReadSessions(ctx, m.plexURL(), token)
+	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
+	defer cancel()
+	pms := m.pms()
+	streams, err := activity.ReadSessions(ctx, pms)
 	if err != nil {
 		if ctx.Err() == nil {
 			m.Logger.Debug("read Plex sessions", "error", err)
 		}
 		return
 	}
-	m.Metrics.PlexSessions.Set(float64(s.Total))
-	m.Metrics.PlexTranscodeSessions.Set(float64(s.Transcoding))
+	act := m.Metrics.Activity
+	act.Observe(ctx, streams)
+	transcoding := 0
+	for _, s := range streams {
+		if s.Transcoding {
+			transcoding++
+		}
+	}
+	m.Metrics.PlexSessions.Set(float64(len(streams)))
+	m.Metrics.PlexTranscodeSessions.Set(float64(transcoding))
+	if time.Since(act.ServerReadAt()) >= serverInfoEvery {
+		if info, err := activity.ReadServer(ctx, pms); err == nil {
+			act.SetServer(info)
+		}
+	}
 }
 
 // plexLost hands this pod over to whatever restarts it.
