@@ -772,7 +772,7 @@ database that already has the shells keeps them; drop them by hand
 (`DROP OPERATOR plex.= (integer, boolean)`, likewise `(boolean, integer)`)
 only after checking they are shells (`oprcode = 0`).
 
-## Fixed: genre directories empty or 500, so Plex's Categories were blank
+## Fixed: genre directories empty or 500, and Plex's Categories blank
 
 Every library's tag directory -- `/library/sections/N/genre`, what Plex
 Web's Categories view lists, and likewise for countries, directors and
@@ -797,7 +797,19 @@ as tags_count from tags join taggings ... left join metadata_item_settings
 Both fixed in `v1.3.17-clusterplex.27` (fork `3ccec3b`, `28fa76d`), with
 `a_placeholder_written_against_a_keyword_keeps_the_keyword` and
 `decltype_special_case_a_count_aliased_with_a_count_suffix_returns_null_case`.
-Neither depends on database state, so a fresh database had the same faults.
+
+The Categories view itself (`/library/sections/N/categories`) still listed
+nothing after that, though stock Plex answers it with the genres. It is not
+the directory query: PMS lists the section's genre tags, asks `select
+exists(select 1 from metadata_items join taggings ...)` once per tag, and
+keeps a tag whose answer reads 1. A PostgreSQL boolean reads as the text
+`t`, which Plex parses as 0, so every category was dropped; SQLite has no
+booleans and answers 1. The shim's integer accessors already mapped `t`
+and `f`; its text path now does too, in `v1.3.17-clusterplex.28` (fork
+`c180e43`, `column_text_transform_reads_a_boolean_as_sqlite_does`).
+
+None of the three depends on database state, so a fresh database had the
+same faults.
 
 ## What is known about the remaining crash
 
