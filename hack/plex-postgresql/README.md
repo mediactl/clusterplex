@@ -761,7 +761,7 @@ fresh database (clustarr smoke test, 2026-10-08). The live cluster's database
 was not fresh. Both now name `OPERATOR(public.=)`, as `plex_schema.sql`
 already qualifies its own.
 
-Fixed in the fork at `bae65d1`, **not yet tagged**, with
+Fixed in the fork at `bae65d1`, tagged in `v1.3.17-clusterplex.27`, with
 `rust/plex-pg-core/tests/schema_operators.rs` (every COMMUTATOR and NEGATOR is
 schema-qualified; and, `#[ignore]`d for want of a server in CI, a fresh load
 under both search paths leaves no such operator in `plex`). The vendored copy
@@ -771,6 +771,33 @@ marked, so `TestInitSchemaLeavesWhatPsqlLeft` fails on a stray one. A
 database that already has the shells keeps them; drop them by hand
 (`DROP OPERATOR plex.= (integer, boolean)`, likewise `(boolean, integer)`)
 only after checking they are shells (`oprcode = 0`).
+
+## Fixed: genre directories empty or 500, so Plex's Categories were blank
+
+Every library's tag directory -- `/library/sections/N/genre`, what Plex
+Web's Categories view lists, and likewise for countries, directors and
+labels -- is one query, `select * from (select tags.* ..., count(tags.id)
+as tags_count from tags join taggings ... left join metadata_item_settings
+... account_id=?left join media_items ...)`. Two shim faults broke it on
+2026-10-08, with 31 genres on 2,499 items in the database:
+
+- **Movies answered 500, `std::bad_cast`.** The shim declares an aggregate
+  column NULL, as SQLite does, only by name (`count`, `count(...)`, `sum`,
+  ...). `tags_count` matched none of them, was declared `dt_integer(8)`,
+  and SOCI threw on it. Seen at `PLEX_PG_LOG_LEVEL=DEBUG` as
+  `DECLTYPE_LOOKUP: no match for 'tags_count'`. An expression column named
+  `*_count` now counts as an aggregate; a table's own `leaf_count` has a
+  table oid and keeps its type.
+- **TV answered nothing.** Plex writes `?left` with no space. In SQLite a
+  `?` takes digits only, so that is a placeholder and then `left join`.
+  `fix_placeholder_spacing` read it as a named parameter and stripped the
+  word. The join became an inner one, and a show has no `media_items` row.
+  Every `?word` now gets the space SQLite's tokenizer implies.
+
+Both fixed in `v1.3.17-clusterplex.27` (fork `3ccec3b`, `28fa76d`), with
+`a_placeholder_written_against_a_keyword_keeps_the_keyword` and
+`decltype_special_case_a_count_aliased_with_a_count_suffix_returns_null_case`.
+Neither depends on database state, so a fresh database had the same faults.
 
 ## What is known about the remaining crash
 
