@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-proxy
+  name: {{ include "cluster-plex.fullname" . }}-proxy
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.proxy.replicas }}
@@ -16,7 +16,7 @@ spec:
         {{- include "cluster-plex.labels" . | nindent 8 }}
         app.kubernetes.io/component: proxy
     spec:
-      serviceAccountName: {{ .Release.Name }}-proxy
+      serviceAccountName: {{ include "cluster-plex.fullname" . }}-proxy
       # Throughput comes from nodes, not replicas: each pod serves media over
       # its own node's interface, so stacking them on one node adds nothing.
       # Spreading is enforced rather than preferred for that reason.
@@ -71,7 +71,7 @@ spec:
       volumes:
         - name: plex-media
           persistentVolumeClaim:
-            claimName: {{ .Values.storage.media.existingClaim | default (printf "%s-media" .Release.Name) }}
+            claimName: {{ include "cluster-plex.mediaClaim" . }}
             readOnly: true
         {{- if .Values.proxy.tls.secretName }}
         - name: tls

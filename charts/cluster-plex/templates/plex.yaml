@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ .Release.Name }}
+  name: {{ include "cluster-plex.fullname" . }}
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.plex.replicas }}
-  serviceName: {{ .Release.Name }}-workers
+  serviceName: {{ include "cluster-plex.fullname" . }}-workers
   # No pod depends on another's ordinal: every pod runs Plex against the
   # shared library, and the Lease decides only who talks to plex.tv.
   podManagementPolicy: Parallel
@@ -20,7 +20,7 @@ spec:
         {{- include "cluster-plex.labels" . | nindent 8 }}
         app.kubernetes.io/component: plex
     spec:
-      serviceAccountName: {{ .Release.Name }}-plex
+      serviceAccountName: {{ include "cluster-plex.fullname" . }}-plex
       {{- if .Values.plex.unprivileged }}
       # Forwarding for Plex's network namespace, set by Kubernetes before any
       # container starts, since an unprivileged pod cannot write /proc/sys.
@@ -75,9 +75,9 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: CLUSTERPLEX_LEASE_NAME
-              value: {{ .Release.Name }}-plextv
+              value: {{ include "cluster-plex.fullname" . }}-plextv
             - name: CLUSTERPLEX_WORKERS_SERVICE
-              value: {{ .Release.Name }}-workers
+              value: {{ include "cluster-plex.fullname" . }}-workers
             # How long a stopping pod lets the client connections it holds
             # finish before Plex is stopped. New clients go to the other pods
             # from the moment the pod starts terminating.
@@ -95,9 +95,9 @@ spec:
             # start. Naming it here rather than taking the default matters,
             # because the chart names its Service after the release.
             - name: CLUSTERPLEX_PLEX_EXTERNAL_SERVICE
-              value: {{ .Release.Name | quote }}
+              value: {{ include "cluster-plex.fullname" . | quote }}
             - name: CLUSTERPLEX_POSTGRES_HOST
-              value: {{ required "postgres.host is required: the library lives in PostgreSQL" .Values.postgres.host | quote }}
+              value: {{ include "cluster-plex.tpl" (list (required "postgres.host is required: the library lives in PostgreSQL" .Values.postgres.host) $) | quote }}
             - name: CLUSTERPLEX_POSTGRES_PORT
               value: {{ .Values.postgres.port | quote }}
             - name: CLUSTERPLEX_POSTGRES_DATABASE
@@ -113,12 +113,12 @@ spec:
             - name: CLUSTERPLEX_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "postgres.passwordSecret.name is required" .Values.postgres.passwordSecret.name }}
+                  name: {{ include "cluster-plex.tpl" (list (required "postgres.passwordSecret.name is required" .Values.postgres.passwordSecret.name) $) }}
                   key: {{ .Values.postgres.passwordSecret.key }}
             - name: CLUSTERPLEX_PLEX_CLAIM
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.plex.claimSecret.name | default (printf "%s-plex-claim" .Release.Name) }}
+                  name: {{ .Values.plex.claimSecret.name | default (printf "%s-plex-claim" (include "cluster-plex.fullname" .)) }}
                   key: {{ .Values.plex.claimSecret.key }}
                   optional: true
             {{- with .Values.otel.endpoint }}
@@ -171,18 +171,21 @@ spec:
             # that session, which the Service pins.
             - name: plex-transcode
               mountPath: /transcode
-            - {name: plex-media, mountPath: /media{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
+            - {name: plex-media, mountPath: /media{{ if .Values.storage.media.readOnly }}, readOnly: true{{ end }}{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
             - {name: config, mountPath: /etc/clusterplex, readOnly: true}
       volumes:
         - name: plex-config
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-config
+            claimName: {{ include "cluster-plex.fullname" . }}-config
         - name: plex-media
           persistentVolumeClaim:
-            claimName: {{ .Values.storage.media.existingClaim | default (printf "%s-media" .Release.Name) }}
+            claimName: {{ include "cluster-plex.mediaClaim" . }}
+            {{- if .Values.storage.media.readOnly }}
+            readOnly: true
+            {{- end }}
         - name: config
           configMap:
-            name: {{ .Release.Name }}-config
+            name: {{ include "cluster-plex.fullname" . }}-config
         # emptyDir rather than volumeClaimTemplates: each is rebuilt on start
         # or discarded between sessions, and a claim template is immutable
         # once created.

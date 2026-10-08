@@ -76,6 +76,17 @@ helm-lint: ## Lint and render the Helm chart
 	helm template cluster-plex charts/cluster-plex \
 		--set postgres.host=postgres --set postgres.passwordSecret.name=plex-postgres >/dev/null
 
+# clustarr's chart depends on this one at oci://ghcr.io/mediactl/charts,
+# pinned by version: bump charts/cluster-plex/Chart.yaml's version for every
+# chart change, then push. A version once pushed is never pushed again.
+CHART_REGISTRY ?= oci://ghcr.io/mediactl/charts
+
+.PHONY: chart-push
+chart-push: helm-lint ## Package the chart and push it to $(CHART_REGISTRY)
+	@mkdir -p bin/charts
+	helm package charts/cluster-plex -d bin/charts
+	helm push bin/charts/cluster-plex-$$(sed -n 's/^version: //p' charts/cluster-plex/Chart.yaml).tgz $(CHART_REGISTRY)
+
 .PHONY: manifests
 manifests: ## Render the base manifests
 	kubectl kustomize k8s/base

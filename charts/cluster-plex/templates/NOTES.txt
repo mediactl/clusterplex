@@ -1,8 +1,8 @@
-{{ .Release.Name }} is installed.
+{{ include "cluster-plex.fullname" . }} is installed.
 
 Clients connect to the proxy Service, never to Plex directly:
 
-    kubectl get svc -n {{ .Release.Namespace }} {{ .Release.Name }}
+    kubectl get svc -n {{ .Release.Namespace }} {{ include "cluster-plex.fullname" . }}
 
 Two things decide whether media throughput actually scales past one node:
 

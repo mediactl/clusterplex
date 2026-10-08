@@ -2,6 +2,41 @@
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+The prefix of every resource name. The release name by default, as before;
+fullnameOverride lets a parent chart install this one beside its own
+resources (clustarr's chart sets "plex").
+*/}}
+{{- define "cluster-plex.fullname" -}}
+{{- default .Release.Name .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+A value rendered as a template, so a parent chart can name its own
+resources ("{{ .Release.Name }}-plex-db-rw"). Call with (list $value $).
+*/}}
+{{- define "cluster-plex.tpl" -}}
+{{- tpl (toString (index . 0)) (index . 1) -}}
+{{- end -}}
+
+{{/* The library's claim: storage.media.existingClaim (a template), else <fullname>-media. */}}
+{{- define "cluster-plex.mediaClaim" -}}
+{{- with .Values.storage.media.existingClaim -}}
+{{- include "cluster-plex.tpl" (list . $) -}}
+{{- else -}}
+{{- include "cluster-plex.fullname" . -}}-media
+{{- end -}}
+{{- end -}}
+
+{{/* clustarr's namespace: plex.clustarr.namespace (a template), else this release's. */}}
+{{- define "cluster-plex.clustarrNamespace" -}}
+{{- with .Values.plex.clustarr.namespace -}}
+{{- include "cluster-plex.tpl" (list . $) -}}
+{{- else -}}
+{{- .Release.Namespace -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "cluster-plex.labels" -}}
 app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}

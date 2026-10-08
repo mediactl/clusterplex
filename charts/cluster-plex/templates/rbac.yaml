@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Release.Name }}-plex
+  name: {{ include "cluster-plex.fullname" . }}-plex
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Release.Name }}-proxy
+  name: {{ include "cluster-plex.fullname" . }}-proxy
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ .Release.Name }}-plex
+  name: {{ include "cluster-plex.fullname" . }}-plex
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
   # Electing the one pod that may talk to plex.tv.
@@ -39,7 +39,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ .Release.Name }}-proxy
+  name: {{ include "cluster-plex.fullname" . }}-proxy
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
   # The proxy only ever reads who is available, and it reads it from the pods
@@ -52,27 +52,27 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ .Release.Name }}-plex
+  name: {{ include "cluster-plex.fullname" . }}-plex
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Release.Name }}-plex
+    name: {{ include "cluster-plex.fullname" . }}-plex
 roleRef:
   kind: Role
-  name: {{ .Release.Name }}-plex
+  name: {{ include "cluster-plex.fullname" . }}-plex
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ .Release.Name }}-proxy
+  name: {{ include "cluster-plex.fullname" . }}-proxy
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Release.Name }}-proxy
+    name: {{ include "cluster-plex.fullname" . }}-proxy
 roleRef:
   kind: Role
-  name: {{ .Release.Name }}-proxy
+  name: {{ include "cluster-plex.fullname" . }}-proxy
   apiGroup: rbac.authorization.k8s.io
 {{- if .Values.plex.clustarr.enabled }}
 ---
@@ -83,8 +83,8 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ .Release.Name }}-clustarr-reader
-  namespace: {{ .Values.plex.clustarr.namespace }}
+  name: {{ include "cluster-plex.fullname" . }}-clustarr-reader
+  namespace: {{ include "cluster-plex.clustarrNamespace" . }}
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["catalog.clustarr.io"]
@@ -95,7 +95,7 @@ rules:
   # limited by name, and the manager never lists or watches Secrets.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: [{{ . | quote }}]
+    resourceNames: [{{ include "cluster-plex.tpl" (list . $) | quote }}]
     verbs: ["get", "update"]
   - apiGroups: [""]
     resources: ["secrets"]
@@ -105,15 +105,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ .Release.Name }}-clustarr-reader
-  namespace: {{ .Values.plex.clustarr.namespace }}
+  name: {{ include "cluster-plex.fullname" . }}-clustarr-reader
+  namespace: {{ include "cluster-plex.clustarrNamespace" . }}
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Release.Name }}-plex
+    name: {{ include "cluster-plex.fullname" . }}-plex
     namespace: {{ .Release.Namespace }}
 roleRef:
   kind: Role
-  name: {{ .Release.Name }}-clustarr-reader
+  name: {{ include "cluster-plex.fullname" . }}-clustarr-reader
   apiGroup: rbac.authorization.k8s.io
 {{- end }}

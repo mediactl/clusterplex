@@ -1,3 +1,8 @@
+# The prefix of every resource name; the release name when empty. A parent
+# chart that installs this one beside its own resources sets it (clustarr's
+# chart: "plex").
+fullnameOverride: ""
+
 image:
   repository: ghcr.io/mediactl/cluster-plex
   tag: dev
@@ -42,6 +47,10 @@ plex:
   # that namespace, and the token Secret below when one is named.
   clustarr:
     enabled: false
+    # Empty means this release's namespace. Like postgres.host,
+    # postgres.passwordSecret.name, storage.media.existingClaim,
+    # tokenSecret and each metadata provider's uri, it is rendered as a
+    # template, so a parent chart can name its own resources.
     namespace: clustarr-system
     pathMappings: []
     #  - {clustarr: /data/media, plex: /media}
@@ -158,6 +167,9 @@ storage:
     # namespaced, so clustarr's own cannot be named here.
     existingClaim: ""
     subPath: ""
+    # Mount the library read-only in the Plex pods too (the proxy and the
+    # remux pool always do). Plex only reads a library clustarr manages.
+    readOnly: false
 
 # Plex's background maintenance. Its own scheduler is disabled on every pod,
 # because each process runs its own copy with no knowledge of the others, so

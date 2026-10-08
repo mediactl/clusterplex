@@ -6,7 +6,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-remux
+  name: {{ include "cluster-plex.fullname" . }}-remux
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.remux.replicas }}
@@ -37,16 +37,16 @@ spec:
           emptyDir: {sizeLimit: {{ .Values.remux.cache.sizeLimit }}}
         - name: media
           persistentVolumeClaim:
-            claimName: {{ .Values.storage.media.existingClaim | default (printf "%s-media" .Release.Name) }}
+            claimName: {{ include "cluster-plex.mediaClaim" . }}
             readOnly: true
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ .Release.Name }}-remux
+  name: {{ include "cluster-plex.fullname" . }}-remux
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 spec:
-  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ .Release.Name }}-remux}
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "cluster-plex.fullname" . }}-remux}
   minReplicas: {{ .Values.remux.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.remux.autoscaling.maxReplicas }}
   metrics:

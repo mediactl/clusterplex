@@ -13,7 +13,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ $.Release.Name }}-maintenance-{{ $name }}
+  name: {{ include "cluster-plex.fullname" $ }}-maintenance-{{ $name }}
   labels: {{- include "cluster-plex.labels" $ | nindent 4 }}
 spec:
   schedule: {{ $schedule | quote }}
@@ -38,7 +38,7 @@ spec:
               # The manager fans the work out across pods; this only asks it to.
               command: ["/usr/local/bin/maintenance"]
               args:
-                - -endpoint=http://{{ $.Release.Name }}-workers.{{ $.Release.Namespace }}.svc.cluster.local:8080
+                - -endpoint=http://{{ include "cluster-plex.fullname" $ }}-workers.{{ $.Release.Namespace }}.svc.cluster.local:8080
                 - -task={{ $name }}
               resources:
                 requests: {cpu: 10m, memory: 16Mi}
