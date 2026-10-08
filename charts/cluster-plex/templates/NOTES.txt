@@ -1,33 +1,43 @@
 {{ include "cluster-plex.fullname" . }} is installed.
 
-Clients connect to the proxy Service, never to Plex directly:
+Clients connect to the {{ include "cluster-plex.fullname" . }} Service, a LoadBalancer in front of every
+Plex pod:
 
     kubectl get svc -n {{ .Release.Namespace }} {{ include "cluster-plex.fullname" . }}
 
-Two things decide whether media throughput actually scales past one node:
+It pins each client to one pod by its address (sessionAffinity: ClientIP, for
+{{ .Values.service.sessionAffinityTimeoutSeconds }}s), because a transcode's chunks live only on the pod that wrote
+them, and keeps that address the client's own with externalTrafficPolicy:
+Local, which this chart enforces. Clients behind one NAT share a pod.
+{{- if .Values.plex.externalURL }}
 
-  1. The proxy Service uses externalTrafficPolicy: Local, which this chart
-     enforces. Traffic must enter through a node that is running a proxy pod.
+Plex advertises {{ .Values.plex.externalURL }} to clients. It has to stay live: a
+stale address works until a client signs in, then fails on the way back.
+{{- else if not .Values.proxy.enabled }}
 
-  2. Your router must install more than one next hop for the service address.
-     Cilium advertises it from every node running a proxy, but a router that
-     keeps a single best path will send everything to one node. On FRR-based
-     gear this means raising maximum-paths.
+Plex advertises that Service's LoadBalancer address, which the manager reads
+before every start; until the load balancer assigns one, Plex keeps
+advertising what it did before. Set plex.externalURL only for an address the
+cluster cannot see, such as a DNS name with a certificate in front.
+{{- end }}
+{{- if .Values.proxy.enabled }}
 
-Throughput scales with nodes, not replicas. Proxy pods are spread one per node
-and will stay Pending if asked for more replicas than there are nodes.
+The media proxy tier is on: {{ include "cluster-plex.fullname" . }}-proxy serves direct-play bytes from the
+shared library. Throughput scales with the nodes running it, not replicas:
+its pods are spread one per node and stay Pending beyond the node count, and
+your router must install more than one next hop for its address (on
+FRR-based gear, raise maximum-paths).
+{{- if not .Values.plex.externalURL }}
 
-{{- if not .Values.proxy.externalURL }}
-
-WARNING: proxy.externalURL is unset, so Plex will advertise its own pod
-addresses to clients. Nothing outside the cluster can reach those, so clients
-will either fail to connect or find a route that bypasses the proxy and its
-media offload entirely. Set it to the address clients actually use.
+WARNING: plex.externalURL is unset, so Plex advertises {{ include "cluster-plex.fullname" . }}, not the
+proxy, and clients that follow the advertisement never reach it. Set it to the
+proxy's hostname.
 {{- end }}
 {{- if not .Values.proxy.tls.secretName }}
 
 WARNING: proxy.tls.secretName is unset, so the proxy speaks plain HTTP. Plex
 clients prefer a secure connection and some will decline a server without one.
+{{- end }}
 {{- end }}
 {{- if not .Values.plex.machineIdentifier }}
 

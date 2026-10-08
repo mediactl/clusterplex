@@ -3,18 +3,42 @@
 package manifests_test
 
 import (
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
+// trackInputs opens every file of the manifests and the chart, so that go
+// test's cache sees them. kubectl and helm read them in a subprocess, which
+// the cache cannot see: without this an edited template could pass on the
+// result of the template before it.
+func trackInputs(t *testing.T) {
+	t.Helper()
+	for _, root := range []string{"../../k8s", "../../charts/cluster-plex"} {
+		require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			return f.Close()
+		}))
+	}
+}
+
 func render(t *testing.T, dir string) string {
 	t.Helper()
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		t.Skip("kubectl not on PATH")
 	}
+	trackInputs(t)
 	out, err := exec.Command("kubectl", "kustomize", "../../"+dir).CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	return string(out)

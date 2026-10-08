@@ -4,26 +4,23 @@ metadata:
   name: {{ include "cluster-plex.fullname" . }}-plex
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 ---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ include "cluster-plex.fullname" . }}-proxy
-  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "cluster-plex.fullname" . }}-plex
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
+  # k8s/base's clusterplex-role, rule for rule; test/manifests holds the two
+  # together.
+  #
   # Electing the one pod that may talk to plex.tv.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    verbs: ["get", "watch", "list", "create", "update"]
+    verbs: ["get", "watch", "list", "create", "update", "delete"]
   # Finding worker pods to dispatch transcodes and maintenance to, and marking
   # this pod as serving. The annotation says "this pod can do work", which the
-  # Lease cannot express: it names one holder, and in active mode every pod
-  # serves. Leadership itself is still never copied onto a pod.
+  # Lease cannot express: it names one holder, and every pod serves.
+  # Leadership itself is still never copied onto a pod.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "watch", "list", "patch"]
@@ -35,6 +32,26 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}-plex
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cluster-plex.fullname" . }}-plex
+roleRef:
+  kind: Role
+  name: {{ include "cluster-plex.fullname" . }}-plex
+  apiGroup: rbac.authorization.k8s.io
+{{- if .Values.proxy.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}-proxy
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -52,19 +69,6 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "cluster-plex.fullname" . }}-plex
-  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "cluster-plex.fullname" . }}-plex
-roleRef:
-  kind: Role
-  name: {{ include "cluster-plex.fullname" . }}-plex
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
   name: {{ include "cluster-plex.fullname" . }}-proxy
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 subjects:
@@ -74,6 +78,7 @@ roleRef:
   kind: Role
   name: {{ include "cluster-plex.fullname" . }}-proxy
   apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- if .Values.plex.clustarr.enabled }}
 ---
 # clustarr's catalog, read-only: the lease holder rescans the folders its

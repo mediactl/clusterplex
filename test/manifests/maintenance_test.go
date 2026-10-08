@@ -98,6 +98,7 @@ func renderChart(t *testing.T) string {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH")
 	}
+	trackInputs(t)
 	out, err := exec.Command("helm", "template", "cp", "../../charts/cluster-plex",
 		"--namespace", "media", "--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg").CombinedOutput()
 	require.NoError(t, err, "%s", out)

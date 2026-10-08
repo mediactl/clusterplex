@@ -151,6 +151,7 @@ func TestTheChartLetsTheManagerKeepTheTokenSecret(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH")
 	}
+	trackInputs(t)
 	out, err := exec.Command("helm", "template", "cp", "../../charts/cluster-plex", "--namespace", "media",
 		"--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg",
 		"--set", "plex.clustarr.enabled=true", "--set", "plex.clustarr.tokenSecret=plex-token",

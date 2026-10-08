@@ -49,17 +49,32 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
 
 {{/*
-The proxy Service must not be reachable through nodes that are not running a
-proxy pod. With the default Cluster policy, kube-proxy forwards to pods on
-other nodes and masquerades the source, so traffic hairpins across the very
-links this design exists to scale, and the client address Plex sees is wrong.
-This is a property of the design, not a preference, so the chart refuses to
-render if it is overridden.
+externalTrafficPolicy for a LoadBalancer Service: Local, and nothing else.
+Call with (list $given $key $reason). Under Cluster, kube-proxy forwards to
+pods on other nodes and replaces the source address with a node's. For the
+client Service that breaks the session pinning, which hashes the client's
+address; for the media proxy's it also hairpins media across the links that
+tier exists to scale. A property of the design, not a preference, so the
+chart refuses to render it overridden.
 */}}
 {{- define "cluster-plex.externalTrafficPolicy" -}}
-{{- $given := default "Local" .Values.proxy.service.externalTrafficPolicy -}}
+{{- $given := default "Local" (index . 0) -}}
 {{- if ne $given "Local" -}}
-{{- fail "proxy.service.externalTrafficPolicy must be Local: with Cluster, media traffic hairpins between nodes and client addresses are masqueraded. See docs/media-proxy-pattern.md" -}}
+{{- fail (printf "%s must be Local: %s" (index . 1) (index . 2)) -}}
 {{- end -}}
 Local
+{{- end -}}
+
+{{/*
+Values chart 0.3.0 moved. Each would otherwise be dropped without a word, and
+the first one is the failure docs/configuration.md warns about: Plex then
+advertises another address, which works until a client signs in.
+*/}}
+{{- define "cluster-plex.validate" -}}
+{{- if .Values.proxy.externalURL -}}
+{{- fail "proxy.externalURL moved to plex.externalURL in chart 0.3.0: it is the address Plex advertises, whatever is in front" -}}
+{{- end -}}
+{{- if and (not .Values.proxy.enabled) (or .Values.proxy.service.loadBalancerIP .Values.proxy.service.annotations) -}}
+{{- fail "proxy.service.* is the media proxy's own Service since chart 0.3.0, rendered only with proxy.enabled; the Service clients connect to is configured under service.*" -}}
+{{- end -}}
 {{- end -}}

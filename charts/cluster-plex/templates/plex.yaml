@@ -74,28 +74,31 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # The manager defaults these three to k8s/base's names
+            # (cluster-plex-plextv, plex-workers, plex-main); the chart names
+            # its objects after the release, so it says which. The Lease is
+            # per release, so two releases in one namespace never share one.
             - name: CLUSTERPLEX_LEASE_NAME
               value: {{ include "cluster-plex.fullname" . }}-plextv
             - name: CLUSTERPLEX_WORKERS_SERVICE
               value: {{ include "cluster-plex.fullname" . }}-workers
+            # Where the advertised address comes from when plex.externalURL is
+            # not set: the manager reads the client Service's LoadBalancer
+            # address before every start.
+            - name: CLUSTERPLEX_PLEX_EXTERNAL_SERVICE
+              value: {{ include "cluster-plex.fullname" . | quote }}
             # How long a stopping pod lets the client connections it holds
             # finish before Plex is stopped. New clients go to the other pods
             # from the moment the pod starts terminating.
             - name: CLUSTERPLEX_DRAIN_TIMEOUT
               value: {{ .Values.plex.drainTimeout | quote }}
-            {{- with .Values.proxy.externalURL }}
+            {{- with .Values.plex.externalURL }}
             # Plex advertises this to clients. The manager forces it into
             # Preferences.xml on every start; it is not an operator preference,
-            # because it has to agree with what the proxy actually serves.
+            # because it has to agree with the address clients reach.
             - name: CLUSTERPLEX_PLEX_EXTERNAL_URL
               value: {{ . | quote }}
             {{- end }}
-            # Where the address comes from when externalURL is not set: the
-            # manager reads this Service's LoadBalancer address before every
-            # start. Naming it here rather than taking the default matters,
-            # because the chart names its Service after the release.
-            - name: CLUSTERPLEX_PLEX_EXTERNAL_SERVICE
-              value: {{ include "cluster-plex.fullname" . | quote }}
             - name: CLUSTERPLEX_POSTGRES_HOST
               value: {{ include "cluster-plex.tpl" (list (required "postgres.host is required: the library lives in PostgreSQL" .Values.postgres.host) $) | quote }}
             - name: CLUSTERPLEX_POSTGRES_PORT
@@ -134,10 +137,11 @@ spec:
               value: {{ . | quote }}
             {{- end }}
           ports:
-            # The manager's proxy holds this port in the pod namespace and
-            # forwards to Plex, which binds it inside its own namespace. There
-            # is no second port: the proxy no longer needs one (ADR-0003).
-            - name: pms
+            # The manager's proxy holds Plex's own port in the pod namespace
+            # and forwards to Plex, which binds it inside its own namespace,
+            # where nothing else competes for it (ADR-0003). The client
+            # Service targets it by this name.
+            - name: proxy
               containerPort: 32400
             - name: grpc
               containerPort: 50051

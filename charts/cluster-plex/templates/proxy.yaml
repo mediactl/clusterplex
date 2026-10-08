@@ -1,3 +1,8 @@
+{{- if .Values.proxy.enabled }}
+# The media proxy tier, opt in (proxy.enabled; docs/media-proxy-pattern.md).
+# It serves direct-play bytes from the shared library and forwards everything
+# else to a Plex pod, chosen by a consistent hash of the client. Clients reach
+# it only if Plex advertises it: plex.externalURL must name its hostname.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,3 +83,31 @@ spec:
           secret:
             secretName: {{ .Values.proxy.tls.secretName }}
         {{- end }}
+---
+# The media proxy's own LoadBalancer. Not the Service Plex advertises unless
+# plex.externalURL names it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}-proxy
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+  {{- with .Values.proxy.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  # Traffic must enter through a node running a proxy pod: under Cluster,
+  # media hairpins across the very links this tier exists to scale.
+  externalTrafficPolicy: {{ include "cluster-plex.externalTrafficPolicy" (list .Values.proxy.service.externalTrafficPolicy "proxy.service.externalTrafficPolicy" "with Cluster, media traffic hairpins between nodes and client addresses are masqueraded. See docs/media-proxy-pattern.md") }}
+  {{- with .Values.proxy.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - name: pms
+      port: 32400
+      targetPort: pms
+{{- end }}

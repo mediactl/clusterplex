@@ -15,6 +15,17 @@ plex:
   # Pin the server identity so a rebuilt cluster keeps the identity clients
   # already know. Setting this on a server that already has one CHANGES it.
   machineIdentifier: ""
+  # The address Plex advertises to clients, written into Preferences.xml as
+  # customConnections on every start. Usually leave it empty: the manager
+  # then reads the LoadBalancer address of the client Service (service,
+  # below) before every start and advertises that, so an address the load
+  # balancer moves is picked up at the next start rather than going stale.
+  # Set it only for an address the cluster cannot see -- a DNS name, an
+  # ingress, a certificate in front -- for example
+  # https://plex.example.com:443, and with proxy.enabled, to the proxy's own
+  # hostname. See docs/configuration.md, "Advertising an address clients can
+  # use".
+  externalURL: ""
   # Settings an operator chooses, applied on every start. A list, not a map:
   # the config loader lowercases nested map keys and Plex names are case
   # sensitive.
@@ -23,7 +34,7 @@ plex:
   # manager will refuse to start if one is declared: the Butler schedulers (off,
   # replaced by the CronJobs below), remote-access publishing and automatic port
   # mapping (off, so no pod publishes itself to plex.tv or punches a hole to a
-  # pod address), and customConnections (set from proxy.externalURL).
+  # pod address), and customConnections (plex.externalURL, below).
   preferences:
     - name: FriendlyName
       value: Cluster Plex
@@ -125,26 +136,58 @@ otel:
   # k8s.namespace.name are set already.
   resourceAttributes: ""
 
+# The Service clients connect to, <fullname>: a LoadBalancer in front of
+# every ready Plex pod, landing on the manager's proxy that holds 32400 in
+# front of Plex's own network namespace (ADR-0003) -- k8s/base's plex-main,
+# held to it by test/manifests. Plex terminates its own TLS through it, which
+# is why it is L4: plex.tv may publish the advertised address as a
+# plex.direct URI whose certificate only the Plex pod has (ADR-0005).
+#
+# It pins each client to one pod by its address (sessionAffinity: ClientIP),
+# because a transcode's chunks live on the pod that wrote them, and keeps
+# that address the client's own with externalTrafficPolicy: Local, which the
+# chart refuses to render otherwise: under Cluster, kube-proxy replaces the
+# source address with a node's, every external client looks like one client
+# and all of them are pinned to one pod.
+service:
+  # Empty asks for whatever the load balancer implementation assigns.
+  loadBalancerIP: ""
+  # For example a load balancer implementation's address pool or sharing key.
+  annotations: {}
+  # How long a client stays pinned to its pod after its last connection.
+  # What has to survive is a session, not a request: a client that moves pods
+  # mid-film loses its transcode. Three hours covers a feature-length one.
+  sessionAffinityTimeoutSeconds: 10800
+
+# The media proxy tier (cmd/proxy, docs/media-proxy-pattern.md): a Deployment
+# that serves direct-play bytes itself from the shared library and forwards
+# everything else to a Plex pod, so media throughput scales with the nodes
+# running it. Off by default, and k8s/base does not run it: every pod runs
+# Plex and serves its own bytes (ADR-0004), and sessions are pinned by the
+# client Service above (ADR-0005). Whether to retire it is an open question
+# for an ADR of its own; until then it is here, opt in.
+#
+# Enabled, it gets a LoadBalancer Service of its own, <fullname>-proxy. The
+# client Service above stays, and stays what Plex advertises unless
+# plex.externalURL names the proxy's hostname: set it, or no client that
+# follows the advertisement reaches the proxy.
 proxy:
-  # The only thing clients connect to. Media bytes are served from here, so
+  enabled: false
   # THROUGHPUT SCALES WITH NODES, NOT REPLICAS: spreading these across nodes is
-  # what raises the ceiling. See docs/media-proxy-pattern.md.
+  # what raises the ceiling, so they are spread one per node and stay Pending
+  # beyond the node count.
   replicas: 3
-  # The address clients actually reach, for example
-  # https://plex.example.com:32400. The manager forces this into Plex's
-  # Preferences.xml as customConnections on every start. Without it Plex
-  # advertises only the link-local address inside its own network namespace,
-  # which no client can reach.
-  externalURL: ""
   tls:
     # A Secret holding tls.crt and tls.key, served by the proxy. Plex clients
     # prefer a secure connection, and intercepting Plex's own plex.direct name
     # with a different certificate breaks native clients, so serve your own
-    # hostname instead and name it in externalURL above.
+    # hostname instead and name it in plex.externalURL.
     secretName: ""
   # How long a request waits for Plex during a failover before giving up.
   failoverGrace: 30s
   resources: {}
+  # The proxy's own LoadBalancer Service; externalTrafficPolicy is Local here
+  # too, so media does not hairpin between nodes.
   service:
     # Empty asks for whatever the load balancer implementation assigns.
     loadBalancerIP: ""
@@ -161,14 +204,16 @@ storage:
     size: 1Ti
     accessMode: ReadWriteMany
     storageClass: ""
-    # Mount an existing claim instead of creating <release>-media, so Plex
-    # scans what clustarr imports. It must be a claim in this release's
-    # namespace bound to the same volume as clustarr's library: claims are
-    # namespaced, so clustarr's own cannot be named here.
+    # Mount an existing claim instead of creating <fullname>-media, so Plex
+    # scans what clustarr imports. Claims are namespaced, so it must be one in
+    # this release's namespace: clustarr's own when this chart is installed
+    # beside clustarr (its chart passes <release>-data, subPath media), else
+    # one bound to the same volume as clustarr's library. Either way the
+    # library is mounted at /media.
     existingClaim: ""
     subPath: ""
-    # Mount the library read-only in the Plex pods too (the proxy and the
-    # remux pool always do). Plex only reads a library clustarr manages.
+    # Mount the library read-only in the Plex pods too (the media proxy and
+    # the remux pool always do). Plex only reads a library clustarr manages.
     readOnly: false
 
 # Plex's background maintenance. Its own scheduler is disabled on every pod,
