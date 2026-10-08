@@ -747,6 +747,31 @@ standalone compose under load, then verified there: 10 minutes after two
 DVRs, with no corruption, swap or I/O error, no orphaned staging file,
 every database passing `integrity_check`, and no finalize skipped.
 
+## Fixed: a fresh database got shell `=` operators in `plex`
+
+`pg_compat_functions.sql` created `public.=` for (boolean, integer) and
+(integer, boolean) with an unqualified `COMMUTATOR = =`. PostgreSQL looks an
+unqualified commutator up on the search path and, finding none, creates a
+shell for it in the search path's first schema: `plex`, on a fresh database
+loaded by the manager (`search_path=plex`: both shells) or the upstream script
+(`PGUSER=plex`, so `"$user", public`: the (integer, boolean) one). A shell sits
+ahead of public's real operator, so comparing an integer with a boolean failed
+with `operator is only a shell: integer = boolean`, and Plex crash-looped on a
+fresh database (clustarr smoke test, 2026-10-08). The live cluster's database
+was not fresh. Both now name `OPERATOR(public.=)`, as `plex_schema.sql`
+already qualifies its own.
+
+Fixed in the fork at `bae65d1`, **not yet tagged**, with
+`rust/plex-pg-core/tests/schema_operators.rs` (every COMMUTATOR and NEGATOR is
+schema-qualified; and, `#[ignore]`d for want of a server in CI, a fresh load
+under both search paths leaves no such operator in `plex`). The vendored copy
+here carries the same change, and the image copies its schema from here, not
+from the shim's tag. `postgres_schema.golden` now lists operators, shells
+marked, so `TestInitSchemaLeavesWhatPsqlLeft` fails on a stray one. A
+database that already has the shells keeps them; drop them by hand
+(`DROP OPERATOR plex.= (integer, boolean)`, likewise `(boolean, integer)`)
+only after checking they are shells (`oprcode = 0`).
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —

@@ -74,6 +74,13 @@ func freshDatabase(t *testing.T) (Connect, *pgx.ConnConfig) {
 
 // fingerprint describes everything a load leaves behind: each object by name,
 // each sequence's value and each table's row count.
+//
+// Operators are listed with their schema and marked when only a shell: an
+// unqualified COMMUTATOR in pg_compat_functions.sql once left shells of
+// public's boolean/integer = in plex, ahead of the real ones on the shim's
+// search path, and every such comparison failed with "operator is only a
+// shell". Argument types go through format_type, which, unlike ::regtype,
+// does not qualify by the session's search path.
 func fingerprint(t *testing.T, ctx context.Context, conn *pgx.Conn) []string {
 	t.Helper()
 	rows, err := conn.Query(ctx, `
@@ -85,6 +92,10 @@ UNION ALL SELECT DISTINCT 'trigger ' || event_object_schema || '.' || event_obje
   FROM information_schema.triggers
 UNION ALL SELECT 'function ' || n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+UNION ALL SELECT 'operator ' || n.nspname || '.' || o.oprname || '(' || format_type(o.oprleft, NULL) || ', ' || format_type(o.oprright, NULL) || ')'
+    || CASE WHEN o.oprcode::oid = 0 THEN ' shell' ELSE '' END
+  FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace
   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
 UNION ALL SELECT 'extension ' || extname FROM pg_extension
 UNION ALL SELECT 'sequence ' || schemaname || '.' || sequencename || ' ' || coalesce(last_value::text, 'unset')

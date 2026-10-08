@@ -205,6 +205,20 @@ index plex.taggings_pkey
 index plex.tags_pkey
 index plex.versioned_metadata_items_pkey
 index plex.view_settings_pkey
+operator plex.%(text, text)
+operator plex.%>(text, text)
+operator plex.%>>(text, text)
+operator plex.<%(text, text)
+operator plex.<->(text, text)
+operator plex.<->>(text, text)
+operator plex.<->>>(text, text)
+operator plex.<<%(text, text)
+operator plex.<<->(text, text)
+operator plex.<<<->(text, text)
+operator plex.=(integer, text)
+operator plex.=(text, integer)
+operator public.=(boolean, integer)
+operator public.=(integer, boolean)
 sequence plex.accounts_id_seq 1
 sequence plex.activities_id_seq 2
 sequence plex.blobs_id_seq unset
