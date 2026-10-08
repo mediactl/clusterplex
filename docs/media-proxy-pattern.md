@@ -1,5 +1,14 @@
 # The media proxy pattern
 
+> **Opt in, and not what runs by default.** `k8s/base` does not run this
+> tier, and the chart renders it only with `proxy.enabled: true` (a
+> Deployment and its own `<fullname>-proxy` LoadBalancer). By default every
+> pod runs Plex and serves its own bytes ([ADR-0004](adr/0004-run-plex-on-every-pod.md)),
+> and clients reach them through one LoadBalancer Service that pins each
+> client to a pod by its address ([ADR-0005](adr/0005-retire-the-media-proxy-for-gateway-api.md)'s
+> note). Whether to retire the tier is an open question for an ADR of its
+> own. What follows is the tier's design as built.
+
 ## Why
 
 One Plex Media Server serves every byte, so aggregate throughput is capped by
@@ -134,7 +143,7 @@ own tests without them.
 addresses, which nothing outside the cluster can reach, so clients either fail
 to connect or find a route that bypasses the proxy and its offload entirely.
 The `customConnections` preference fixes this, and the chart sets it from
-`proxy.externalURL`.
+`plex.externalURL`, which with the tier on must name the proxy's hostname.
 
 **The proxy must offer TLS.** Plex clients prefer a secure connection and some
 decline a server without one. Serve your own hostname with your own

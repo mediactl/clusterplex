@@ -228,7 +228,7 @@ explicitly:
 plex-external-url: https://plex.example.com:443
 ```
 
-or, in the chart, `proxy.externalURL`. The manager writes it into
+or, in the chart, `plex.externalURL`. The manager writes it into
 `Preferences.xml` as `customConnections` on every start. It is a setting of its
 own rather than a preference because it has to agree with what the proxy
 actually serves; declaring `customConnections` directly is refused. Plex treats
@@ -240,7 +240,9 @@ or whatever ingress sits in front of that.
 
 **Usually you should not set it at all.** Left empty, the manager reads the
 LoadBalancer address of the Service named by `plex-external-service`
-(`plex-main` by default) before every Plex start, and advertises that:
+(`plex-main` by default; the chart sets it to its client Service, named after
+the release and configured under `service`) before every Plex start, and
+advertises that:
 
 ```yaml
 plex-external-service: plex-main
@@ -277,8 +279,10 @@ records for the proxy tier, and it applies to anything put in front of Plex.
 
 ### Sessions have to stay on one pod
 
-`plex-main` sets `sessionAffinity: ClientIP` with `externalTrafficPolicy: Local`,
-and both halves are load-bearing. A playback session is many requests, and since
+`plex-main` (the chart's client Service, `<fullname>`) sets `sessionAffinity:
+ClientIP` with `externalTrafficPolicy: Local`, and both halves are
+load-bearing; the chart refuses to render any other policy, and the affinity's
+three hours are `service.sessionAffinityTimeoutSeconds`. A playback session is many requests, and since
 [ADR-0004](adr/0004-run-plex-on-every-pod.md) the transcode chunks are written to
 a per-pod `emptyDir` — so a client spread across pods asks a pod for a chunk it
 never produced, and playback stops with `Error code: s1001 (Network)` seconds

@@ -1,15 +1,17 @@
 # Cluster Plex
 
 Plex Media Server on Kubernetes, scaled horizontally. The library lives in a
-shared PostgreSQL database that every pod reads and writes, a proxy tier serves
-the media bytes so aggregate bandwidth is not capped by one node's interface,
-and a shim replaces Plex's helper binaries so transcodes run on other pods.
+shared PostgreSQL database that every pod reads and writes, every pod runs
+Plex and serves the clients one LoadBalancer Service pins to it, and a shim
+replaces Plex's helper binaries so transcodes run on other pods. An opt-in
+media proxy tier can serve the media bytes itself.
 
 Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 
 ## Read before designing anything
 
-- `docs/media-proxy-pattern.md` — the proxy tier: why it serves bytes itself,
+- `docs/media-proxy-pattern.md` — the opt-in media proxy tier (not in
+  `k8s/base`; chart `proxy.enabled`, off): why it serves bytes itself,
   and how sessions are pinned to pods.
 - `docs/configuration.md` — the config system, the Plex preferences an operator
   may set, and the ones this architecture fixes.
@@ -36,7 +38,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | Path | Owns |
 | --- | --- |
 | `cmd/manager/` | Runs in every pod: leader election, the Plex supervisor, the maintenance fan-out, the job listeners |
-| `cmd/proxy/` | The media proxy clients connect to |
+| `cmd/proxy/` | The opt-in media proxy tier (chart `proxy.enabled`, off by default; `k8s/base` does not run it) |
 | `cmd/shim/` | Stands in for Plex's helper binaries and forwards each invocation to the manager |
 | `cmd/maintenance/` | What a CronJob runs to ask the manager to distribute one task |
 | `pkg/plex/db/` | The shared PostgreSQL library database |
@@ -138,7 +140,7 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   retires whenever it likes — so Plex would be killed at random. `pkg/plex/net`
   rejects it rather than letting it be set.
 - **Plex advertises `169.254.1.2` to plex.tv,** because that is the only address
-  it can see. Set `plex-external-url` (chart: `proxy.externalURL`) for an
+  it can see. Set `plex-external-url` (chart: `plex.externalURL`) for an
   address clients can reach; see `docs/configuration.md`.
 - **`ProcessedMachineIdentifier` is what clients see as the server ID.** Plex
   derives it from `MachineIdentifier` with a salt you cannot reproduce, and
@@ -214,6 +216,16 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   `metadata_items.guid` as `<provider identifier>://<movie|show|…>/<uid>`,
   exactly `clustarrwatch.Guid`'s form (both seen on kind-cluster-plex,
   2026-09-30, where `k8s/overlays/kind-cluster-plex` runs the integration).
+- **The chart and `k8s/base` are two installs of one design, and they
+  drifted.** By chart 0.2.0 the chart's client Service still selected the
+  media proxy Deployment, its Plex port was `pms` where the base targets
+  `proxy`, and its Role could not delete a Lease. `test/manifests`
+  (`parity_test.go`) now holds the chart's Plex pods, client and headless
+  Services, PDB and Role to the base: change both, or the test names the
+  difference. Its render helpers open every file under `k8s/` and the chart
+  (`trackInputs`), because kubectl and helm read them in a subprocess the
+  `go test` cache cannot see, and an edited template once passed on a cached
+  result.
 - **`go test ./...` passing does not mean the cluster works.** Nearly every bug
   in this repo so far was only visible in a real cluster.
 - **The image is `FROM scratch`: no shell, no `cat`, no `curl`.** Plex's
