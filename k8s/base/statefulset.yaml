@@ -55,10 +55,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: POD_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
             # The shared library. These manifests do not deploy PostgreSQL,
             # they expect one to be reachable at this Service, and they do not
             # create the Secret below either.
