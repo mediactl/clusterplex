@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -172,4 +173,27 @@ func TestReadSessionsThroughThePMSClient(t *testing.T) {
 	streams, err := ReadSessions(t.Context(), &plexapi.Client{BaseURL: srv.URL, Token: func() string { return "tok" }})
 	require.NoError(t, err)
 	assert.Len(t, streams, 3)
+}
+
+// A direct play recorded from PMS 1.43.4 on kind-cluster-plex (2026-10-07,
+// a probe client on plex-2; the username replaced, cast and crew lists
+// trimmed). What it shows that the hand-built fixture above does not: a
+// client that reports only timelines gets an empty Session -- no id,
+// bandwidth or location -- so the key falls back to sessionKey and the
+// location to Player.local, and every client arrives from 169.254.1.1, the
+// pod end of Plex's veth (docs/media-proxy-pattern.md, "Client addresses").
+func TestReadSessionsReadsARecordedDirectPlay(t *testing.T) {
+	body, err := os.ReadFile("testdata/sessions-direct-play-1.43.4.json")
+	require.NoError(t, err)
+	streams, err := ReadSessions(t.Context(), fakePMS{"/status/sessions": string(body)})
+	require.NoError(t, err)
+	require.Len(t, streams, 1)
+	assert.Equal(t, Stream{
+		Key: "1/356", RatingKey: "356", MediaType: "movie", Title: "La Jetée", Year: 1962,
+		User: "owner", Player: "Plex HTPC", Platform: "Linux", Device: "probe", State: "playing",
+		Address: "169.254.1.1", Location: "lan",
+		ViewOffset: 71416, Duration: 1686752,
+		Resolution: "1080", VideoCodec: "hevc", AudioCodec: "ac3",
+	}, streams[0])
+	assert.Equal(t, DirectPlay, streams[0].Decision())
 }

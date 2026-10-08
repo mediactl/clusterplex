@@ -1,0 +1,147 @@
+{
+ "MediaContainer": {
+  "size": 1,
+  "Metadata": [
+   {
+    "addedAt": 1790220216,
+    "art": "/library/metadata/356/art/1791303419",
+    "contentRating": "NR",
+    "duration": 1686752,
+    "guid": "plex://movie/5d776827961905001eb91338",
+    "key": "/library/metadata/356",
+    "lastViewedAt": 1791425323,
+    "librarySectionID": "2",
+    "librarySectionKey": "/library/sections/2",
+    "librarySectionTitle": "Clustarr Movies",
+    "originalTitle": "La Jetée",
+    "originallyAvailableAt": "2003-10-10",
+    "ratingKey": "356",
+    "sessionKey": "1",
+    "studio": "Argos films",
+    "summary": "A man confronts his past during an experiment that attempts to find a solution to the problems of a post-apocalyptic world caused by a world war.",
+    "tagline": "A man's obsession with an image of his past",
+    "thumb": "/library/metadata/356/thumb/1791303419",
+    "title": "La Jetée",
+    "titleSort": "Jetee",
+    "type": "movie",
+    "updatedAt": 1791303419,
+    "viewOffset": 71416,
+    "year": 1962,
+    "Media": [
+     {
+      "aspectRatio": "1.66",
+      "audioChannels": 1,
+      "audioCodec": "ac3",
+      "bitrate": 4209,
+      "container": "mkv",
+      "duration": 1686752,
+      "hasVoiceActivity": "0",
+      "height": 1080,
+      "id": "355",
+      "probeHash": "292c163c951376ee3424aaa1a067df0380c0a4fa",
+      "source": "clustarr",
+      "videoCodec": "hevc",
+      "videoFrameRate": "24p",
+      "videoProfile": "main 10",
+      "videoResolution": "1080",
+      "width": 1776,
+      "Part": [
+       {
+        "container": "mkv",
+        "duration": 1686752,
+        "file": "/library/movies/La Jetée (1962) {tmdb-662}/La Jetee (1962) {tmdb-662} - [Bluray-1080p][AC3 1.0][h265]-CiNEFiLE.mkv",
+        "id": "355",
+        "key": "/library/parts/355/1790220216/file.mkv",
+        "size": 887470615,
+        "source": "clustarr",
+        "videoProfile": "main 10",
+        "Stream": [
+         {
+          "bitDepth": 10,
+          "bitrate": 3569,
+          "chromaLocation": "left",
+          "chromaSubsampling": "4:2:0",
+          "codec": "hevc",
+          "codedHeight": 1080,
+          "codedWidth": 1776,
+          "colorRange": "tv",
+          "default": true,
+          "displayTitle": "1080p (HEVC Main 10)",
+          "extendedDisplayTitle": "1080p (HEVC Main 10)",
+          "frameRate": 23.976,
+          "height": 1080,
+          "id": "233284",
+          "index": 0,
+          "language": "English",
+          "languageCode": "eng",
+          "languageTag": "en",
+          "level": 120,
+          "profile": "main 10",
+          "refFrames": 1,
+          "scanType": "progressive",
+          "source": "clustarr",
+          "streamType": 1,
+          "width": 1776
+         },
+         {
+          "audioChannelLayout": "mono",
+          "bitrate": 640,
+          "canNormalizeLoudness": "0",
+          "channels": 1,
+          "codec": "ac3",
+          "default": true,
+          "displayTitle": "French (AC3 Mono)",
+          "extendedDisplayTitle": "French (AC3 Mono)",
+          "id": "233285",
+          "index": 1,
+          "language": "French",
+          "languageCode": "fra",
+          "languageTag": "fr",
+          "samplingRate": 48000,
+          "selected": true,
+          "source": "clustarr",
+          "streamType": 2
+         },
+         {
+          "canAutoSync": "0",
+          "codec": "srt",
+          "default": true,
+          "displayTitle": "English (SRT)",
+          "extendedDisplayTitle": "English (SRT)",
+          "id": "233286",
+          "index": 2,
+          "language": "English",
+          "languageCode": "eng",
+          "languageTag": "en",
+          "selected": true,
+          "source": "clustarr",
+          "streamType": 3
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "User": {
+     "id": "1",
+     "title": "owner",
+     "thumb": "https://plex.tv/users/0000000000000000/avatar?c=0"
+    },
+    "Player": {
+     "address": "169.254.1.1",
+     "device": "probe",
+     "machineIdentifier": "probe-direct",
+     "platform": "Linux",
+     "product": "Plex HTPC",
+     "state": "playing",
+     "title": "clusterplex-probe",
+     "version": "1.0",
+     "local": true,
+     "relayed": false,
+     "secure": false,
+     "userID": 1
+    }
+   }
+  ]
+ }
+}

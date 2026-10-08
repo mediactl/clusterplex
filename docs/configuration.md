@@ -360,6 +360,12 @@ answered for 45 s reports no streams rather than the ones it last saw.
 The `user` label carries Plex usernames, and `/metrics` is unauthenticated
 on the probe port.
 
+Plex sees a client's own address only when the proxy forwards a public one
+("Client addresses" in `docs/media-proxy-pattern.md`): a client on a private
+address arrives from `169.254.1.1`, the pod end of Plex's veth, and reads as
+`lan`, which it is. A client that reports only timelines gets no `Session`
+element from Plex, so its bandwidth reads 0.
+
 #### OpenTelemetry
 
 Titles are unbounded as Prometheus labels, so each finished play is also an
