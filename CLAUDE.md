@@ -215,7 +215,16 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   honours `metadataAgentProviderGroupId`. A clustarr match is stored in
   `metadata_items.guid` as `<provider identifier>://<movie|show|…>/<uid>`,
   exactly `clustarrwatch.Guid`'s form (both seen on kind-cluster-plex,
-  2026-09-30, where `k8s/overlays/kind-cluster-plex` runs the integration).
+  2026-09-30).
+- **kind-cluster-plex runs Plex from clustarr's Helm chart, not from this
+  repo's manifests** (2026-10-08). Its `clustarr` release installs this chart
+  as the `cluster-plex` subchart in `clustarr-system`, pinned by version from
+  `oci://ghcr.io/mediactl/charts` (`make chart-push`; bump
+  `charts/cluster-plex/Chart.yaml` for every chart change). The
+  `k8s/overlays/kind-cluster-plex` overlay that ran it in `media` until then
+  was deleted: applying it now would start a second Plex with the same
+  machine identifier and plex.tv token. Roll a new image there with
+  `helm upgrade clustarr` and `cluster-plex.image.tag`.
 - **The chart and `k8s/base` are two installs of one design, and they
   drifted.** By chart 0.2.0 the chart's client Service still selected the
   media proxy Deployment, its Plex port was `pms` where the base targets

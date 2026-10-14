@@ -1,0 +1,25 @@
+# The clustarr component (k8s/components/clustarr) on the kind overlay with a
+# token Secret named, for TestTheClustarrComponentLetsTheManagerKeepTheTokenSecret.
+# Test data only: no install applies it. kind-cluster-plex, which used this
+# shape, runs Plex from clustarr's Helm chart since 2026-10-08.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../k8s/overlays/kind
+components:
+  - ../../../../k8s/components/clustarr
+patches:
+  - target:
+      kind: ConfigMap
+      name: clusterplex-config
+    patch: |-
+      - op: replace
+        path: /data/config.yaml
+        value: |
+          plex:
+            clustarr:
+              enabled: true
+              namespace: clustarr-system
+              tokenSecret: plex-token
+              pathMappings:
+                - {clustarr: /data/media, plex: /media}

@@ -161,6 +161,8 @@ func TestTheChartLetsTheManagerKeepTheTokenSecret(t *testing.T) {
 	tokenSecretGrant(t, string(out))
 }
 
-func TestTheLiveOverlayLetsTheManagerKeepTheTokenSecret(t *testing.T) {
-	tokenSecretGrant(t, render(t, "k8s/overlays/kind-cluster-plex"))
+// TestTheClustarrComponentLetsTheManagerKeepTheTokenSecret: an install that
+// follows clustarr through k8s/components/clustarr grants the token Secret too.
+func TestTheClustarrComponentLetsTheManagerKeepTheTokenSecret(t *testing.T) {
+	tokenSecretGrant(t, render(t, "test/manifests/testdata/clustarr-component"))
 }

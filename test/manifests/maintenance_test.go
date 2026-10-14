@@ -114,7 +114,7 @@ var unscheduled = []string{"analyze", "deep-analyze", "media-index", "chapter-th
 
 func TestEveryInstallSchedulesTheSameMaintenance(t *testing.T) {
 	chart, _ := maintenanceOf(t, objects(t, renderChart(t)))
-	for _, overlay := range []string{"k8s/overlays/kind", "k8s/overlays/kind-cluster-plex"} {
+	for _, overlay := range []string{"k8s/overlays/kind"} {
 		got, _ := maintenanceOf(t, objects(t, render(t, overlay)))
 		require.NotEmpty(t, got, "%s schedules no maintenance", overlay)
 		require.Len(t, got, len(chart), overlay)
@@ -130,9 +130,8 @@ func TestEveryInstallSchedulesTheSameMaintenance(t *testing.T) {
 
 func TestEveryMaintenanceCronJobCallsAServiceItsInstallDefines(t *testing.T) {
 	for name, rendered := range map[string]string{
-		"chart":                          renderChart(t),
-		"k8s/overlays/kind":              render(t, "k8s/overlays/kind"),
-		"k8s/overlays/kind-cluster-plex": render(t, "k8s/overlays/kind-cluster-plex"),
+		"chart":             renderChart(t),
+		"k8s/overlays/kind": render(t, "k8s/overlays/kind"),
 	} {
 		m, services := maintenanceOf(t, objects(t, rendered))
 		for task, c := range m {
@@ -149,9 +148,8 @@ func TestEveryInstallsPlexPodsMatchTheManagersSelector(t *testing.T) {
 	key, value, ok := strings.Cut(plexroute.DefaultPlexSelector, "=")
 	require.True(t, ok, "the selector is one key=value: %s", plexroute.DefaultPlexSelector)
 	for name, rendered := range map[string]string{
-		"chart":                          renderChart(t),
-		"k8s/overlays/kind":              render(t, "k8s/overlays/kind"),
-		"k8s/overlays/kind-cluster-plex": render(t, "k8s/overlays/kind-cluster-plex"),
+		"chart":             renderChart(t),
+		"k8s/overlays/kind": render(t, "k8s/overlays/kind"),
 	} {
 		dec := yaml.NewDecoder(strings.NewReader(rendered))
 		sets := 0
