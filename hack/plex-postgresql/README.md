@@ -811,6 +811,22 @@ and `f`; its text path now does too, in `v1.3.17-clusterplex.28` (fork
 None of the three depends on database state, so a fresh database had the
 same faults.
 
+## Fixed: text longer than 8 KiB reached Plex cut short
+
+The shim's `column_text` copied every value into an 8,192-byte
+thread-local buffer, so any longer value reached PMS cut at 8,191 bytes.
+On 2026-10-14 a Live TV block of 300 channels kept its channel map in
+`media_provider_resources.extra_data`, 16,685 bytes of JSON: the database
+held it whole, every PMS read it truncated, parsed no map, and listed the
+DVR with no channels, while the 16-channel block's 1,717 bytes read fine.
+A row PMS wrote back from such a read would have stored the truncation --
+the "truncated JSON" `doctor.sh` repairs upstream. A value longer than the
+buffer that no transform rewrites now comes back as the cached row's or
+libpq's own copy, valid as long as SQLite keeps a `column_text` pointer;
+in `v1.3.17-clusterplex.29` (fork `3636c19`,
+`column_text_returns_a_value_longer_than_its_buffer_whole` and
+`..._a_long_live_value_whole`).
+
 ## What is known about the remaining crash
 
 - It is a race. The row it dies on moves between runs — 91, 134, 259, 283 —
