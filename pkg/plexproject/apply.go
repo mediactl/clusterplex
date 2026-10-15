@@ -40,6 +40,9 @@ type Change struct {
 	SeedKey  string         // clustarrwatch.SeedKey
 	Item     Item           // Resolve's chain; empty when unresolved
 	Input    plexseed.Input // path, size, probe hash, probe, markers, original language
+	// Unresolved marks a file whose item is not in the caches yet: a
+	// reconcile keeps its row and applies nothing (spec §8).
+	Unresolved bool
 }
 
 // Apply is spec §6: one file, one transaction. The item chain, the folder,
