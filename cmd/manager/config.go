@@ -125,6 +125,11 @@ type Config struct {
 	WorkerPort int
 	// RemuxSelector picks the remux pool's pods; empty turns the pool off.
 	RemuxSelector string
+	// ScanRoute is where the proxy sends a library-scan request of a
+	// provisioned section instead of Plex (pkg/plexscan.Diverter): the
+	// manager's own /api/v1/scan on the probe port, normally. Empty leaves
+	// every scan to Plex.
+	ScanRoute string
 	// RemuxPort is the remux workers' gRPC port.
 	RemuxPort int
 	// ProbePort serves the health probes and metrics.
@@ -175,6 +180,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
 	fs.String("remux-selector", "app=plex-remux", "label selector of the remux pool's pods; empty leaves every browser stream to Plex's transcoder")
 	fs.Int("remux-port", 50052, "gRPC port of the remux workers")
+	fs.String("scan-route", "", "URL a library scan of a provisioned section is sent to instead of Plex, normally this pod's http://127.0.0.1:<probe-port>/api/v1/scan; empty leaves every scan to Plex")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
 	fs.Duration("drain-timeout", 2*time.Minute, "how long a stopping pod lets the client connections it holds finish before Plex is stopped; the pod's termination grace period must cover it plus Plex's own 30s")
 	fs.String("postgres-host", "", "host of the shared Plex library database")
@@ -249,6 +255,7 @@ func loadConfig(args []string) (Config, error) {
 		WorkerPort:       port("worker-port"),
 		RemuxSelector:    strings.TrimSpace(v.GetString("remux-selector")),
 		RemuxPort:        port("remux-port"),
+		ScanRoute:        strings.TrimSpace(v.GetString("scan-route")),
 		ProbePort:        port("probe-port"),
 		DrainTimeout:     v.GetDuration("drain-timeout"),
 		BlockPlexTV:      v.GetBool("block-plex-tv"),

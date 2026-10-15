@@ -41,6 +41,7 @@ import (
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 	"github.com/mediactl/clusterplex/pkg/plex/servertoken"
+	"github.com/mediactl/clusterplex/pkg/plexscan"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
 )
@@ -61,6 +62,9 @@ type Manager struct {
 	// runs, which answers a scan request (ReconcileSection).
 	sections sectionRecord
 	watcher  *clustarrwatch.Watcher
+	// reconciler, when set, answers scans instead of the watcher (tests).
+	reconciler sectionReconciler
+	keysCache
 
 	sup       *Supervisor
 	publisher *plexroute.Publisher
@@ -281,6 +285,12 @@ func run() int {
 			Target:       plexNet.PlexAddrPort().String(),
 			Logger:       logger.With("component", "proxy"),
 			OnConnChange: func(delta int) { metrics.ProxyConnections.Add(float64(delta)) },
+			// A library scan of a provisioned section is a reconcile of
+			// clustarr's projection, not Plex's walk (spec 2026-10-15 §5):
+			// the proxy sends it to the scan route, and only a plain-HTTP
+			// client's; a TLS client's reaches Plex until the proxy can
+			// terminate with Plex's own certificate.
+			Divert: scanDiverter(cfg.ScanRoute),
 		},
 		OnUnexpectedExit: func(err error) { m.plexLost(err) },
 	}
@@ -340,6 +350,15 @@ func run() int {
 	defer cancel()
 	m.shutdown(stopCtx)
 	return 0
+}
+
+// scanDiverter is the proxy's Divert for the configured scan route; none
+// when the route is empty, which leaves every scan to Plex.
+func scanDiverter(route string) proxy.Divert {
+	if route == "" {
+		return nil
+	}
+	return plexscan.Diverter(route, nil)
 }
 
 func (m *Manager) serveProbes() {

@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/mediactl/clusterplex/pkg/plexscan"
 	"github.com/mediactl/clusterplex/pkg/remoteexec"
 	"github.com/mediactl/clusterplex/pkg/remux/relay"
 	pb "github.com/mediactl/clusterplex/proto"
@@ -114,6 +115,15 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 		PMSAddr: cfg.PMSAddr(),
 		Logger:  m.Logger.With("component", "dispatcher"),
 		OnRoute: func(target, mode string) { m.Metrics.JobsRouted.WithLabelValues(target, mode).Inc() },
+	}
+	// An analyze of an item the projection wrote is answered without
+	// running Plex's binary (pkg/plexscan.AnalyzeRoute): clustarr's probe
+	// is the analysis, and the binary would only re-read the file over NFS.
+	if cfg.Clustarr.Enabled && m.pool != nil {
+		dispatcher.Scan = &plexscan.AnalyzeRoute{
+			Provisioned: m.provisionedKeys, SectionOf: m.sectionOf,
+			Logger: m.Logger.With("component", "scanner"),
+		}
 	}
 	// Plex Web's DASH streams go to the remux pool (pkg/remux), which
 	// streams their segments back; the relay talks to Plex at its own
