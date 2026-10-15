@@ -9,10 +9,10 @@ import (
 )
 
 // recordSections keeps the sections provisioning reports, by Plex key,
-// with the location id the database holds for each (location, by key); a
-// section whose location cannot be read is left out, so the projection
-// never writes under a location of zero.
-func (m *Manager) recordSections(byName map[string]string, location func(key string) (int64, error)) {
+// with every location the database holds for each (locations, by key); a
+// section whose locations cannot be read, or that has none, is left out,
+// so the projection never writes under a location of zero.
+func (m *Manager) recordSections(byName map[string]string, locations func(key string) ([]clustarrwatch.SectionLocation, error)) {
 	out := map[string]clustarrwatch.SectionIDs{}
 	for name, key := range byName {
 		id, err := strconv.ParseInt(key, 10, 64)
@@ -20,12 +20,12 @@ func (m *Manager) recordSections(byName map[string]string, location func(key str
 			m.Logger.Warn("provisioned section has no numeric key", "library", name, "key", key)
 			continue
 		}
-		loc, err := location(key)
-		if err != nil {
+		locs, err := locations(key)
+		if err != nil || len(locs) == 0 {
 			m.Logger.Warn("provisioned section has no location yet", "library", name, "key", key, "error", err)
 			continue
 		}
-		out[key] = clustarrwatch.SectionIDs{Section: id, Location: loc}
+		out[key] = clustarrwatch.SectionIDs{Section: id, Location: locs[0].ID, Locations: locs}
 	}
 	m.sections.Store(&out)
 }
@@ -40,12 +40,23 @@ func (m *Manager) provisionedSections() map[string]clustarrwatch.SectionIDs {
 	return *p
 }
 
-// locationOf reads a section's first location id from the library.
-func (m *Manager) locationOf(ctx context.Context) func(key string) (int64, error) {
-	return func(key string) (int64, error) {
-		var id int64
-		err := m.pool.QueryRow(ctx, `SELECT id FROM section_locations WHERE library_section_id = $1::bigint ORDER BY id LIMIT 1`, key).Scan(&id)
-		return id, err
+// locationsOf reads a section's locations from the library.
+func (m *Manager) locationsOf(ctx context.Context) func(key string) ([]clustarrwatch.SectionLocation, error) {
+	return func(key string) ([]clustarrwatch.SectionLocation, error) {
+		rows, err := m.pool.Query(ctx, `SELECT id, root_path FROM section_locations WHERE library_section_id = $1::bigint ORDER BY id`, key)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []clustarrwatch.SectionLocation
+		for rows.Next() {
+			var l clustarrwatch.SectionLocation
+			if err := rows.Scan(&l.ID, &l.Root); err != nil {
+				return nil, err
+			}
+			out = append(out, l)
+		}
+		return out, rows.Err()
 	}
 }
 

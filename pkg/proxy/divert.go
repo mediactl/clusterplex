@@ -21,8 +21,15 @@ type Divert func(ctx context.Context, req *http.Request) (resp *http.Response, c
 
 // divertable is the request line of a library scan (spec 2026-10-15 §5,
 // as amended by the capture doc): what Scan Library Files, the API and
-// the maintenance refresh send. The proxy reads nothing else as HTTP.
-var divertable = regexp.MustCompile(`^(?:POST|GET) /library/sections/[0-9]+/refresh(?:[ ?])`)
+// the maintenance refresh send. httpLine is any plain-HTTP request line:
+// such a request is read and forwarded with Connection: close, so the
+// client's next request opens a connection of its own and is examined in
+// turn, rather than riding a kept-alive connection past the divert
+// (review I1). TLS and anything else is piped as it is.
+var (
+	divertable = regexp.MustCompile(`^(?:POST|GET) /library/sections/[0-9]+/refresh(?:[ ?])`)
+	httpLine   = regexp.MustCompile(`^[A-Z]{3,7} /\S* HTTP/1\.[01]\r?$`)
+)
 
 // peekLine is how many bytes of a connection's first bytes are looked at
 // for a request line; a TLS hello or a longer line is not a scan.
@@ -59,7 +66,7 @@ func (p *TCP) divert(ctx context.Context, client net.Conn) (src net.Conn, forwar
 	if i := bytes.IndexByte(head, '\n'); i >= 0 {
 		line = head[:i]
 	}
-	if !divertable.Match(line) {
+	if !httpLine.Match(line) {
 		return src, nil, false
 	}
 	req, err := http.ReadRequest(br)
@@ -71,15 +78,17 @@ func (p *TCP) divert(ctx context.Context, client net.Conn) (src net.Conn, forwar
 	if err != nil {
 		return src, nil, false
 	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	resp, claimed := p.Divert(ctx, req)
-	if !claimed {
+	if divertable.Match(line) {
 		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
-		return src, req, false
+		if resp, claimed := p.Divert(ctx, req); claimed {
+			p.answer(client, resp)
+			return src, nil, true
+		}
 	}
-	p.answer(client, resp)
-	return src, nil, true
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.Close = true // Connection: close on the forward: one request per plain connection
+	return src, req, false
 }
 
 // answer writes the divert's response and closes the connection: a client

@@ -99,3 +99,24 @@ func TestWithoutADivertEverythingIsForwarded(t *testing.T) {
 	_, body := roundTrip(t, addr, "POST /library/sections/1/refresh HTTP/1.1\r\nHost: plex\r\nContent-Length: 0\r\n\r\n")
 	require.Equal(t, "upstream POST /library/sections/1/refresh", body)
 }
+
+// I1: a plain-HTTP request the proxy read and forwarded is sent with
+// Connection: close, so the client's next request opens a new connection
+// and is examined in turn rather than slipping past the divert.
+func TestAForwardedPlainHTTPRequestClosesTheConnectionAfterItsAnswer(t *testing.T) {
+	addr := startDiverting(t, func(context.Context, *http.Request) (*http.Response, bool) { return nil, false })
+	conn, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	_, err = conn.Write([]byte("GET /identity HTTP/1.1\r\nHost: plex\r\n\r\nPOST /library/sections/1/refresh HTTP/1.1\r\nHost: plex\r\nContent-Length: 0\r\n\r\n"))
+	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	require.Equal(t, "upstream GET /identity", string(body))
+	require.True(t, resp.Close, "Connection: close on the forwarded answer")
+	_, err = http.ReadResponse(br, nil)
+	require.Error(t, err, "the pipelined scan never reaches Plex on this connection")
+}

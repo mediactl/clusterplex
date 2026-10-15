@@ -123,7 +123,7 @@ func (m *Manager) provisionLoop(ctx context.Context) {
 		}
 		m.Metrics.ProvisionRuns.WithLabelValues(string(res)).Inc()
 		if keys := p.Keys(); keys != nil && m.pool != nil {
-			m.recordSections(keys, m.locationOf(ctx))
+			m.recordSections(keys, m.locationsOf(ctx))
 		}
 		wait := every
 		switch {

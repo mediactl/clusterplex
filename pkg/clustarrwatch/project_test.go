@@ -25,7 +25,14 @@ type recordingProjector struct {
 	applied    []applied
 	deleted    []deleted
 	reconciled []reconciled
+	events     []string // "apply:<uid>" and "delete:<uid>", in order
 	refresher  plexproject.Refresher
+}
+
+func (r *recordingProjector) Events() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
 }
 
 type applied struct {
@@ -47,6 +54,7 @@ type reconciled struct {
 func (r *recordingProjector) Apply(_ context.Context, section, location int64, c plexproject.Change) error {
 	r.mu.Lock()
 	r.applied = append(r.applied, applied{section, location, c})
+	r.events = append(r.events, "apply:"+c.UID)
 	r.mu.Unlock()
 	if r.refresher != nil {
 		r.refresher.NeedsRefresh(99)
@@ -58,6 +66,7 @@ func (r *recordingProjector) Delete(_ context.Context, section int64, uid string
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.deleted = append(r.deleted, deleted{section, uid})
+	r.events = append(r.events, "delete:"+uid)
 	return nil
 }
 
@@ -89,15 +98,77 @@ func (r *recordingProjector) Reconciled() []reconciled {
 // withProjection wires rp as the projection of section "1" (the fake
 // Plex's Movies library at /media/movies), database ids 1 and 10, and a
 // resync far away unless the test moves it.
+// sectionsOf is a Sections func a test may change while the watcher runs.
+type sectionsOf struct {
+	mu sync.Mutex
+	m  map[string]clustarrwatch.SectionIDs
+}
+
+func (s *sectionsOf) get() map[string]clustarrwatch.SectionIDs {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.m
+}
+
+func (s *sectionsOf) set(m map[string]clustarrwatch.SectionIDs) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m = m
+}
+
+// movieSections is the fake Plex's Movies library, section "1" with its
+// two locations (database ids 10 and 11).
+func movieSections() map[string]clustarrwatch.SectionIDs {
+	return map[string]clustarrwatch.SectionIDs{"1": {Section: 1, Location: 10, Locations: []clustarrwatch.SectionLocation{{ID: 10, Root: "/media/movies"}, {ID: 11, Root: "/media/movies2"}}}}
+}
+
 func withProjection(rp *recordingProjector, resync time.Duration) func(*clustarrwatch.Watcher) {
+	return withProjectionOf(rp, resync, &sectionsOf{m: movieSections()})
+}
+
+func withProjectionOf(rp *recordingProjector, resync time.Duration, sections *sectionsOf) func(*clustarrwatch.Watcher) {
 	return func(w *clustarrwatch.Watcher) {
 		w.Projection = rp
-		w.Sections = func() map[string]clustarrwatch.SectionIDs {
-			return map[string]clustarrwatch.SectionIDs{"1": {Section: 1, Location: 10}}
-		}
+		w.Sections = sections.get
+		w.TVProvider = "tv.plex.agents.custom.clustarr.tv"
 		w.SeedResync = resync
 		rp.refresher = w
 	}
+}
+
+func series(name, plexID string, seasons map[int]string) *unstructured.Unstructured {
+	var ps []any
+	for n, id := range seasons {
+		ps = append(ps, map[string]any{"number": int64(n), "id": id})
+	}
+	md := map[string]any{"title": "Show", "year": int64(2010), "originalLanguage": "en", "plexSeasons": ps}
+	if plexID != "" {
+		md["externalIDs"] = map[string]any{"plex": plexID}
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Series",
+		"metadata": map[string]any{"name": name, "namespace": ns, "uid": "uid-" + name},
+		"status":   map[string]any{"metadata": md},
+	}}
+}
+
+func episode(name, seriesName string, season, number int, plexID string) *unstructured.Unstructured {
+	st := map[string]any{"title": "Ep"}
+	if plexID != "" {
+		st["plexID"] = plexID
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Episode",
+		"metadata": map[string]any{"name": name, "namespace": ns, "uid": "uid-" + name},
+		"spec":     map[string]any{"seriesRef": seriesName, "seasonNumber": int64(season), "episodeNumber": int64(number)},
+		"status":   st,
+	}}
+}
+
+func episodeFile(name, p, ep string) *unstructured.Unstructured {
+	f := mediaFile(name, p)
+	f.Object["spec"].(map[string]any)["mediaRef"] = map[string]any{"kind": "episode", "name": ep}
+	return f
 }
 
 func startProjecting(t *testing.T, resync time.Duration, objs ...runtime.Object) (*recordingProjector, *pms, *counts, *dynamicClient) {
@@ -208,12 +279,22 @@ func TestTheResyncReconcilesEveryProvisionedSection(t *testing.T) {
 func TestReconcileSectionKnowsItsSections(t *testing.T) {
 	rp, _, _, _ := startProjecting(t, time.Hour, movie("m1", "Heat"), mediaFile("a", "/data/media/movies/Heat (1995)/Heat.mkv"))
 	w := rp.refresher.(*clustarrwatch.Watcher)
-	time.Sleep(50 * time.Millisecond)
-	_, ok, err := w.ReconcileSection(t.Context(), "1", "/media/movies/Heat (1995)")
-	require.NoError(t, err)
+	var ok bool
+	var err error
+	require.Eventually(t, func() bool {
+		_, ok, err = w.ReconcileSection(t.Context(), "1", "/media/movies/Heat (1995)")
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond, "refused until the watch has synced, then run")
 	require.True(t, ok)
-	require.Equal(t, reconciled{1, "/media/movies/Heat (1995)", rp.Reconciled()[0].want}, rp.Reconciled()[0])
-	require.Len(t, rp.Reconciled()[0].want, 1)
+	var mine *reconciled
+	for _, r := range rp.Reconciled() {
+		if r.folder == "/media/movies/Heat (1995)" {
+			mine = &r
+		}
+	}
+	require.NotNil(t, mine, "the folder reconcile, beside the first tick's resync")
+	require.Equal(t, int64(1), mine.section)
+	require.Len(t, mine.want, 1, "the whole section's files, whatever the folder")
 	_, ok, err = w.ReconcileSection(t.Context(), "9", "")
 	require.NoError(t, err)
 	require.False(t, ok)
@@ -239,4 +320,100 @@ func (d *dynamicClient) update(t *testing.T, gvr schema.GroupVersionResource, u 
 func (d *dynamicClient) del(t *testing.T, gvr schema.GroupVersionResource, u *unstructured.Unstructured) {
 	t.Helper()
 	require.NoError(t, d.dyn.Resource(gvr).Namespace(ns).Delete(t.Context(), u.GetName(), metav1.DeleteOptions{}))
+}
+
+// C1: an episode's Plex id arriving, or its series' season ids, re-applies
+// its file with the plex:// guids.
+func TestAnEpisodesPlexIDOrSeasonIDArrivingReappliesItsFile(t *testing.T) {
+	rp := &recordingProjector{}
+	p := &pms{}
+	p.tv.Store(true)
+	sections := &sectionsOf{m: map[string]clustarrwatch.SectionIDs{"2": {Section: 2, Location: 20, Locations: []clustarrwatch.SectionLocation{{ID: 20, Root: "/media/tv"}}}}}
+	// The fake client files an initial Series under a guessed "serieses"
+	// resource, so the series is created under the real one after start.
+	raw, _, _ := startWith(t, p, withProjectionOf(rp, time.Hour, sections), episode("ep", "show", 1, 1, ""))
+	dyn := &dynamicClient{raw}
+	dyn.add(t, clustarrwatch.Series, series("show", "aaaaaaaaaaaaaaaaaaaaaaaa", nil))
+	time.Sleep(50 * time.Millisecond)
+	dyn.add(t, clustarrwatch.MediaFiles, episodeFile("a", "/data/media/tv/Show/Season 01/E01.mkv", "ep"))
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, "tv.plex.agents.custom.clustarr.tv://episode/uid-ep", rp.Applied()[0].change.Item.Chain[2].GUID)
+
+	dyn.update(t, clustarrwatch.Episodes, episode("ep", "show", 1, 1, "bbbbbbbbbbbbbbbbbbbbbbbb"))
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 2 }, 5*time.Second, 10*time.Millisecond, "events: %v", rp.Events())
+	require.Equal(t, "plex://episode/bbbbbbbbbbbbbbbbbbbbbbbb", rp.Applied()[1].change.Item.Chain[2].GUID)
+
+	dyn.update(t, clustarrwatch.Series, series("show", "aaaaaaaaaaaaaaaaaaaaaaaa", map[int]string{1: "cccccccccccccccccccccccc"}))
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 3 }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, "plex://season/cccccccccccccccccccccccc", rp.Applied()[2].change.Item.Chain[1].GUID)
+}
+
+// C2: an upgrade's new file is applied before the old one is removed,
+// whichever order the two events share a tick in.
+func TestAnUpgradeAppliesTheNewFileBeforeRemovingTheOld(t *testing.T) {
+	rp, _, _, dyn := startProjecting(t, time.Hour, movie("m1", "Heat"))
+	time.Sleep(50 * time.Millisecond)
+	old := mediaFile("old", "/data/media/movies/Heat (1995)/Heat-1080p.mkv")
+	dyn.add(t, clustarrwatch.MediaFiles, old)
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	// a tick is 5 ms in tests, so both land in one tick only by luck; the
+	// order rule is what is tested, so delete first and add right after
+	dyn.del(t, clustarrwatch.MediaFiles, old)
+	dyn.add(t, clustarrwatch.MediaFiles, mediaFile("new", "/data/media/movies/Heat (1995)/Heat-2160p.mkv"))
+	require.Eventually(t, func() bool { return len(rp.Events()) == 3 }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, []string{"apply:uid-old", "apply:uid-new", "delete:uid-old"}, rp.Events())
+}
+
+// C4: a scan request before the informers have synced is refused, never
+// run against an empty want list.
+func TestAReconcileBeforeTheWatchSyncedIsRefused(t *testing.T) {
+	rp := &recordingProjector{}
+	w := &clustarrwatch.Watcher{Projection: rp, Sections: movieSections}
+	_, ok, err := w.ReconcileSection(t.Context(), "1", "")
+	require.True(t, ok)
+	require.ErrorContains(t, err, "not synced")
+	require.Empty(t, rp.Reconciled())
+}
+
+// I2: until provisioning has reported the sections, a provider section
+// gets no Plex catch-up refresh and a file change is held, not dropped.
+func TestFilesWaitForTheSectionsToBeKnown(t *testing.T) {
+	rp := &recordingProjector{}
+	sections := &sectionsOf{m: map[string]clustarrwatch.SectionIDs{}}
+	dyn, p, _ := startWith(t, &pms{}, withProjectionOf(rp, time.Hour, sections), movie("m1", "Heat"))
+	d := &dynamicClient{dyn}
+	time.Sleep(50 * time.Millisecond)
+	d.add(t, clustarrwatch.MediaFiles, mediaFile("a", "/data/media/movies/Heat (1995)/Heat.mkv"))
+	time.Sleep(150 * time.Millisecond)
+	require.Empty(t, rp.Applied())
+	require.Empty(t, refreshCalls(p), "no catch-up walk of a provider section while the projection is configured")
+	sections.set(movieSections())
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond, "held, then applied")
+}
+
+// I13: a file deleted while it waits for its item is never applied when
+// the item then arrives.
+func TestADeletedFileIsNotResurrectedByAPendingRetry(t *testing.T) {
+	rp, _, _, dyn := startProjecting(t, time.Hour)
+	time.Sleep(50 * time.Millisecond)
+	f := mediaFile("a", "/data/media/movies/Heat (1995)/Heat.mkv")
+	dyn.add(t, clustarrwatch.MediaFiles, f)
+	time.Sleep(100 * time.Millisecond)
+	dyn.del(t, clustarrwatch.MediaFiles, f)
+	time.Sleep(50 * time.Millisecond)
+	dyn.add(t, clustarrwatch.Movies, movie("m1", "Heat"))
+	time.Sleep(300 * time.Millisecond)
+	require.Empty(t, rp.Applied())
+	require.Len(t, rp.Deleted(), 1)
+}
+
+// I10: a file under a library's second location is applied under that
+// location's id.
+func TestAFileUnderASecondLocationUsesThatLocation(t *testing.T) {
+	rp, _, _, dyn := startProjecting(t, time.Hour, movie("m1", "Heat"))
+	time.Sleep(50 * time.Millisecond)
+	dyn.add(t, clustarrwatch.MediaFiles, mediaFile("a", "/data/media/movies2/Heat (1995)/Heat.mkv"))
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(11), rp.Applied()[0].location)
+	require.Equal(t, int64(11), rp.Applied()[0].change.Location)
 }

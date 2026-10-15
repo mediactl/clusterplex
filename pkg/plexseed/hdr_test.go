@@ -58,3 +58,27 @@ func TestSeedTxWritesTheAnalysisVersionSoPlexNeverAnalyses(t *testing.T) {
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND color_trc = 'smpte2084'", l.media))
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", l.media), "the video stream")
 }
+
+// ReplaceTx throws every stream of the target away, Plex's own included,
+// and seeds the probe's: once a row is the projection's, its streams are
+// clustarr's probe and nothing else.
+func TestReplaceTxReplacesPlexsOwnStreams(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr Movies")
+	ctx := context.Background()
+	_, err := conn.Exec(ctx, `INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, "index", created_at, updated_at, extra_data)
+		VALUES (1, $1, $2, 'h264', '', 0, 1, 1, '{"ma:profile":"high"}'), (2, $1, $2, 'dca', 'eng', 1, 1, 1, '')`, l.media, l.part)
+	require.NoError(t, err)
+	tx, err := conn.Begin(ctx)
+	require.NoError(t, err)
+	_, err = seeder(conn).ReplaceTx(ctx, tx, plexseed.Target{Part: l.part, Media: l.media, Item: l.item},
+		plexseed.Input{Path: l.path, ProbeHash: "h2", Probe: &plexseed.Probe{
+			Container: "mp4", VideoCodec: "hevc", RuntimeMillis: 60000,
+			Audio: []plexseed.Audio{{Index: 1, Codec: "aac", Channels: 2}},
+		}})
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(ctx))
+	require.Equal(t, 0, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND codec IN ('h264', 'dca')", l.media))
+	require.Equal(t, 2, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND extra_data LIKE '%cp:source%'", l.media))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND container = 'mp4' AND video_codec = 'hevc'", l.media))
+}

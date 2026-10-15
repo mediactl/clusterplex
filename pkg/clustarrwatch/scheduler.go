@@ -33,7 +33,12 @@ type Scheduler struct {
 	scans     map[string]map[string]time.Time // section -> folder -> due
 	refreshes map[string]time.Time            // guid -> due
 	byID      map[int64]time.Time             // item id -> due
+	idFails   map[int64]int                   // item id -> failed sends
 }
+
+// MaxRefreshAttempts is how many times a refresh by id is sent before it
+// is given up: the row may have been rolled back or trashed (review I11).
+const MaxRefreshAttempts = 5
 
 func (s *Scheduler) now() time.Time {
 	if s.Now != nil {
@@ -162,6 +167,19 @@ func (s *Scheduler) Flush(ctx context.Context) {
 			break
 		}
 		if err := s.RefreshID(ctx, id); err != nil {
+			s.mu.Lock()
+			if s.idFails == nil {
+				s.idFails = map[int64]int{}
+			}
+			s.idFails[id]++
+			if s.idFails[id] >= MaxRefreshAttempts {
+				delete(s.byID, id)
+				delete(s.idFails, id)
+				s.mu.Unlock()
+				s.logger().Warn("refresh by id given up", "id", id, "attempts", MaxRefreshAttempts, "error", err)
+				continue
+			}
+			s.mu.Unlock()
 			s.logger().Warn("refresh by id failed; will retry", "id", id, "error", err)
 			continue
 		}
@@ -169,6 +187,7 @@ func (s *Scheduler) Flush(ctx context.Context) {
 		if cur, ok := s.byID[id]; ok && cur.Equal(due) {
 			delete(s.byID, id)
 		}
+		delete(s.idFails, id)
 		s.mu.Unlock()
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plexproject"
 )
 
@@ -23,9 +24,29 @@ type Projection interface {
 }
 
 // SectionIDs are a provisioned section's database ids: library_sections.id
-// (Plex's section key) and its section_locations.id.
+// (Plex's section key), its first section_locations.id, and every location
+// with its root, for a library with more than one folder (review I10).
 type SectionIDs struct {
 	Section, Location int64
+	Locations         []SectionLocation
+}
+
+// SectionLocation is one section_locations row.
+type SectionLocation struct {
+	ID   int64
+	Root string
+}
+
+// locationFor is the location id a mapped path falls under: the longest
+// root that prefixes it, else the first.
+func (s SectionIDs) locationFor(mapped string) int64 {
+	best, id := -1, s.Location
+	for _, l := range s.Locations {
+		if (mapped == l.Root || strings.HasPrefix(mapped, l.Root+"/")) && len(l.Root) > best {
+			best, id = len(l.Root), l.ID
+		}
+	}
+	return id
 }
 
 // removal is a deleted MediaFile waiting for the next flush.
@@ -99,8 +120,16 @@ func (w *Watcher) flushRemovals(ctx context.Context) {
 }
 
 // errUnresolved is a file whose item is not cached yet; it waits on the
-// seed backoff, and the resync keeps its row meanwhile.
-var errUnresolved = errors.New("the file's item is not cached yet")
+// seed backoff, and the resync keeps its row meanwhile. errNoSections is
+// a projection whose sections are not known yet (provisioning has not
+// reported them): the file waits the same way (review I2).
+var (
+	errUnresolved = errors.New("the file's item is not cached yet")
+	errNoSections = errors.New("the provisioned sections are not known yet")
+	// ErrNotSynced is a reconcile asked for before the informers synced:
+	// it would read an empty library (review C4).
+	ErrNotSynced = errors.New("the clustarr watch has not synced; a reconcile now would read an empty library")
+)
 
 // projectOne applies one MediaFile to its section's rows.
 func (w *Watcher) projectOne(ctx context.Context, u *unstructured.Unstructured) error {
@@ -120,16 +149,33 @@ func (w *Watcher) projectOne(ctx context.Context, u *unstructured.Unstructured) 
 	}
 	ids, ok := w.provisioned(s.Key)
 	if !ok {
+		if w.sectionsUnknown() {
+			return errNoSections
+		}
 		return nil // not the projection's: the folder-refresh path has it
 	}
 	c, ok := w.changeOf(u, mapped)
 	if !ok {
 		return errUnresolved
 	}
+	c.Location = ids.locationFor(mapped)
 	lock := w.sectionLock(s.Key)
 	lock.Lock()
 	defer lock.Unlock()
-	return w.Projection.Apply(ctx, ids.Section, ids.Location, c)
+	return w.Projection.Apply(ctx, ids.Section, c.Location, c)
+}
+
+// sectionsUnknown reports a projection whose Sections has nothing yet.
+func (w *Watcher) sectionsUnknown() bool {
+	return w.Projection != nil && (w.Sections == nil || len(w.Sections()) == 0)
+}
+
+// providerSection reports a section on one of clustarr's providers: with
+// the projection configured, such a section is the projection's whether
+// or not provisioning has reported it yet, so Plex is never asked to
+// scan it (review I2).
+func (w *Watcher) providerSection(s plexapi.Section) bool {
+	return s.Agent != "" && (s.Agent == w.MovieProvider || s.Agent == w.TVProvider)
 }
 
 // changeOf builds the projection's input for a MediaFile at its mapped
@@ -156,10 +202,13 @@ func (w *Watcher) ReconcileSection(ctx context.Context, key, folder string) (ple
 	if !ok {
 		return plexproject.Outcome{}, false, nil
 	}
+	if !w.synced.Load() {
+		return plexproject.Outcome{}, true, ErrNotSynced
+	}
 	lock := w.sectionLock(key)
 	lock.Lock()
 	defer lock.Unlock()
-	want, err := w.changesUnder(ctx, key, folder)
+	want, err := w.changesUnder(ctx, key)
 	if err != nil {
 		return plexproject.Outcome{}, true, err
 	}
@@ -173,9 +222,11 @@ func (w *Watcher) ReconcileSection(ctx context.Context, key, folder string) (ple
 }
 
 // changesUnder lists the cached MediaFiles whose mapped path the section
-// (and folder) covers, as Changes; a file whose item is not cached is
-// Unresolved, which the reconcile reads as wanted but not applied.
-func (w *Watcher) changesUnder(ctx context.Context, key, folder string) ([]plexproject.Change, error) {
+// covers, as Changes -- the whole section even for a folder reconcile,
+// which limits only what it applies (review I8); a file whose item is not
+// cached is Unresolved, which the reconcile reads as wanted but not
+// applied.
+func (w *Watcher) changesUnder(ctx context.Context, key string) ([]plexproject.Change, error) {
 	if w.files == nil {
 		return nil, errors.New("the MediaFile informer is not running")
 	}
@@ -198,12 +249,12 @@ func (w *Watcher) changesUnder(ctx context.Context, key, folder string) ([]plexp
 		if !ok || s.Key != key {
 			continue
 		}
-		if folder != "" && !strings.HasPrefix(mapped, folder+"/") {
-			continue
-		}
 		c, ok := w.changeOf(u, mapped)
 		if !ok {
 			c = plexproject.Change{UID: string(u.GetUID()), PlexPath: mapped, SeedKey: SeedKey(u), Unresolved: true}
+		}
+		if ids, ok := w.provisioned(key); ok {
+			c.Location = ids.locationFor(mapped)
 		}
 		out = append(out, c)
 	}
@@ -211,10 +262,12 @@ func (w *Watcher) changesUnder(ctx context.Context, key, folder string) ([]plexp
 }
 
 // resyncProjection reconciles every provisioned section whole: the first
-// tick after the informers sync, then every SeedResync.
-func (w *Watcher) resyncProjection(ctx context.Context) {
-	if w.Sections == nil {
-		return
+// tick after the informers sync, then every SeedResync. It reports whether
+// there were sections to reconcile, so an empty set does not count as a
+// resync done.
+func (w *Watcher) resyncProjection(ctx context.Context) bool {
+	if w.Sections == nil || len(w.Sections()) == 0 {
+		return false
 	}
 	for key := range w.Sections() {
 		if _, _, err := w.ReconcileSection(ctx, key, ""); err != nil {
@@ -222,6 +275,7 @@ func (w *Watcher) resyncProjection(ctx context.Context) {
 			w.log().Warn("projection: resync", "section", key, "error", err)
 		}
 	}
+	return true
 }
 
 // NeedsRefresh is plexproject.Refresher: a row the projection inserted is

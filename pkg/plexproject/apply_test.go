@@ -139,3 +139,110 @@ func TestEnsureDirectoryBuildsTheParentChainOnce(t *testing.T) {
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM directories d JOIN directories p ON p.id = d.parent_directory_id WHERE d.id = $1 AND d.path = 'Show (2010)/Season 01' AND p.path = 'Show (2010)'", a))
 	require.Equal(t, 3, count(t, conn, "SELECT count(*) FROM directories WHERE library_section_id = $1", section))
 }
+
+// C3: a row adopted from Plex's scanner carries Plex's own streams; once
+// adopted it is the projection's, so the streams become the probe's, and a
+// later probe change replaces them again.
+func TestAnAdoptedRowsStreamsAreReplacedByTheProbeAndAgainOnAProbeChange(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	_, media := plexScannedRow(t, conn, section, loc, GUID(MoviesProvider, TypeMovie, "u1", ""), "Heat", "/media/movies/Heat (1995)/Heat.mkv")
+	ctx := context.Background()
+	_, err := conn.Exec(ctx, `INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, "index", created_at, updated_at, extra_data)
+		VALUES (1, $1, (SELECT id FROM media_parts WHERE media_item_id = $1), 'h264', '', 0, 1, 1, ''), (2, $1, (SELECT id FROM media_parts WHERE media_item_id = $1), 'dca', 'eng', 1, 1, 1, '')`, media)
+	require.NoError(t, err)
+	p := projector(conn, &refreshes{})
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "", "Heat"))))
+	require.Equal(t, 0, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND codec = 'dca'", media), "Plex's streams are gone")
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND video_codec = 'hevc' AND container = 'mkv'", media))
+
+	c := change("f1", "/media/movies/Heat (1995)/Heat.mp4", "k2", movieItem("u1", "", "Heat"))
+	c.Input.Probe.Container = "mp4"
+	c.Input.Probe.VideoCodec = "av1"
+	require.NoError(t, p.Apply(ctx, section, loc, c))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND video_codec = 'av1' AND container = 'mp4' AND extra_data LIKE '%\"cp:probeHash\":\"p-k2\"%'", media))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND codec = 'av1'", media))
+	require.Equal(t, 2, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", media))
+}
+
+// C1: a change to the item chain alone (the Plex id arriving) is applied
+// even though the file itself is unchanged.
+func TestAnItemKeyChangeIsAppliedWhenTheFileIsUnchanged(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	ctx := context.Background()
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "", "Heat"))))
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "5d7768b7880197001ec967c6", "Heat"))))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE library_section_id = $1 AND guid = 'plex://movie/5d7768b7880197001ec967c6' AND deleted_at IS NULL", section))
+	require.Equal(t, 0, count(t, conn, "SELECT count(*) FROM metadata_items WHERE library_section_id = $1 AND guid = $2 AND deleted_at IS NULL", section, GUID(MoviesProvider, TypeMovie, "u1", "")))
+}
+
+// C2: an item the projection trashed is revived, with its id, when a file
+// for it comes back -- as Plex restores an item from its trash when the
+// file returns -- so collections and playlists keyed by the id survive an
+// upgrade whose delete lands before its add.
+func TestATrashedItemIsRevivedWithItsID(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	ctx := context.Background()
+	require.NoError(t, p.Apply(ctx, section, loc, change("old", "/media/movies/Heat (1995)/Heat-1080p.mkv", "k1", movieItem("u1", "", "Heat"))))
+	var item int64
+	require.NoError(t, conn.QueryRow(ctx, "SELECT metadata_item_id FROM media_items WHERE id = $1", mediaID(t, conn, section, "old")).Scan(&item))
+	require.NoError(t, p.Delete(ctx, section, "old"))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND deleted_at IS NOT NULL", item))
+	require.NoError(t, p.Apply(ctx, section, loc, change("new", "/media/movies/Heat (1995)/Heat-2160p.mkv", "k1", movieItem("u1", "", "Heat"))))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND deleted_at IS NULL", item), "the same row, revived")
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE library_section_id = $1 AND guid = $2", section, GUID(MoviesProvider, TypeMovie, "u1", "")), "no second row")
+}
+
+// I11: a file directly under the location's root hangs off the root
+// directory row.
+func TestAFileAtTheRootUsesTheRootDirectoryRow(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	require.NoError(t, projector(conn, &refreshes{}).Apply(context.Background(), section, loc, change("f1", "/media/movies/Heat.mkv", "k1", movieItem("u1", "", "Heat"))))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_parts mp JOIN directories d ON d.id = mp.directory_id WHERE mp.media_item_id = $1 AND d.path = '' AND d.parent_directory_id IS NULL", mediaID(t, conn, section, "f1")))
+}
+
+// I11: a refresh is asked for only once the row's transaction committed; a
+// rolled-back insert asks for none.
+func TestARefreshIsAskedForOnlyAfterTheCommit(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	r := &refreshes{}
+	p := projector(conn, r)
+	c := change("f1", "/elsewhere/Heat.mkv", "k1", movieItem("u1", "", "Heat")) // not under the location: the apply fails after the chain insert
+	require.Error(t, p.Apply(context.Background(), section, loc, c))
+	require.Empty(t, r.ids, "the insert rolled back: nothing to refresh")
+	require.NoError(t, p.Apply(context.Background(), section, loc, change("f2", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u2", "", "Heat"))))
+	require.Len(t, r.ids, 1)
+}
+
+// I7: when a file moves to another item, the item it left is recounted
+// and trashed if nothing else is on it.
+func TestAFileMovingToAnotherItemLeavesNoGhost(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	ctx := context.Background()
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "", "Heat"))))
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k2", movieItem("u2", "", "Heat Remastered"))))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE library_section_id = $1 AND guid = $2 AND deleted_at IS NOT NULL AND media_item_count = 0", section, GUID(MoviesProvider, TypeMovie, "u1", "")))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE library_section_id = $1 AND guid = $2 AND deleted_at IS NULL AND media_item_count = 1", section, GUID(MoviesProvider, TypeMovie, "u2", "")))
+}
+
+// I7: a found row is re-parented and re-numbered when the chain says so.
+func TestAFoundRowIsReparentedToItsChain(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "TV "+t.Name(), 2, "/media/tv")
+	p := projector(conn, &refreshes{})
+	ctx := context.Background()
+	it := episodeItem("s1", 1, "e1", 1)
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/tv/Show (2010)/Season 01/E01.mkv", "k1", it)))
+	moved := episodeItem("s1", 2, "e1", 3) // the episode is now S02E03
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/tv/Show (2010)/Season 02/E03.mkv", "k2", moved)))
+	require.Equal(t, 1, count(t, conn, `SELECT count(*) FROM metadata_items e JOIN metadata_items s ON s.id = e.parent_id
+		WHERE e.library_section_id = $1 AND e.guid = $2 AND e."index" = 3 AND s.guid = $3 AND s."index" = 2`, section, moved.Chain[2].GUID, moved.Chain[1].GUID))
+}

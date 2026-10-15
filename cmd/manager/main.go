@@ -62,8 +62,10 @@ type Manager struct {
 	// runs, which answers a scan request (ReconcileSection).
 	sections sectionRecord
 	watcher  *clustarrwatch.Watcher
-	// reconciler, when set, answers scans instead of the watcher (tests).
+	// reconciler, when set, answers scans instead of the watcher (tests);
+	// tokenValid replaces the Plex token check (tests).
 	reconciler sectionReconciler
+	tokenValid func(ctx context.Context, token string) bool
 	keysCache
 
 	sup       *Supervisor

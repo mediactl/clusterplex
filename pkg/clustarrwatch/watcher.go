@@ -2,12 +2,15 @@ package clustarrwatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"path"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -94,6 +97,11 @@ type Watcher struct {
 	projMu       sync.Mutex
 	removals     map[string]removal
 	sectionLocks map[string]*sync.Mutex
+	// synced is set once the informers have synced: a reconcile before
+	// that would read an empty library (review C4). hadSections records
+	// the sections becoming known, which releases the files that waited.
+	synced      atomic.Bool
+	hadSections bool
 
 	mu         sync.Mutex
 	sections   []plexapi.Section
@@ -187,6 +195,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if !w.waitForSync(ctx, synced) {
 		return ctx.Err()
 	}
+	w.synced.Store(true)
 	caughtUp := false
 	var nextResync time.Time // zero: seed everything on the first tick
 	resync := w.SeedResync
@@ -212,13 +221,21 @@ func (w *Watcher) Run(ctx context.Context) error {
 			w.sched.Flush(ctx)
 			switch {
 			case w.Projection != nil:
-				if now := time.Now(); !now.Before(nextResync) {
-					w.resyncProjection(ctx)
+				if now := time.Now(); !now.Before(nextResync) && w.resyncProjection(ctx) {
 					nextResync = now.Add(resync)
 				}
+				if !w.hadSections && !w.sectionsUnknown() {
+					// The sections just became known: everything that
+					// waited for them is tried now, not after its backoff.
+					w.hadSections = true
+					w.promoteSeedRetries(time.Now().Add(365 * 24 * time.Hour))
+				}
 				w.promoteSeedRetries(time.Now())
-				w.flushRemovals(ctx)
+				// Applies before removals: an upgrade's new file lands
+				// before its old one goes, so the item never empties
+				// between the two (review C2).
 				w.flushSeeds(ctx)
+				w.flushRemovals(ctx)
 			case w.Seed != nil:
 				if now := time.Now(); !now.Before(nextResync) {
 					for _, obj := range files.GetStore().List() {
@@ -276,8 +293,8 @@ func (w *Watcher) catchUp(ctx context.Context) error {
 		if s.Agent == "" || (s.Agent != w.MovieProvider && s.Agent != w.TVProvider) {
 			continue
 		}
-		if _, ok := w.provisioned(s.Key); ok {
-			continue // the projection's resync reconciles it instead
+		if w.Projection != nil {
+			continue // the projection's resync reconciles it instead; Plex never walks it
 		}
 		if err := w.PMS.RefreshSection(ctx, s.Key, "", false); err != nil {
 			return err
@@ -339,12 +356,13 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 		UpdateFunc: func(oldObj, newObj any) {
 			o, ok1 := oldObj.(*unstructured.Unstructured)
 			n, ok2 := newObj.(*unstructured.Unstructured)
-			if !ok1 || !ok2 || MetadataHash(o) == MetadataHash(n) {
+			if !ok1 || !ok2 || (MetadataHash(o) == MetadataHash(n) && chainKey(o) == chainKey(n)) {
 				return
 			}
-			if w.Projection != nil && plexIDOf(o) != plexIDOf(n) {
-				// The chain's guid changed: every file of the item is
-				// applied again, which re-keys the rows.
+			if w.Projection != nil && chainKey(o) != chainKey(n) {
+				// The chain's guids changed -- the Plex id arriving, the
+				// series' season ids -- so every file of the item is
+				// applied again, which re-keys the rows (review C1).
 				for _, u := range w.filesOfItem(plexType, n.GetName()) {
 					w.enqueueSeed(u)
 				}
@@ -352,6 +370,14 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 			w.sched.EnqueueRefresh(itemGUID(provider, plexType, n))
 		},
 	}
+}
+
+// chainKey is what of an item the projection's chain reads: its Plex id
+// and, for a series, its seasons' ids.
+func chainKey(u *unstructured.Unstructured) string {
+	seasons, _, _ := unstructured.NestedSlice(u.Object, "status", "metadata", "plexSeasons")
+	b, _ := json.Marshal(seasons)
+	return plexIDOf(u) + "|" + string(b)
 }
 
 func fileOf(obj any) (File, bool) {
@@ -385,7 +411,7 @@ func (w *Watcher) enqueueMapped(mapped string) {
 		w.mu.Unlock()
 	case !ok:
 		inc(w.Counters.Uncovered)
-	case w.projectsKey(s.Key):
+	case w.projectsKey(s.Key) || (w.Projection != nil && w.providerSection(s)):
 		// The projection applied the change itself; no scan.
 	default:
 		w.sched.EnqueueScan(s.Key, path.Dir(mapped))
@@ -551,9 +577,22 @@ func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 				obj = t.Obj
 			}
 			if u, ok := obj.(*unstructured.Unstructured); ok {
+				w.forgetSeed(u.GetName()) // a pending apply would resurrect it (review I13)
 				w.enqueueRemoval(u)
 			}
 		},
+	}
+}
+
+// forgetSeed drops a file from the queue and its retries.
+func (w *Watcher) forgetSeed(name string) {
+	w.seedMu.Lock()
+	defer w.seedMu.Unlock()
+	delete(w.seedRetry, name)
+	delete(w.seedAttempts, name)
+	if _, queued := w.seedQueue[name]; queued {
+		delete(w.seedQueue, name)
+		w.seedOrder = slices.DeleteFunc(w.seedOrder, func(n string) bool { return n == name })
 	}
 }
 
@@ -664,7 +703,7 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 			case err == nil:
 				inc(w.Counters.Seeded)
 				continue
-			case errors.Is(err, errUnresolved):
+			case errors.Is(err, errUnresolved), errors.Is(err, errNoSections):
 				inc(w.Counters.SeedUnmatched)
 			default:
 				inc(w.Counters.SeedErrors)

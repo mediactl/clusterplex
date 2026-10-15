@@ -14,8 +14,11 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/lease"
+	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plexproject"
+	"github.com/mediactl/clusterplex/pkg/plexscan"
 )
 
 // ScanPath is where a library scan of a provisioned section is asked for
@@ -56,7 +59,14 @@ func (m *Manager) handleScan(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), scanTimeout)
 	defer cancel()
 	if !m.provisionedKeys(ctx)[section] {
-		http.Error(w, fmt.Sprintf("section %s is not provisioned; Plex scans it", section), http.StatusNotFound)
+		unprovisioned(w, section)
+		return
+	}
+	// The proxy diverted this before Plex could authenticate it: the
+	// token the client sent is checked against Plex here (review I4). A
+	// forwarded request was checked by the pod that forwarded it.
+	if r.Header.Get(forwardedHeader) == "" && !m.validToken(ctx, r.Header.Get("X-Plex-Token")) {
+		http.Error(w, "a valid X-Plex-Token is required", http.StatusUnauthorized)
 		return
 	}
 	if m.holdsLease() {
@@ -67,10 +77,12 @@ func (m *Manager) handleScan(w http.ResponseWriter, r *http.Request) {
 		}
 		out, ok, err := rec.ReconcileSection(ctx, section, folder)
 		switch {
+		case errors.Is(err, clustarrwatch.ErrNotSynced):
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		case err != nil:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		case !ok:
-			http.Error(w, fmt.Sprintf("section %s is not provisioned; Plex scans it", section), http.StatusNotFound)
+			unprovisioned(w, section)
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(out)
@@ -94,6 +106,25 @@ func (m *Manager) handleScan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func unprovisioned(w http.ResponseWriter, section string) {
+	w.Header().Set(plexscan.UnprovisionedHeader, "1")
+	http.Error(w, fmt.Sprintf("section %s is not provisioned; Plex scans it", section), http.StatusNotFound)
+}
+
+// validToken asks Plex whether token may list the library, which is what
+// the scan request needed to do; tokenValid replaces it in tests.
+func (m *Manager) validToken(ctx context.Context, token string) bool {
+	if m.tokenValid != nil {
+		return m.tokenValid(ctx, token)
+	}
+	if token == "" {
+		return false
+	}
+	c := &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: func() string { return token }}
+	_, err := c.Sections(ctx)
+	return err == nil
 }
 
 // holdsLease reports whether this pod runs the leader-only work.
@@ -195,14 +226,17 @@ type keysCache struct {
 	keysAt time.Time
 }
 
-// sectionOf is a metadata item's section key, for the analyze route.
-func (m *Manager) sectionOf(ctx context.Context, item int64) (string, bool) {
+// projectedItem reports an item whose every live media row the projection
+// wrote and seeded, for the analyze route (review I9): a row of Plex's own
+// or an unseeded one keeps Plex's analysis.
+func (m *Manager) projectedItem(ctx context.Context, item int64) bool {
 	if m.pool == nil {
-		return "", false
+		return false
 	}
-	var section int64
-	if err := m.pool.QueryRow(ctx, `SELECT library_section_id FROM metadata_items WHERE id = $1`, item).Scan(&section); err != nil {
-		return "", false
+	var live, ours int
+	if err := m.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE extra_data LIKE '%"cp:mediaFile":%' AND extra_data LIKE '%"cp:probeHash":%')
+		FROM media_items WHERE metadata_item_id = $1 AND deleted_at IS NULL`, item).Scan(&live, &ours); err != nil {
+		return false
 	}
-	return strconv.FormatInt(section, 10), true
+	return live > 0 && ours == live
 }

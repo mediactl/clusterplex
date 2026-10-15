@@ -46,16 +46,20 @@ func TestAMissingMovieRowIsInsertedOnceAndQueuedForRefresh(t *testing.T) {
 		AND hash IS NULL AND refreshed_at IS NULL AND parent_id IS NULL`, id1, "plex://movie/5d7768b7880197001ec967c6", section))
 }
 
-// A soft-deleted row with the same guid is Plex's trash, not the item:
-// a new row is made beside it.
-func TestASoftDeletedRowIsNotRevived(t *testing.T) {
+// A soft-deleted row with the same guid is revived, keeping its id -- as
+// Plex restores an item from its trash when the file returns -- rather
+// than a second row made beside it.
+func TestASoftDeletedRowIsRevivedNotDuplicated(t *testing.T) {
 	conn := plexDB(t)
 	section, _ := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
 	guid := GUID(MoviesProvider, TypeMovie, "u-trash", "")
 	var old int64
 	require.NoError(t, conn.QueryRow(context.Background(), `INSERT INTO metadata_items (library_section_id, metadata_type, guid, title, deleted_at) VALUES ($1, 1, $2, 'Old', 1790000000) RETURNING id`, section, guid).Scan(&old))
-	id := ensure(t, conn, section, movieItem("u-trash", "", "Heat"), &refreshes{})
-	require.NotEqual(t, old, id)
+	r := &refreshes{}
+	id := ensure(t, conn, section, movieItem("u-trash", "", "Heat"), r)
+	require.Equal(t, old, id)
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND deleted_at IS NULL", id))
+	require.Empty(t, r.ids, "a revived row keeps what Plex filled: no refresh")
 }
 
 // An episode's chain is inserted top down: the show with no parent, the

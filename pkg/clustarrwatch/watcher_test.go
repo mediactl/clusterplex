@@ -66,7 +66,7 @@ func (p *pms) client(t *testing.T) *plexapi.Client {
 				tv = `,{"key":"2","type":"show","title":"TV","agent":"tv.plex.agents.custom.clustarr.tv","Location":[{"path":"/media/tv"}]}`
 			}
 			_, _ = w.Write([]byte(`{"MediaContainer":{"Directory":[{"key":"1","type":"movie","title":"Movies",
-				"agent":"tv.plex.agents.custom.clustarr.movies","Location":[{"path":"/media/movies"}]}` + tv + `]}}`))
+				"agent":"tv.plex.agents.custom.clustarr.movies","Location":[{"path":"/media/movies"},{"path":"/media/movies2"}]}` + tv + `]}}`))
 			return
 		}
 		p.mu.Lock()

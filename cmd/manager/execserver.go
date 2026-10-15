@@ -121,8 +121,8 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 	// is the analysis, and the binary would only re-read the file over NFS.
 	if cfg.Clustarr.Enabled && m.pool != nil {
 		dispatcher.Scan = &plexscan.AnalyzeRoute{
-			Provisioned: m.provisionedKeys, SectionOf: m.sectionOf,
-			Logger: m.Logger.With("component", "scanner"),
+			Projected: m.projectedItem,
+			Logger:    m.Logger.With("component", "scanner"),
 		}
 	}
 	// Plex Web's DASH streams go to the remux pool (pkg/remux), which

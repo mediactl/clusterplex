@@ -15,6 +15,7 @@ import (
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/plexproject"
+	"github.com/mediactl/clusterplex/pkg/plexscan"
 )
 
 // fakeReconciler stands in for the watcher on a holder.
@@ -35,7 +36,10 @@ func scanRequest(target string, forwarded bool) *http.Request {
 }
 
 func withSections(m *Manager) {
-	m.recordSections(map[string]string{"Clustarr Movies": "1"}, func(string) (int64, error) { return 10, nil })
+	m.recordSections(map[string]string{"Clustarr Movies": "1"}, func(string) ([]clustarrwatch.SectionLocation, error) {
+		return []clustarrwatch.SectionLocation{{ID: 10, Root: "/media/movies"}}, nil
+	})
+	m.tokenValid = func(context.Context, string) bool { return true }
 }
 
 // The holder runs the reconcile and answers its outcome.
@@ -139,3 +143,66 @@ func atoiT(t *testing.T, s string) int {
 }
 
 var _ clustarrwatch.SectionIDs
+
+// I4: a scan carrying a token Plex does not accept is refused, as Plex
+// would have refused the request the proxy diverted.
+func TestTheScanEndpointRefusesAnInvalidPlexToken(t *testing.T) {
+	m := newTestManager()
+	withSections(m)
+	m.tokenValid = func(_ context.Context, token string) bool { return token == "good" }
+	m.reconciler = &fakeReconciler{}
+	m.stopLeader = func() {}
+	rr := httptest.NewRecorder()
+	r := scanRequest("/api/v1/scan?section=1", false)
+	r.Header.Set("X-Plex-Token", "bad")
+	m.probeHandler().ServeHTTP(rr, r)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+	rr = httptest.NewRecorder()
+	r = scanRequest("/api/v1/scan?section=1", false)
+	r.Header.Set("X-Plex-Token", "good")
+	m.probeHandler().ServeHTTP(rr, r)
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// I3: the unprovisioned answer carries its header, so the proxy's divert
+// can tell it from a route that is simply missing.
+func TestAnUnprovisionedSectionIsSaidSoInAHeader(t *testing.T) {
+	m := newTestManager()
+	withSections(m)
+	m.reconciler = &fakeReconciler{}
+	m.stopLeader = func() {}
+	rr := httptest.NewRecorder()
+	m.probeHandler().ServeHTTP(rr, scanRequest("/api/v1/scan?section=9", false))
+	require.Equal(t, http.StatusNotFound, rr.Code)
+	require.Equal(t, "1", rr.Header().Get(plexscan.UnprovisionedHeader))
+}
+
+// C4: a reconcile the watcher refuses because it has not synced is 503,
+// which the divert relays, so Plex's own scan never runs instead.
+func TestAReconcileRefusedBeforeSyncIs503(t *testing.T) {
+	m := newTestManager()
+	withSections(m)
+	m.reconciler = &notSynced{}
+	m.stopLeader = func() {}
+	rr := httptest.NewRecorder()
+	m.probeHandler().ServeHTTP(rr, scanRequest("/api/v1/scan?section=1", false))
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+}
+
+type notSynced struct{}
+
+func (notSynced) ReconcileSection(context.Context, string, string) (plexproject.Outcome, bool, error) {
+	return plexproject.Outcome{}, true, clustarrwatch.ErrNotSynced
+}
+
+// I10: every location of a section is recorded, with its root.
+func TestEveryLocationOfASectionIsRecorded(t *testing.T) {
+	m := newTestManager()
+	m.recordSections(map[string]string{"Clustarr Movies": "1"}, func(string) ([]clustarrwatch.SectionLocation, error) {
+		return []clustarrwatch.SectionLocation{{ID: 10, Root: "/media/movies"}, {ID: 11, Root: "/media/movies2"}}, nil
+	})
+	got := m.provisionedSections()["1"]
+	require.Equal(t, int64(10), got.Location)
+	require.Len(t, got.Locations, 2)
+	require.Equal(t, "/media/movies2", got.Locations[1].Root)
+}

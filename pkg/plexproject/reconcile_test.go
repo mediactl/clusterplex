@@ -89,3 +89,54 @@ func TestReconcileKeepsARowWhoseItemIsUnresolved(t *testing.T) {
 	require.Equal(t, Outcome{}, out)
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE library_section_id = $1 AND extra_data LIKE '%\"cp:seedKey\":\"k1\"%' AND deleted_at IS NULL", section))
 }
+
+// I5: a row whose extra_data is NULL (older Plex rows) is read, and adopted
+// rather than duplicated.
+func TestANullExtraDataRowIsReadAndAdopted(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	_, media := plexScannedRow(t, conn, section, loc, GUID(MoviesProvider, TypeMovie, "u1", ""), "Heat", "/media/movies/Heat (1995)/Heat.mkv")
+	_, err := conn.Exec(context.Background(), "UPDATE media_items SET extra_data = NULL WHERE id = $1", media)
+	require.NoError(t, err)
+	out, err := projector(conn, &refreshes{}).Reconcile(context.Background(), section, loc, "", []Change{change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "", "Heat"))})
+	require.NoError(t, err)
+	require.Equal(t, Outcome{Applied: 1, Adopted: 1}, out)
+	require.Equal(t, media, mediaID(t, conn, section, "f1"))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE library_section_id = $1 AND deleted_at IS NULL", section))
+}
+
+// I8: a folder reconcile matches the folder literally (no LIKE wildcards)
+// and never deletes a row whose file merely moved out of the folder.
+func TestAFolderReconcileMatchesLiterallyAndKeepsMovedRows(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	ctx := context.Background()
+	require.NoError(t, p.Apply(ctx, section, loc, change("ab", "/media/movies/A_B/A.mkv", "k1", movieItem("u-ab", "", "A_B"))))
+	require.NoError(t, p.Apply(ctx, section, loc, change("axb", "/media/movies/AxB/A.mkv", "k1", movieItem("u-axb", "", "AxB"))))
+	require.NoError(t, p.Apply(ctx, section, loc, change("moved", "/media/movies/A_B/M.mkv", "k1", movieItem("u-m", "", "M"))))
+	// clustarr now has "moved" under another folder; the whole section's files are the want list
+	out, err := p.Reconcile(ctx, section, loc, "/media/movies/A_B", []Change{
+		change("ab", "/media/movies/A_B/A.mkv", "k1", movieItem("u-ab", "", "A_B")),
+		change("axb", "/media/movies/AxB/A.mkv", "k1", movieItem("u-axb", "", "AxB")),
+		change("moved", "/media/movies/Elsewhere/M.mkv", "k1", movieItem("u-m", "", "M")),
+	})
+	require.NoError(t, err)
+	require.Equal(t, Outcome{}, out)
+	for _, uid := range []string{"ab", "axb", "moved"} {
+		require.NotZero(t, mediaID(t, conn, section, uid), uid)
+	}
+}
+
+// C4: a reconcile whose want list is empty while the section has stamped
+// rows is refused: it would empty the library, and an empty list is what
+// a watch that has not synced looks like.
+func TestReconcileRefusesToEmptyASectionFromAnEmptyWantList(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	require.NoError(t, p.Apply(context.Background(), section, loc, change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "", "Heat"))))
+	_, err := p.Reconcile(context.Background(), section, loc, "", nil)
+	require.ErrorIs(t, err, ErrEmptyWant)
+	require.NotZero(t, mediaID(t, conn, section, "f1"))
+}

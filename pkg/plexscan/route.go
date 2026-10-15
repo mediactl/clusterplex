@@ -19,6 +19,11 @@ import (
 // reconcile is seconds, and a client that asked for one is waiting.
 const scanTimeout = 10 * time.Minute
 
+// UnprovisionedHeader marks the scan endpoint's 404 for a section the
+// projection does not own: only that 404 sends the request on to Plex; a
+// bare one is the route missing (review I3).
+const UnprovisionedHeader = "X-ClusterPlex-Unprovisioned"
+
 // Diverter is the proxy's Divert for library scans (spec 2026-10-15 §5, as
 // amended by the capture doc): a scan request is sent to route -- the
 // manager's /api/v1/scan, on this pod or wherever the owner pointed it --
@@ -48,14 +53,22 @@ func Diverter(route string, client *http.Client) proxy.Divert {
 		if err != nil {
 			return textResponse(http.StatusInternalServerError, "clustarr scanner: "+err.Error()), true
 		}
+		// The client's token travels with the scan: the endpoint refuses
+		// what Plex would have refused (review I4).
+		if token := plexToken(req); token != "" {
+			post.Header.Set("X-Plex-Token", token)
+		}
 		resp, err := client.Do(post)
 		if err != nil {
 			return textResponse(http.StatusBadGateway, "clustarr scanner: "+err.Error()), true
 		}
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if resp.StatusCode == http.StatusNotFound {
+		if resp.StatusCode == http.StatusNotFound && resp.Header.Get(UnprovisionedHeader) != "" {
 			return nil, false
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			return textResponse(http.StatusBadGateway, "clustarr scanner: the scan route answered 404; is --scan-route the manager's /api/v1/scan?"), true
 		}
 		out := &http.Response{StatusCode: resp.StatusCode, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}
 		if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -63,6 +76,14 @@ func Diverter(route string, client *http.Client) proxy.Divert {
 		}
 		return out, true
 	}
+}
+
+// plexToken is the token a Plex client sent, in the header or the query.
+func plexToken(r *http.Request) string {
+	if t := r.Header.Get("X-Plex-Token"); t != "" {
+		return t
+	}
+	return r.URL.Query().Get("X-Plex-Token")
 }
 
 func textResponse(status int, text string) *http.Response {
@@ -75,26 +96,22 @@ func textResponse(status int, text string) *http.Response {
 // projection wrote the item's streams from clustarr's probe and the
 // binary would only re-read the file over NFS to write the same.
 type AnalyzeRoute struct {
-	// Provisioned is the set of section keys the projection owns.
-	Provisioned func(ctx context.Context) map[string]bool
-	// SectionOf is a metadata item's section key, from the library.
-	SectionOf func(ctx context.Context, item int64) (key string, ok bool)
+	// Projected reports an item whose every live media row the projection
+	// wrote and seeded; an item with a row of Plex's own, or an unseeded
+	// one, keeps Plex's analysis (review I9).
+	Projected func(ctx context.Context, item int64) bool
 	Logger    *slog.Logger
 }
 
 // Execute takes an analyze of a projected item; anything else is Plex's.
 func (r *AnalyzeRoute) Execute(ctx context.Context, exec *pb.ExecRequest, sink remoteexec.Sink) (bool, error) {
 	item, ok := ParseAnalyze(exec.GetArgs())
-	if !ok {
-		return false, nil
-	}
-	key, ok := r.SectionOf(ctx, item)
-	if !ok || !r.Provisioned(ctx)[key] {
+	if !ok || !r.Projected(ctx, item) {
 		return false, nil
 	}
 	_ = sink.Send(&pb.TranscodeLog{StdoutChunk: fmt.Appendf(nil, "clustarr scanner: item %d is projected from clustarr's probe; analysis skipped\n", item)})
 	if r.Logger != nil {
-		r.Logger.Info("analysis skipped for a projected item", "item", item, "section", key)
+		r.Logger.Info("analysis skipped for a projected item", "item", item)
 	}
 	return true, sink.Send(&pb.TranscodeLog{ExitCode: 0, IsFinished: true})
 }

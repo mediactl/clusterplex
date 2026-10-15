@@ -2,10 +2,16 @@ package plexproject
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 )
+
+// ErrEmptyWant is a reconcile asked to empty a section that has stamped
+// rows: an empty want list is what a watch that has not synced looks
+// like, never a library that lost every file at once (review C4).
+var ErrEmptyWant = errors.New("plexproject: an empty want list would empty the section; refused")
 
 // Outcome counts what a reconcile did.
 type Outcome struct {
@@ -15,7 +21,7 @@ type Outcome struct {
 // rowState is one live media row of the section: its stamps, if any, and
 // its file.
 type rowState struct {
-	uid, seedKey, file string
+	uid, seedKey, itemKey, seedVersion, file string
 }
 
 // Reconcile is spec §8 for a section (folder == "") or one folder of it.
@@ -32,17 +38,22 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 	if err != nil {
 		return out, err
 	}
+	if len(want) == 0 && len(have) > 0 {
+		return out, ErrEmptyWant
+	}
+	// want is the whole section's files whatever the folder: a row whose
+	// file moved out of the folder is still wanted, never deleted
+	// (review I8); only applies are limited to the folder.
 	wanted := map[string]bool{}
 	for _, c := range want {
-		if !underFolder(c.PlexPath, folder) {
-			continue
-		}
 		wanted[c.UID] = true
-		if c.Unresolved {
+	}
+	for _, c := range want {
+		if !underFolder(c.PlexPath, folder) || c.Unresolved {
 			continue
 		}
 		st, ok := have[c.UID]
-		if ok && st.seedKey == c.SeedKey {
+		if ok && st.seedKey == c.SeedKey && st.itemKey == c.Item.Key() && st.seedVersion == SeedVersion {
 			continue
 		}
 		if !ok {
@@ -76,8 +87,8 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 // liveRows reads the section's (or the folder's) live media rows: the
 // stamped ones by UID, the stamp-less ones by file.
 func (p *Projector) liveRows(ctx context.Context, section int64, folder string) (map[string]rowState, map[string]rowState, error) {
-	rows, err := p.DB.Query(ctx, `SELECT mi.extra_data, mp.file FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
-		WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mp.deleted_at IS NULL AND ($2 = '' OR mp.file LIKE $2 || '/%')`,
+	rows, err := p.DB.Query(ctx, `SELECT coalesce(mi.extra_data, ''), mp.file FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
+		WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mp.deleted_at IS NULL AND ($2 = '' OR left(mp.file, length($2) + 1) = $2 || '/')`,
 		section, folder)
 	if err != nil {
 		return nil, nil, fmt.Errorf("plexproject: list section %d: %w", section, err)
@@ -89,7 +100,8 @@ func (p *Projector) liveRows(ctx context.Context, section int64, folder string) 
 		if err := rows.Scan(&extra, &file); err != nil {
 			return nil, nil, err
 		}
-		st := rowState{uid: extraValue(extra, FileUIDKey), seedKey: extraValue(extra, SeedKeyKey), file: file}
+		m := extraMap(extra)
+		st := rowState{uid: m[FileUIDKey], seedKey: m[SeedKeyKey], itemKey: m[ItemKeyKey], seedVersion: m[SeedVersionKey], file: file}
 		if st.uid != "" {
 			have[st.uid] = st
 		} else {

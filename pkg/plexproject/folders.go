@@ -19,12 +19,15 @@ import (
 // parent the row above.
 func EnsureDirectory(ctx context.Context, tx pgx.Tx, section int64, root, dir string, now time.Time) (int64, error) {
 	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return 0, fmt.Errorf("plexproject: %s is not a folder under %s", dir, root)
 	}
 	id, err := findOrInsertDirectory(ctx, tx, section, nil, "", now)
 	if err != nil {
 		return 0, fmt.Errorf("plexproject: root directory of section %d: %w", section, err)
+	}
+	if rel == "." {
+		return id, nil // a file directly under the root hangs off the root row
 	}
 	acc := ""
 	for _, el := range strings.Split(filepath.ToSlash(rel), "/") {

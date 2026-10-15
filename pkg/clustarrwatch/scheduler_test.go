@@ -2,10 +2,13 @@ package clustarrwatch_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
 
@@ -139,4 +142,16 @@ func TestARefreshQueuedDuringItsSendIsNotLost(t *testing.T) {
 	c.Advance(61 * time.Second)
 	sch.Flush(t.Context())
 	assert.Equal(t, []string{"g", "g"}, s.refs)
+}
+
+// I11: a refresh by id that keeps failing is given up, not retried for ever.
+func TestARefreshByIDIsGivenUpAfterRepeatedFailures(t *testing.T) {
+	calls := 0
+	s := &clustarrwatch.Scheduler{RefreshID: func(context.Context, int64) error { calls++; return errors.New("gone") }, RefreshDelay: time.Nanosecond}
+	s.EnqueueRefreshID(7)
+	for range 20 {
+		time.Sleep(time.Millisecond)
+		s.Flush(t.Context())
+	}
+	require.Equal(t, clustarrwatch.MaxRefreshAttempts, calls)
 }

@@ -18,15 +18,21 @@ import (
 // scanAPI is a fake of the manager's /api/v1/scan: it records what it was
 // asked and answers as told.
 type scanAPI struct {
-	status int
-	body   string
-	asked  []string
+	status        int
+	body          string
+	unprovisioned bool
+	asked         []string
+	token         string
 }
 
 func (a *scanAPI) server(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.asked = append(a.asked, r.Method+" "+r.URL.RequestURI())
+		a.token = r.Header.Get("X-Plex-Token")
+		if a.unprovisioned {
+			w.Header().Set(UnprovisionedHeader, "1")
+		}
 		w.WriteHeader(a.status)
 		_, _ = io.WriteString(w, a.body)
 	}))
@@ -49,14 +55,35 @@ func TestDivertSendsAScanToTheRouteAndRelaysItsAnswer(t *testing.T) {
 	require.Equal(t, []string{"POST /api/v1/scan?force=1&path=%2Fmedia%2Fmovies%2FHeat+%281995%29&section=1"}, api.asked)
 }
 
-// A route that says the section is not provisioned (404) declines: the
-// request goes on to Plex as it was.
-func TestDivertDeclinesWhenTheRouteDoesNotOwnTheSection(t *testing.T) {
-	api := &scanAPI{status: http.StatusNotFound, body: "section 9 is not provisioned"}
+// A route that says the section is not provisioned -- a 404 carrying the
+// unprovisioned header -- declines: the request goes on to Plex as it
+// was. A bare 404 (a misconfigured route) is a failure, relayed (I3).
+func TestDivertDeclinesOnlyWhenTheRouteSaysUnprovisioned(t *testing.T) {
+	api := &scanAPI{status: http.StatusNotFound, body: "section 9 is not provisioned", unprovisioned: true}
 	d := Diverter(api.server(t), nil)
 	_, claimed := d(context.Background(), httptest.NewRequest(http.MethodPost, "/library/sections/9/refresh", nil))
 	require.False(t, claimed)
 	require.Len(t, api.asked, 1)
+
+	bare := &scanAPI{status: http.StatusNotFound, body: "404 page not found"}
+	d = Diverter(bare.server(t), nil)
+	resp, claimed := d(context.Background(), httptest.NewRequest(http.MethodPost, "/library/sections/9/refresh", nil))
+	require.True(t, claimed, "a bare 404 is the route missing, not the section")
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// I4: the client's Plex token travels with the scan, so the endpoint can
+// refuse a request Plex itself would have refused.
+func TestDivertForwardsTheClientsPlexToken(t *testing.T) {
+	api := &scanAPI{status: http.StatusOK}
+	d := Diverter(api.server(t), nil)
+	req := httptest.NewRequest(http.MethodPost, "/library/sections/1/refresh?X-Plex-Token=abc", nil)
+	_, _ = d(context.Background(), req)
+	require.Equal(t, "abc", api.token)
+	req = httptest.NewRequest(http.MethodPost, "/library/sections/1/refresh", nil)
+	req.Header.Set("X-Plex-Token", "hdr")
+	_, _ = d(context.Background(), req)
+	require.Equal(t, "hdr", api.token)
 }
 
 // A route that fails is still the answer: the client sees the failure
@@ -103,10 +130,7 @@ func (c *collectSink) stdout() string {
 // and never run: the projection wrote its streams.
 func TestAnAnalyzeOfAProjectedItemExitsZeroWithoutRunning(t *testing.T) {
 	r := &AnalyzeRoute{
-		Provisioned: func(context.Context) map[string]bool { return map[string]bool{"1": true} },
-		SectionOf: func(_ context.Context, item int64) (string, bool) {
-			return map[int64]string{14371: "1", 500: "9"}[item], item != 0
-		},
+		Projected: func(_ context.Context, item int64) bool { return item == 14371 },
 	}
 	sink := &collectSink{}
 	done, err := r.Execute(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner", Args: []string{"--analyze", "--log-file-suffix", "Analysis", "--no-thumbs", "--item", "14371"}}, sink)
@@ -117,7 +141,7 @@ func TestAnAnalyzeOfAProjectedItemExitsZeroWithoutRunning(t *testing.T) {
 	require.Contains(t, sink.stdout(), "14371")
 
 	done, _ = r.Execute(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner", Args: []string{"--analyze", "--item", "500"}}, &collectSink{})
-	require.False(t, done, "another section's item: Plex's binary runs")
+	require.False(t, done, "an item the projection does not own: Plex's binary runs")
 	done, _ = r.Execute(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner", Args: []string{"--scan", "--section", "1"}}, &collectSink{})
 	require.False(t, done, "not an analyze: left alone")
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,10 +17,11 @@ import (
 func TestProvisionedSectionsFollowTheLastProvisioningRun(t *testing.T) {
 	m := newTestManager()
 	require.Empty(t, m.provisionedSections(), "none before provisioning ran")
-	m.recordSections(map[string]string{"Clustarr Movies": "2", "Clustarr TV": "3"}, func(key string) (int64, error) {
-		return map[string]int64{"2": 20, "3": 30}[key], nil
+	m.recordSections(map[string]string{"Clustarr Movies": "2", "Clustarr TV": "3"}, func(key string) ([]clustarrwatch.SectionLocation, error) {
+		return []clustarrwatch.SectionLocation{{ID: map[string]int64{"2": 20, "3": 30}[key], Root: "/media/" + key}}, nil
 	})
-	require.Equal(t, map[string]clustarrwatch.SectionIDs{"2": {Section: 2, Location: 20}, "3": {Section: 3, Location: 30}}, m.provisionedSections())
+	require.Equal(t, int64(20), m.provisionedSections()["2"].Location)
+	require.Equal(t, int64(30), m.provisionedSections()["3"].Location)
 	m.recordSections(map[string]string{}, nil)
 	require.Empty(t, m.provisionedSections())
 }
@@ -27,11 +30,11 @@ func TestProvisionedSectionsFollowTheLastProvisioningRun(t *testing.T) {
 // projection never writes under a location id of zero.
 func TestASectionWithoutALocationIsNotProvisioned(t *testing.T) {
 	m := newTestManager()
-	m.recordSections(map[string]string{"Clustarr Movies": "2", "Clustarr TV": "x"}, func(key string) (int64, error) {
+	m.recordSections(map[string]string{"Clustarr Movies": "2", "Clustarr TV": "x"}, func(key string) ([]clustarrwatch.SectionLocation, error) {
 		if key == "2" {
-			return 20, nil
+			return []clustarrwatch.SectionLocation{{ID: 20, Root: "/media/movies"}}, nil
 		}
-		return 0, errors.New("no location")
+		return nil, errors.New("no location")
 	})
-	require.Equal(t, map[string]clustarrwatch.SectionIDs{"2": {Section: 2, Location: 20}}, m.provisionedSections())
+	require.Equal(t, []string{"2"}, slices.Collect(maps.Keys(m.provisionedSections())))
 }

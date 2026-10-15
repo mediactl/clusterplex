@@ -35,28 +35,8 @@ func (p *Projector) Delete(ctx context.Context, section int64, uid string) error
 	if _, err := tx.Exec(ctx, `UPDATE media_items SET deleted_at = $2, updated_at = $2 WHERE id = $1`, media, now); err != nil {
 		return err
 	}
-	for id := item; id != 0; {
-		var parent *int64
-		var live int
-		if err := tx.QueryRow(ctx, `SELECT parent_id,
-			(SELECT count(*) FROM media_items WHERE metadata_item_id = $1 AND deleted_at IS NULL)
-			+ (SELECT count(*) FROM metadata_items WHERE parent_id = $1 AND deleted_at IS NULL)
-			FROM metadata_items WHERE id = $1`, id).Scan(&parent, &live); err != nil {
-			return err
-		}
-		if err := countMedia(ctx, tx, id); err != nil {
-			return err
-		}
-		if live > 0 {
-			break
-		}
-		if _, err := tx.Exec(ctx, `UPDATE metadata_items SET deleted_at = $2, updated_at = $2 WHERE id = $1`, id, now); err != nil {
-			return err
-		}
-		if parent == nil {
-			break
-		}
-		id = *parent
+	if err := trashIfEmpty(ctx, tx, item, now); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

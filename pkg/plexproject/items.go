@@ -31,11 +31,17 @@ func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now tim
 			}
 		}
 		id, err := findItem(ctx, tx, section, n.GUID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			id, err = insertItem(ctx, tx, section, parent, n, now)
-			if err == nil && refresh != nil {
-				refresh.NeedsRefresh(id)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			id, err = reviveItem(ctx, tx, section, n.GUID, now)
+			if errors.Is(err, pgx.ErrNoRows) {
+				id, err = insertItem(ctx, tx, section, parent, n, now)
+				if err == nil && refresh != nil {
+					refresh.NeedsRefresh(id)
+				}
 			}
+		case err == nil:
+			err = placeItem(ctx, tx, id, parent, n, now)
 		}
 		if err != nil {
 			return 0, fmt.Errorf("plexproject: %s %q: %w", typeNames[n.Type], n.GUID, err)
@@ -74,6 +80,62 @@ func insertItem(ctx context.Context, tx pgx.Tx, section int64, parent *int64, n 
 		RETURNING id`,
 		section, parent, int(n.Type), n.GUID, n.Title, n.TitleSort, index, year, added.Unix(), now.Unix()).Scan(&id)
 	return id, err
+}
+
+// reviveItem brings a soft-deleted row with the guid back, keeping its id:
+// what Plex does when a file returns before the trash is emptied, and what
+// keeps collections and playlists keyed by the id across an upgrade whose
+// delete landed before its add (review C2).
+func reviveItem(ctx context.Context, tx pgx.Tx, section int64, guid string, now time.Time) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `UPDATE metadata_items SET deleted_at = NULL, updated_at = $3
+		WHERE id = (SELECT id FROM metadata_items WHERE library_section_id = $1 AND guid = $2 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT 1)
+		RETURNING id`, section, guid, now.Unix()).Scan(&id)
+	return id, err
+}
+
+// placeItem puts a found row where the chain says: under its parent, at
+// its index (review I7: an episode renumbered, a season re-keyed).
+func placeItem(ctx context.Context, tx pgx.Tx, id int64, parent *int64, n Node, now time.Time) error {
+	var index any
+	if n.Type == TypeSeason || n.Type == TypeEpisode {
+		index = n.Index
+	}
+	_, err := tx.Exec(ctx, `UPDATE metadata_items SET parent_id = $2, "index" = $3, updated_at = $4
+		WHERE id = $1 AND (parent_id IS DISTINCT FROM $2 OR "index" IS DISTINCT FROM $3)`, id, parent, index, now.Unix())
+	return err
+}
+
+// trashIfEmpty recounts item and soft-deletes it, and each parent left
+// with nothing live, as Delete does.
+func trashIfEmpty(ctx context.Context, tx pgx.Tx, item, now int64) error {
+	for id := item; id != 0; {
+		var parent *int64
+		var live int
+		if err := tx.QueryRow(ctx, `SELECT parent_id,
+			(SELECT count(*) FROM media_items WHERE metadata_item_id = $1 AND deleted_at IS NULL)
+			+ (SELECT count(*) FROM metadata_items WHERE parent_id = $1 AND deleted_at IS NULL)
+			FROM metadata_items WHERE id = $1`, id).Scan(&parent, &live); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if err := countMedia(ctx, tx, id); err != nil {
+			return err
+		}
+		if live > 0 {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE metadata_items SET deleted_at = $2, updated_at = $2 WHERE id = $1`, id, now); err != nil {
+			return err
+		}
+		if parent == nil {
+			return nil
+		}
+		id = *parent
+	}
+	return nil
 }
 
 // ReKey renames a node's guid in place once clustarr knows its Plex id

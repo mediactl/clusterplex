@@ -1,6 +1,8 @@
 package plexproject
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -28,6 +30,16 @@ type Item struct {
 	Provider         string
 	Chain            []Node
 	OriginalLanguage string
+}
+
+// Key is the chain as a stamp: each node's guid, parent order and index,
+// so a change to the chain alone is applied (ItemKeyKey).
+func (it Item) Key() string {
+	h := sha256.New()
+	for _, n := range it.Chain {
+		_, _ = fmt.Fprintf(h, "%d|%s|%d\n", n.Type, n.GUID, n.Index)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // Lookup finds a catalog object by kind and name in a namespace; the

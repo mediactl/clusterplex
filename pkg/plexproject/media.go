@@ -19,13 +19,26 @@ const (
 	// reconcile tells a current row from a drifted one without reading
 	// every column.
 	SeedKeyKey = "cp:seedKey"
+	// ItemKeyKey is the item chain as of the last apply (Item.Key): a
+	// chain change alone -- the Plex id arriving, an episode renumbered --
+	// is applied even though the file is unchanged (review C1).
+	ItemKeyKey = "cp:itemKey"
+	// SeedVersionKey is the seeder's row format; a row stamped with an
+	// older one has its streams replaced (review I6).
+	SeedVersionKey = "cp:seedVersion"
 )
+
+// SeedVersion is the seeder's current row format: 2 added color_trc, the
+// analysis version and the commentary and bitmap flags.
+const SeedVersion = "2"
 
 // found is a media row located by UID, or adopted by path.
 type found struct {
-	media, part int64
-	seedKey     string
-	adopted     bool
+	media, part, item int64
+	seedKey, itemKey  string
+	probeHash         string
+	seedVersion       string
+	adopted           bool
 }
 
 // findMedia looks a MediaFile's row up by its stamp, then adopts a
@@ -33,14 +46,14 @@ type found struct {
 func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath string) (found, bool, error) {
 	var f found
 	var extra string
-	err := tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.extra_data FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
+	err := tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
 		WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mi.extra_data LIKE $2 ORDER BY mp.deleted_at NULLS FIRST, mp.id LIMIT 1`,
-		section, `%"`+FileUIDKey+`":"`+uid+`"%`).Scan(&f.media, &f.part, &extra)
+		section, `%"`+FileUIDKey+`":"`+uid+`"%`).Scan(&f.media, &f.part, &f.item, &extra)
 	if errors.Is(err, pgx.ErrNoRows) {
 		f.adopted = true
-		err = tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.extra_data FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
+		err = tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
 			WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mp.deleted_at IS NULL AND mp.file = $2
-			AND mi.extra_data NOT LIKE '%"cp:mediaFile":%' ORDER BY mi.id LIMIT 1`, section, plexPath).Scan(&f.media, &f.part, &extra)
+			AND coalesce(mi.extra_data, '') NOT LIKE '%"cp:mediaFile":%' ORDER BY mi.id LIMIT 1`, section, plexPath).Scan(&f.media, &f.part, &f.item, &extra)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return found{}, false, nil
@@ -48,13 +61,9 @@ func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath stri
 	if err != nil {
 		return found{}, false, err
 	}
-	f.seedKey = extraValue(extra, SeedKeyKey)
+	m := extraMap(extra)
+	f.seedKey, f.itemKey, f.probeHash, f.seedVersion = m[SeedKeyKey], m[ItemKeyKey], m[plexseed.ProbeHashKey], m[SeedVersionKey]
 	return f, true, nil
-}
-
-// extraValue reads one key of plexseed's JSON extra_data.
-func extraValue(extra, key string) string {
-	return extraMap(extra)[key]
 }
 
 func extraMap(extra string) map[string]string {
@@ -68,10 +77,9 @@ func extraMap(extra string) map[string]string {
 
 // upsertMedia writes the identity and placement of c's media row -- the
 // item it hangs off, its location, its part's folder, file and size -- and
-// returns the seeder's target. The codec columns, the streams and the
-// probe-hash stamp are the seeder's (SeedTx), which runs after; the stamps
-// go on last (stampMedia), since the seeder rewrites extra_data when it
-// seeds.
+// returns the seeder's target. The codec columns and the streams are the
+// seeder's, which runs after; the stamps go on last (stampMedia), since
+// the seeder rewrites extra_data when it seeds.
 func upsertMedia(ctx context.Context, tx pgx.Tx, section, location, item, dir int64, f found, have bool, c Change, now time.Time) (plexseed.Target, error) {
 	ts := now.Unix()
 	if !have {
@@ -99,9 +107,11 @@ func upsertMedia(ctx context.Context, tx pgx.Tx, section, location, item, dir in
 	return plexseed.Target{Part: f.part, Media: f.media, Item: item}, nil
 }
 
-// stampMedia records the MediaFile's UID and seed key on the row's
-// extra_data, keeping every key the seeder wrote.
-func stampMedia(ctx context.Context, tx pgx.Tx, media int64, c Change) error {
+// stampMedia records the MediaFile's UID, seed key and item key on the
+// row's extra_data, keeping every key the seeder wrote; the probe hash and
+// the seed version only when the probe was seeded, so the stamp never
+// claims streams the row does not carry.
+func stampMedia(ctx context.Context, tx pgx.Tx, media int64, c Change, seeded bool) error {
 	var extra string
 	if err := tx.QueryRow(ctx, `SELECT coalesce(extra_data, '') FROM media_items WHERE id = $1`, media).Scan(&extra); err != nil {
 		return err
@@ -110,8 +120,10 @@ func stampMedia(ctx context.Context, tx pgx.Tx, media int64, c Change) error {
 	m[plexseed.SourceKey] = plexseed.SourceValue
 	m[FileUIDKey] = c.UID
 	m[SeedKeyKey] = c.SeedKey
-	if c.Input.ProbeHash != "" {
+	m[ItemKeyKey] = c.Item.Key()
+	if seeded {
 		m[plexseed.ProbeHashKey] = c.Input.ProbeHash
+		m[SeedVersionKey] = SeedVersion
 	}
 	_, err := tx.Exec(ctx, `UPDATE media_items SET extra_data = $2 WHERE id = $1`, media, plexseed.ExtraData(m))
 	return err

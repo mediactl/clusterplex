@@ -96,6 +96,18 @@ func (s *Seeder) SeedTx(ctx context.Context, tx pgx.Tx, t Target, in Input) (Res
 	return s.seedTarget(ctx, tx, t, in, true)
 }
 
+// ReplaceTx is SeedTx for a row the projection owns outright: every stream
+// of the target goes, Plex's own included, and the probe's are seeded in
+// their place. A row adopted from Plex's scanner, or whose probe changed,
+// takes this path; Plex never re-analyses a projected row, so nothing else
+// would replace a stale stream (review C3, 2026-10-15).
+func (s *Seeder) ReplaceTx(ctx context.Context, tx pgx.Tx, t Target, in Input) (Result, error) {
+	if _, err := tx.Exec(ctx, "DELETE FROM media_streams WHERE media_item_id = $1", t.Media); err != nil {
+		return Result{}, fmt.Errorf("plexseed: clear streams of media %d: %w", t.Media, err)
+	}
+	return s.seedTarget(ctx, tx, t, in, true)
+}
+
 func (s *Seeder) seedTarget(ctx context.Context, tx pgx.Tx, t Target, in Input, markers bool) (Result, error) {
 	res := Result{Parts: 1}
 	now := s.now().Unix()
