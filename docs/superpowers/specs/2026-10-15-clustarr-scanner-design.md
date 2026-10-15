@@ -200,11 +200,44 @@ as the structural part of it.
   the guid rule for both forms.
 - The argv parser against the argv captured in §10.
 - The queue: a scan during a stream of applies never interleaves.
+- The `fields.go` contract test against clustarr's CRD YAML (§12).
 - Falsification per rule: remove it, watch its test fail by name.
 - End to end on talos once built: a transcode swap, a rename, a delete and
   a button press, each checked in Plex's UI and in the database.
 
-## 12. Out of scope
+## 12. Dependencies
+
+The direction stays one way: clustarr is the source, cluster-plex and
+Plex are consumers.
+
+| From | To | How |
+|---|---|---|
+| cluster-plex | clustarr | the Kubernetes API only: get, list and watch on MediaFiles, Movies, Series and Episodes (the `plex-clustarr-reader` Role). Never a clustarr process. |
+| Plex | clustarr-ui | HTTP, the metadata provider, on an item refresh. |
+| cluster-plex | Plex | the database (§6-§8) and the PMS API (`refresh`). |
+| clustarr | cluster-plex or Plex | nothing. |
+
+No webhook: clustarr pushing changes to a cluster-plex endpoint would
+make clustarr know cluster-plex's address, carry its auth and retry its
+outages, and cluster-plex would still need a list for the reconcile. The
+watch gives push delivery, replay after either side restarts and the list,
+with the apiserver as the broker.
+
+Two couplings remain and are held by tests and by degrading, not failing:
+
+- **Schema:** cluster-plex reads clustarr's fields through
+  `clustarrwatch/fields.go`. A contract test loads clustarr's CRD YAML and
+  checks that every path in `fields.go` exists, so a renamed field fails a
+  test rather than silently projecting nothing.
+- **Availability:** the informer waits for the CRDs; a `refresh` Plex
+  cannot complete (clustarr-ui down) is requeued with backoff. A clustarr
+  that is gone leaves Plex's rows as they are.
+
+Should clustarr ever need Plex's state (watched status for a list, say),
+that is a clustarr agent reading Plex's API, never cluster-plex writing
+clustarr's resources; ADR-0019 already forbids the latter.
+
+## 13. Out of scope
 
 Descriptive metadata and image bundles (Plex's refresh keeps them); files
 clustarr does not know; non-provisioned sections; Live TV and DVR rows;
