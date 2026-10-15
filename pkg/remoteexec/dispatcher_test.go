@@ -147,3 +147,22 @@ func TestABrowserRemuxNeverReachesPlexsTranscoder(t *testing.T) {
 	require.NoError(t, d.Execute(t.Context(), &pb.ExecRequest{TargetBinary: Transcoder}, nil))
 	assert.Equal(t, 1, route.calls)
 }
+
+type routeStub struct {
+	done  bool
+	calls int
+}
+
+func (r *routeStub) Execute(context.Context, *pb.ExecRequest, Sink) (bool, error) {
+	r.calls++
+	return r.done, nil
+}
+
+// A scanner run is offered to the scan route before the local binary; a
+// route that takes it is the whole job.
+func TestAScannerRunGoesToTheScanRouteBeforeTheLocalBinary(t *testing.T) {
+	scan := &routeStub{done: true}
+	d := &Dispatcher{Local: localScanner(t), Scan: scan, Dial: noDial(t)}
+	require.NoError(t, d.Execute(context.Background(), &pb.ExecRequest{TargetBinary: Scanner, Args: []string{"--analyze", "--item", "1"}}, &collectSink{}))
+	require.Equal(t, 1, scan.calls)
+}

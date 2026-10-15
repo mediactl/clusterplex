@@ -19,6 +19,17 @@ import (
 // server's own filesystem and sockets.
 const Transcoder = "Plex Transcoder"
 
+// Scanner is Plex's scanner binary, which Plex 1.43 runs only to analyse an
+// item; library scans run inside the server.
+const Scanner = "Plex Media Scanner"
+
+// ScanRoute takes a scanner run off Plex's binary (pkg/plexscan): an
+// analyze of an item the projection wrote is answered without running.
+type ScanRoute interface {
+	// Execute handles req when it is the route's; done=false leaves it to Plex.
+	Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) (done bool, err error)
+}
+
 // Worker is a pod able to run jobs.
 type Worker struct {
 	Name string
@@ -55,6 +66,7 @@ type Dispatcher struct {
 	Local   *Executor
 	Workers WorkerLister // nil means never dispatch remotely
 	Remux   RemuxRoute   // nil leaves every job to Plex's helpers
+	Scan    ScanRoute    // nil runs every scanner job as Plex's binary
 	Dial    Dialer
 	// PMSAddr is how workers reach this node's Plex Media Server (host:port).
 	// Loopback references in the job's arguments are rewritten to it.
@@ -75,6 +87,12 @@ func RemoteEligible(req *pb.ExecRequest) bool {
 
 // Execute runs the job remotely when it can, locally otherwise.
 func (d *Dispatcher) Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) error {
+	if d.Scan != nil && req.GetTargetBinary() == Scanner {
+		if done, err := d.Scan.Execute(ctx, req, sink); done {
+			d.route(req.GetTargetBinary(), "projected")
+			return err
+		}
+	}
 	if d.Remux != nil && req.GetTargetBinary() == Transcoder {
 		if done, err := d.Remux.Execute(ctx, req, sink); done {
 			d.route(req.GetTargetBinary(), "remux")
