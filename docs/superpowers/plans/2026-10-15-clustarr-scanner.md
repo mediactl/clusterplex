@@ -143,11 +143,15 @@ git commit -m "db: Pool.Query for multi-row reads" -- pkg/plex/db/pool.go pkg/pl
 
 ---
 
-### Task 3: Parse the scanner's argv
+### Task 3: Parse a scan request and an analyze invocation
+
+Re-scoped after Task 1's capture (library scans are in-process; only
+`--analyze` reaches the shim): the scan arrives as an HTTP request at the
+pod proxy, the analyze as argv.
 
 **Files:**
-- Create: `pkg/plexscan/args.go`
-- Test: `pkg/plexscan/args_test.go`
+- Create: `pkg/plexscan/request.go`, `pkg/plexscan/analyze.go`
+- Test: `pkg/plexscan/request_test.go`, `pkg/plexscan/analyze_test.go`
 - Uses: `pkg/plexscan/testdata/argv.txt` (Task 1)
 
 **Interfaces:**
@@ -157,101 +161,105 @@ git commit -m "db: Pool.Query for multi-row reads" -- pkg/plex/db/pool.go pkg/pl
   type Kind int
   const ( KindSection Kind = iota + 1; KindFolder )
   type Request struct { Section string; Path string; Force bool; Kind Kind }
-  // Parse reads a Plex Media Scanner argv (without argv[0]). ok is false for
-  // anything that is not a library scan (analyze, tree, help).
-  func Parse(args []string) (req Request, ok bool)
+  // ParseScan reads Plex's library-scan request, POST /library/sections/{id}/refresh,
+  // with path and force in the query or the form body; ok is false for any
+  // other request.
+  func ParseScan(r *http.Request) (req Request, ok bool)
+  // ParseAnalyze reads a Plex Media Scanner argv (without argv[0]); ok is
+  // true for --analyze with an --item.
+  func ParseAnalyze(args []string) (item int64, ok bool)
   ```
 
-- [ ] **Step 1: Write the failing tests.** The table rows come from `testdata/argv.txt`; the first three below are the expected shapes and must be replaced by the captured lines if they differ.
+- [ ] **Step 1: Write the failing tests.** `request_test.go`:
 
 ```go
-func TestParseReadsEveryCapturedScannerArgv(t *testing.T) {
-	b, err := os.ReadFile("testdata/argv.txt")
-	require.NoError(t, err)
-	var kind string
-	for _, line := range strings.Split(string(b), "\n") {
-		switch {
-		case strings.HasPrefix(line, "#"):
-			kind = strings.TrimSpace(strings.TrimPrefix(line, "#"))
-		case strings.TrimSpace(line) == "":
-		default:
-			args := strings.Fields(line)[1:] // drop "Plex" ... argv[0] is two words; fields of the joined cmdline
-			args = argsAfterBinary(line)
-			req, ok := Parse(args)
-			switch kind {
-			case "section":
-				require.True(t, ok, line)
-				require.Equal(t, KindSection, req.Kind, line)
-				require.NotEmpty(t, req.Section, line)
-			case "folder":
-				require.True(t, ok, line)
-				require.Equal(t, KindFolder, req.Kind, line)
-				require.NotEmpty(t, req.Path, line)
-			case "forced":
-				require.True(t, ok, line)
-				require.True(t, req.Force, line)
-			default:
-				require.False(t, ok, line)
-			}
-		}
-	}
-}
-
-// argsAfterBinary splits a captured cmdline on the binary's name.
-func argsAfterBinary(line string) []string {
-	_, rest, _ := strings.Cut(line, "Plex Media Scanner")
-	return strings.Fields(rest)
-}
-
-func TestParseKnowsBothFlagSpellings(t *testing.T) {
+func TestParseScanReadsSectionPathAndForceFromQueryOrBody(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		args []string
+		req  *http.Request
 		want Request
 	}{
-		{"long section", []string{"--scan", "--refresh", "--section", "2", "--log-file-suffix", "x"}, Request{Section: "2", Kind: KindSection}},
-		{"short folder", []string{"-s", "-r", "-c", "3", "-d", "/media/tv/Show", "--force"}, Request{Section: "3", Path: "/media/tv/Show", Force: true, Kind: KindFolder}},
+		{"section, no path", httptest.NewRequest(http.MethodPost, "/library/sections/2/refresh", nil), Request{Section: "2", Kind: KindSection}},
+		{"path in query", httptest.NewRequest(http.MethodPost, "/library/sections/1/refresh?path=%2Fmedia%2Fmovies%2FHeat+%281995%29&force=1", nil), Request{Section: "1", Path: "/media/movies/Heat (1995)", Force: true, Kind: KindFolder}},
+		{"path in body", formPost("/library/sections/1/refresh", "path=%2Fmedia%2Ftv%2FShow"), Request{Section: "1", Path: "/media/tv/Show", Kind: KindFolder}},
+		{"GET is accepted too", httptest.NewRequest(http.MethodGet, "/library/sections/2/refresh?force=1", nil), Request{Section: "2", Force: true, Kind: KindSection}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := Parse(tc.args)
+			got, ok := ParseScan(tc.req)
 			require.True(t, ok)
 			require.Equal(t, tc.want, got)
 		})
 	}
 }
 
-func TestParseLeavesAnalyzeAndTreeToPlex(t *testing.T) {
-	for _, args := range [][]string{
-		{"--analyze", "--item", "12"}, {"-a", "-i", "12"}, {"--tree", "--section", "2"}, {"--help"}, {},
+func formPost(target, body string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return r
+}
+
+func TestParseScanLeavesEveryOtherRequestAlone(t *testing.T) {
+	for _, r := range []*http.Request{
+		httptest.NewRequest(http.MethodPut, "/library/metadata/7/refresh", nil),
+		httptest.NewRequest(http.MethodGet, "/library/sections/2/all", nil),
+		httptest.NewRequest(http.MethodPost, "/library/sections/2/analyze", nil),
+		httptest.NewRequest(http.MethodGet, "/library/sections", nil),
+		httptest.NewRequest(http.MethodDelete, "/library/sections/2/refresh", nil),
 	} {
-		_, ok := Parse(args)
+		_, ok := ParseScan(r)
+		require.False(t, ok, r.Method+" "+r.URL.String())
+	}
+}
+```
+
+`analyze_test.go`:
+
+```go
+func TestParseAnalyzeReadsTheCapturedInvocation(t *testing.T) {
+	b, err := os.ReadFile("testdata/argv.txt")
+	require.NoError(t, err)
+	seen := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		_, rest, _ := strings.Cut(line, "Plex Media Scanner.real")
+		item, ok := ParseAnalyze(strings.Fields(rest))
+		require.True(t, ok, line)
+		require.Equal(t, int64(14371), item)
+		seen++
+	}
+	require.Equal(t, 1, seen)
+}
+
+func TestParseAnalyzeLeavesScansAndTreesAlone(t *testing.T) {
+	for _, args := range [][]string{
+		{"--scan", "--refresh", "--section", "2"}, {"--analyze"}, {"--analyze", "--item", "x"}, {"--tree", "--item", "3"}, {},
+	} {
+		_, ok := ParseAnalyze(args)
 		require.False(t, ok, "%v", args)
 	}
 }
 ```
 
-- [ ] **Step 2: Run:** `go test ./pkg/plexscan/ -run TestParse` — FAIL, `Parse` undefined.
+- [ ] **Step 2: Run:** `go test ./pkg/plexscan/` — FAIL to compile.
 
-- [ ] **Step 3: Implement** `args.go`:
+- [ ] **Step 3: Implement.** `request.go`:
 
 ```go
-// Package plexscan turns a Plex Media Scanner run into a reconcile of
-// clustarr's projection (spec 2026-10-15 §5): the argv is parsed here, the
-// Route in route.go decides where it runs.
+// Package plexscan turns a library scan into a reconcile of clustarr's
+// projection (spec 2026-10-15 §5, as amended by the capture doc): Plex's
+// scan request is read here, the proxy route in route.go diverts it, and
+// the analyze invocation that still reaches the shim is read here too.
 package plexscan
 
-// Kind is what the scanner was asked to walk.
 type Kind int
 
 const (
-	// KindSection is a whole library: Scan Library Files, the API without
-	// a path, the maintenance refresh.
 	KindSection Kind = iota + 1
-	// KindFolder is one directory of a library: the API's ?path=.
 	KindFolder
 )
 
-// Request is a library scan the scanner was started for.
 type Request struct {
 	Section string
 	Path    string
@@ -259,42 +267,21 @@ type Request struct {
 	Kind    Kind
 }
 
-// Parse reads a scanner argv without argv[0]. Only a scan (--scan/-s with
-// a --section/-c) is ours; an analyze, a tree, a help or anything without
-// a section is left to Plex's own binary, so ok is false for those.
-func Parse(args []string) (Request, bool) {
-	var req Request
-	scan := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		next := func() string {
-			if i+1 < len(args) {
-				i++
-				return args[i]
-			}
-			return ""
-		}
-		switch a {
-		case "--scan", "-s":
-			scan = true
-		case "--section", "-c":
-			req.Section = next()
-		case "--directory", "-d":
-			req.Path = next()
-		case "--force":
-			req.Force = true
-		case "--analyze", "-a", "--analyze-deeply", "--tree", "-t", "--help", "-h", "--item", "-i", "--file", "-f":
-			return Request{}, false
-		case "--log-file-suffix", "--refresh", "-r", "--no-thumbs":
-			if a == "--log-file-suffix" {
-				next()
-			}
-		}
-	}
-	if !scan || req.Section == "" {
+var scanPath = regexp.MustCompile(`^/library/sections/([0-9]+)/refresh$`)
+
+// ParseScan reads a library-scan request. Plex Web and the API send
+// POST /library/sections/{id}/refresh with path and force as query
+// parameters or as a form body (curl --data-urlencode), and GET works too.
+func ParseScan(r *http.Request) (Request, bool) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		return Request{}, false
 	}
-	req.Kind = KindSection
+	m := scanPath.FindStringSubmatch(r.URL.Path)
+	if m == nil {
+		return Request{}, false
+	}
+	_ = r.ParseForm() // query plus a form body; a bad body leaves the query
+	req := Request{Section: m[1], Path: r.Form.Get("path"), Force: r.Form.Get("force") == "1", Kind: KindSection}
 	if req.Path != "" {
 		req.Kind = KindFolder
 	}
@@ -302,15 +289,43 @@ func Parse(args []string) (Request, bool) {
 }
 ```
 
-Adjust the flag set to the captured argv: any flag Task 1 saw that takes a value must be consumed with `next()`.
+`analyze.go`:
 
-- [ ] **Step 4: Run:** PASS. Falsify once: remove the `!scan` guard and watch `TestParseLeavesAnalyzeAndTreeToPlex` fail on `{"--tree", "--section", "2"}`; restore.
+```go
+// ParseAnalyze reads a scanner argv (without argv[0]). Plex 1.43 runs the
+// binary only as "--analyze --log-file-suffix Analysis --no-thumbs --item N"
+// (capture doc); anything else is not an analyze of one item.
+func ParseAnalyze(args []string) (int64, bool) {
+	analyze, item := false, int64(0)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--analyze", "-a":
+			analyze = true
+		case "--item", "-i":
+			if i+1 >= len(args) {
+				return 0, false
+			}
+			n, err := strconv.ParseInt(args[i+1], 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			item = n
+			i++
+		case "--scan", "-s", "--tree", "-t":
+			return 0, false
+		}
+	}
+	return item, analyze && item != 0
+}
+```
+
+- [ ] **Step 4: Run:** PASS. Falsify: drop the method check in `ParseScan`; the DELETE case fails; restore.
 
 - [ ] **Step 5: Commit:**
 
 ```bash
-git add pkg/plexscan/args.go pkg/plexscan/args_test.go
-git commit -m "plexscan: parse the scanner's argv into a section or folder scan" -- pkg/plexscan
+git add pkg/plexscan
+git commit -m "plexscan: read a library-scan request and an analyze invocation" -- pkg/plexscan
 ```
 
 ---
