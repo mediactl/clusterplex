@@ -244,13 +244,17 @@ func (w *Watcher) filesOfItem(plexType, name string) []*unstructured.Unstructure
 		if !ok {
 			continue
 		}
+		k, _, _ := unstructured.NestedString(u.Object, kindField...)
+		n, _, _ := unstructured.NestedString(u.Object, mediaRefNameField...)
 		var match bool
 		if plexType == "show" {
-			series, _, _ := unstructured.NestedString(u.Object, seriesRefField...)
-			match = series == name
+			// A show's files are its episodes' files: the file names the
+			// episode, the episode names the series.
+			if ep, ok := w.item(Episodes, u.GetNamespace(), n); ok && strings.EqualFold(k, "episode") {
+				series, _, _ := unstructured.NestedString(ep.Object, seriesRefField...)
+				match = series == name
+			}
 		} else {
-			k, _, _ := unstructured.NestedString(u.Object, kindField...)
-			n, _, _ := unstructured.NestedString(u.Object, mediaRefNameField...)
 			match = strings.EqualFold(k, plexType) && n == name
 		}
 		if match {

@@ -34,8 +34,10 @@ var (
 	kindField    = []string{"spec", "mediaRef", "kind"}
 	sizeField    = []string{"spec", "sizeBytes"}
 	modTimeField = []string{"spec", "modTime"}
-	// mediaRefNameField and an Episode's seriesRefField lead a file to the
-	// item whose originalLanguageField its untagged audio is in.
+	// mediaRefNameField leads a file to its item, and an Episode's
+	// seriesRefField leads on to its series, whose originalLanguageField
+	// the file's untagged audio is in. A MediaFile carries no seriesRef:
+	// the contract test found the watcher reading one there (2026-10-15).
 	mediaRefNameField = []string{"spec", "mediaRef", "name"}
 	seriesRefField    = []string{"spec", "seriesRef"}
 	// The projection's episode fields (pkg/plexproject.Resolve).
@@ -56,6 +58,32 @@ var (
 		{"status", "airDate"},
 	}
 )
+
+// FieldPaths is every field path the watcher and the projection read of a
+// kind, declared once: Trim keeps them, and the contract test holds each to
+// clustarr's CRD schema, so a renamed field fails a test rather than
+// silently projecting nothing.
+func FieldPaths(gvr schema.GroupVersionResource) [][]string {
+	// A Movie and a Series are titled, dated and overlaid under
+	// status.metadata; an Episode carries its own title, overview and
+	// airDate and its Plex id, and no metadata block (the CRDs, 2026-10-15).
+	item := [][]string{
+		{"status", "metadata"}, {"status", "metadata", "title"}, {"status", "metadata", "year"},
+		{"status", "metadata", "overview"}, {"status", "metadata", "originalLanguage"},
+		{"status", "metadata", "externalIDs"}, {"status", "overlay"},
+	}
+	switch gvr {
+	case MediaFiles:
+		return [][]string{pathField, kindField, mediaRefNameField, sizeField, modTimeField, probeField, probeHashField, markersField}
+	case Movies:
+		return item
+	case Series:
+		return append(item, []string{"status", "metadata", "plexSeasons"})
+	case Episodes:
+		return [][]string{seriesRefField, seasonNumberField, episodeNumberField, plexIDField, {"status", "title"}, {"status", "overview"}, {"status", "airDate"}}
+	}
+	return nil
+}
 
 // File is what the watcher keeps of a MediaFile.
 type File struct {
@@ -97,6 +125,22 @@ func MetadataHash(u *unstructured.Unstructured) string {
 // Trim is the informers' transform. It keeps only what FileOf and
 // MetadataHash read, because the owner's library is about 16,000 items and
 // 14,000 files.
+// kept is the union of every kind's FieldPaths: Trim runs one transform
+// over every informer, and a path a kind lacks is simply absent.
+var kept = func() [][]string {
+	var out [][]string
+	seen := map[string]bool{}
+	for _, gvr := range []schema.GroupVersionResource{MediaFiles, Movies, Series, Episodes} {
+		for _, p := range FieldPaths(gvr) {
+			if k := strings.Join(p, "."); !seen[k] {
+				seen[k] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}()
+
 func Trim(obj any) (any, error) {
 	u, ok := obj.(*unstructured.Unstructured)
 	if !ok {
@@ -109,7 +153,7 @@ func Trim(obj any) (any, error) {
 	out.SetName(u.GetName())
 	out.SetUID(u.GetUID())
 	out.SetResourceVersion(u.GetResourceVersion())
-	for _, f := range append([][]string{pathField, kindField, mediaRefNameField, seriesRefField, sizeField, modTimeField, probeField, probeHashField, markersField, seasonNumberField, episodeNumberField, plexIDField}, shown...) {
+	for _, f := range kept {
 		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
 			if err := unstructured.SetNestedField(out.Object, v, f...); err != nil {
 				return nil, err
