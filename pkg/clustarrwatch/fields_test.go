@@ -1,8 +1,8 @@
 package clustarrwatch_test
 
 import (
-	"strings"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
