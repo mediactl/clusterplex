@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/lease"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexlivetv "github.com/mediactl/clusterplex/pkg/plex/livetv"
@@ -55,6 +56,11 @@ type Manager struct {
 	// pool is the same connection, unwrapped, for the bootstrap: it needs to
 	// run statements and multi-row queries rather than single-row lookups.
 	pool *plexdb.Pool
+	// sections are the provisioned sections the projection owns, by Plex
+	// key (recordSections); watcher is the clustarr watch the lease holder
+	// runs, which answers a scan request (ReconcileSection).
+	sections sectionRecord
+	watcher  *clustarrwatch.Watcher
 
 	sup       *Supervisor
 	publisher *plexroute.Publisher

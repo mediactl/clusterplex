@@ -10,6 +10,7 @@ import (
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
+	"github.com/mediactl/clusterplex/pkg/plexproject"
 	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
@@ -121,6 +122,9 @@ func (m *Manager) provisionLoop(ctx context.Context) {
 			return
 		}
 		m.Metrics.ProvisionRuns.WithLabelValues(string(res)).Inc()
+		if keys := p.Keys(); keys != nil && m.pool != nil {
+			m.recordSections(keys, m.locationOf(ctx))
+		}
 		wait := every
 		switch {
 		case err != nil:
@@ -165,17 +169,21 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		},
 	}
 	if m.pool != nil {
-		// ADR 0006: clustarr's probe and TheIntroDB's markers are written
-		// into Plex's library, only in the libraries provisioned here.
+		// Plex's rows for the provisioned sections are a projection of
+		// clustarr's MediaFiles (spec 2026-10-15, ADR 0008): the streams
+		// and markers ADR 0006 seeded, and now the items, folders, parts
+		// and media rows with them, written by the projection; Plex's
+		// scanner never runs for those sections.
 		seeder := &plexseed.Seeder{DB: m.pool, Libraries: m.Config.Provision.LibraryNames()}
-		w.Seed = func(ctx context.Context, plexPath string, in plexseed.Input) error {
-			_, err := seeder.Seed(ctx, plexPath, in)
-			return err
-		}
+		w.Projection = &plexproject.Projector{DB: m.pool, Seeder: seeder, Refresh: w, Logger: m.Logger.With("component", "projection")}
+		w.Sections = m.provisionedSections
 		w.Counters.Seeded = func() { m.Metrics.SeedFiles.WithLabelValues("seeded").Inc() }
 		w.Counters.SeedUnmatched = func() { m.Metrics.SeedFiles.WithLabelValues("unmatched").Inc() }
 		w.Counters.SeedErrors = func() { m.Metrics.SeedFiles.WithLabelValues("error").Inc() }
 	}
+	m.mu.Lock()
+	m.watcher = w
+	m.mu.Unlock()
 	if err := w.Run(ctx); err != nil && ctx.Err() == nil {
 		m.Logger.Error("clustarr watch stopped", "error", err)
 	}

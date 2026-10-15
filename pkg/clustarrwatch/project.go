@@ -42,17 +42,6 @@ func (w *Watcher) provisioned(key string) (SectionIDs, bool) {
 	return ids, ok
 }
 
-// projects reports whether the projection, not a Plex scan, handles the
-// section a mapped path falls in; a path no section covers is nobody's.
-func (w *Watcher) projects(mapped string) bool {
-	s, ok, err := w.sectionFor(mapped)
-	if err != nil || !ok {
-		return false
-	}
-	_, ok = w.provisioned(s.Key)
-	return ok
-}
-
 // sectionLock serialises everything the projection does to one section:
 // the flush's applies and removals, a scan's reconcile and the resync's,
 // so a reconcile never interleaves with the apply stream (spec §9).

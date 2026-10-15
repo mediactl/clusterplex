@@ -223,3 +223,17 @@ func TestEveryLibrarysOwnAnalysisIsTurnedOff(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, pms.Writes(), before, "settings already off are not written again")
 }
+
+// A run reports every configured library's section key, as Plex numbers
+// them, so the projection can own the sections by id rather than by name.
+func TestRunReportsEveryProvisionedSectionsKey(t *testing.T) {
+	pms := &fakePMS{}
+	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	require.Nil(t, p.Keys(), "nothing before a run")
+	_, err := p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"Movies": "1", "TV": "2"}, p.Keys())
+	_, err = p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"Movies": "1", "TV": "2"}, p.Keys(), "a converged run reports them too")
+}

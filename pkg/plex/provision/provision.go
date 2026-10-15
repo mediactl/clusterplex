@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"sync"
 
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 )
@@ -114,6 +115,41 @@ type Provisioner struct {
 	Logger *slog.Logger
 	// Drift is told, each run, whether each library is on another agent.
 	Drift func(library string, drifted bool)
+
+	mu   sync.Mutex
+	keys map[string]string
+}
+
+// Keys is each configured library's section key, as Plex numbers them,
+// from the last run that listed the sections; nil before one. The
+// projection (pkg/plexproject) owns sections by these ids, never by name,
+// so a renamed library keeps working.
+func (p *Provisioner) Keys() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.keys == nil {
+		return nil
+	}
+	out := make(map[string]string, len(p.keys))
+	for k, v := range p.keys {
+		out[k] = v
+	}
+	return out
+}
+
+func (p *Provisioner) recordKeys(sections []plexapi.Section) {
+	keys := map[string]string{}
+	for _, lib := range p.Config.Libraries {
+		for _, s := range sections {
+			if s.Title == lib.Name {
+				keys[lib.Name] = s.Key
+				break
+			}
+		}
+	}
+	p.mu.Lock()
+	p.keys = keys
+	p.mu.Unlock()
 }
 
 // Run makes one idempotent pass. Pending means a provider root did not
@@ -194,6 +230,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 			}
 		}
 	}
+	p.recordKeys(sections)
 	if err := errors.Join(errs...); err != nil {
 		return Errored, err
 	}
