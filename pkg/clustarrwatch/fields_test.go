@@ -104,6 +104,7 @@ func TestSeedInputOfReadsARealMediaFile(t *testing.T) {
 		assert.EqualValues(t, 7141668, in.Probe.RuntimeMillis)
 		assert.NotEmpty(t, in.Probe.VideoCodec)
 		assert.NotEmpty(t, in.Probe.Audio)
+		assert.Equal(t, "none", in.Probe.HDR, "the hdr enum reaches the seeder, SDR included")
 		require.NotNil(t, in.Markers, "the markers survive Trim")
 		assert.Equal(t, "Found", in.Markers.Result)
 		assert.Equal(t, []plexseed.Segment{{Kind: "intro", StartMs: 0, EndMs: 40000}}, in.Markers.Segments)

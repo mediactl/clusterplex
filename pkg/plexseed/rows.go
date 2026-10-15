@@ -38,6 +38,30 @@ type MediaRow struct {
 	Duration, Bitrate                 int64
 	FPS, AspectRatio                  float64
 	ItemExtra, PartExtra              string
+	// ColorTRC is media_items.color_trc, the transfer curve Plex reads HDR
+	// from; AnalysisVersion is MediaAnalysisVersion.
+	ColorTRC        string
+	AnalysisVersion int32
+}
+
+// MediaAnalysisVersion is the media_analysis_version Plex 1.43.4 stamps on
+// a file it has analysed (captured on talos, 2026-10-15: 11,807 rows at 8).
+// A row at it is never analysed by Plex, which is the point: clustarr's
+// probe is the analysis.
+const MediaAnalysisVersion int32 = 8
+
+// colorTRC is the media_items.color_trc Plex records for a transfer curve.
+// Every PQ flavour -- HDR10, HDR10+, PQ10, Dolby Vision on an HDR10 or an
+// IPT base -- is smpte2084; HLG is its own; the rest is SDR's bt709.
+func colorTRC(hdr string) string {
+	switch hdr {
+	case "", "none", "dolbyVisionSdr":
+		return "bt709"
+	case "hlg10", "dolbyVisionHlg":
+		return "arib-std-b67"
+	default:
+		return "smpte2084"
+	}
 }
 
 // StreamRow is one media_streams row.
@@ -56,7 +80,8 @@ func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamR
 	m := MediaRow{
 		Container: p.Container, VideoCodec: PlexCodec(p.VideoCodec),
 		Width: p.Width, Height: p.Height, Duration: p.RuntimeMillis,
-		FPS: float64(p.FpsMilli) / 1000,
+		FPS:      float64(p.FpsMilli) / 1000,
+		ColorTRC: colorTRC(p.HDR), AnalysisVersion: MediaAnalysisVersion,
 	}
 	if p.Height > 0 {
 		m.AspectRatio = float64(p.Width) / float64(p.Height)
@@ -120,6 +145,9 @@ func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamR
 		if a.Title != "" {
 			x["ma:title"] = a.Title
 		}
+		if a.Commentary {
+			x["ma:commentary"] = "1"
+		}
 		streams = append(streams, StreamRow{
 			Type: streamAudio, Index: a.Index, Codec: PlexCodec(a.Codec), Language: AudioLanguage(a, originalLanguage),
 			Channels: a.Channels, Bitrate: a.BitrateKbps * 1000, Default: a.Default, Extra: ExtraData(x),
@@ -132,6 +160,9 @@ func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamR
 		}
 		if s.HearingImpaired {
 			x["ma:hearingImpaired"] = "1"
+		}
+		if s.Bitmap {
+			x["ma:bitmap"] = "1"
 		}
 		streams = append(streams, StreamRow{
 			Type: streamSubtitle, Index: s.Index, Codec: PlexCodec(s.Codec), Language: PlexLanguage(s.Language),

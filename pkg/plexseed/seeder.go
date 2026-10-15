@@ -36,7 +36,9 @@ type Result struct {
 	MediaSeeded, MarkersWritten, MarkersRemoved int
 }
 
-type target struct{ part, media, item int64 }
+// Target is one media row the seeder writes to: its media_parts id,
+// media_items id and metadata_items id.
+type Target struct{ Part, Media, Item int64 }
 
 // Seed writes in's probe into Plex for the file at plexPath when Plex has
 // no streams for it, and reconciles its markers, in one transaction.
@@ -57,9 +59,9 @@ SELECT mp.id, mi.id, mi.metadata_item_id
 	if err != nil {
 		return res, fmt.Errorf("plexseed: find %s: %w", plexPath, err)
 	}
-	targets, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (target, error) {
-		var t target
-		return t, r.Scan(&t.part, &t.media, &t.item)
+	targets, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Target, error) {
+		var t Target
+		return t, r.Scan(&t.Part, &t.Media, &t.Item)
 	})
 	if err != nil {
 		return res, fmt.Errorf("plexseed: find %s: %w", plexPath, err)
@@ -67,13 +69,37 @@ SELECT mp.id, mi.id, mi.metadata_item_id
 	if len(targets) == 0 {
 		return res, fmt.Errorf("%w: %s", ErrNotInPlex, plexPath)
 	}
-	res.Parts = len(targets)
-	now := s.now().Unix()
-
+	seen := map[int64]bool{}
 	for _, t := range targets {
-		if in.Probe == nil || in.Probe.RuntimeMillis <= 0 {
-			continue
+		r, err := s.seedTarget(ctx, tx, t, in, !seen[t.Item])
+		if err != nil {
+			return res, err
 		}
+		seen[t.Item] = true
+		res.Parts += r.Parts
+		res.MediaSeeded += r.MediaSeeded
+		res.MarkersWritten += r.MarkersWritten
+		res.MarkersRemoved += r.MarkersRemoved
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return res, fmt.Errorf("plexseed: commit: %w", err)
+	}
+	return res, nil
+}
+
+// SeedTx seeds one target inside tx: its media row and streams, then its
+// item's markers. Seed finds a path's targets and calls it in a transaction
+// of its own; the projection (pkg/plexproject) calls it inside the
+// transaction that wrote the row. A probe without a runtime (an unprobed
+// file) seeds no media.
+func (s *Seeder) SeedTx(ctx context.Context, tx pgx.Tx, t Target, in Input) (Result, error) {
+	return s.seedTarget(ctx, tx, t, in, true)
+}
+
+func (s *Seeder) seedTarget(ctx context.Context, tx pgx.Tx, t Target, in Input, markers bool) (Result, error) {
+	res := Result{Parts: 1}
+	now := s.now().Unix()
+	if in.Probe != nil && in.Probe.RuntimeMillis > 0 {
 		seeded, err := s.seedMedia(ctx, tx, t, in, now)
 		if err != nil {
 			return res, err
@@ -82,28 +108,19 @@ SELECT mp.id, mi.id, mi.metadata_item_id
 			res.MediaSeeded++
 		}
 	}
-
+	if !markers {
+		return res, nil
+	}
 	var duration int64
 	if in.Probe != nil {
 		duration = in.Probe.RuntimeMillis
 	}
 	if want := MarkerRows(in.Markers, duration); want != nil {
-		seen := map[int64]bool{}
-		for _, t := range targets {
-			if seen[t.item] {
-				continue
-			}
-			seen[t.item] = true
-			w, r, err := s.reconcileMarkers(ctx, tx, t.item, want, now)
-			if err != nil {
-				return res, err
-			}
-			res.MarkersWritten += w
-			res.MarkersRemoved += r
+		w, r, err := s.reconcileMarkers(ctx, tx, t.Item, want, now)
+		if err != nil {
+			return res, err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return res, fmt.Errorf("plexseed: commit: %w", err)
+		res.MarkersWritten, res.MarkersRemoved = w, r
 	}
 	return res, nil
 }
@@ -113,7 +130,7 @@ SELECT mp.id, mi.id, mi.metadata_item_id
 // place: a viewer's chosen track names a stream by id. It is how a file
 // seeded before the seeder knew the original language, or whose item's
 // original language changed, catches up.
-func (s *Seeder) setAudioLanguages(ctx context.Context, tx pgx.Tx, t target, in Input, now int64) error {
+func (s *Seeder) setAudioLanguages(ctx context.Context, tx pgx.Tx, t Target, in Input, now int64) error {
 	for _, a := range in.Probe.Audio {
 		if PlexLanguage(a.Language) != "" {
 			continue
@@ -122,8 +139,8 @@ func (s *Seeder) setAudioLanguages(ctx context.Context, tx pgx.Tx, t target, in 
 UPDATE media_streams SET language = $3, updated_at = $5
  WHERE media_item_id = $1 AND stream_type_id = 2 AND "index" = $2 AND extra_data LIKE $4
    AND language IS DISTINCT FROM $3`,
-			t.media, a.Index, AudioLanguage(a, in.OriginalLanguage), "%"+ourMark+"%", now); err != nil {
-			return fmt.Errorf("plexseed: audio language of media %d: %w", t.media, err)
+			t.Media, a.Index, AudioLanguage(a, in.OriginalLanguage), "%"+ourMark+"%", now); err != nil {
+			return fmt.Errorf("plexseed: audio language of media %d: %w", t.Media, err)
 		}
 	}
 	return nil
@@ -133,22 +150,22 @@ UPDATE media_streams SET language = $3, updated_at = $5
 // whose streams are all ours from another probe (a file replaced in
 // place). One with any stream Plex analysed is left alone; one seeded from
 // this probe has its untagged audio set to the original language.
-func (s *Seeder) seedMedia(ctx context.Context, tx pgx.Tx, t target, in Input, now int64) (bool, error) {
+func (s *Seeder) seedMedia(ctx context.Context, tx pgx.Tx, t Target, in Input, now int64) (bool, error) {
 	var streams, ourStreams int
 	var extra string
 	if err := tx.QueryRow(ctx, `
 SELECT (SELECT count(*) FROM media_streams WHERE media_item_id = $1),
        (SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND extra_data LIKE $2),
        coalesce((SELECT extra_data FROM media_items WHERE id = $1), '')`,
-		t.media, "%"+ourMark+"%").Scan(&streams, &ourStreams, &extra); err != nil {
-		return false, fmt.Errorf("plexseed: count streams of media %d: %w", t.media, err)
+		t.Media, "%"+ourMark+"%").Scan(&streams, &ourStreams, &extra); err != nil {
+		return false, fmt.Errorf("plexseed: count streams of media %d: %w", t.Media, err)
 	}
 	switch {
 	case streams == 0:
 	case ourStreams == streams && in.ProbeHash != "" && !strings.Contains(extra, probeHashMark(in.ProbeHash)):
 		if _, err := tx.Exec(ctx, "DELETE FROM media_streams WHERE media_item_id = $1 AND extra_data LIKE $2",
-			t.media, "%"+ourMark+"%"); err != nil {
-			return false, fmt.Errorf("plexseed: clear streams of media %d: %w", t.media, err)
+			t.Media, "%"+ourMark+"%"); err != nil {
+			return false, fmt.Errorf("plexseed: clear streams of media %d: %w", t.Media, err)
 		}
 	case ourStreams == streams:
 		return false, s.setAudioLanguages(ctx, tx, t, in, now)
@@ -159,16 +176,16 @@ SELECT (SELECT count(*) FROM media_streams WHERE media_item_id = $1),
 	if _, err := tx.Exec(ctx, `
 UPDATE media_items SET container = $2, video_codec = $3, audio_codec = $4, width = $5, height = $6,
        duration = $7, bitrate = $8, frames_per_second = $9, display_aspect_ratio = $10,
-       audio_channels = $11, extra_data = $12, updated_at = $13
- WHERE id = $1`, t.media, m.Container, m.VideoCodec, nullString(m.AudioCodec), m.Width, m.Height,
-		m.Duration, m.Bitrate, m.FPS, m.AspectRatio, m.AudioChannels, m.ItemExtra, now); err != nil {
-		return false, fmt.Errorf("plexseed: media item %d: %w", t.media, err)
+       audio_channels = $11, extra_data = $12, updated_at = $13, color_trc = $14, media_analysis_version = $15
+ WHERE id = $1`, t.Media, m.Container, m.VideoCodec, nullString(m.AudioCodec), m.Width, m.Height,
+		m.Duration, m.Bitrate, m.FPS, m.AspectRatio, m.AudioChannels, m.ItemExtra, now, m.ColorTRC, m.AnalysisVersion); err != nil {
+		return false, fmt.Errorf("plexseed: media item %d: %w", t.Media, err)
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE media_parts SET duration = $2, size = CASE WHEN $3::bigint > 0 THEN $3::bigint ELSE size END,
        extra_data = $4, updated_at = $5
- WHERE id = $1`, t.part, m.Duration, in.SizeBytes, m.PartExtra, now); err != nil {
-		return false, fmt.Errorf("plexseed: media part %d: %w", t.part, err)
+ WHERE id = $1`, t.Part, m.Duration, in.SizeBytes, m.PartExtra, now); err != nil {
+		return false, fmt.Errorf("plexseed: media part %d: %w", t.Part, err)
 	}
 	// language is "" for none, never NULL: Plex's scanner stores "", and PMS
 	// reads it without a NULL indicator (a NULL failed the show's page).
@@ -177,9 +194,9 @@ UPDATE media_parts SET duration = $2, size = CASE WHEN $3::bigint > 0 THEN $3::b
 INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, "index",
                            channels, bitrate, "default", forced, extra_data, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)`,
-			r.Type, t.media, t.part, r.Codec, r.Language, r.Index,
+			r.Type, t.Media, t.Part, r.Codec, r.Language, r.Index,
 			nullInt(r.Channels), nullInt(r.Bitrate), boolInt(r.Default), boolInt(r.Forced), r.Extra, now); err != nil {
-			return false, fmt.Errorf("plexseed: stream of media %d: %w", t.media, err)
+			return false, fmt.Errorf("plexseed: stream of media %d: %w", t.Media, err)
 		}
 	}
 	return true, nil

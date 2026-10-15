@@ -36,6 +36,9 @@ type Probe struct {
 	RuntimeMillis    int64      `json:"runtimeMillis,omitempty"`
 	Audio            []Audio    `json:"audio,omitempty"`
 	Subtitles        []Subtitle `json:"subtitles,omitempty"`
+	// HDR is clustarr's hdr enum: none (or empty) for SDR, pq10, hdr10,
+	// hdr10plus, hlg10 and the dolbyVision* variants.
+	HDR string `json:"hdr,omitempty"`
 }
 
 // Audio is one audio track of the probe.
@@ -49,6 +52,7 @@ type Audio struct {
 	ChannelLayout string `json:"channelLayout,omitempty"`
 	BitrateKbps   int32  `json:"bitrateKbps,omitempty"`
 	Default       bool   `json:"default,omitempty"`
+	Commentary    bool   `json:"commentary,omitempty"`
 }
 
 // Subtitle is one subtitle track of the probe.
@@ -59,6 +63,7 @@ type Subtitle struct {
 	Title           string `json:"title,omitempty"`
 	Forced          bool   `json:"forced,omitempty"`
 	HearingImpaired bool   `json:"hearingImpaired,omitempty"`
+	Bitmap          bool   `json:"bitmap,omitempty"`
 }
 
 // Markers is status.markers: TheIntroDB's Result, clustarr's own Analysis,
