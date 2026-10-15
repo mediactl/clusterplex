@@ -1,0 +1,2 @@
+# analyze — the only invocation of the binary Plex 1.43.4 makes; library scans run inside the server
+Plex Media Scanner.real --analyze --log-file-suffix Analysis --no-thumbs --item 14371
