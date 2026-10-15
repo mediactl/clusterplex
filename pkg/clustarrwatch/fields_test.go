@@ -1,6 +1,7 @@
 package clustarrwatch_test
 
 import (
+	"strings"
 	"os"
 	"testing"
 
@@ -153,4 +154,16 @@ func trimmed(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructu
 	out, err := clustarrwatch.Trim(u)
 	require.NoError(t, err)
 	return out.(*unstructured.Unstructured)
+}
+
+// The projection reads an episode's season and episode numbers and its
+// plexID, so Trim keeps them (it dropped all three before the scanner).
+func TestTrimKeepsTheEpisodeNumbersAndPlexID(t *testing.T) {
+	ep := load(t, "episode.yaml")
+	require.NoError(t, unstructured.SetNestedField(ep.Object, "5d9c0b1e2f3a4b5c6d7e8f90", "status", "plexID"))
+	u := trimmed(t, ep)
+	for _, p := range [][]string{{"spec", "seasonNumber"}, {"spec", "episodeNumber"}, {"status", "plexID"}} {
+		_, found, _ := unstructured.NestedFieldNoCopy(u.Object, p...)
+		require.True(t, found, strings.Join(p, "."))
+	}
 }

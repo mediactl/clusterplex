@@ -36,8 +36,12 @@ var (
 	modTimeField = []string{"spec", "modTime"}
 	// mediaRefNameField and an Episode's seriesRefField lead a file to the
 	// item whose originalLanguageField its untagged audio is in.
-	mediaRefNameField     = []string{"spec", "mediaRef", "name"}
-	seriesRefField        = []string{"spec", "seriesRef"}
+	mediaRefNameField = []string{"spec", "mediaRef", "name"}
+	seriesRefField    = []string{"spec", "seriesRef"}
+	// The projection's episode fields (pkg/plexproject.Resolve).
+	seasonNumberField     = []string{"spec", "seasonNumber"}
+	episodeNumberField    = []string{"spec", "episodeNumber"}
+	plexIDField           = []string{"status", "plexID"}
 	originalLanguageField = []string{"status", "metadata", "originalLanguage"}
 	// What the seeder writes into Plex (pkg/plexseed).
 	probeField     = []string{"status", "mediaInfo"}
@@ -105,7 +109,7 @@ func Trim(obj any) (any, error) {
 	out.SetName(u.GetName())
 	out.SetUID(u.GetUID())
 	out.SetResourceVersion(u.GetResourceVersion())
-	for _, f := range append([][]string{pathField, kindField, mediaRefNameField, seriesRefField, sizeField, modTimeField, probeField, probeHashField, markersField}, shown...) {
+	for _, f := range append([][]string{pathField, kindField, mediaRefNameField, seriesRefField, sizeField, modTimeField, probeField, probeHashField, markersField, seasonNumberField, episodeNumberField, plexIDField}, shown...) {
 		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
 			if err := unstructured.SetNestedField(out.Object, v, f...); err != nil {
 				return nil, err
