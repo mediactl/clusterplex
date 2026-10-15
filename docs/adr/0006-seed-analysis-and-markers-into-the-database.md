@@ -1,6 +1,6 @@
 # ADR-0006: Seed media analysis and skip markers into Plex's database
 
-**Status:** Accepted
+**Status:** Accepted; superseded by ADR-0008 for provisioned sections, where the projection writes the item rows too. Still the rule for any other section.
 **Date:** 2026-09-30
 **Deciders:** cluster-plex maintainers, with the owner
 

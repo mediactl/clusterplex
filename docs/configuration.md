@@ -512,6 +512,19 @@ plex:
 - Watch `clusterplex_clustarr_watch_synced`: it reads 0 when the watch has
   not synced within two minutes, which is what missing clustarr CRDs, a
   wrong `plex.clustarr.namespace` or missing RBAC look like.
+- **Plex's rows for the provisioned libraries come from clustarr** (ADR
+  0008). The lease holder writes each MediaFile's item, folder, part,
+  media row, streams and markers straight into the library the moment
+  clustarr records it, and updates the same row when a file is renamed
+  or transcoded, so Plex shows one version and nothing lands in the
+  trash. Plex's scanner never runs for those libraries. "Scan Library
+  Files" is a reconcile of Plex's rows against clustarr's records: it
+  takes seconds, adds what is missing, removes what clustarr no longer
+  has, and leaves alone any file clustarr never imported. The chart
+  points the proxy's `scan-route` at the manager's `/api/v1/scan`; a
+  client that reaches Plex over TLS still gets Plex's own walk, which
+  finds nothing to do. `pathMappings` must cover every clustarr root
+  folder, or its files are counted as unmappable and never projected.
 
 | Metric | Meaning |
 | --- | --- |
@@ -522,6 +535,7 @@ plex:
 | `clusterplex_clustarr_unmappable_paths_total` | clustarr paths no mapping covers |
 | `clusterplex_clustarr_uncovered_paths_total` | Mapped paths no library covers |
 | `clusterplex_clustarr_watch_synced` | 1 once the clustarr watch has synced |
+| `clusterplex_seed_files_total{result}` | Files projected: `seeded`, `unmatched` (the item is not in clustarr's caches yet) or `error` |
 
 ## Live TV: clustarr's IPTVProviders as DVRs
 

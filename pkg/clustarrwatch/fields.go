@@ -68,9 +68,13 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 	// status.metadata; an Episode carries its own title, overview and
 	// airDate and its Plex id, and no metadata block (the CRDs, 2026-10-15).
 	item := [][]string{
-		{"status", "metadata"}, {"status", "metadata", "title"}, {"status", "metadata", "year"},
-		{"status", "metadata", "overview"}, {"status", "metadata", "originalLanguage"},
-		{"status", "metadata", "externalIDs"}, {"status", "overlay"},
+		{"status", "metadata"},
+		{"status", "metadata", "title"},
+		{"status", "metadata", "year"},
+		{"status", "metadata", "overview"},
+		{"status", "metadata", "originalLanguage"},
+		{"status", "metadata", "externalIDs"},
+		{"status", "overlay"},
 	}
 	switch gvr {
 	case MediaFiles:

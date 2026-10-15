@@ -169,6 +169,30 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   stream nor an audio stream". `execServices` sets `Executor.Env` for this
   reason. The scanner's own log is the tell: with the preload it reaches
   "Analyzing media parts", without it stops at "Opening 20 database sessions".
+- **A provisioned section's rows are a projection of clustarr's MediaFiles,
+  and Plex's scanner never runs for it (ADR-0008, 2026-10-15).**
+  `pkg/plexproject` writes `metadata_items` (keyed by guid under one rule,
+  `plexproject.GUID`, with no `hash` so Plex fills the rest on refresh),
+  `directories`, `media_parts`, `media_items` (stamped `cp:mediaFile=<uid>`,
+  `media_analysis_version` 8) and, through `pkg/plexseed.SeedTx`, the
+  streams and markers, from the MediaFile the watcher hands it; a path or
+  probe change updates the same row; a deleted file trashes its rows and
+  the items left empty. Plex 1.43 scans a library inside its own process,
+  so the shim never sees a scan: the proxy catches the plain-HTTP
+  `POST /library/sections/{id}/refresh` and sends it to `--scan-route`
+  (the manager's `/api/v1/scan`, 404 for an unprovisioned section so the
+  request goes on to Plex, a reconcile on the lease holder, forwarded
+  there from any other pod), the 6-hour resync reconciles every section,
+  and `Plex Media Scanner --analyze --item N` -- the only thing the binary
+  still does -- is answered exit 0 for a projected item. A TLS client's
+  scan still reaches Plex until the proxy terminates with Plex's
+  `Cache/cert-v2.p12`; that walk changes nothing once the projection is
+  current. Debug with `SELECT extra_data FROM plex.media_items WHERE
+  extra_data LIKE '%cp:mediaFile%' LIMIT 3` and
+  `curl -X POST http://<pod>:8080/api/v1/scan?section=1`. The field paths
+  the watcher reads are declared once per kind (`clustarrwatch.FieldPaths`)
+  and checked against clustarr's CRDs (`TestEveryFieldPathExistsInClustarrsCRDs`),
+  which found the watcher reading a `seriesRef` no MediaFile has.
 - **The scanner authenticates with `.LocalAdminToken`, not `X_PLEX_TOKEN`,
   so analysis works only on the pod whose Plex started last.** Plex writes a
   fresh local token to that file on every start (`SafelyWriteFile`: a temp

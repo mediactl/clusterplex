@@ -70,3 +70,8 @@ data:
     # No remux pool: every browser stream stays on Plex's transcoder.
     remux-selector: ""
     {{- end }}
+    {{- if .Values.plex.clustarr.enabled }}
+    # A library scan of a provisioned section is a reconcile of clustarr's
+    # projection (ADR 0008): the proxy sends it to this pod's manager.
+    scan-route: "http://127.0.0.1:8080/api/v1/scan"
+    {{- end }}
