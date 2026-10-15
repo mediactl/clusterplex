@@ -77,8 +77,23 @@ type Watcher struct {
 	// tick that places scans and refreshes.
 	SeedTimeout time.Duration
 
+	// Projection, when set, owns the sections Sections names (spec
+	// 2026-10-15): their MediaFile changes are applied to Plex's rows in
+	// place of Seed and of the folder refreshes, a deleted file is
+	// removed, and the resync reconciles each section whole. Sections
+	// maps a provisioned section's Plex key to its database ids; a key not
+	// in it is not provisioned and keeps the folder-refresh path.
+	Projection Projection
+	Sections   func() map[string]SectionIDs
+
 	sched *Scheduler
 	ctx   context.Context
+	// files is the MediaFile informer's store, the reconcile's want list.
+	files cache.Store
+
+	projMu       sync.Mutex
+	removals     map[string]removal
+	sectionLocks map[string]*sync.Mutex
 
 	mu         sync.Mutex
 	sections   []plexapi.Section
@@ -116,7 +131,7 @@ func (w *Watcher) log() *slog.Logger {
 func (w *Watcher) Run(ctx context.Context) error {
 	w.ctx = ctx
 	w.sched = &Scheduler{
-		Scan: w.scan, Refresh: w.refresh,
+		Scan: w.scan, Refresh: w.refresh, RefreshID: w.refreshID,
 		ScanDelay: w.ScanDelay, RefreshDelay: w.RefreshDelay, Logger: w.log(),
 	}
 	f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
@@ -135,13 +150,14 @@ func (w *Watcher) Run(ctx context.Context) error {
 		return inf, nil
 	}
 	fileHandlers := []cache.ResourceEventHandler{w.fileHandler()}
-	if w.Seed != nil {
+	if w.Seed != nil || w.Projection != nil {
 		fileHandlers = append(fileHandlers, w.seedHandler())
 	}
 	files, err := add(MediaFiles, fileHandlers...)
 	if err != nil {
 		return err
 	}
+	w.files = files.GetStore()
 	for _, it := range []struct {
 		gvr      schema.GroupVersionResource
 		plexType string
@@ -155,7 +171,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		if it.provider != "" {
 			hs = append(hs, w.itemHandler(it.plexType, it.provider))
 		}
-		if len(hs) == 0 && w.Seed == nil {
+		if len(hs) == 0 && w.Seed == nil && w.Projection == nil {
 			continue
 		}
 		inf, err := add(it.gvr, hs...)
@@ -194,7 +210,16 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 			w.retryPending()
 			w.sched.Flush(ctx)
-			if w.Seed != nil {
+			switch {
+			case w.Projection != nil:
+				if now := time.Now(); !now.Before(nextResync) {
+					w.resyncProjection(ctx)
+					nextResync = now.Add(resync)
+				}
+				w.promoteSeedRetries(time.Now())
+				w.flushRemovals(ctx)
+				w.flushSeeds(ctx)
+			case w.Seed != nil:
 				if now := time.Now(); !now.Before(nextResync) {
 					for _, obj := range files.GetStore().List() {
 						if u, ok := obj.(*unstructured.Unstructured); ok {
@@ -251,6 +276,9 @@ func (w *Watcher) catchUp(ctx context.Context) error {
 		if s.Agent == "" || (s.Agent != w.MovieProvider && s.Agent != w.TVProvider) {
 			continue
 		}
+		if _, ok := w.provisioned(s.Key); ok {
+			continue // the projection's resync reconciles it instead
+		}
 		if err := w.PMS.RefreshSection(ctx, s.Key, "", false); err != nil {
 			return err
 		}
@@ -295,14 +323,33 @@ func (w *Watcher) fileHandler() cache.ResourceEventHandler {
 }
 
 func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHandler {
-	return cache.ResourceEventHandlerFuncs{
+	return cache.ResourceEventHandlerDetailedFuncs{
+		AddFunc: func(obj any, initial bool) {
+			// An item arriving after its files: the files waited for it
+			// (projectOne's errUnresolved), and now apply.
+			if initial || w.Projection == nil {
+				return
+			}
+			if n, ok := obj.(*unstructured.Unstructured); ok {
+				for _, u := range w.filesOfItem(plexType, n.GetName()) {
+					w.enqueueSeed(u)
+				}
+			}
+		},
 		UpdateFunc: func(oldObj, newObj any) {
 			o, ok1 := oldObj.(*unstructured.Unstructured)
 			n, ok2 := newObj.(*unstructured.Unstructured)
 			if !ok1 || !ok2 || MetadataHash(o) == MetadataHash(n) {
 				return
 			}
-			w.sched.EnqueueRefresh(Guid(provider, plexType, string(n.GetUID())))
+			if w.Projection != nil && plexIDOf(o) != plexIDOf(n) {
+				// The chain's guid changed: every file of the item is
+				// applied again, which re-keys the rows.
+				for _, u := range w.filesOfItem(plexType, n.GetName()) {
+					w.enqueueSeed(u)
+				}
+			}
+			w.sched.EnqueueRefresh(itemGUID(provider, plexType, n))
 		},
 	}
 }
@@ -338,9 +385,16 @@ func (w *Watcher) enqueueMapped(mapped string) {
 		w.mu.Unlock()
 	case !ok:
 		inc(w.Counters.Uncovered)
+	case w.projectsKey(s.Key):
+		// The projection applied the change itself; no scan.
 	default:
 		w.sched.EnqueueScan(s.Key, path.Dir(mapped))
 	}
+}
+
+func (w *Watcher) projectsKey(key string) bool {
+	_, ok := w.provisioned(key)
+	return ok
 }
 
 // retryPending places the paths Plex could not be asked about before.
@@ -450,6 +504,16 @@ func (w *Watcher) refresh(ctx context.Context, guid string) error {
 	return nil
 }
 
+// refreshID refreshes a Plex item by its id: a row the projection
+// inserted, which Plex fills from the provider.
+func (w *Watcher) refreshID(ctx context.Context, id int64) error {
+	if err := w.PMS.RefreshItem(ctx, id); err != nil {
+		return err
+	}
+	inc(w.Counters.Refreshes)
+	return nil
+}
+
 func report(f func(bool), v bool) {
 	if f != nil {
 		f(v)
@@ -477,6 +541,17 @@ func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 			n, ok2 := newObj.(*unstructured.Unstructured)
 			if ok1 && ok2 && SeedKey(o) != SeedKey(n) {
 				w.enqueueSeed(n)
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if w.Projection == nil {
+				return
+			}
+			if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = t.Obj
+			}
+			if u, ok := obj.(*unstructured.Unstructured); ok {
+				w.enqueueRemoval(u)
 			}
 		},
 	}
@@ -581,6 +656,25 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 	w.seedMu.Unlock()
 
 	for i, u := range objs {
+		if w.Projection != nil {
+			sctx, cancel := context.WithTimeout(ctx, timeout)
+			err := w.projectOne(sctx, u)
+			cancel()
+			switch {
+			case err == nil:
+				inc(w.Counters.Seeded)
+				continue
+			case errors.Is(err, errUnresolved):
+				inc(w.Counters.SeedUnmatched)
+			default:
+				inc(w.Counters.SeedErrors)
+				w.log().Warn("projection: apply", "file", u.GetName(), "error", err)
+			}
+			if ctx.Err() == nil {
+				w.retrySeed(u, attempts[i])
+			}
+			continue
+		}
 		in, ok := SeedInputOf(u)
 		if !ok {
 			continue

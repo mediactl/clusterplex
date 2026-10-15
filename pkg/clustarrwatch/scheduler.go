@@ -22,6 +22,7 @@ const (
 type Scheduler struct {
 	Scan         func(ctx context.Context, section, folder string) error
 	Refresh      func(ctx context.Context, guid string) error
+	RefreshID    func(ctx context.Context, id int64) error
 	ScanDelay    time.Duration
 	RefreshDelay time.Duration
 	Threshold    int
@@ -31,6 +32,7 @@ type Scheduler struct {
 	mu        sync.Mutex
 	scans     map[string]map[string]time.Time // section -> folder -> due
 	refreshes map[string]time.Time            // guid -> due
+	byID      map[int64]time.Time             // item id -> due
 }
 
 func (s *Scheduler) now() time.Time {
@@ -68,6 +70,17 @@ func (s *Scheduler) EnqueueRefresh(guid string) {
 		s.refreshes = map[string]time.Time{}
 	}
 	s.refreshes[guid] = s.now().Add(orDefault(s.RefreshDelay, defaultRefreshDelay))
+}
+
+// EnqueueRefreshID asks for the item with id to be refreshed once it is
+// quiet: a row the projection inserted, whose id it knows.
+func (s *Scheduler) EnqueueRefreshID(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byID == nil {
+		s.byID = map[int64]time.Time{}
+	}
+	s.byID[id] = s.now().Add(orDefault(s.RefreshDelay, defaultRefreshDelay))
 }
 
 // Flush sends everything due. A send that fails stays queued for the next
@@ -109,6 +122,12 @@ func (s *Scheduler) Flush(ctx context.Context) {
 			refreshes[guid] = due
 		}
 	}
+	byID := map[int64]time.Time{}
+	for id, due := range s.byID {
+		if !due.After(now) {
+			byID[id] = due
+		}
+	}
 	s.mu.Unlock()
 
 	for _, sc := range scans {
@@ -135,6 +154,20 @@ func (s *Scheduler) Flush(ctx context.Context) {
 		s.mu.Lock()
 		if cur, ok := s.refreshes[g]; ok && cur.Equal(due) {
 			delete(s.refreshes, g)
+		}
+		s.mu.Unlock()
+	}
+	for id, due := range byID {
+		if s.RefreshID == nil {
+			break
+		}
+		if err := s.RefreshID(ctx, id); err != nil {
+			s.logger().Warn("refresh by id failed; will retry", "id", id, "error", err)
+			continue
+		}
+		s.mu.Lock()
+		if cur, ok := s.byID[id]; ok && cur.Equal(due) {
+			delete(s.byID, id)
 		}
 		s.mu.Unlock()
 	}
