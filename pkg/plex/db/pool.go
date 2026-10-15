@@ -34,6 +34,12 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) Row {
 	return row{p.pool.QueryRow(ctx, sql, args...)}
 }
 
+// Query runs a statement that returns rows; the caller closes them. The
+// projection's reconcile reads a whole section through it.
+func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return p.pool.Query(ctx, sql, args...)
+}
+
 // Ping checks the database is actually reachable.
 func (p *Pool) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
