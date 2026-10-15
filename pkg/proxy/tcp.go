@@ -24,6 +24,9 @@ type TCP struct {
 	// when it closes.
 	OnConnChange func(delta int)
 	DialTimeout  time.Duration
+	// Divert, when set, is offered a connection's first plain-HTTP library
+	// scan request before Plex sees it (divert.go).
+	Divert Divert
 
 	lis  net.Listener
 	wg   sync.WaitGroup
@@ -219,6 +222,11 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 		defer p.OnConnChange(-1)
 	}
 
+	src, forward, done := p.divert(ctx, client)
+	if done {
+		return
+	}
+
 	timeout := p.DialTimeout
 	if timeout == 0 {
 		timeout = defaultDialTimeout
@@ -242,9 +250,16 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 	stop := context.AfterFunc(ctx, func() { _ = client.Close(); _ = upstream.Close() })
 	defer stop()
 
+	if forward != nil {
+		// The divert read a request and declined it: Plex gets it whole,
+		// then whatever the client sends next.
+		if err := forward.Write(upstream); err != nil {
+			return
+		}
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go pipe(ctx, &wg, upstream, client, nil)
+	go pipe(ctx, &wg, upstream, src, nil)
 	go pipe(ctx, &wg, client, upstream, act)
 	wg.Wait()
 }
