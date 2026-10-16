@@ -150,9 +150,10 @@ func TestInitSchemaLeavesWhatPsqlLeft(t *testing.T) {
 	assert.Equal(t, got, fingerprint(t, ctx, conn))
 }
 
-// psql reported three failing statements in the dump, all harmless: the
-// dump's own CREATE SCHEMA, and two statements about tables it never creates.
-// The port has to fail on exactly those and no others.
+// psql reported two failing statements in the dump, both harmless: the
+// dump's own CREATE SCHEMA, and one statement about a table it never creates
+// (the plex.test constraint went with clusterplex.31, 2026-10-16). The port
+// has to fail on exactly those and no others.
 func TestRunFileFailsWhereTheDumpFailsUnderPsql(t *testing.T) {
 	ctx := context.Background()
 	connect, _ := freshDatabase(t)
@@ -167,7 +168,7 @@ func TestRunFileFailsWhereTheDumpFailsUnderPsql(t *testing.T) {
 
 	failed, err := RunFile(ctx, quiet, connect, filepath.Join(schemaDir, PlexSchemaFile))
 	require.NoError(t, err)
-	assert.Equal(t, 3, failed)
+	assert.Equal(t, 2, failed)
 	failed, err = RunFile(ctx, quiet, connect, filepath.Join(schemaDir, ColumnTypesFile))
 	require.NoError(t, err)
 	// transaction_timeout, which a PostgreSQL before 17 does not know.

@@ -37,7 +37,10 @@ func TestShadowSchemaHoldsExactlyWhatSqlite3Built(t *testing.T) {
 
 	failed, err := runSQLiteFile(context.Background(), quiet, db, filepath.Join(schemaDir, SQLiteSchemaFile))
 	require.NoError(t, err)
-	assert.Equal(t, 7, failed, "sqlite3 reported seven failing statements")
+	// The fts4, spellfix1 and rtree virtual tables sqlite3 could not build
+	// moved to sqlite_virtual_tables.sql with clusterplex.31 (2026-10-16), and
+	// the rtree builds its own shadow tables, so nothing fails any more.
+	assert.Equal(t, 0, failed, "sqlite3 reports no failing statement")
 
 	rows, err := db.Query("SELECT type || ' ' || name FROM sqlite_master ORDER BY type, name")
 	require.NoError(t, err)

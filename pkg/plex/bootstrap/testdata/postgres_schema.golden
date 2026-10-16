@@ -1,10 +1,14 @@
 extension pg_trgm
 extension plpgsql
+extension unaccent
 function plex.clean_old_statistics_bandwidth()
 function plex.clean_old_statistics_resources()
 function plex.cleanup_statistics_bandwidth(days_to_keep integer)
-function plex.fix_orphan_season_on_episode_insert()
-function plex.fix_orphan_season_on_media_part_insert()
+function plex.fold(text)
+function plex.fts_lexemes(src text, prefix boolean)
+function plex.fts_phrase(src text, prefix boolean)
+function plex.fts_query(term text)
+function plex.fts_term(tok text, is_phrase boolean)
 function plex.gin_extract_query_trgm(text, internal, smallint, internal, internal, internal, internal)
 function plex.gin_extract_value_trgm(text, internal)
 function plex.gin_trgm_consistent(internal, smallint, text, integer, internal, internal, internal, internal)
@@ -30,9 +34,6 @@ function plex.gtrgm_union(internal, internal)
 function plex.iif(condition boolean, true_val anyelement, false_val anyelement)
 function plex.integer_equals_text(integer, text)
 function plex.maybe_cleanup_statistics()
-function plex.metadata_items_search_trigger()
-function plex.prevent_cross_section_parent()
-function plex.prevent_self_referential_parent()
 function plex.reject_empty_statistics()
 function plex.run_statistics_cleanup(p_days_to_keep integer)
 function plex.set_available_at()
@@ -42,14 +43,20 @@ function plex.show_trgm(text)
 function plex.similarity(text, text)
 function plex.similarity_dist(text, text)
 function plex.similarity_op(text, text)
+function plex.spellfix_suggest(term text, n integer)
+function plex.spellfix_vocab_add()
+function plex.spellfix_words(src text)
 function plex.sqlite_typeof(val anyelement)
 function plex.strict_word_similarity(text, text)
 function plex.strict_word_similarity_commutator_op(text, text)
 function plex.strict_word_similarity_dist_commutator_op(text, text)
 function plex.strict_word_similarity_dist_op(text, text)
 function plex.strict_word_similarity_op(text, text)
-function plex.tags_search_trigger()
 function plex.text_equals_integer(text, integer)
+function plex.unaccent(regdictionary, text)
+function plex.unaccent(text)
+function plex.unaccent_init(internal)
+function plex.unaccent_lexize(internal, internal, internal, internal)
 function plex.unixepoch(ts text, modifier text)
 function plex.word_similarity(text, text)
 function plex.word_similarity_commutator_op(text, text)
@@ -89,6 +96,7 @@ index plex.idx_media_item_settings_account_id
 index plex.idx_media_item_settings_composite
 index plex.idx_media_item_settings_media_item_id
 index plex.idx_media_items_deleted_at
+index plex.idx_media_items_extra_data_trgm
 index plex.idx_media_items_library_section
 index plex.idx_media_items_library_section_id
 index plex.idx_media_items_metadata_item_id
@@ -113,7 +121,6 @@ index plex.idx_metadata_item_views_guid
 index plex.idx_metadata_items_absolute_index
 index plex.idx_metadata_items_added_at
 index plex.idx_metadata_items_changed_at
-index plex.idx_metadata_items_fts
 index plex.idx_metadata_items_guid
 index plex.idx_metadata_items_hash
 index plex.idx_metadata_items_id_section
@@ -121,16 +128,18 @@ index plex.idx_metadata_items_index
 index plex.idx_metadata_items_library_section
 index plex.idx_metadata_items_library_section_id
 index plex.idx_metadata_items_metadata_type
+index plex.idx_metadata_items_original_title_fts
 index plex.idx_metadata_items_originally_available_at
 index plex.idx_metadata_items_parent_id
 index plex.idx_metadata_items_parent_type
-index plex.idx_metadata_items_search
 index plex.idx_metadata_items_section_type
 index plex.idx_metadata_items_section_type_added
 index plex.idx_metadata_items_section_type_sort
 index plex.idx_metadata_items_title
+index plex.idx_metadata_items_title_fts
 index plex.idx_metadata_items_title_lower
 index plex.idx_metadata_items_title_sort
+index plex.idx_metadata_items_title_sort_fts
 index plex.idx_metadata_items_title_trgm
 index plex.idx_metadata_items_type
 index plex.idx_metadata_relations_metadata_item_id
@@ -143,6 +152,7 @@ index plex.idx_play_queue_items_queue_id
 index plex.idx_plugins_identifier
 index plex.idx_preferences_name
 index plex.idx_section_locations_library_section_id
+index plex.idx_spellfix_vocab_trgm
 index plex.idx_statistics_media_at
 index plex.idx_statistics_media_lookup
 index plex.idx_statistics_media_timespan
@@ -151,11 +161,25 @@ index plex.idx_taggings_item_tag
 index plex.idx_taggings_metadata_item_id
 index plex.idx_taggings_tag_id
 index plex.idx_taggings_tag_metadata
-index plex.idx_tags_fts
 index plex.idx_tags_key
 index plex.idx_tags_metadata_item_id
 index plex.idx_tags_tag
+index plex.idx_tags_tag_fts
 index plex.idx_tags_tag_type
+index plex.index_directories_on_deleted_at
+index plex.index_external_metadata_sources_on_uri
+index plex.index_media_items_on_begins_at
+index plex.index_media_items_on_channel_id
+index plex.index_media_items_on_channel_id_and_begins_at
+index plex.index_media_items_on_ends_at
+index plex.index_media_items_on_media_analysis_version
+index plex.index_metadata_item_views_on_library_section_id
+index plex.index_metadata_item_views_on_viewed_at
+index plex.index_metadata_items_on_created_at
+index plex.index_metadata_items_on_deleted_at
+index plex.index_metadata_items_on_resources_changed_at
+index plex.index_play_queues_on_client_identifier_account_id_metadata_type
+index plex.index_tags_on_tag_type_and_tag
 index plex.library_section_permissions_pkey
 index plex.library_sections_pkey
 index plex.locatables_location_id_locatable_id_locatable_type_key
@@ -164,11 +188,13 @@ index plex.location_places_location_id_guid_key
 index plex.location_places_pkey
 index plex.locations_pkey
 index plex.maintenance_control_pkey
+index plex.media_grabs_on_uuid
 index plex.media_grabs_pkey
 index plex.media_item_settings_pkey
 index plex.media_items_pkey
 index plex.media_part_settings_pkey
 index plex.media_parts_pkey
+index plex.media_provider_resources_on_uuid
 index plex.media_provider_resources_pkey
 index plex.media_stream_settings_media_stream_id_account_id_key
 index plex.media_stream_settings_pkey
@@ -196,6 +222,7 @@ index plex.preferences_pkey
 index plex.remote_id_translation_pkey
 index plex.schema_migrations_pkey
 index plex.section_locations_pkey
+index plex.spellfix_vocab_pkey
 index plex.sqlite_column_types_pkey
 index plex.statistics_bandwidth_account_id_device_id_timespan_at_lan_key
 index plex.statistics_bandwidth_pkey
@@ -261,7 +288,7 @@ sequence plex.plugin_prefixes_id_seq 4
 sequence plex.plugins_id_seq 7
 sequence plex.preferences_id_seq 2
 sequence plex.remote_id_translation_id_seq unset
-sequence plex.schema_migrations_id_seq 446
+sequence plex.schema_migrations_id_seq 445
 sequence plex.section_locations_id_seq unset
 sequence plex.statistics_bandwidth_id_seq unset
 sequence plex.statistics_media_id_seq unset
@@ -324,6 +351,7 @@ table plex.preferences
 table plex.remote_id_translation
 table plex.schema_migrations
 table plex.section_locations
+table plex.spellfix_vocab
 table plex.sqlite_column_types
 table plex.statistics_bandwidth
 table plex.statistics_media
@@ -332,16 +360,14 @@ table plex.taggings
 table plex.tags
 table plex.versioned_metadata_items
 table plex.view_settings
-trigger plex.media_parts.trg_fix_orphan_season_media
-trigger plex.metadata_items.check_cross_section_parent
-trigger plex.metadata_items.metadata_items_search_update
 trigger plex.metadata_items.metadata_items_set_available_at
-trigger plex.metadata_items.prevent_self_ref_parent
-trigger plex.metadata_items.trg_fix_orphan_season
+trigger plex.metadata_items.spellfix_vocab_metadata_items_insert
+trigger plex.metadata_items.spellfix_vocab_metadata_items_update
 trigger plex.statistics_media.statistics_media_reject_empty
 trigger plex.statistics_resources.trg_clean_statistics_resources
-trigger plex.tags.tags_search_update
-rows plex.accounts 2
+trigger plex.tags.spellfix_vocab_tags_insert
+trigger plex.tags.spellfix_vocab_tags_update
+rows plex.accounts 1
 rows plex.activities 2
 rows plex.blobs 0
 rows plex.custom_channels 0
@@ -389,8 +415,9 @@ rows plex.plugin_prefixes 2
 rows plex.plugins 7
 rows plex.preferences 1
 rows plex.remote_id_translation 0
-rows plex.schema_migrations 446
+rows plex.schema_migrations 445
 rows plex.section_locations 0
+rows plex.spellfix_vocab 6
 rows plex.sqlite_column_types 524
 rows plex.statistics_bandwidth 0
 rows plex.statistics_media 0
