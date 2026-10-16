@@ -105,6 +105,18 @@ func openSQLite(path string) (*sql.DB, error) {
 	// One connection: every statement then sees the one before it, as the
 	// sqlite3 command's single session does.
 	db.SetMaxOpenConns(1)
+	// No durability while building: the file is deleted and rebuilt on
+	// every start, so a half-built one is what the next start removes
+	// first. With SQLite's defaults every DDL statement autocommitted
+	// through a journal file and two fsyncs, 1.2 s per shadow on talos's
+	// arm64 boards (2026-10-16). Neither setting is stored in the file;
+	// Plex opens it afterwards with its own.
+	for _, pragma := range []string{"PRAGMA journal_mode = MEMORY", "PRAGMA synchronous = OFF"} {
+		if _, err := db.Exec(pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("%s: %w", pragma, err)
+		}
+	}
 	return db, nil
 }
 

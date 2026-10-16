@@ -26,9 +26,11 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -83,24 +85,35 @@ func Run(ctx context.Context, log *slog.Logger, o Options) error {
 	return nil
 }
 
+// buildShadows builds the library and blobs shadows at once, each on a
+// PostgreSQL connection of its own (a pgx.Conn is not shared across
+// goroutines): the two are independent until the library's seed.
 func buildShadows(ctx context.Context, log *slog.Logger, o Options) error {
-	pg, err := o.Connect(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = pg.Close(context.Background()) }()
-
 	dir := filepath.Join(o.PlexDir, "Plug-in Support", "Databases")
 	if err := mkdirAll(dir); err != nil {
 		return err
 	}
 	schemaFile := filepath.Join(o.SchemaDir, SQLiteSchemaFile)
-	for _, name := range []string{LibraryDB, BlobsDB} {
-		if err := BuildShadow(ctx, log, pg, filepath.Join(dir, name), schemaFile, o.Schema, o.ShadowTables); err != nil {
-			return fmt.Errorf("build shadow %s: %w", name, err)
-		}
+	names := []string{LibraryDB, BlobsDB}
+	errs := make([]error, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pg, err := o.Connect(ctx)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer func() { _ = pg.Close(context.Background()) }()
+			if err := BuildShadow(ctx, log, pg, filepath.Join(dir, name), schemaFile, o.Schema, o.ShadowTables); err != nil {
+				errs[i] = fmt.Errorf("build shadow %s: %w", name, err)
+			}
+		}()
 	}
-	return nil
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // ConnectWith returns a Connect over a parsed pgx configuration.

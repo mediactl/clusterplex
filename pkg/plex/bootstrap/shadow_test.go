@@ -132,3 +132,29 @@ func TestTempDirIsStickyAndWorldWritable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.ModeDir|os.ModeSticky|0o777, info.Mode())
 }
+
+// The build connection skips durability: the shadow is deleted and rebuilt
+// on every start, so a journal file and an fsync per DDL statement bought
+// nothing and cost 1.2 s per shadow on talos's arm64 boards (2026-10-16).
+// Neither setting is stored in the file, so Plex opens it with its own.
+func TestTheShadowBuildConnectionSkipsDurability(t *testing.T) {
+	db, err := openSQLite(filepath.Join(t.TempDir(), LibraryDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var journal string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journal); err != nil {
+		t.Fatal(err)
+	}
+	if journal != "memory" {
+		t.Fatalf("journal_mode = %q, want memory", journal)
+	}
+	var sync int
+	if err := db.QueryRow("PRAGMA synchronous").Scan(&sync); err != nil {
+		t.Fatal(err)
+	}
+	if sync != 0 {
+		t.Fatalf("synchronous = %d, want 0 (OFF)", sync)
+	}
+}
