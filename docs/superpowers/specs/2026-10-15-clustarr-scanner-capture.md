@@ -94,3 +94,30 @@ revisit if a client visibly lags.
 - Tasks 6-9: epoch-second timestamps; `directories` root row; inserted
   item rows with `hash` NULL.
 - Task 4: `MediaAnalysisVersion = 8`.
+
+## As built (talos, 2026-10-16, cluster-plex 23aa7e0, clustarr revision 23)
+
+- The first resync adopted the library: Movies in 45 s (837 applied, 835
+  adopted, 6 unknown: Plex's own optimised versions), TV in 16 minutes
+  (10,105 applied, 10,094 adopted, 1,161 unknown: files clustarr has not
+  imported), nothing deleted, nothing failed. Afterwards 10,941 live rows
+  carry `cp:mediaFile` and a seeded probe, against 10,942 MediaFiles.
+- A direct `POST /api/v1/scan?section=1` with the owner's token answered
+  in 9.7 s: 226 applied (files whose markers clustarr had refreshed
+  meanwhile, so their seed key moved), 0 adopted, 6 unknown.
+- An adopted movie ("20th Century Women") is served by Plex with
+  clustarr's streams -- HEVC video, AAC English audio, SRT and two PGS
+  subtitles -- its row at `media_analysis_version` 8, `color_trc` bt709;
+  `/hubs/sections/1` answers 200.
+- TV folders are stored as full relative paths under one root row per
+  section (`1923 (2022) {tvdb-416491}/Season 1`), as `EnsureDirectory`
+  writes them; show and season rows carry `media_item_count` 0, as
+  `countMedia` leaves them.
+- 318 live rows had a NULL `extra_data`; the reconcile read and adopted
+  them (review I5).
+- Not yet observed live: a transcode swap, a delete, a brand-new import
+  and the Plex Web button. The talos release pins the published
+  cluster-plex chart 0.4.0, which has no `scan-route`, so the proxy's
+  divert is off there until the chart is published; `/api/v1/scan`
+  stands in. No `--analyze` ran in the window, so the skip is unproven
+  live.
