@@ -192,10 +192,6 @@ table library_section_permissions
 table library_sections
 table locatables
 table location_places
-table locations
-table locations_node
-table locations_parent
-table locations_rowid
 table media_grabs
 table media_item_settings
 table media_items
