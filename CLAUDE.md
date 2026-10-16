@@ -125,6 +125,9 @@ make test-netns    # pkg/plex/net against real network namespaces (needs unshare
 make lint          # golangci-lint v2
 make docker-build  # the image (FROM scratch); DOCKER_TARGET=debug adds busybox
 make docker-buildx IMG=ghcr.io/mediactl/cluster-plex:<tag>  # publish for linux/amd64 and linux/arm64 (PLATFORMS); needs a builder that runs arm64
+# CI publishes both images on every push to main (tags: the 7-char sha, `main`, `latest`; `v*` tags their semver):
+# .github/workflows/images.yml builds each platform natively on its own runner and merges the digests, so
+# `make docker-buildx` is for an image CI has not built (a branch, a shim ref: `gh workflow run images.yml -f plex_pg_ref=...`).
 make helm-lint     # lint and render the chart
 make docker-build DOCKER_TARGET=debug  # the e2e suite execs sh, cat and find in the pod
 make kind-up kind-load deploy-kind
