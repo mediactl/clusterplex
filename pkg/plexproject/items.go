@@ -76,7 +76,7 @@ func insertItem(ctx context.Context, tx pgx.Tx, section int64, parent *int64, n 
 	err := tx.QueryRow(ctx, `INSERT INTO metadata_items
 		(library_section_id, parent_id, metadata_type, guid, media_item_count, title, title_sort, "index", year,
 		 added_at, created_at, updated_at, extra_data)
-		VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, $9, $10, $10, '')
+		VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, $9, $10, $10, NULL)
 		RETURNING id`,
 		section, parent, int(n.Type), n.GUID, n.Title, n.TitleSort, index, year, added.Unix(), now.Unix()).Scan(&id)
 	return id, err
