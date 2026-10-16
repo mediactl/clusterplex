@@ -124,6 +124,7 @@ make test          # unit tests
 make test-netns    # pkg/plex/net against real network namespaces (needs unshare)
 make lint          # golangci-lint v2
 make docker-build  # the image (FROM scratch); DOCKER_TARGET=debug adds busybox
+make docker-buildx IMG=ghcr.io/mediactl/cluster-plex:<tag>  # publish for linux/amd64 and linux/arm64 (PLATFORMS); needs a builder that runs arm64
 make helm-lint     # lint and render the chart
 make docker-build DOCKER_TARGET=debug  # the e2e suite execs sh, cat and find in the pod
 make kind-up kind-load deploy-kind

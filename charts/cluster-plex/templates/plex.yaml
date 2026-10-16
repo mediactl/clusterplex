@@ -45,6 +45,18 @@ spec:
               app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: plex
       {{- end }}
+      {{- with .Values.plex.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.plex.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.plex.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Covers the manager's drain (plex.drainTimeout), which lets the streams
       # this pod holds finish before Plex is told to stop, plus the 30s Plex
       # gets to flush on SIGTERM. Shorter, and the kubelet kills the pod

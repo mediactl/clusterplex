@@ -71,6 +71,23 @@ docker-build-remux: ## Build the remux worker's image
 docker-build: ## Build the image; DOCKER_TARGET=debug adds busybox, which make e2e needs
 	docker build -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
 
+# A cluster may mix architectures (talos: arm64 control-plane nodes beside
+# amd64 workers), so the published images are built for both. The builder
+# must run every platform: natively, or arm64 under QEMU (binfmt) on an
+# amd64 host. `docker buildx ls` lists what each builder can build, and
+# BUILDER picks one other than the current.
+PLATFORMS ?= linux/amd64,linux/arm64
+BUILDER ?=
+BUILDX = docker buildx build $(if $(BUILDER),--builder $(BUILDER)) --platform $(PLATFORMS) --push
+
+.PHONY: docker-buildx
+docker-buildx: ## Build and push $(IMG) for $(PLATFORMS)
+	$(BUILDX) -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
+
+.PHONY: docker-buildx-remux
+docker-buildx-remux: ## Build and push $(REMUX_IMG) for $(PLATFORMS)
+	$(BUILDX) -f images/Dockerfile.remux --target remux -t $(REMUX_IMG) .
+
 .PHONY: helm-lint
 helm-lint: ## Lint and render the Helm chart
 	helm lint charts/cluster-plex

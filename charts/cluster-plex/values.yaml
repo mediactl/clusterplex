@@ -130,6 +130,27 @@ plex:
   drainTimeout: 2m
   # Must cover drainTimeout plus the 30s Plex gets to flush on SIGTERM.
   terminationGracePeriodSeconds: 180
+  # Which nodes Plex's pods run on. The image is built for amd64 and arm64
+  # (make docker-buildx), so a node of either qualifies. To keep Plex on
+  # the control-plane nodes:
+  #
+  #   affinity:
+  #     nodeAffinity:
+  #       requiredDuringSchedulingIgnoredDuringExecution:
+  #         nodeSelectorTerms:
+  #           - matchExpressions:
+  #               - key: node-role.kubernetes.io/control-plane
+  #                 operator: Exists
+  #   tolerations:
+  #     - key: node-role.kubernetes.io/control-plane
+  #       operator: Exists
+  #       effect: NoSchedule
+  #
+  # A control-plane node's disk is etcd's too: transcodes write their
+  # chunks to the pod's emptyDir there.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   # One pod at a time under eviction: every pod serves, and each one that
   # goes takes the sessions pinned to it.
   podDisruptionBudget:
