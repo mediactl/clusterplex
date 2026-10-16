@@ -126,8 +126,16 @@ func cleanCrashReports(log *slog.Logger, plexDir string) error {
 // is not already its, so a start after the first touches almost nothing on a
 // large metadata tree. Symlinks are changed, not followed, as chown -R does.
 // Failures are counted rather than returned, as upstream ignores them.
+//
+// A volume that refuses chown -- the NAS over NFS with the owner's uid
+// mapping, 64,915 failures in 36 s on every start (2026-10-16) -- is given
+// up on after chownGiveUpAfter failures: nothing later in the tree would
+// succeed either, and Plex ran on that volume all along.
 func chownTree(root string, uid, gid int) (changed, failed int) {
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if failed >= chownGiveUpAfter {
+			return fs.SkipAll
+		}
 		if err != nil {
 			failed++
 			return nil
@@ -149,6 +157,9 @@ func chownTree(root string, uid, gid int) (changed, failed int) {
 	})
 	return changed, failed
 }
+
+// chownGiveUpAfter is how many failed ownership changes end the walk.
+const chownGiveUpAfter = 64
 
 // checkWritable warns when Plex's state directory cannot be written, which
 // otherwise surfaces much later as "attempt to write a readonly database".

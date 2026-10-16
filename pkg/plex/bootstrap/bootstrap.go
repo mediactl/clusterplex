@@ -81,7 +81,11 @@ func Run(ctx context.Context, log *slog.Logger, o Options) error {
 		return fmt.Errorf("clean crash reports: %w", err)
 	}
 	changed, failed := chownTree(o.PlexDir, PlexUID, PlexGID)
-	log.Info("state directory ownership", "changed", changed, "failed", failed)
+	if failed >= chownGiveUpAfter {
+		log.Warn("state directory ownership cannot be changed on this volume; left as it is", "changed", changed, "failed", failed)
+	} else {
+		log.Info("state directory ownership", "changed", changed, "failed", failed)
+	}
 	return nil
 }
 

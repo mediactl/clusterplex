@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -159,5 +160,27 @@ func TestTheShadowBuildConnectionSkipsDurability(t *testing.T) {
 	}
 	if sync != 0 {
 		t.Fatalf("synchronous = %d, want 0 (OFF)", sync)
+	}
+}
+
+// A volume that refuses chown (the NAS over NFS, 2026-10-16: 64,915 failures
+// in 36 s on every start) is given up on after a few failures rather than
+// walked to the end: nothing later in the tree would succeed either.
+func TestChownTreeGivesUpOnAVolumeThatRefusesIt(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can chown anything")
+	}
+	root := t.TempDir()
+	for i := range 300 {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed, failed := chownTree(root, 12345, 12345)
+	if changed != 0 {
+		t.Fatalf("changed %d files as an unprivileged user", changed)
+	}
+	if failed > chownGiveUpAfter {
+		t.Fatalf("kept trying: %d failures, want at most %d", failed, chownGiveUpAfter)
 	}
 }
