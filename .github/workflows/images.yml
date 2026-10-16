@@ -85,7 +85,12 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # The workflow's own token writes a package the workflow created
+          # (the first push links it to this repository). A package first
+          # pushed from a workstation needs this repository given the Write
+          # role once, under the package's "Manage Actions access", or a
+          # classic PAT with write:packages in the GHCR_TOKEN secret.
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Image labels
         id: meta
@@ -152,7 +157,12 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # The workflow's own token writes a package the workflow created
+          # (the first push links it to this repository). A package first
+          # pushed from a workstation needs this repository given the Write
+          # role once, under the package's "Manage Actions access", or a
+          # classic PAT with write:packages in the GHCR_TOKEN secret.
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Image tags
         id: meta
