@@ -379,7 +379,7 @@ func TestAReconcileBeforeTheWatchSyncedIsRefused(t *testing.T) {
 // gets no Plex catch-up refresh and a file change is held, not dropped.
 func TestFilesWaitForTheSectionsToBeKnown(t *testing.T) {
 	rp := &recordingProjector{}
-	sections := &sectionsOf{m: map[string]clustarrwatch.SectionIDs{}}
+	sections := &sectionsOf{} // nil: provisioning has not reported
 	dyn, p, _ := startWith(t, &pms{}, withProjectionOf(rp, time.Hour, sections), movie("m1", "Heat"))
 	d := &dynamicClient{dyn}
 	time.Sleep(50 * time.Millisecond)
@@ -416,4 +416,49 @@ func TestAFileUnderASecondLocationUsesThatLocation(t *testing.T) {
 	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
 	require.Equal(t, int64(11), rp.Applied()[0].location)
 	require.Equal(t, int64(11), rp.Applied()[0].change.Location)
+}
+
+// Item 4 of the 2026-10-15 review: a library on clustarr's agent that
+// provisioning does not own is Plex's, as ADR-0008 leaves every other
+// section -- its files are scanned by Plex, never projected -- both for a
+// change after provisioning reported and for one held while it had not.
+func TestAProviderSectionProvisioningDoesNotOwnIsScannedByPlex(t *testing.T) {
+	scansOf := func(p *pms, section string) []string {
+		var out []string
+		for _, c := range refreshCalls(p) {
+			if strings.Contains(c, "/library/sections/"+section+"/refresh") && strings.Contains(c, "path=") {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	t.Run("after the report", func(t *testing.T) {
+		rp := &recordingProjector{}
+		p := &pms{}
+		p.tv.Store(true)
+		raw, _, _ := startWith(t, p, withProjectionOf(rp, time.Hour, &sectionsOf{m: movieSections()}))
+		d := &dynamicClient{raw}
+		time.Sleep(50 * time.Millisecond)
+		d.add(t, clustarrwatch.MediaFiles, episodeFile("a", "/data/media/tv/Show/Season 01/E01.mkv", "ep"))
+		require.Eventually(t, func() bool { return len(scansOf(p, "2")) == 1 }, 5*time.Second, 10*time.Millisecond, "calls: %v", p.Calls())
+		require.Empty(t, rp.Applied())
+	})
+	t.Run("held while unknown", func(t *testing.T) {
+		rp := &recordingProjector{}
+		p := &pms{}
+		p.tv.Store(true)
+		sections := &sectionsOf{}
+		raw, _, _ := startWith(t, p, withProjectionOf(rp, time.Hour, sections))
+		d := &dynamicClient{raw}
+		time.Sleep(50 * time.Millisecond)
+		d.add(t, clustarrwatch.MediaFiles, episodeFile("a", "/data/media/tv/Show/Season 01/E01.mkv", "ep"))
+		time.Sleep(150 * time.Millisecond)
+		require.Empty(t, refreshCalls(p), "nothing reaches Plex before provisioning reports")
+		sections.set(movieSections())
+		require.Eventually(t, func() bool { return len(scansOf(p, "2")) == 1 }, 5*time.Second, 10*time.Millisecond, "calls: %v", p.Calls())
+		require.Empty(t, rp.Applied())
+		for _, c := range refreshCalls(p) {
+			require.NotContains(t, c, "/library/sections/1/", "the projection's own section is never walked")
+		}
+	})
 }

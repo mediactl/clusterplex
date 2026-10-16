@@ -176,7 +176,13 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		// scanner never runs for those sections.
 		seeder := &plexseed.Seeder{DB: m.pool, Libraries: m.Config.Provision.LibraryNames()}
 		w.Projection = &plexproject.Projector{DB: m.pool, Seeder: seeder, Refresh: w, Logger: m.Logger.With("component", "projection")}
-		w.Sections = m.provisionedSections
+		if len(m.Config.Provision.Libraries) > 0 {
+			// Provisioning reports the sections it owns. Until it has,
+			// a change in a clustarr library waits rather than reaching
+			// Plex; with no libraries to provision there is nothing to
+			// wait for, and every section is Plex's.
+			w.Sections = m.provisionedSections
+		}
 		w.Counters.Seeded = func() { m.Metrics.SeedFiles.WithLabelValues("seeded").Inc() }
 		w.Counters.SeedUnmatched = func() { m.Metrics.SeedFiles.WithLabelValues("unmatched").Inc() }
 		w.Counters.SeedErrors = func() { m.Metrics.SeedFiles.WithLabelValues("error").Inc() }

@@ -31,11 +31,13 @@ func (m *Manager) recordSections(byName map[string]string, locations func(key st
 }
 
 // provisionedSections is what recordSections last stored: the sections
-// the projection owns (clustarrwatch.Watcher.Sections).
+// the projection owns (clustarrwatch.Watcher.Sections). It is nil until
+// provisioning first reports, which the watcher reads as "not known yet",
+// and an empty map once a report named none.
 func (m *Manager) provisionedSections() map[string]clustarrwatch.SectionIDs {
 	p := m.sections.Load()
 	if p == nil {
-		return map[string]clustarrwatch.SectionIDs{}
+		return nil
 	}
 	return *p
 }

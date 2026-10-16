@@ -165,15 +165,19 @@ func (w *Watcher) projectOne(ctx context.Context, u *unstructured.Unstructured) 
 	return w.Projection.Apply(ctx, ids.Section, c.Location, c)
 }
 
-// sectionsUnknown reports a projection whose Sections has nothing yet.
+// sectionsUnknown reports a projection waiting for provisioning's first
+// report: Sections answers nil until provisioning has said which sections
+// are the projection's, and an empty map once it has said none are. With no
+// Sections at all (no libraries to provision) nothing is waited for.
 func (w *Watcher) sectionsUnknown() bool {
-	return w.Projection != nil && (w.Sections == nil || len(w.Sections()) == 0)
+	return w.Projection != nil && w.Sections != nil && w.Sections() == nil
 }
 
-// providerSection reports a section on one of clustarr's providers: with
-// the projection configured, such a section is the projection's whether
-// or not provisioning has reported it yet, so Plex is never asked to
-// scan it (review I2).
+// providerSection reports a section on one of clustarr's providers: until
+// provisioning has reported, such a section may be the projection's, so
+// Plex is not asked to walk it meanwhile (review I2). Once it has, only the
+// sections it reported are the projection's; any other is Plex's, as
+// ADR-0008 leaves it.
 func (w *Watcher) providerSection(s plexapi.Section) bool {
 	return s.Agent != "" && (s.Agent == w.MovieProvider || s.Agent == w.TVProvider)
 }

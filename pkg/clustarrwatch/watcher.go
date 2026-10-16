@@ -107,8 +107,11 @@ type Watcher struct {
 	sections   []plexapi.Section
 	sectionsAt time.Time
 	// pending holds mapped paths that could not be placed because Plex did
-	// not answer; each flush tries them again.
+	// not answer; each flush tries them again. held holds the paths in a
+	// section on clustarr's providers that changed before provisioning
+	// reported its sections; they are placed once it has.
 	pending []string
+	held    map[string]bool
 
 	seedMu    sync.Mutex
 	seedQueue map[string]*unstructured.Unstructured
@@ -229,6 +232,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 					// waited for them is tried now, not after its backoff.
 					w.hadSections = true
 					w.promoteSeedRetries(time.Now().Add(365 * 24 * time.Hour))
+					w.releaseHeld()
 				}
 				w.promoteSeedRetries(time.Now())
 				// Applies before removals: an upgrade's new file lands
@@ -282,9 +286,15 @@ func (w *Watcher) waitForSync(ctx context.Context, synced []cache.InformerSynced
 
 // catchUp covers what changed while no pod was watching: one non-forced
 // refresh of each library on a clustarr agent, which Plex limits to
-// folders whose modification time moved. It fails while Plex is not
-// answering, and Run tries again at the next flush.
+// folders whose modification time moved. A section the projection owns is
+// left to its resync, and until provisioning has reported which those are
+// catchUp waits, so Plex never walks one. It fails while Plex is not
+// answering or the sections are unknown, and Run tries again at the next
+// flush.
 func (w *Watcher) catchUp(ctx context.Context) error {
+	if w.sectionsUnknown() {
+		return errNoSections
+	}
 	sections, err := w.sectionList(ctx, false)
 	if err != nil {
 		return err
@@ -293,7 +303,7 @@ func (w *Watcher) catchUp(ctx context.Context) error {
 		if s.Agent == "" || (s.Agent != w.MovieProvider && s.Agent != w.TVProvider) {
 			continue
 		}
-		if w.Projection != nil {
+		if w.projectsKey(s.Key) {
 			continue // the projection's resync reconciles it instead; Plex never walks it
 		}
 		if err := w.PMS.RefreshSection(ctx, s.Key, "", false); err != nil {
@@ -411,8 +421,16 @@ func (w *Watcher) enqueueMapped(mapped string) {
 		w.mu.Unlock()
 	case !ok:
 		inc(w.Counters.Uncovered)
-	case w.projectsKey(s.Key) || (w.Projection != nil && w.providerSection(s)):
+	case w.projectsKey(s.Key):
 		// The projection applied the change itself; no scan.
+	case w.sectionsUnknown() && w.providerSection(s):
+		// Possibly the projection's: held until provisioning reports.
+		w.mu.Lock()
+		if w.held == nil {
+			w.held = map[string]bool{}
+		}
+		w.held[mapped] = true
+		w.mu.Unlock()
 	default:
 		w.sched.EnqueueScan(s.Key, path.Dir(mapped))
 	}
@@ -421,6 +439,18 @@ func (w *Watcher) enqueueMapped(mapped string) {
 func (w *Watcher) projectsKey(key string) bool {
 	_, ok := w.provisioned(key)
 	return ok
+}
+
+// releaseHeld places the paths held until provisioning reported: a scan
+// for a section that turned out to be Plex's, nothing for the projection's.
+func (w *Watcher) releaseHeld() {
+	w.mu.Lock()
+	held := w.held
+	w.held = nil
+	w.mu.Unlock()
+	for p := range held {
+		w.enqueueMapped(p)
+	}
 }
 
 // retryPending places the paths Plex could not be asked about before.
