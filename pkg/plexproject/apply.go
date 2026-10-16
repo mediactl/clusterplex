@@ -68,7 +68,7 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	if err != nil {
 		return fmt.Errorf("plexproject: find %s: %w", c.UID, err)
 	}
-	if have && !f.adopted && f.seedKey == c.SeedKey && f.itemKey == c.Item.Key() && f.seedVersion == SeedVersion {
+	if have && !f.adopted && c.current(f.seedKey, f.itemKey, f.seedVersion) {
 		return nil
 	}
 	pending := &pendingRefresh{}
@@ -100,9 +100,11 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	}
 	// A new row, an adopted one, a changed probe or an older row format:
 	// the row's streams are the probe's and nothing else. Otherwise (a path
-	// change alone) the seeder keeps them and fixes languages.
-	seeded := c.Input.Probe != nil && c.Input.Probe.RuntimeMillis > 0
-	replace := !have || f.adopted || f.probeHash != c.Input.ProbeHash || f.seedVersion != SeedVersion
+	// change alone) the seeder keeps them and fixes languages. Without a
+	// probe there is nothing to replace them with, so whatever the row
+	// carries -- Plex's own analysis included -- stays until one arrives.
+	seeded := c.seedable()
+	replace := seeded && (!have || f.adopted || f.probeHash != c.Input.ProbeHash || f.seedVersion != SeedVersion)
 	if replace {
 		_, err = p.Seeder.ReplaceTx(ctx, tx, target, c.Input)
 	} else {
@@ -119,6 +121,20 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	}
 	pending.deliver(p.Refresh)
 	return nil
+}
+
+// seedable reports a change whose probe the seeder can write: one with a
+// runtime, as plexseed.Seeder.seedTarget requires.
+func (c Change) seedable() bool {
+	return c.Input.Probe != nil && c.Input.Probe.RuntimeMillis > 0
+}
+
+// current reports whether a row stamped seedKey, itemKey and seedVersion
+// already is c. The seed version is the stamp of seeded streams, so it is
+// asked of a change that would seed them: a row whose file has no probe
+// never carries one, and is not re-applied on every reconcile for that.
+func (c Change) current(seedKey, itemKey, seedVersion string) bool {
+	return seedKey == c.SeedKey && itemKey == c.Item.Key() && (!c.seedable() || seedVersion == SeedVersion)
 }
 
 // pendingRefresh holds the ids EnsureChain inserted until the transaction

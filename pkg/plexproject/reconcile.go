@@ -53,7 +53,7 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 			continue
 		}
 		st, ok := have[c.UID]
-		if ok && st.seedKey == c.SeedKey && st.itemKey == c.Item.Key() && st.seedVersion == SeedVersion {
+		if ok && c.current(st.seedKey, st.itemKey, st.seedVersion) {
 			continue
 		}
 		if !ok {

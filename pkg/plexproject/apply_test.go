@@ -246,3 +246,51 @@ func TestAFoundRowIsReparentedToItsChain(t *testing.T) {
 	require.Equal(t, 1, count(t, conn, `SELECT count(*) FROM metadata_items e JOIN metadata_items s ON s.id = e.parent_id
 		WHERE e.library_section_id = $1 AND e.guid = $2 AND e."index" = 3 AND s.guid = $3 AND s."index" = 2`, section, moved.Chain[2].GUID, moved.Chain[1].GUID))
 }
+
+// A row adopted from Plex's scanner before clustarr has probed its file
+// keeps the streams Plex wrote: without a probe there is nothing to
+// replace them with.
+func TestAnAdoptedRowWithoutAProbeKeepsPlexsStreams(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	_, media := plexScannedRow(t, conn, section, loc, GUID(MoviesProvider, TypeMovie, "u1", ""), "Heat", "/media/movies/Heat (1995)/Heat.mkv")
+	ctx := context.Background()
+	_, err := conn.Exec(ctx, `INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, "index", created_at, updated_at, extra_data)
+		VALUES (1, $1, (SELECT id FROM media_parts WHERE media_item_id = $1), 'h264', '', 0, 1, 1, ''), (2, $1, (SELECT id FROM media_parts WHERE media_item_id = $1), 'dca', 'eng', 1, 1, 1, '')`, media)
+	require.NoError(t, err)
+	c := change("f1", "/media/movies/Heat (1995)/Heat.mkv", "k1", movieItem("u1", "", "Heat"))
+	c.Input.Probe, c.Input.ProbeHash = nil, ""
+	require.NoError(t, projector(conn, &refreshes{}).Apply(ctx, section, loc, c))
+	require.Equal(t, media, mediaID(t, conn, section, "f1"), "adopted, not duplicated")
+	require.Equal(t, 2, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", media), "Plex's streams stay")
+}
+
+// A row whose file has no probe is current to the reconcile once applied:
+// it is not applied again on every resync, which would delete the streams
+// Plex's own analysis wrote meanwhile (the analyze route leaves an unseeded
+// row to Plex). The probe arriving replaces them with its own.
+func TestAnUnprobedRowIsCurrentAndKeepsPlexsAnalysisUntilTheProbe(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	ctx := context.Background()
+	const file = "/media/movies/Heat (1995)/Heat.mkv"
+	c := change("f1", file, "k1", movieItem("u1", "", "Heat"))
+	c.Input.Probe, c.Input.ProbeHash = nil, ""
+	require.NoError(t, p.Apply(ctx, section, loc, c))
+	media := mediaID(t, conn, section, "f1")
+	_, err := conn.Exec(ctx, `INSERT INTO media_streams (stream_type_id, media_item_id, media_part_id, codec, language, "index", created_at, updated_at, extra_data)
+		VALUES (1, $1, (SELECT id FROM media_parts WHERE media_item_id = $1), 'h264', '', 0, 1, 1, '')`, media)
+	require.NoError(t, err)
+
+	out, err := p.Reconcile(ctx, section, loc, "", []Change{c})
+	require.NoError(t, err)
+	require.Equal(t, Outcome{}, out, "current: nothing applied")
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND codec = 'h264'", media), "Plex's analysis stays")
+
+	out, err = p.Reconcile(ctx, section, loc, "", []Change{change("f1", file, "k2", movieItem("u1", "", "Heat"))})
+	require.NoError(t, err)
+	require.Equal(t, Outcome{Applied: 1}, out)
+	require.Equal(t, 0, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND codec = 'h264'", media), "the probe's streams replace Plex's")
+	require.Equal(t, 2, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", media))
+}
