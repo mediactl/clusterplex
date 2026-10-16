@@ -251,9 +251,9 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 	defer stop()
 
 	if forward != nil {
-		// The divert read a request and declined it: Plex gets it whole,
-		// then whatever the client sends next.
-		if err := forward.Write(upstream); err != nil {
+		// The divert read a request's head and declined it: Plex gets the
+		// head, then the body and whatever else the client sends, piped.
+		if _, err := upstream.Write(forward); err != nil {
 			return
 		}
 	}

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -29,7 +30,12 @@ func httpUpstream(t *testing.T) string {
 
 func startDiverting(t *testing.T, divert Divert) net.Addr {
 	t.Helper()
-	p := &TCP{Listen: "127.0.0.1:0", Target: httpUpstream(t), Divert: divert}
+	return startDivertingTo(t, divert, httpUpstream(t))
+}
+
+func startDivertingTo(t *testing.T, divert Divert, target string) net.Addr {
+	t.Helper()
+	p := &TCP{Listen: "127.0.0.1:0", Target: target, Divert: divert}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	addr, err := p.Start(ctx)
@@ -119,4 +125,97 @@ func TestAForwardedPlainHTTPRequestClosesTheConnectionAfterItsAnswer(t *testing.
 	require.True(t, resp.Close, "Connection: close on the forwarded answer")
 	_, err = http.ReadResponse(br, nil)
 	require.Error(t, err, "the pipelined scan never reaches Plex on this connection")
+}
+
+// bodyUpstream is an upstream that reads each request's body and answers
+// with its method, path and body length.
+func bodyUpstream(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		_, _ = fmt.Fprintf(w, "upstream %s %s %d", r.Method, r.URL.RequestURI(), n)
+	}), ReadHeaderTimeout: time.Second}
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return lis.Addr().String()
+}
+
+// Review of 2026-10-15, item 1: a scan whose request line is longer than
+// the first bytes looked at -- a Plex client's X-Plex-* query parameters --
+// is still offered to the divert, and so never reaches Plex.
+func TestALongScanRequestLineIsDiverted(t *testing.T) {
+	claimed := false
+	addr := startDiverting(t, func(context.Context, *http.Request) (*http.Response, bool) {
+		claimed = true
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("reconciled"))}, true
+	})
+	q := "?X-Plex-Product=Plex%20Web&X-Plex-Client-Identifier=" + strings.Repeat("a", 36) + "&X-Plex-Token=" + strings.Repeat("x", 20)
+	_, body := roundTrip(t, addr, "GET /library/sections/1/refresh"+q+" HTTP/1.1\r\nHost: plex\r\n\r\n")
+	require.True(t, claimed)
+	require.Equal(t, "reconciled", body)
+}
+
+// Item 2: a plain-HTTP upload larger than the proxy's buffer reaches Plex
+// whole: the proxy reads a request's head, never its body.
+func TestALargePlainHTTPBodyReachesPlexWhole(t *testing.T) {
+	addr := startDivertingTo(t, func(context.Context, *http.Request) (*http.Response, bool) { return nil, false }, bodyUpstream(t))
+	conn, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	body := strings.Repeat("x", 2<<20)
+	go func() {
+		_, _ = fmt.Fprintf(conn, "POST /library/metadata/1/posters HTTP/1.1\r\nHost: plex\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	}()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(resp.Body)
+	require.Equal(t, fmt.Sprintf("upstream POST /library/metadata/1/posters %d", len(body)), string(got))
+}
+
+// Item 2: a client that waits for 100 Continue before sending its body gets
+// it from Plex: the head is forwarded at once, not held for a body that
+// will not come until Plex answers.
+func TestAnExpectContinueUploadGetsPlexsContinue(t *testing.T) {
+	addr := startDivertingTo(t, func(context.Context, *http.Request) (*http.Response, bool) { return nil, false }, bodyUpstream(t))
+	conn, err := net.Dial("tcp", addr.String())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	_, err = io.WriteString(conn, "PUT /library/metadata/1/art HTTP/1.1\r\nHost: plex\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
+	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "HTTP/1.1 100 Continue\r\n", line)
+	_, _ = br.ReadString('\n') // the blank line after it
+	_, err = io.WriteString(conn, "hello")
+	require.NoError(t, err)
+	resp, err := http.ReadResponse(br, nil)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(resp.Body)
+	require.Equal(t, "upstream PUT /library/metadata/1/art 5", string(got))
+}
+
+// A head too long to look at is not lost: it reaches Plex as it came.
+func TestAHeadLongerThanTheBufferReachesPlexAsItCame(t *testing.T) {
+	addr := startDiverting(t, func(context.Context, *http.Request) (*http.Response, bool) { return nil, false })
+	_, body := roundTrip(t, addr, "GET /identity HTTP/1.1\r\nHost: plex\r\nX-Pad: "+strings.Repeat("p", bufSize)+"\r\n\r\n")
+	require.Equal(t, "upstream GET /identity", body)
+}
+
+// closeAfter replaces the client's Connection header with close, keeps
+// every other line and the line ending it found, and leaves an upgrade --
+// a WebSocket -- untouched.
+func TestCloseAfterSetsConnectionCloseExceptOnAnUpgrade(t *testing.T) {
+	for _, tc := range []struct{ name, head, want string }{
+		{"no Connection", "GET / HTTP/1.1\r\nHost: plex\r\n\r\n", "GET / HTTP/1.1\r\nHost: plex\r\nConnection: close\r\n\r\n"},
+		{"keep-alive replaced", "GET / HTTP/1.1\r\nconnection: keep-alive\r\nHost: plex\r\n\r\n", "GET / HTTP/1.1\r\nHost: plex\r\nConnection: close\r\n\r\n"},
+		{"bare LF", "GET / HTTP/1.1\nHost: plex\n\n", "GET / HTTP/1.1\nHost: plex\nConnection: close\n\n"},
+		{"an upgrade", "GET /:/websockets/notifications HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\n\r\n", "GET /:/websockets/notifications HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\n\r\n"},
+	} {
+		require.Equal(t, tc.want, string(closeAfter([]byte(tc.head))), tc.name)
+	}
 }
