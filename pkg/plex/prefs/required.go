@@ -47,7 +47,10 @@ var required = map[string]string{
 	// credits detector (live logs, 2026-10-01). MarkerSource stays "cloud"
 	// ("only online (no local detection)") so that credits generation,
 	// were it ever turned back on, could not run locally. Names and options
-	// read from a live /:/prefs, 2026-10-01.
+	// read from a live /:/prefs, 2026-10-01. These, not the libraries'
+	// own intro and credits switches, keep detection off: the provisioner
+	// leaves those switches on, since Plex serves a library's markers only
+	// while they are (talos, 2026-10-20).
 	"GenerateIntroMarkerBehavior":   "never",
 	"GenerateCreditsMarkerBehavior": "never",
 	"MarkerSource":                  "cloud",

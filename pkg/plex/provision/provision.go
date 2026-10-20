@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/url"
 	"path"
@@ -225,7 +224,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 			return Errored, err
 		}
 		for _, name := range ensured {
-			if err := p.ensureAnalysisOff(ctx, log, name, sections); err != nil {
+			if err := p.ensureAnalysisSettings(ctx, log, name, sections); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -322,23 +321,30 @@ func (p *Provisioner) ensureLibrary(ctx context.Context, log *slog.Logger, lib L
 	return nil
 }
 
-// analysisOff are the section settings that make a library analyse its own
-// media: preview thumbnails, intro, credits and ad detection, voice
-// activity and loudness. clustarr probes and detects, so every one is off.
-// A section without one of them (a movie library has no intro detection)
+// analysisSettings are the section settings for a library's own analysis
+// of its media: preview thumbnails, intro, credits and ad detection, voice
+// activity and loudness. clustarr probes and detects, so each is off but
+// intro and credits detection, which stay on: Plex serves a library's skip
+// markers -- clustarr's, seeded into its database (ADR 0006) -- only while
+// that library's switch for the kind is on. From 2026-10-01 both were off
+// and Plex served none of the 15,077 seeded markers (talos, 2026-10-20).
+// Plex detects nothing itself all the same: the server-wide
+// GenerateIntroMarkerBehavior and GenerateCreditsMarkerBehavior are "never"
+// (prefs.Required), and they decide whether detection ever runs. A section
+// without one of these settings (a movie library has no intro detection)
 // is not sent it.
-var analysisOff = map[string]string{
+var analysisSettings = map[string]string{
 	"enableBIFGeneration":           "0",
-	"enableIntroMarkerGeneration":   "0",
-	"enableCreditsMarkerGeneration": "0",
+	"enableIntroMarkerGeneration":   "1",
+	"enableCreditsMarkerGeneration": "1",
 	"enableAdMarkerGeneration":      "0",
 	"enableVoiceActivityGeneration": "0",
 	"enableLoudnessAnalysis":        "0",
 }
 
-// ensureAnalysisOff writes the analysis settings of the named library that
-// are not off yet, and nothing when all are.
-func (p *Provisioner) ensureAnalysisOff(ctx context.Context, log *slog.Logger, name string, sections []plexapi.Section) error {
+// ensureAnalysisSettings writes the analysis settings of the named library
+// that are not as wanted yet, and nothing when all are.
+func (p *Provisioner) ensureAnalysisSettings(ctx context.Context, log *slog.Logger, name string, sections []plexapi.Section) error {
 	i := slices.IndexFunc(sections, func(s plexapi.Section) bool { return s.Title == name })
 	if i < 0 {
 		return nil
@@ -349,7 +355,7 @@ func (p *Provisioner) ensureAnalysisOff(ctx context.Context, log *slog.Logger, n
 		return fmt.Errorf("library %q: read settings: %w", name, err)
 	}
 	set := map[string]string{}
-	for pref, want := range analysisOff {
+	for pref, want := range analysisSettings {
 		if v, ok := have[pref]; ok && boolish(v) != want {
 			set[pref] = want
 		}
@@ -358,9 +364,9 @@ func (p *Provisioner) ensureAnalysisOff(ctx context.Context, log *slog.Logger, n
 		return nil
 	}
 	if err := p.PMS.SetSectionPrefs(ctx, key, set); err != nil {
-		return fmt.Errorf("library %q: turn off analysis: %w", name, err)
+		return fmt.Errorf("library %q: set analysis settings: %w", name, err)
 	}
-	log.Info("turned off the library's own analysis", "library", name, "settings", slices.Sorted(maps.Keys(set)))
+	log.Info("set the library's analysis settings", "library", name, "settings", set)
 	return nil
 }
 

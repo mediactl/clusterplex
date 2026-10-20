@@ -58,8 +58,8 @@ func TestAnEmptyServerGetsOneWriteOfEachAndThenNone(t *testing.T) {
 		"POST /media/providers/metadata", "POST /media/providers/metadata",
 		"POST /media/providers/metadata/group", "POST /media/providers/metadata/group",
 		"POST /library/sections/all", "POST /library/sections/all",
-		"PUT /library/sections/1/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableCreditsMarkerGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
-		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableCreditsMarkerGeneration=0&enableIntroMarkerGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
+		"PUT /library/sections/1/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
+		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
 	}, pms.Writes())
 
 	before := len(pms.Writes())
@@ -98,7 +98,7 @@ func TestTheLiveShapeIsAdoptedAndItsDriftOnlyReported(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{
 		"POST /library/sections/all",
-		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableCreditsMarkerGeneration=0&enableIntroMarkerGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
+		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
 	}, pms.Writes(), "only TV is created and has its analysis turned off; Movies is not touched")
 	assert.Equal(t, map[string]bool{"Movies": true, "TV": false}, drift)
 }
@@ -201,27 +201,53 @@ func TestLibraryNamesAreTheProvisionedLibraries(t *testing.T) {
 }
 
 // Plex is a UI and API: clustarr probes and detects, so no library analyses
-// its own media. The server-wide behaviours are forced to "never" as well,
-// but the section switches are what a library falls back to if one of
-// those is reset. Settings that are not analysis are left alone.
-func TestEveryLibrarysOwnAnalysisIsTurnedOff(t *testing.T) {
+// its own media. Intro and credits detection are the exception that stays
+// on in every library: Plex serves a library's skip markers -- clustarr's,
+// seeded into its database -- only while that library's switch for the
+// kind is on (talos, 2026-10-20: 15,077 seeded markers, none served until
+// the TV library's two switches were turned on). Detection itself is off
+// server-wide (prefs: GenerateIntroMarkerBehavior and
+// GenerateCreditsMarkerBehavior "never"). Settings that are not analysis
+// are left alone.
+func TestALibraryAnalysesNothingButServesMarkers(t *testing.T) {
 	pms := &fakePMS{}
 	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
-		"enableBIFGeneration": "false", "enableCreditsMarkerGeneration": "false",
+		"enableBIFGeneration": "false", "enableCreditsMarkerGeneration": "true",
 		"enableAdMarkerGeneration": "0", "enableVoiceActivityGeneration": "false",
 		"enableLoudnessAnalysis": "false", "enableCinemaTrailers": "true",
-	}, pms.prefs["1"], "the movie library, which has no intro detection to turn off")
-	assert.Equal(t, "false", pms.prefs["2"]["enableIntroMarkerGeneration"])
+	}, pms.prefs["1"], "the movie library, which has no intro detection")
+	assert.Equal(t, "true", pms.prefs["2"]["enableIntroMarkerGeneration"])
+	assert.Equal(t, "true", pms.prefs["2"]["enableCreditsMarkerGeneration"])
 	assert.Equal(t, "false", pms.prefs["2"]["enableLoudnessAnalysis"])
 
 	before := len(pms.Writes())
 	_, err = p.Run(t.Context())
 	require.NoError(t, err)
-	assert.Len(t, pms.Writes(), before, "settings already off are not written again")
+	assert.Len(t, pms.Writes(), before, "settings already as wanted are not written again")
+}
+
+// A library whose marker switches an earlier cluster-plex turned off, as
+// every one was from 2026-10-01, has them turned back on, in one write.
+func TestALibraryWhoseMarkerSwitchesAreOffHasThemTurnedOn(t *testing.T) {
+	pms := &fakePMS{}
+	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	_, err := p.Run(t.Context())
+	require.NoError(t, err)
+	pms.prefs["1"]["enableCreditsMarkerGeneration"] = "false"
+	pms.prefs["2"]["enableCreditsMarkerGeneration"] = "false"
+	pms.prefs["2"]["enableIntroMarkerGeneration"] = "false"
+
+	before := len(pms.Writes())
+	_, err = p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"PUT /library/sections/1/prefs?enableCreditsMarkerGeneration=1",
+		"PUT /library/sections/2/prefs?enableCreditsMarkerGeneration=1&enableIntroMarkerGeneration=1",
+	}, pms.Writes()[before:])
 }
 
 // A run reports every configured library's section key, as Plex numbers
