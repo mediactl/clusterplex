@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -261,13 +262,72 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, out 
 // doLimit is do with its own body cap: a Live TV channel map carries a row
 // per channel, past the 1 MiB every other answer fits.
 func (c *Client) doLimit(ctx context.Context, method, path string, q url.Values, out any, limit int) error {
+	body, err := c.send(ctx, method, path, q, nil, limit)
+	if err != nil {
+		return err
+	}
+	if out == nil || len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("%s %s: decode: %w", method, path, err)
+	}
+	return nil
+}
+
+// send makes one request and returns the body of a 2xx answer. h is sent
+// over the defaults (Accept: application/json, the token): what a Plex
+// client says about itself, for the calls PMS answers per client.
+func (c *Client) send(ctx context.Context, method, path string, q url.Values, h http.Header, limit int) ([]byte, error) {
+	req, hc, err := c.request(ctx, method, path, q, h)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: read: %w", method, path, err)
+	}
+	if len(body) > limit {
+		return nil, fmt.Errorf("%s %s: %w", method, path, ErrResponseTooLarge)
+	}
+	if err := statusError(method, path, resp, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// open is send for a body read as a stream, such as a media segment: the
+// caller reads and closes a 2xx answer's body.
+func (c *Client) open(ctx context.Context, method, path string, q url.Values, h http.Header) (*http.Response, error) {
+	req, hc, err := c.request(ctx, method, path, q, h)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	if resp.StatusCode < 300 {
+		return resp, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return nil, statusError(method, path, resp, body)
+}
+
+func (c *Client) request(ctx context.Context, method, path string, q url.Values, h http.Header) (*http.Request, *http.Client, error) {
 	u := strings.TrimRight(c.BaseURL, "/") + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	if c.Token != nil {
@@ -275,22 +335,16 @@ func (c *Client) doLimit(ctx context.Context, method, path string, q url.Values,
 			req.Header.Set("X-Plex-Token", t)
 		}
 	}
+	maps.Copy(req.Header, h)
 	hc := c.HTTP
 	if hc == nil {
 		hc = defaultHTTP
 	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
-	if err != nil {
-		return fmt.Errorf("%s %s: read: %w", method, path, err)
-	}
-	if len(body) > limit {
-		return fmt.Errorf("%s %s: %w", method, path, ErrResponseTooLarge)
-	}
+	return req, hc, nil
+}
+
+// statusError is a non-2xx answer as an error, its sentinel where it has one.
+func statusError(method, path string, resp *http.Response, body []byte) error {
 	switch {
 	case resp.StatusCode == http.StatusConflict:
 		return fmt.Errorf("%s %s: %w", method, path, ErrConflict)
@@ -300,12 +354,6 @@ func (c *Client) doLimit(ctx context.Context, method, path string, q url.Values,
 		return fmt.Errorf("%s %s: %w: %s", method, path, ErrBadRequest, snippet(body))
 	case resp.StatusCode >= 300:
 		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, snippet(body))
-	}
-	if out == nil || len(bytes.TrimSpace(body)) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("%s %s: decode: %w", method, path, err)
 	}
 	return nil
 }

@@ -54,6 +54,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/mediaproxy/`, `pkg/proxy/` | Serving media, and the L4 proxy |
 | `pkg/remoteexec/` | Running helper binaries locally or on a worker pod |
 | `pkg/plex/api/` | A client for Plex's admin API: providers, agents, libraries, refreshes |
+| `pkg/plex/codecs/` | Having Plex download the audio decoders a Live TV tune needs, through a short audio-only transcode of a library item, on the lease holder |
 | `pkg/plex/activity/` | What Tautulli reads from Plex, read by the manager: streams, plays, watch time, library counts, as Prometheus series and a span per finished play |
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
@@ -218,6 +219,28 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   namespace (`remoteexec.Executor.Start` is `plexnet.Network.StartProcess`
   for every job) made the log say `Loopback` and changed nothing else. The
   file's token is accepted from the subnet too. Not fixed yet.
+- **Live TV's "Could not tune channel" can be a missing audio decoder,
+  not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
+  decoders, among others. PMS downloads each into `Codecs/<transcoder
+  build>-<platform>/` on the config volume, but only when it transcodes a
+  file it has analysed. A Live TV stream is never analysed, so a tune never
+  downloads one.
+  - **The tell:** the transcoder logs `[stream_segment,ssegment] sample
+    rate not set` and exits 234, then PMS logs `Recorder: Error 16`.
+  - **When it happens:** a new config volume, a PMS upgrade into a new
+    folder, or a new architecture. talos's arm64 Plex had no AAC decoder
+    until 2026-10-20.
+  - **The fix:** `pkg/plex/codecs` has the lease holder ask for an HLS
+    transcode of a library item that copies the video and converts the
+    audio, and fetch its first segment. Fetching is the only proof: the
+    variant playlist lists every segment of the file from the start. It asks as "Plex for Android (TV)"
+    with HEVC appended, because Plex Web's profile copies only H.264 and
+    `TranscoderCanOnlyRemuxVideo` refuses every video conversion with
+    decision 4010, "maximum simultaneous video transcodes". It records what
+    it fetched in `Codecs/.clusterplex-prefetch.json` per platform and PMS
+    version.
+  - **Pods of another architecture** share the volume but not the
+    decoders. They get theirs only while one of them holds the Lease.
 - **The PostgreSQL shim is lossy in two known ways.** Library search returns
   nothing, because it translates Plex's full-text `MATCH` into a constant false
   predicate; and title ordering follows PostgreSQL's default collation, because

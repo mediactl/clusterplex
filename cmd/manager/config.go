@@ -8,9 +8,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
@@ -161,6 +164,13 @@ type Config struct {
 	Clustarr ClustarrConfig
 	// LiveTV adds clustarr's IPTVProviders to Plex as DVRs.
 	LiveTV LiveTVConfig
+	// CodecPrefetch are the audio codecs, as Plex names them, whose
+	// decoders the lease holder has Plex download once it serves
+	// (pkg/plex/codecs). Plex downloads one only for a transcode of a file
+	// it has analysed, never for a Live TV stream, so without this a tune
+	// of a channel whose audio it has no decoder for fails. Empty fetches
+	// none.
+	CodecPrefetch []string
 }
 
 // newFlagSet declares every flag and the default for each setting.
@@ -202,6 +212,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("shadow-sync-tables", plexbootstrap.DefaultShadowSyncTables, "tables copied from PostgreSQL into the library's SQLite shadow before Plex starts, comma-separated; none disables")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
+	fs.String(codecPrefetchKey, defaultCodecPrefetch, "audio codecs, as Plex names them, whose decoders the lease holder has Plex download once it serves, so a Live TV tune never meets a missing one; comma-separated, none disables")
 	return fs
 }
 
@@ -308,6 +319,11 @@ func loadConfig(args []string) (Config, error) {
 		errs = append(errs, err)
 	}
 	c.LiveTV = lt
+	codecs, err := codecList(v.Get(codecPrefetchKey))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	c.CodecPrefetch = codecs
 
 	if c.PodName == "" || c.Namespace == "" {
 		errs = append(errs, errors.New("pod-name and pod-namespace must be set (use the downward API as POD_NAME and POD_NAMESPACE)"))
@@ -440,6 +456,10 @@ func (c Config) PodDNS() string {
 // PMSAddr is how other pods reach this node's Plex Media Server.
 func (c Config) PMSAddr() string { return fmt.Sprintf("%s:%d", c.PodDNS(), c.PMSPort) }
 
+// CodecsDir is where Plex keeps the codecs it downloads, a folder per
+// transcoder build and platform.
+func (c Config) CodecsDir() string { return filepath.Join(c.PlexDir, "Codecs") }
+
 // PIDFile is where Plex records its pid.
 func (c Config) PIDFile() string { return filepath.Join(c.PlexDir, "plexmediaserver.pid") }
 
@@ -450,4 +470,49 @@ func (c Config) PreferencesFile() string { return filepath.Join(c.PlexDir, "Pref
 // such as its blob cache. The library itself is in PostgreSQL.
 func (c Config) DatabasesDir() string {
 	return filepath.Join(c.PlexDir, "Plug-in Support", "Databases")
+}
+
+const (
+	codecPrefetchKey = "plex-codec-prefetch"
+	// defaultCodecPrefetch is what Live TV streams carry: AAC on most IPTV,
+	// AC-3 and E-AC-3 on broadcast, MP2 on DVB, MP3 on a few.
+	defaultCodecPrefetch = "aac,ac3,eac3,mp2,mp3"
+)
+
+// codecName is a codec as Plex names it: aac, eac3, pcm_s16le.
+var codecName = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+// codecList reads plex-codec-prefetch: a comma- or space-separated string
+// (the flag, the environment) or a YAML list (the file). "none" is empty.
+func codecList(raw any) ([]string, error) {
+	var names []string
+	switch r := raw.(type) {
+	case nil:
+	case string:
+		names = strings.FieldsFunc(r, func(c rune) bool { return c == ',' || unicode.IsSpace(c) })
+	case []string:
+		names = r
+	case []any:
+		for _, e := range r {
+			names = append(names, fmt.Sprint(e))
+		}
+	default:
+		return nil, fmt.Errorf("%s: %v is neither a list nor a comma-separated string", codecPrefetchKey, raw)
+	}
+	var out []string
+	for _, n := range names {
+		n = strings.ToLower(strings.TrimSpace(n))
+		switch {
+		case n == "":
+		case n == "none":
+			if len(names) > 1 {
+				return nil, fmt.Errorf("%s: none cannot be listed beside codecs", codecPrefetchKey)
+			}
+		case !codecName.MatchString(n):
+			return nil, fmt.Errorf("%s: %q is not a codec name as Plex names them (aac, eac3)", codecPrefetchKey, n)
+		case !slices.Contains(out, n):
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }

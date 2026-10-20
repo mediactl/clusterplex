@@ -34,7 +34,8 @@ func (m *Manager) pms() *plexapi.Client {
 // configuration: one writer at a time for providers, agents and libraries,
 // one watcher of clustarr rather than one per pod, and one writer of the
 // server token's Secret. It also counts the library, which every pod would
-// count the same.
+// count the same, and has Plex fetch the decoders Live TV needs, which only
+// the pod reaching plex.tv can.
 func (m *Manager) startLeaderWork(ctx context.Context) {
 	prov := m.Config.Provision
 	store := m.tokenStore()
@@ -55,6 +56,9 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 	}
 	if store != nil {
 		go m.keepServerToken(ctx, store)
+	}
+	if m.prefetchesCodecs() {
+		go m.prefetchCodecs(ctx)
 	}
 	go m.countLibrary(ctx)
 }

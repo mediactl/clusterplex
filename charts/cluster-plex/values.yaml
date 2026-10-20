@@ -87,6 +87,13 @@ plex:
     # At most one round of PMS restarts on the other pods per this, after a
     # DVR is created or deleted (each PMS caches its DVRs from its start).
     restartEvery: 10m
+  # Audio codecs whose decoders the lease holder has Plex download once it
+  # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex
+  # downloads a decoder only for a transcode of a file it has analysed,
+  # never for a Live TV stream, so a tune of a channel whose audio it has
+  # no decoder for fails as "Could not tune channel". Unset takes the
+  # manager's default (aac, ac3, eac3, mp2, mp3); [] turns it off.
+  codecPrefetch: null
   # A Secret holding a plex.tv claim code (https://plex.tv/claim) under
   # claimSecret.key, exchanged for the server's token at the next start when
   # the server has none or, with plex.clustarr.tokenSecret, when the code is

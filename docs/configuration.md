@@ -657,6 +657,86 @@ which restarts Plex and, if it keeps failing, the pod.
 **The calls** are recorded against the owner's PMS in
 `docs/livetv-pms-calls.md`.
 
+### The audio decoders a tune needs
+
+Plex's transcoder ships without most audio decoders: AAC, MP2 and MP3 among
+them. PMS downloads each one from plex.tv into `Codecs/` on the config
+volume, in one folder per transcoder build and platform
+(`Codecs/a336ba9-16a9aaf440ee9a92b75f070b-linux-aarch64/`). It does so only
+when it starts a transcode of a file it has analysed and found to need one.
+
+PMS never analyses a Live TV stream, so a tune never downloads a decoder.
+Without one, every tune of a channel with that audio fails:
+- the transcoder logs `[stream_segment,ssegment] sample rate not set` and
+  exits 234;
+- PMS logs `Recorder: Error 16`;
+- the client shows "Could not tune channel. Please check your tuner or
+  antenna".
+
+A Codecs folder lacks the decoders when:
+- the config volume is new;
+- PMS has upgraded into a new folder;
+- the pods run on a new architecture.
+
+talos's arm64 Plex was the third case: it had no AAC decoder until
+2026-10-20.
+
+**The prefetch.** The lease holder therefore has PMS download them itself
+(`pkg/plex/codecs`), once PMS answers for its library. For each codec in
+`--plex-codec-prefetch` (default `aac,ac3,eac3,mp2,mp3`, the codecs Live TV
+streams carry; `none` turns it off):
+
+1. It takes a movie or episode whose first audio track is that codec and
+   whose video is H.264 or HEVC.
+2. It asks PMS for an HLS transcode that copies the video and converts the
+   audio, as "Plex for Android (TV)" with HEVC appended to its profile. Plex
+   Web's profile copies H.264 alone, and no profile may convert video here
+   (`TranscoderCanOnlyRemuxVideo`).
+3. It fetches the transcode's first segment, then stops the transcode. The
+   transcoder cannot write a segment without the decoder, and only a served
+   segment proves anything: PMS's variant playlist lists every segment of
+   the file from the start, 715 for a two-hour film.
+
+Under PMS 1.43.4 that profile copies H.264 and HEVC Main 10 beside AAC,
+AC-3, E-AC-3, DTS, TrueHD, FLAC and Opus. PMS still refuses to copy a few
+files, Hi10P H.264 among them, so up to five items are tried per codec,
+each costing one decision.
+
+**E-AC-3** is the exception. PMS decodes it through its EasyAudioEncoder
+rather than a downloaded library, and the same transcode proves that
+EasyAudioEncoder runs.
+
+**Licensing.** The decoders are Plex's own downloads for this server. Nothing
+ships or copies one, which also keeps them matched to the transcoder build
+PMS is running.
+
+**What it records.** What it fetched, it records per platform and PMS version
+in `Codecs/.clusterplex-prefetch.json`. A later lease holder fetches nothing
+again until the version changes, since a new PMS version may use a new
+folder.
+
+**Codecs it cannot fetch.**
+- A codec that no item carries as its first audio track is left for PMS to
+  fetch on first use, as before. MP2 and MP3 rarely appear in a movie
+  library.
+- A codec whose transcode fails is tried again after 30 seconds, then after
+  waits that double up to an hour.
+
+**Where it runs.** Only on the lease holder, because only the lease holder
+reaches plex.tv, and never under `--block-plex-tv`. Pods of a second
+architecture share the volume but get their decoders only when one of them
+holds the Lease.
+
+**Adding codecs.** A codec named here also helps library playback on the
+other pods: a decoder they download on demand needs plex.tv, which only the
+lease holder reaches. Add `dca` and `truehd` if the library holds them:
+
+```yaml
+plex-codec-prefetch: [aac, ac3, eac3, mp2, mp3, dca, truehd]
+```
+
+The chart's value is `plex.codecPrefetch`.
+
 ## The remux pool
 
 Plex Web's DASH streams run on the remux pool rather than on Plex's
