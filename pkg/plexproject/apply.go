@@ -117,6 +117,13 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	if err != nil {
 		return fmt.Errorf("plexproject: seed %s: %w", c.UID, err)
 	}
+	if seeded {
+		// The streams are the projection's: the subtitle files beside the
+		// file are written as Plex's scanner would have found them.
+		if _, _, err := p.Seeder.SyncSidecarsTx(ctx, tx, target, c.PlexPath, c.Input.Sidecars); err != nil {
+			return fmt.Errorf("plexproject: sidecars of %s: %w", c.UID, err)
+		}
+	}
 	if err := stampMedia(ctx, tx, target.Media, c, seeded); err != nil {
 		return fmt.Errorf("plexproject: stamp %s: %w", c.UID, err)
 	}

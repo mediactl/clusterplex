@@ -167,3 +167,21 @@ func TestTrimKeepsTheEpisodeNumbersAndPlexID(t *testing.T) {
 		require.True(t, found, strings.Join(p, "."))
 	}
 }
+
+// A MediaFile's sidecar subtitles reach the projection: Trim keeps them,
+// SeedInputOf reads them, and a change to them changes the seed key, so a
+// subtitle found later is applied.
+func TestSidecarsReachTheProjection(t *testing.T) {
+	u := mediaFile("a", "/data/media/movies/Heat (1995)/Heat (1995).mp4")
+	before := clustarrwatch.SeedKey(u)
+	u.Object["status"] = map[string]any{"sidecars": []any{
+		map[string]any{"name": "Heat (1995).en.srt", "language": "en"},
+		map[string]any{"name": "Heat (1995).en.sdh.srt", "language": "en", "hi": true},
+	}}
+	out, err := clustarrwatch.Trim(u)
+	require.NoError(t, err)
+	in, ok := clustarrwatch.SeedInputOf(out.(*unstructured.Unstructured))
+	require.True(t, ok)
+	require.Equal(t, []plexseed.Sidecar{{Name: "Heat (1995).en.srt", Language: "en"}, {Name: "Heat (1995).en.sdh.srt", Language: "en", HI: true}}, in.Sidecars)
+	require.NotEqual(t, before, clustarrwatch.SeedKey(u))
+}

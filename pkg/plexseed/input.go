@@ -20,6 +20,9 @@ type Input struct {
 	// (a Movie's, or an Episode's Series' status.metadata.originalLanguage):
 	// the language of an audio track the file does not tag.
 	OriginalLanguage string
+	// Sidecars are the subtitle files beside the file (status.sidecars),
+	// which the projection writes as external subtitle streams.
+	Sidecars []Sidecar
 }
 
 // Probe is status.mediaInfo.

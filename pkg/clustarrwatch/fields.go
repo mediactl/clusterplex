@@ -52,6 +52,9 @@ var (
 	probeField     = []string{"status", "mediaInfo"}
 	probeHashField = []string{"status", "probeHash"}
 	markersField   = []string{"status", "markers"}
+	// sidecarsField lists the subtitle files beside the file, which the
+	// projection writes as external subtitle streams.
+	sidecarsField = []string{"status", "sidecars"}
 	// shown is what Plex displays of an item, and so what a refresh is for.
 	shown = [][]string{
 		{"status", "metadata"},
@@ -81,7 +84,7 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 	}
 	switch gvr {
 	case MediaFiles:
-		return [][]string{pathField, kindField, mediaRefNameField, mediaRefKeysField, sizeField, modTimeField, probeField, probeHashField, markersField}
+		return [][]string{pathField, kindField, mediaRefNameField, mediaRefKeysField, sizeField, modTimeField, probeField, probeHashField, markersField, sidecarsField}
 	case Movies:
 		return item
 	case Series:
@@ -200,6 +203,14 @@ func SeedInputOf(u *unstructured.Unstructured) (plexseed.Input, bool) {
 			in.Markers = &mk
 		}
 	}
+	if l, ok, _ := unstructured.NestedSlice(u.Object, sidecarsField...); ok {
+		if b, err := json.Marshal(l); err == nil {
+			var sc []plexseed.Sidecar
+			if json.Unmarshal(b, &sc) == nil {
+				in.Sidecars = sc
+			}
+		}
+	}
 	return in, true
 }
 
@@ -212,10 +223,10 @@ func decode(m map[string]any, out any) error {
 }
 
 // SeedKey changes exactly when what the seeder writes for a MediaFile does:
-// its path, probe hash, probe or markers.
+// its path, probe hash, probe, markers or sidecar subtitles.
 func SeedKey(u *unstructured.Unstructured) string {
 	keep := map[string]any{}
-	for _, f := range [][]string{pathField, sizeField, probeHashField, probeField, markersField} {
+	for _, f := range [][]string{pathField, sizeField, probeHashField, probeField, markersField, sidecarsField} {
 		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
 			keep[strings.Join(f, ".")] = v
 		}

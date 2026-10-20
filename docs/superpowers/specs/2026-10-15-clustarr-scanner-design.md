@@ -172,6 +172,18 @@ each episode takes its own of Plex's rows. Before, only the first episode
 was projected, and a transcode that renamed the file left the others on
 parts whose file was gone (talos: 11 such episodes).
 
+**Sidecar subtitles (2026-10-20).** Plex finds a subtitle file beside a
+media file only while it scans, so with its scanner replaced none of the
+library's 15,036 sidecars reached Plex, and a stream replacement deleted any
+it had. The apply writes them from `status.sidecars` as Plex 1.43.4's own
+scanner does (captured on a folder of sidecars): a `media_streams` row per
+file, `stream_type_id` 3, `url` the `file://` URL with only spaces and `%`
+escaped, `codec` the format (srt, ass, ssa, vtt, smi), `language` the tag in
+the name as written, `forced`, and `ma:hearingImpaired` and `ma:format` in
+`extra_data` beside the seeder's mark (`plexseed.SyncSidecarsTx`). A
+sidecar still there keeps its stream id; the seed key covers the sidecars,
+so one found later is applied.
+
 **Gone files (2026-10-20).** Plex removes no gone file on a refresh, and
 its scanner no longer runs here, so the reconcile sweeps after it
 (`plexproject.Projector.Sweep`, the section or the scan's folder), and so
