@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -116,6 +117,17 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	if err := stampMedia(ctx, tx, target.Media, c, seeded); err != nil {
 		return fmt.Errorf("plexproject: stamp %s: %w", c.UID, err)
 	}
+	if f.fileChanged(have, c, seeded) {
+		// The item Plex already shows has a new file. Plex's refresh of an
+		// unchanged provider answer writes only refreshed_at, so the item's
+		// updated_at -- clients' updatedAt -- is stamped here, and the
+		// refresh after the commit sends open clients Plex's timeline
+		// "updated" for it (talos, 2026-10-20).
+		if _, err := tx.Exec(ctx, `UPDATE metadata_items SET updated_at = $2 WHERE id = $1`, item, now.Unix()); err != nil {
+			return fmt.Errorf("plexproject: stamp item %d: %w", item, err)
+		}
+		pending.NeedsRefresh(item)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -137,11 +149,28 @@ func (c Change) current(seedKey, itemKey, seedVersion string) bool {
 	return seedKey == c.SeedKey && itemKey == c.Item.Key() && (!c.seedable() || seedVersion == SeedVersion)
 }
 
-// pendingRefresh holds the ids EnsureChain inserted until the transaction
-// commits (review I11).
+// fileChanged reports whether this apply gives an item Plex already shows
+// a different file: a row found by its stamp (never one adopted at first
+// contact, which would refresh the whole library at the first resync)
+// whose path changed, or whose seeded probe did. A change of markers or of
+// the item chain alone is not one.
+func (f found) fileChanged(have bool, c Change, seeded bool) bool {
+	if !have || f.adopted {
+		return false
+	}
+	return f.file != c.PlexPath || (seeded && f.probeHash != c.Input.ProbeHash)
+}
+
+// pendingRefresh holds the ids to refresh -- the rows EnsureChain inserted,
+// and an existing item whose file changed -- until the transaction commits
+// (review I11).
 type pendingRefresh struct{ ids []int64 }
 
-func (r *pendingRefresh) NeedsRefresh(id int64) { r.ids = append(r.ids, id) }
+func (r *pendingRefresh) NeedsRefresh(id int64) {
+	if !slices.Contains(r.ids, id) {
+		r.ids = append(r.ids, id)
+	}
+}
 
 func (r *pendingRefresh) deliver(to Refresher) {
 	if to == nil {

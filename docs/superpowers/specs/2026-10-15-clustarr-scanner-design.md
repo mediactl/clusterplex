@@ -130,6 +130,14 @@ folded into the apply queue.
 A path change is step 4 on the existing row. Play position and watched
 state are keyed by guid in `metadata_item_settings` and are never touched.
 
+A changed path or probe on a row found by its stamp (2026-10-20) also sets
+the item's `updated_at`, which clients read as `updatedAt`, and queues the
+item for the post-commit refresh, which sends open clients Plex's timeline
+"updated". Plex's refresh alone does neither stamp: with the provider's
+answer unchanged it writes only `refreshed_at` (talos, Before Sunrise after
+its transcode). A markers-only change, a chain change and an adoption do
+neither.
+
 ## 7. Delete
 
 A deleted MediaFile soft-deletes its `media_parts` and `media_items`

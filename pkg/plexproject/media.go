@@ -38,6 +38,7 @@ type found struct {
 	seedKey, itemKey  string
 	probeHash         string
 	seedVersion       string
+	file              string // media_parts.file as the row last had it
 	adopted           bool
 }
 
@@ -46,14 +47,14 @@ type found struct {
 func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath string) (found, bool, error) {
 	var f found
 	var extra string
-	err := tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
+	err := tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, ''), coalesce(mp.file, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
 		WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mi.extra_data LIKE $2 ORDER BY mp.deleted_at NULLS FIRST, mp.id LIMIT 1`,
-		section, `%"`+FileUIDKey+`":"`+uid+`"%`).Scan(&f.media, &f.part, &f.item, &extra)
+		section, `%"`+FileUIDKey+`":"`+uid+`"%`).Scan(&f.media, &f.part, &f.item, &extra, &f.file)
 	if errors.Is(err, pgx.ErrNoRows) {
 		f.adopted = true
-		err = tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
+		err = tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, ''), coalesce(mp.file, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
 			WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mp.deleted_at IS NULL AND mp.file = $2
-			AND coalesce(mi.extra_data, '') NOT LIKE '%"cp:mediaFile":%' ORDER BY mi.id LIMIT 1`, section, plexPath).Scan(&f.media, &f.part, &f.item, &extra)
+			AND coalesce(mi.extra_data, '') NOT LIKE '%"cp:mediaFile":%' ORDER BY mi.id LIMIT 1`, section, plexPath).Scan(&f.media, &f.part, &f.item, &extra, &f.file)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return found{}, false, nil
