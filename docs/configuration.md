@@ -552,6 +552,7 @@ plex:
     language: eng              # the DVRs' guide language
     localAddress: 169.254.47.1 # link-local, never 169.254.169.254
     restartEvery: 10m          # PMS restarts on the other pods, at most this often
+    staleGrabAfter: 5m         # a Live TV grab no player watches is ended after this
 ```
 
 **Blocks.** PMS takes one device's channel map in one request, capped at
@@ -656,6 +657,39 @@ which restarts Plex and, if it keeps failing, the pod.
 
 **The calls** are recorded against the owner's PMS in
 `docs/livetv-pms-calls.md`.
+
+### Grabs no player watches
+
+PMS ends a Live TV grab only when its client reports that playback
+stopped ("Recorder: No more consumers"). Stopping the client's transcode
+doesn't end it. A client that is killed or loses its network mid-play
+reports nothing, so its grab keeps one of the device's tuners until PMS
+restarts.
+
+On talos, 2026-10-20, one such grab held the only tuner for six hours:
+- every tune waited PMS's 300 seconds for a tuner, then failed with
+  `Recorder: Error 23 (Tuner in use by another process)`;
+- the client showed "The recording conflicts with other recordings";
+- each failed tune stayed listed in `/livetv/sessions` and held the tuner
+  in turn.
+
+Every pod therefore looks at its own PMS every 30 seconds
+(`pkg/plex/livetv.StaleGrabs`):
+- A **Live TV grab** is a `grabber.grab` activity whose subtitle begins
+  "Live TV - Session". Its `Context.transcode_session` names its live
+  session.
+- The grab counts as **watched** while `/status/sessions` lists that live
+  session, by its key or its item's ratingKey.
+- **A grab unwatched for `staleGrabAfter`** (default 5m) has its activity
+  cancelled (`DELETE /activities/<uuid>`), which ends the grab and its
+  live session.
+- **Two other ways to end a grab don't work:** `DELETE
+  /livetv/sessions/<id>` answers 404, and a stopped timeline from another
+  client is ignored.
+- **A DVR recording**, whose subtitle is the programme's title, runs with
+  no player by design and is never touched.
+
+The counter is `clusterplex_livetv_stale_grabs_ended_total`.
 
 ### The audio decoders a tune needs
 

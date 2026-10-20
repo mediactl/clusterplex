@@ -103,6 +103,9 @@ type LiveTVConfig struct {
 	// RestartEvery bounds how often the lease holder restarts PMS on the
 	// other pods after a DVR change. Default 10m.
 	RestartEvery time.Duration `mapstructure:"restartEvery"`
+	// StaleGrabAfter is how long a Live TV grab may go unwatched before
+	// its pod ends it (pkg/plex/livetv.StaleGrabs). Default 5m.
+	StaleGrabAfter time.Duration `mapstructure:"staleGrabAfter"`
 }
 
 // defaultRestartEvery is plex.liveTV.restartEvery's default.
@@ -130,6 +133,9 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	}
 	if lt.RestartEvery <= 0 {
 		lt.RestartEvery = defaultRestartEvery
+	}
+	if lt.StaleGrabAfter <= 0 {
+		lt.StaleGrabAfter = plexlivetv.DefaultStaleGrabAfter
 	}
 	if lt.Enabled && cl.Namespace == "" {
 		return lt, fmt.Errorf("%s.enabled: needs %s.namespace, where clustarr's IPTVProviders live", liveTVKey, clustarrKey)

@@ -48,6 +48,9 @@ type Metrics struct {
 	// files that are gone (pkg/plexproject.Sweep), by action: removed,
 	// revived, or projected (clustarr names a file that is not there).
 	ProjectionMissingFiles *prometheus.CounterVec
+	// LiveTVStaleGrabsEnded counts the Live TV grabs this pod ended because
+	// no player watched them (pkg/plex/livetv.StaleGrabs).
+	LiveTVStaleGrabsEnded prometheus.Counter
 	// Activity is what Tautulli would report about this pod's Plex: its
 	// streams, plays, watch time, library and version (pkg/plex/activity).
 	Activity *activity.Monitor
@@ -110,6 +113,10 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Name: "clusterplex_projection_missing_files_total",
 			Help: "Gone files the projection's sweeps found, by action: removed (a row Plex scanned, taken off its item), revived (its file came back) or projected (a clustarr MediaFile naming a file that is not there, left)",
 		}, []string{"action"}),
+		LiveTVStaleGrabsEnded: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "clusterplex_livetv_stale_grabs_ended_total",
+			Help: "Live TV grabs ended because no player watched them for plex.liveTV.staleGrabAfter: each held one of the device's tuners",
+		}),
 		ClustarrUnmappable: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "clusterplex_clustarr_unmappable_paths_total",
 			Help: "clustarr file paths no pathMapping covers, dropped",

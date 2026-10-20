@@ -344,6 +344,7 @@ func run() int {
 	m.runPlex(ctx)
 	if cfg.LiveTV.Enabled && m.Dynamic != nil {
 		go m.watchLiveTVRestart(ctx)
+		go m.endStaleGrabs(ctx)
 	}
 
 	<-ctx.Done()

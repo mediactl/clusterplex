@@ -87,6 +87,10 @@ plex:
     # At most one round of PMS restarts on the other pods per this, after a
     # DVR is created or deleted (each PMS caches its DVRs from its start).
     restartEvery: 10m
+    # A Live TV grab no player has watched for this long is ended
+    # (docs/configuration.md, "Grabs no player watches"): one its client
+    # abandoned holds a tuner until PMS restarts.
+    staleGrabAfter: 5m
   # Audio codecs whose decoders the lease holder has Plex download once it
   # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex
   # downloads a decoder only for a transcode of a file it has analysed,

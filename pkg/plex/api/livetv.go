@@ -90,6 +90,65 @@ type Activity struct {
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle"`
 	Progress int    `json:"progress"`
+	// Context is what the activity is about; a grab's names its live
+	// session (TranscodeSession, the id in /livetv/sessions/<id>).
+	Context ActivityContext `json:"Context"`
+}
+
+// ActivityContext is the part of an activity's Context a caller reads.
+type ActivityContext struct {
+	TranscodeSession Str `json:"transcode_session"`
+}
+
+// ActivityGrab is a grabber's recording: a DVR recording, or a Live TV
+// session's (subtitle "Live TV - Session …").
+const ActivityGrab = "grabber.grab"
+
+// CancelActivity cancels a running activity, as the dashboard's cancel
+// does. A grab's cancel stops its recording and ends its live session
+// (PMS 1.43.4, talos 2026-10-20): the one way found to end a grab its
+// client abandoned, since DELETE /livetv/sessions/<id> is 404 and only the
+// client's own stopped timeline ends it otherwise.
+func (c *Client) CancelActivity(ctx context.Context, uuid string) error {
+	return c.do(ctx, http.MethodDelete, "/activities/"+url.PathEscape(uuid), nil, nil)
+}
+
+// LiveSession is one of PMS's Live TV sessions (/livetv/sessions).
+type LiveSession struct {
+	// Key is "/livetv/sessions/<id>"; RatingKey the item a player that
+	// watches it plays.
+	Key       string `json:"key"`
+	RatingKey Str    `json:"ratingKey"`
+	Title     string `json:"title"`
+}
+
+// LiveSessions lists PMS's Live TV sessions.
+func (c *Client) LiveSessions(ctx context.Context) ([]LiveSession, error) {
+	var out struct {
+		MediaContainer struct {
+			Metadata []LiveSession `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	err := c.do(ctx, http.MethodGet, "/livetv/sessions", nil, &out)
+	return out.MediaContainer.Metadata, err
+}
+
+// PlayingItem is one item a player is playing (/status/sessions), by the
+// two ways it names it.
+type PlayingItem struct {
+	Key       string `json:"key"`
+	RatingKey Str    `json:"ratingKey"`
+}
+
+// Playing lists what PMS's players are playing, paused ones included.
+func (c *Client) Playing(ctx context.Context) ([]PlayingItem, error) {
+	var out struct {
+		MediaContainer struct {
+			Metadata []PlayingItem `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	err := c.do(ctx, http.MethodGet, "/status/sessions", nil, &out)
+	return out.MediaContainer.Metadata, err
 }
 
 // ActivityGuideLoad is the activity of a DVR's guide being rebuilt. A DVR

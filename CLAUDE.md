@@ -219,6 +219,19 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   namespace (`remoteexec.Executor.Start` is `plexnet.Network.StartProcess`
   for every job) made the log say `Loopback` and changed nothing else. The
   file's token is accepted from the subnet too. Not fixed yet.
+- **"The recording conflicts with other recordings" can be a grab nobody
+  watches, not a schedule clash.** PMS ends a Live TV grab only when its
+  client reports that playback stopped. A client that is killed or goes
+  offline mid-play reports nothing, so its grab keeps a tuner until PMS
+  restarts. With the account's one connection, that blocked every tune on
+  talos for six hours (2026-10-20). The tell is PMS's `Timed out waiting
+  for available tuner (waited 300 seconds)` while clustarr's relay reports
+  `clustarr_livetv_tuners_in_use 0`.
+  - `pkg/plex/livetv.StaleGrabs` cancels a Live TV grab's activity after
+    `plex.liveTV.staleGrabAfter` unwatched: `DELETE /activities/<uuid>`,
+    the only call that ends a grab.
+  - Two calls that don't: `DELETE /livetv/sessions/<id>` is 404, and a
+    stopped timeline only counts from the grab's own client.
 - **Live TV's "Could not tune channel" can be a missing audio decoder,
   not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
   decoders, among others. PMS downloads each into `Codecs/<transcoder
