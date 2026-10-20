@@ -52,6 +52,9 @@ type pms struct {
 	// tv adds a TV library at /media/tv, as the provisioner creating it
 	// after the watcher started does.
 	tv atomic.Bool
+	// events feeds /:/eventsource/notifications, one SSE message per
+	// string; nil holds the stream open and sends nothing.
+	events chan string
 }
 
 func (p *pms) client(t *testing.T) *plexapi.Client {
@@ -59,6 +62,20 @@ func (p *pms) client(t *testing.T) *plexapi.Client {
 		if p.down.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
+		}
+		if r.URL.Path == "/:/eventsource/notifications" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case m := <-p.events:
+					_, _ = w.Write([]byte(m))
+					w.(http.Flusher).Flush()
+				}
+			}
 		}
 		if r.URL.Path == "/library/sections/all" && r.Method == http.MethodGet {
 			tv := ""

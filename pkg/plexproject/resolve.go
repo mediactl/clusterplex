@@ -42,6 +42,19 @@ func (it Item) Key() string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// guids are the guids the row the media hangs off may carry: its own, and
+// the custom form it had before its Plex id was known.
+func (it Item) guids() []string {
+	if len(it.Chain) == 0 {
+		return nil
+	}
+	n := it.Chain[len(it.Chain)-1]
+	if n.PriorGUID == "" {
+		return []string{n.GUID}
+	}
+	return []string{n.GUID, n.PriorGUID}
+}
+
 // Lookup finds a catalog object by kind and name in a namespace; the
 // watcher's informer caches satisfy it.
 type Lookup func(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool)
@@ -65,46 +78,92 @@ func Resolve(file *unstructured.Unstructured, look Lookup) (Item, bool) {
 			OriginalLanguage: nested(movie, "status", "metadata", "originalLanguage"),
 		}, true
 	case "episode":
-		ep, ok := look(Episodes, ns, name)
-		if !ok {
-			return Item{}, false
-		}
-		seriesName := nested(ep, "spec", "seriesRef")
-		if seriesName == "" {
-			seriesName = ownerNamed(ep, "Series")
-		}
-		series, ok := look(Series, ns, seriesName)
-		if !ok {
-			return Item{}, false
-		}
-		seasonNumber := nestedInt(ep, "spec", "seasonNumber")
-		episodeNumber := nestedInt(ep, "spec", "episodeNumber")
-		seriesUID := string(series.GetUID())
-		seasonKey := fmt.Sprintf("%s-s%02d", seriesUID, seasonNumber)
-		seasonPlexID := plexSeasonID(series, seasonNumber)
-		episodePlexID := nested(ep, "status", "plexID")
-		return Item{
-			Provider: TVProvider,
-			Chain: []Node{
-				itemNode(series, TypeShow, TVProvider, seriesUID),
-				{
-					Type: TypeSeason, GUID: GUID(TVProvider, TypeSeason, seasonKey, seasonPlexID),
-					PriorGUID: prior(TVProvider, TypeSeason, seasonKey, seasonPlexID),
-					Title:     fmt.Sprintf("Season %d", seasonNumber), TitleSort: fmt.Sprintf("season %d", seasonNumber),
-					Index: int32(seasonNumber), AddedAt: ep.GetCreationTimestamp().Time,
-				},
-				{
-					Type: TypeEpisode, GUID: GUID(TVProvider, TypeEpisode, string(ep.GetUID()), episodePlexID),
-					PriorGUID: prior(TVProvider, TypeEpisode, string(ep.GetUID()), episodePlexID),
-					Title:     firstOf(nested(ep, "status", "title"), fmt.Sprintf("Episode %d", episodeNumber)),
-					TitleSort: strings.ToLower(firstOf(nested(ep, "status", "title"), fmt.Sprintf("episode %d", episodeNumber))),
-					Index:     int32(episodeNumber), AddedAt: ep.GetCreationTimestamp().Time,
-				},
-			},
-			OriginalLanguage: nested(series, "status", "metadata", "originalLanguage"),
-		}, true
+		return resolveEpisode(ns, name, look)
 	}
 	return Item{}, false
+}
+
+// Covered is one item a MediaFile's rows hang off: the item its mediaRef
+// names (Episode ""), or another episode a multi-episode file holds.
+type Covered struct {
+	Episode string
+	Item    Item
+	// OK is false while the item, or its series, is not in the caches.
+	OK bool
+}
+
+// UID is the cp:mediaFile stamp of the row a file of fileUID has on c.
+func (c Covered) UID(fileUID string) string {
+	if c.Episode == "" {
+		return fileUID
+	}
+	return CoveredUID(fileUID, c.Episode)
+}
+
+// ResolveCovered resolves every item a MediaFile is on: the item its
+// mediaRef names, first, then each other episode its mediaRef.keys list.
+func ResolveCovered(file *unstructured.Unstructured, look Lookup) []Covered {
+	first, ok := Resolve(file, look)
+	out := []Covered{{Item: first, OK: ok}}
+	kind, _, _ := unstructured.NestedString(file.Object, "spec", "mediaRef", "kind")
+	if !strings.EqualFold(kind, "episode") {
+		return out
+	}
+	name, _, _ := unstructured.NestedString(file.Object, "spec", "mediaRef", "name")
+	keys, _, _ := unstructured.NestedStringSlice(file.Object, "spec", "mediaRef", "keys")
+	seen := map[string]bool{name: true}
+	for _, k := range keys {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		it, ok := resolveEpisode(file.GetNamespace(), k, look)
+		out = append(out, Covered{Episode: k, Item: it, OK: ok})
+	}
+	return out
+}
+
+// resolveEpisode is the show, season and episode chain of the Episode
+// named name.
+func resolveEpisode(ns, name string, look Lookup) (Item, bool) {
+	ep, ok := look(Episodes, ns, name)
+	if !ok {
+		return Item{}, false
+	}
+	seriesName := nested(ep, "spec", "seriesRef")
+	if seriesName == "" {
+		seriesName = ownerNamed(ep, "Series")
+	}
+	series, ok := look(Series, ns, seriesName)
+	if !ok {
+		return Item{}, false
+	}
+	seasonNumber := nestedInt(ep, "spec", "seasonNumber")
+	episodeNumber := nestedInt(ep, "spec", "episodeNumber")
+	seriesUID := string(series.GetUID())
+	seasonKey := fmt.Sprintf("%s-s%02d", seriesUID, seasonNumber)
+	seasonPlexID := plexSeasonID(series, seasonNumber)
+	episodePlexID := nested(ep, "status", "plexID")
+	return Item{
+		Provider: TVProvider,
+		Chain: []Node{
+			itemNode(series, TypeShow, TVProvider, seriesUID),
+			{
+				Type: TypeSeason, GUID: GUID(TVProvider, TypeSeason, seasonKey, seasonPlexID),
+				PriorGUID: prior(TVProvider, TypeSeason, seasonKey, seasonPlexID),
+				Title:     fmt.Sprintf("Season %d", seasonNumber), TitleSort: fmt.Sprintf("season %d", seasonNumber),
+				Index: int32(seasonNumber), AddedAt: ep.GetCreationTimestamp().Time,
+			},
+			{
+				Type: TypeEpisode, GUID: GUID(TVProvider, TypeEpisode, string(ep.GetUID()), episodePlexID),
+				PriorGUID: prior(TVProvider, TypeEpisode, string(ep.GetUID()), episodePlexID),
+				Title:     firstOf(nested(ep, "status", "title"), fmt.Sprintf("Episode %d", episodeNumber)),
+				TitleSort: strings.ToLower(firstOf(nested(ep, "status", "title"), fmt.Sprintf("episode %d", episodeNumber))),
+				Index:     int32(episodeNumber), AddedAt: ep.GetCreationTimestamp().Time,
+			},
+		},
+		OriginalLanguage: nested(series, "status", "metadata", "originalLanguage"),
+	}, true
 }
 
 // itemNode is the movie's or the show's node: titled and dated from

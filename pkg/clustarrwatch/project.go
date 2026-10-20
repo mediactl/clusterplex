@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,6 +22,9 @@ type Projection interface {
 	Apply(ctx context.Context, section, location int64, c plexproject.Change) error
 	Delete(ctx context.Context, section int64, uid string) error
 	Reconcile(ctx context.Context, section, location int64, folder string, want []plexproject.Change) (plexproject.Outcome, error)
+	// Sweep takes the files that are gone off a section's items (or a
+	// folder's, or one item's and those under it).
+	Sweep(ctx context.Context, section int64, scope plexproject.SweepScope) (plexproject.SweepOutcome, error)
 }
 
 // SectionIDs are a provisioned section's database ids: library_sections.id
@@ -49,9 +53,11 @@ func (s SectionIDs) locationFor(mapped string) int64 {
 	return id
 }
 
-// removal is a deleted MediaFile waiting for the next flush.
+// removal is a deleted MediaFile waiting for the next flush: the stamps
+// of every row it has, one per episode a multi-episode file holds.
 type removal struct {
-	uid, path string
+	uids []string
+	path string
 }
 
 // provisioned is the section's ids when the projection owns it.
@@ -81,12 +87,14 @@ func (w *Watcher) sectionLock(key string) *sync.Mutex {
 // enqueueRemoval queues a deleted MediaFile's removal.
 func (w *Watcher) enqueueRemoval(u *unstructured.Unstructured) {
 	p, _, _ := unstructured.NestedString(u.Object, pathField...)
+	name, _, _ := unstructured.NestedString(u.Object, mediaRefNameField...)
+	keys, _, _ := unstructured.NestedStringSlice(u.Object, mediaRefKeysField...)
 	w.projMu.Lock()
 	defer w.projMu.Unlock()
 	if w.removals == nil {
 		w.removals = map[string]removal{}
 	}
-	w.removals[u.GetName()] = removal{uid: string(u.GetUID()), path: p}
+	w.removals[u.GetName()] = removal{uids: plexproject.CoveredUIDs(string(u.GetUID()), name, keys), path: p}
 }
 
 // flushRemovals removes every queued deletion from its section.
@@ -110,12 +118,13 @@ func (w *Watcher) flushRemovals(ctx context.Context) {
 		}
 		lock := w.sectionLock(s.Key)
 		lock.Lock()
-		err = w.Projection.Delete(ctx, ids.Section, r.uid)
-		lock.Unlock()
-		if err != nil {
-			inc(w.Counters.SeedErrors)
-			w.log().Warn("projection: remove", "file", name, "error", err)
+		for _, uid := range r.uids {
+			if err := w.Projection.Delete(ctx, ids.Section, uid); err != nil {
+				inc(w.Counters.SeedErrors)
+				w.log().Warn("projection: remove", "file", name, "row", uid, "error", err)
+			}
 		}
+		lock.Unlock()
 	}
 }
 
@@ -154,15 +163,33 @@ func (w *Watcher) projectOne(ctx context.Context, u *unstructured.Unstructured) 
 		}
 		return nil // not the projection's: the folder-refresh path has it
 	}
-	c, ok := w.changeOf(u, mapped)
-	if !ok {
+	changes, ok := w.changesOf(u, mapped)
+	if len(changes) == 0 {
 		return errUnresolved
 	}
-	c.Location = ids.locationFor(mapped)
 	lock := w.sectionLock(s.Key)
 	lock.Lock()
 	defer lock.Unlock()
-	return w.Projection.Apply(ctx, ids.Section, c.Location, c)
+	// Every episode a file holds that is resolved is applied; one that is
+	// not yet makes the file wait and come back, when the applied ones
+	// are current and write nothing.
+	var errs []error
+	for _, c := range changes {
+		if c.Unresolved {
+			continue
+		}
+		c.Location = ids.locationFor(mapped)
+		if err := w.Projection.Apply(ctx, ids.Section, c.Location, c); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if !ok {
+		return errUnresolved
+	}
+	return nil
 }
 
 // sectionsUnknown reports a projection waiting for provisioning's first
@@ -182,20 +209,31 @@ func (w *Watcher) providerSection(s plexapi.Section) bool {
 	return s.Agent != "" && (s.Agent == w.MovieProvider || s.Agent == w.TVProvider)
 }
 
-// changeOf builds the projection's input for a MediaFile at its mapped
-// path; ok is false when the file's item is not in the caches yet.
-func (w *Watcher) changeOf(u *unstructured.Unstructured, mapped string) (plexproject.Change, bool) {
+// changesOf builds the projection's input for a MediaFile at its mapped
+// path: one Change per item it is on, the item its mediaRef names first,
+// then each other episode a multi-episode file holds. A Change whose item
+// is not in the caches yet is Unresolved, and ok is false while any is.
+// A file without a path yields none.
+func (w *Watcher) changesOf(u *unstructured.Unstructured, mapped string) ([]plexproject.Change, bool) {
 	in, ok := SeedInputOf(u)
 	if !ok {
-		return plexproject.Change{}, false
-	}
-	it, ok := plexproject.Resolve(u, w.item)
-	if !ok {
-		return plexproject.Change{}, false
+		return nil, false
 	}
 	in.Path = mapped
-	in.OriginalLanguage = it.OriginalLanguage
-	return plexproject.Change{UID: string(u.GetUID()), PlexPath: mapped, SeedKey: SeedKey(u), Item: it, Input: in}, true
+	uid, key := string(u.GetUID()), SeedKey(u)
+	all := true
+	var out []plexproject.Change
+	for _, cv := range plexproject.ResolveCovered(u, w.item) {
+		c := plexproject.Change{UID: cv.UID(uid), PlexPath: mapped, SeedKey: key, Unresolved: !cv.OK}
+		if cv.OK {
+			c.Item = cv.Item
+			c.Input = in
+			c.Input.OriginalLanguage = cv.Item.OriginalLanguage
+		}
+		all = all && cv.OK
+		out = append(out, c)
+	}
+	return out, all
 }
 
 // ReconcileSection is spec §8 for the provisioned section with Plex key
@@ -222,7 +260,34 @@ func (w *Watcher) ReconcileSection(ctx context.Context, key, folder string) (ple
 	}
 	w.log().Info("projection: reconciled", "section", key, "folder", folder,
 		"applied", out.Applied, "deleted", out.Deleted, "adopted", out.Adopted, "unknown", out.Unknown, "failed", out.Failed)
+	// Then the files that are gone, as Plex's own scanner took them off
+	// before the projection replaced it. A sweep that fails is logged: the
+	// rows are as the reconcile left them, and the next one tries again.
+	w.sweep(ctx, key, ids.Section, plexproject.SweepScope{Folder: folder})
 	return out, true, nil
+}
+
+// sweep runs the projection's sweep of a provisioned section, reporting
+// what it did; the caller holds the section's lock.
+func (w *Watcher) sweep(ctx context.Context, key string, section int64, scope plexproject.SweepScope) {
+	out, err := w.Projection.Sweep(ctx, section, scope)
+	if err != nil {
+		w.log().Warn("projection: sweep", "section", key, "folder", scope.Folder, "item", scope.Item, "error", err)
+	}
+	if w.Counters.Missing != nil {
+		w.Counters.Missing("removed", out.Removed)
+		w.Counters.Missing("revived", out.Revived)
+		w.Counters.Missing("projected", len(out.ProjectedMissing))
+	}
+	if out.Removed > 0 || out.Revived > 0 || len(out.ProjectedMissing) > 0 {
+		w.log().Info("projection: swept gone files", "section", key, "folder", scope.Folder, "item", scope.Item,
+			"checked", out.Checked, "removed", out.Removed, "revived", out.Revived, "skipped", out.Skipped,
+			"clustarrNamesGoneFiles", len(out.ProjectedMissing), "firstGone", first(out.ProjectedMissing, 5))
+	}
+}
+
+func first(s []string, n int) []string {
+	return s[:min(n, len(s))]
 }
 
 // changesUnder lists the cached MediaFiles whose mapped path the section
@@ -253,14 +318,16 @@ func (w *Watcher) changesUnder(ctx context.Context, key string) ([]plexproject.C
 		if !ok || s.Key != key {
 			continue
 		}
-		c, ok := w.changeOf(u, mapped)
-		if !ok {
-			c = plexproject.Change{UID: string(u.GetUID()), PlexPath: mapped, SeedKey: SeedKey(u), Unresolved: true}
+		changes, _ := w.changesOf(u, mapped)
+		if len(changes) == 0 {
+			changes = []plexproject.Change{{UID: string(u.GetUID()), PlexPath: mapped, SeedKey: SeedKey(u), Unresolved: true}}
 		}
-		if ids, ok := w.provisioned(key); ok {
-			c.Location = ids.locationFor(mapped)
+		for _, c := range changes {
+			if ids, ok := w.provisioned(key); ok {
+				c.Location = ids.locationFor(mapped)
+			}
+			out = append(out, c)
 		}
-		out = append(out, c)
 	}
 	return out, nil
 }
@@ -291,7 +358,8 @@ func (w *Watcher) NeedsRefresh(id int64) {
 }
 
 // filesOfItem lists the cached MediaFiles an item's chain reads: a
-// movie's or an episode's by mediaRef, a show's by the files' seriesRef.
+// movie's or an episode's by mediaRef -- an episode's also by the keys of a
+// multi-episode file that holds it -- a show's by the files' seriesRef.
 func (w *Watcher) filesOfItem(plexType, name string) []*unstructured.Unstructured {
 	if w.files == nil {
 		return nil
@@ -314,6 +382,10 @@ func (w *Watcher) filesOfItem(plexType, name string) []*unstructured.Unstructure
 			}
 		} else {
 			match = strings.EqualFold(k, plexType) && n == name
+			if !match && plexType == "episode" && strings.EqualFold(k, "episode") {
+				keys, _, _ := unstructured.NestedStringSlice(u.Object, mediaRefKeysField...)
+				match = slices.Contains(keys, name)
+			}
 		}
 		if match {
 			out = append(out, u)

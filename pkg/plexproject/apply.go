@@ -32,6 +32,9 @@ type Projector struct {
 	Now     func() time.Time
 	Refresh Refresher
 	Logger  *slog.Logger
+	// Files is the disk the sweep asks whether a file is gone; nil
+	// sweeps nothing.
+	Files Files
 }
 
 // Change is one MediaFile as the projection needs it.
@@ -65,7 +68,7 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	defer func() { _ = tx.Rollback(ctx) }()
 	now := p.now()
 
-	f, have, err := findMedia(ctx, tx, section, c.UID, c.PlexPath)
+	f, have, err := findMedia(ctx, tx, section, c.UID, c.PlexPath, c.Item.guids())
 	if err != nil {
 		return fmt.Errorf("plexproject: find %s: %w", c.UID, err)
 	}

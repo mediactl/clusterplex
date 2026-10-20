@@ -44,6 +44,10 @@ type Metrics struct {
 	// SeedFiles counts the seeder's outcomes per file (pkg/plexseed): seeded,
 	// unmatched (Plex has no part for it) or error.
 	SeedFiles *prometheus.CounterVec
+	// ProjectionMissingFiles counts what the projection's sweeps did with
+	// files that are gone (pkg/plexproject.Sweep), by action: removed,
+	// revived, or projected (clustarr names a file that is not there).
+	ProjectionMissingFiles *prometheus.CounterVec
 	// Activity is what Tautulli would report about this pod's Plex: its
 	// streams, plays, watch time, library and version (pkg/plex/activity).
 	Activity *activity.Monitor
@@ -102,6 +106,10 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Name: "clusterplex_seed_files_total",
 			Help: "Files the seeder wrote clustarr's streams and markers for into Plex, by outcome: seeded, unmatched or error",
 		}, []string{"outcome"}),
+		ProjectionMissingFiles: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_projection_missing_files_total",
+			Help: "Gone files the projection's sweeps found, by action: removed (a row Plex scanned, taken off its item), revived (its file came back) or projected (a clustarr MediaFile naming a file that is not there, left)",
+		}, []string{"action"}),
 		ClustarrUnmappable: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "clusterplex_clustarr_unmappable_paths_total",
 			Help: "clustarr file paths no pathMapping covers, dropped",

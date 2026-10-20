@@ -43,8 +43,11 @@ type found struct {
 }
 
 // findMedia looks a MediaFile's row up by its stamp, then adopts a
-// stamp-less row at its path (one Plex's scanner made before this design).
-func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath string) (found, bool, error) {
+// stamp-less row at its path (one Plex's scanner made before this design),
+// preferring one already on an item with one of the guids in prefer: Plex
+// keeps a multi-episode file as one row per episode at the same path, and
+// each episode adopts its own.
+func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath string, prefer []string) (found, bool, error) {
 	var f found
 	var extra string
 	err := tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, ''), coalesce(mp.file, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
@@ -54,7 +57,9 @@ func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath stri
 		f.adopted = true
 		err = tx.QueryRow(ctx, `SELECT mi.id, mp.id, mi.metadata_item_id, coalesce(mi.extra_data, ''), coalesce(mp.file, '') FROM media_items mi JOIN media_parts mp ON mp.media_item_id = mi.id
 			WHERE mi.library_section_id = $1 AND mi.deleted_at IS NULL AND mp.deleted_at IS NULL AND mp.file = $2
-			AND coalesce(mi.extra_data, '') NOT LIKE '%"cp:mediaFile":%' ORDER BY mi.id LIMIT 1`, section, plexPath).Scan(&f.media, &f.part, &f.item, &extra, &f.file)
+			AND coalesce(mi.extra_data, '') NOT LIKE '%"cp:mediaFile":%'
+			ORDER BY mi.metadata_item_id IN (SELECT id FROM metadata_items WHERE library_section_id = $1 AND guid = ANY($3)) DESC, mi.id LIMIT 1`,
+			section, plexPath, prefer).Scan(&f.media, &f.part, &f.item, &extra, &f.file)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return found{}, false, nil

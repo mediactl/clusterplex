@@ -39,6 +39,9 @@ var (
 	// the file's untagged audio is in. A MediaFile carries no seriesRef:
 	// the contract test found the watcher reading one there (2026-10-15).
 	mediaRefNameField = []string{"spec", "mediaRef", "name"}
+	// mediaRefKeysField lists every episode a multi-episode file holds;
+	// the projection puts the file on each (pkg/plexproject.ResolveCovered).
+	mediaRefKeysField = []string{"spec", "mediaRef", "keys"}
 	seriesRefField    = []string{"spec", "seriesRef"}
 	// The projection's episode fields (pkg/plexproject.Resolve).
 	seasonNumberField     = []string{"spec", "seasonNumber"}
@@ -78,7 +81,7 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 	}
 	switch gvr {
 	case MediaFiles:
-		return [][]string{pathField, kindField, mediaRefNameField, sizeField, modTimeField, probeField, probeHashField, markersField}
+		return [][]string{pathField, kindField, mediaRefNameField, mediaRefKeysField, sizeField, modTimeField, probeField, probeHashField, markersField}
 	case Movies:
 		return item
 	case Series:

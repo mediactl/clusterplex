@@ -25,6 +25,7 @@ type recordingProjector struct {
 	applied    []applied
 	deleted    []deleted
 	reconciled []reconciled
+	swept      []swept
 	events     []string // "apply:<uid>" and "delete:<uid>", in order
 	refresher  plexproject.Refresher
 }
@@ -75,6 +76,24 @@ func (r *recordingProjector) Reconcile(_ context.Context, section, _ int64, fold
 	defer r.mu.Unlock()
 	r.reconciled = append(r.reconciled, reconciled{section, folder, want})
 	return plexproject.Outcome{}, nil
+}
+
+type swept struct {
+	section int64
+	scope   plexproject.SweepScope
+}
+
+func (r *recordingProjector) Sweep(_ context.Context, section int64, scope plexproject.SweepScope) (plexproject.SweepOutcome, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.swept = append(r.swept, swept{section, scope})
+	return plexproject.SweepOutcome{}, nil
+}
+
+func (r *recordingProjector) Swept() []swept {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]swept(nil), r.swept...)
 }
 
 func (r *recordingProjector) Applied() []applied {

@@ -175,7 +175,12 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		// and media rows with them, written by the projection; Plex's
 		// scanner never runs for those sections.
 		seeder := &plexseed.Seeder{DB: m.pool, Libraries: m.Config.Provision.LibraryNames()}
-		w.Projection = &plexproject.Projector{DB: m.pool, Seeder: seeder, Refresh: w, Logger: m.Logger.With("component", "projection")}
+		// Files is the library as this pod mounts it, where Plex reads it:
+		// the sweep takes a file Plex scanned that is gone off its item.
+		w.Projection = &plexproject.Projector{
+			DB: m.pool, Seeder: seeder, Refresh: w, Logger: m.Logger.With("component", "projection"),
+			Files: &plexproject.DiskFiles{},
+		}
 		if len(m.Config.Provision.Libraries) > 0 {
 			// Provisioning reports the sections it owns. Until it has,
 			// a change in a clustarr library waits rather than reaching
@@ -186,6 +191,9 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		w.Counters.Seeded = func() { m.Metrics.SeedFiles.WithLabelValues("seeded").Inc() }
 		w.Counters.SeedUnmatched = func() { m.Metrics.SeedFiles.WithLabelValues("unmatched").Inc() }
 		w.Counters.SeedErrors = func() { m.Metrics.SeedFiles.WithLabelValues("error").Inc() }
+		w.Counters.Missing = func(action string, n int) {
+			m.Metrics.ProjectionMissingFiles.WithLabelValues(action).Add(float64(n))
+		}
 	}
 	m.mu.Lock()
 	m.watcher = w

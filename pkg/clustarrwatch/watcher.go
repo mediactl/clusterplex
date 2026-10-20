@@ -38,6 +38,11 @@ type Counters struct {
 	Seeded        func()
 	SeedUnmatched func()
 	SeedErrors    func()
+	// Missing counts what the projection's sweeps did with files that are
+	// gone, by action: removed (a row Plex's scanner made, taken off its
+	// item), revived (one whose file came back) and projected (a row the
+	// projection wrote whose MediaFile names a file that is not there).
+	Missing func(action string, n int)
 }
 
 // Watcher follows one clustarr namespace and tells one Plex what changed.
@@ -88,6 +93,10 @@ type Watcher struct {
 	// in it is not provisioned and keeps the folder-refresh path.
 	Projection Projection
 	Sections   func() map[string]SectionIDs
+	// SweepDelay is how long after Plex finished refreshing an item its
+	// sweep waits, so a burst of refreshes sweeps each item once (default
+	// 10s). The watcher follows Plex's notification stream for them.
+	SweepDelay time.Duration
 
 	sched *Scheduler
 	ctx   context.Context
@@ -97,6 +106,9 @@ type Watcher struct {
 	projMu       sync.Mutex
 	removals     map[string]removal
 	sectionLocks map[string]*sync.Mutex
+	// sweeps are the items Plex refreshed, by section key and item id,
+	// each due at its time.
+	sweeps map[sweepKey]time.Time
 	// synced is set once the informers have synced: a reconcile before
 	// that would read an empty library (review C4). hadSections records
 	// the sections becoming known, which releases the files that waited.
@@ -199,6 +211,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 		return ctx.Err()
 	}
 	w.synced.Store(true)
+	if w.Projection != nil && w.PMS != nil {
+		go w.followRefreshes(ctx)
+	}
 	caughtUp := false
 	var nextResync time.Time // zero: seed everything on the first tick
 	resync := w.SeedResync
@@ -240,6 +255,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 				// between the two (review C2).
 				w.flushSeeds(ctx)
 				w.flushRemovals(ctx)
+				w.flushSweeps(ctx)
 			case w.Seed != nil:
 				if now := time.Now(); !now.Before(nextResync) {
 					for _, obj := range files.GetStore().List() {

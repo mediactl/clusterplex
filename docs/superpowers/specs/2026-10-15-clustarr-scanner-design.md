@@ -162,6 +162,38 @@ the folder. Database side: every live row of the section with its
 A full reconcile reads the section's rows in one query and the cache in
 memory; on the owner's library (about 14,000 files) that is seconds.
 
+**Multi-episode files (2026-10-20).** A file holding several episodes is on
+each of them, as Plex's own scanner puts it: one media row and part per
+episode, all at the one path. The row on the episode `spec.mediaRef.name`
+names carries the file's UID; the row on each other episode in
+`spec.mediaRef.keys` carries `<uid>#<episode>` (`plexproject.CoveredUID`).
+Adoption prefers a stamp-less row already on the change's own item, so
+each episode takes its own of Plex's rows. Before, only the first episode
+was projected, and a transcode that renamed the file left the others on
+parts whose file was gone (talos: 11 such episodes).
+
+**Gone files (2026-10-20).** Plex removes no gone file on a refresh, and
+its scanner no longer runs here, so the reconcile sweeps after it
+(`plexproject.Projector.Sweep`, the section or the scan's folder), and so
+does every item Plex finishes refreshing: the watcher follows Plex's
+`/:/eventsource/notifications` for library timeline entries in state 5,
+which every client's refresh produces, TLS ones the proxy cannot see
+included, and sweeps the item and those under it 10 s after the last.
+
+- Only a row with no `cp:mediaFile` stamp, one Plex's scanner made, is
+  removed: soft-deleted with its parts as §7 does, stamped `cp:missing`, its
+  item trashed if nothing is left, its item's `updated_at` moved if it keeps
+  a file. The `empty-trash` CronJob purges it.
+- A projected row whose file is gone is never removed -- clustarr's
+  MediaFile is wrong, and the next apply would put the row back -- only
+  counted (`clusterplex_projection_missing_files_total{action="projected"}`)
+  and logged.
+- Nothing under a location root that does not list at least one entry is
+  judged (an NFS mount that is not there looks like that); a stat that
+  errs leaves its row; one that does not answer in 10 s stops the sweep.
+- A `cp:missing` row whose file is back is put back, with its parts, its
+  item and every parent it trashed, until the trash is emptied.
+
 ## 9. Ordering and safety
 
 - All writes run on the lease holder, through one queue per section.
