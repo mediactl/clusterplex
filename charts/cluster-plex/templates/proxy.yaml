@@ -34,6 +34,18 @@ spec:
               app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
               app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: proxy
+      {{- with .Values.proxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: proxy
           image: {{ include "cluster-plex.image" . }}

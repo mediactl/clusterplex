@@ -31,6 +31,18 @@ spec:
           # Never, so a failed attempt's pod and its log stay with the Job
           # (failedJobsHistoryLimit) rather than being deleted with it.
           restartPolicy: Never
+          {{- with $.Values.maintenance.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.maintenance.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.maintenance.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           containers:
             - name: trigger
               image: {{ include "cluster-plex.image" $ }}

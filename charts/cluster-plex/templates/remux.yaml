@@ -17,6 +17,18 @@ spec:
       labels: {app: plex-remux, app.kubernetes.io/instance: {{ .Release.Name }}}
     spec:
       securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, runAsNonRoot: true}
+      {{- with .Values.remux.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.remux.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.remux.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: remux
           image: {{ .Values.remux.image.repository }}:{{ .Values.remux.image.tag | default .Chart.AppVersion }}

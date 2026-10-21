@@ -220,6 +220,11 @@ service:
 # follows the advertisement reaches the proxy.
 proxy:
   enabled: false
+  # Scheduling, as plex's: clustarr's control-plane placement design
+  # (2026-10-21, §5.5) holds these pods to its workers.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   # THROUGHPUT SCALES WITH NODES, NOT REPLICAS: spreading these across nodes is
   # what raises the ceiling, so they are spread one per node and stay Pending
   # beyond the node count.
@@ -268,6 +273,11 @@ storage:
 # these CronJobs drive it instead. A schedule change is a values change.
 maintenance:
   enabled: true
+  # Scheduling, as plex's: clustarr's control-plane placement design
+  # (2026-10-21, §5.5) holds these pods to its workers.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   # Held to k8s/base/maintenance.yaml by test/manifests. No analysis is
   # scheduled: clustarr probes the media and seeds streams and markers
   # (ADR 0006), and GenerateBIFBehavior is never, so analyze and media-index
@@ -312,6 +322,11 @@ postgres:
 # browser stream stays on Plex's transcoder.
 remux:
   enabled: true
+  # Scheduling, as plex's: clustarr's control-plane placement design
+  # (2026-10-21, §5.5) holds these pods to its workers.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   image:
     repository: ghcr.io/mediactl/cluster-plex-remux
     tag: ""
