@@ -46,11 +46,18 @@ copies each finished load into the guide's schema (`ImportGuide`, polled every
   holds 122 migrations (to `20181210190600`) and 71 tables. PMS migrates
   each load to the 442 the library holds, deciding by
   `select version from schema_migrations order by version`.
-- **The shim runs every statement in autocommit.** `BEGIN`, `COMMIT`,
-  `ROLLBACK` and `SAVEPOINT` are skipped (`pg_config.rs`,
-  `should_skip_sql_str`), so each INSERT of a load is its own commit. talos's
-  library database runs `synchronous_commit = on`, so each one waits for a
-  WAL flush.
+- **The shim forwards PMS's transactions** (`pg_client/txn.rs`, since
+  2026-10-16, `PLEX_PG_TRANSACTIONS`, which talos leaves on), on a guide
+  handle's own connection too. So a load commits once per transaction PMS
+  makes, not once per row. `should_skip_sql_str` still lists `BEGIN` and
+  `COMMIT`; that comment predates the forwarding. On talos a commit's WAL
+  flush costs about 0.43 ms. On 2026-10-21, 1,000 single-message
+  transactions took 601-634 ms with `synchronous_commit = on` and 172 ms
+  with it off. The database is on local-path SSD, on Plex's node.
+- **A statement PostgreSQL refuses inside one of PMS's transactions aborts
+  the whole transaction**, where SQLite carries on. The shim makes no
+  savepoint per statement, so one translation gap in a load loses the batch
+  around it.
 - **The copy path already uses `COPY`**, in one transaction with user
   triggers held off. Its schema swap renames schemas, which locks none of
   their tables, so the cutover never queues behind a reader. Only the later
@@ -94,7 +101,7 @@ copies each finished load into the guide's schema (`ImportGuide`, polled every
      connection, the file's device and inode, and an open-handle count.
 3. Every open of the path while the load is registered binds to its staging
    schema. Each handle's own connection runs with `search_path` set to the
-   staging schema and `synchronous_commit = off`. `handle_schema` and
+   staging schema (and `synchronous_commit = off`, if kept; below). `handle_schema` and
    `apply_pg_session_settings`, which today derive the schema from the path,
    ask the load registry first, so a reconnect mid-load stays in staging.
 4. **Fail closed.** With no `PLEX_PG_GUIDE_SHADOW` file, no PostgreSQL, a
@@ -103,10 +110,12 @@ copies each finished load into the guide's schema (`ImportGuide`, polled every
 
 PMS reads `schema_migrations` from staging, finds all 442, and runs none of
 the ~320 migrations it runs on each load today. `synchronous_commit = off`
-removes the WAL-flush wait from every autocommitted INSERT. A PostgreSQL
-crash can lose at most the last ~0.6 s of commits (three times the default
-`wal_writer_delay`), and a load that lost its connection is never swapped
-(next section).
+saves about 0.43 ms per commit. That is at most ~5.5 s even if each of a
+load's ~12,800 rows were committed alone, and next to nothing if PMS batches
+them. It is kept only if the rig shows PMS committing row by row. A
+PostgreSQL crash could then lose at most the last ~0.6 s of commits (three
+times the default `wal_writer_delay`), and a load that lost its connection
+is never swapped (next section).
 
 ### The shim: the swap, at `rename()`
 
@@ -258,7 +267,7 @@ with no SQLite phase and no restart.
 - **The rename hook runs in every process the shim loads into**, the
   Transcoder and Scanner included. It must cost one atomic load when no load
   is registered.
-- **Statements PMS rolls back stay in staging,** because the shim runs in
-  autocommit. The library already has this property. A load PMS abandons is
-  never swapped, but a load it rolls back partly and still renames would be.
-  The rig's row comparison (check 1) is the guard.
+- **A refused statement loses its whole batch.** PostgreSQL aborts the
+  transaction it is in, and the library has had this property since
+  2026-10-16. A load that lost a batch and is still renamed would be swapped
+  in short. The rig's row comparison (check 1) is the guard.
