@@ -221,17 +221,39 @@ type sweepRow struct {
 	projected, removed bool
 }
 
-func (p *Projector) sweepRows(ctx context.Context, section, item int64) ([]sweepRow, error) {
-	rows, err := p.DB.Query(ctx, `SELECT mi.id, mi.metadata_item_id, coalesce(mi.extra_data, ''), mi.deleted_at IS NOT NULL,
+// sweepColumns and sweepFilter are what both sweep queries select and
+// keep of a media row: its files, and whether it is live or one the sweep
+// removed.
+const (
+	sweepColumns = `mi.id, mi.metadata_item_id, coalesce(mi.extra_data, ''), mi.deleted_at IS NOT NULL,
 		coalesce((SELECT array_agg(mp.file ORDER BY mp.id) FROM media_parts mp
-			WHERE mp.media_item_id = mi.id AND coalesce(mp.file, '') <> '' AND (mp.deleted_at IS NULL OR mi.deleted_at IS NOT NULL)), '{}')
-		FROM media_items mi
-		WHERE mi.library_section_id = $1
-		AND (mi.deleted_at IS NULL OR mi.extra_data LIKE '%"`+MissingKey+`":%')
-		AND ($2::bigint = 0 OR mi.metadata_item_id IN (
-			WITH RECURSIVE under(id) AS (SELECT $2::bigint UNION SELECT m.id FROM metadata_items m JOIN under ON m.parent_id = under.id)
-			SELECT id FROM under))
-		ORDER BY mi.id`, section, item)
+			WHERE mp.media_item_id = mi.id AND coalesce(mp.file, '') <> '' AND (mp.deleted_at IS NULL OR mi.deleted_at IS NOT NULL)), '{}')`
+	sweepFilter = `mi.library_section_id = $1 AND (mi.deleted_at IS NULL OR mi.extra_data LIKE '%"` + MissingKey + `":%')`
+)
+
+// sweepRows lists the media rows a sweep judges: the section's, or with
+// item the rows of item and the items under it. One query for both, "$2 =
+// 0 OR ... IN (subtree)", is a statement the connection keeps, and its
+// generic plan listed the whole section and filtered the subtree out of
+// it -- every sweep, one per item Plex refreshes (talos, 2026-10-21). An
+// item's query walks its subtree and looks each item's rows up: both steps
+// are LATERAL, and OFFSET 0 keeps the planner from flattening the lookup
+// back into a join it would drive from the section's index.
+func (p *Projector) sweepRows(ctx context.Context, section, item int64) ([]sweepRow, error) {
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if item == 0 {
+		rows, err = p.DB.Query(ctx, `SELECT `+sweepColumns+` FROM media_items mi WHERE `+sweepFilter+` ORDER BY mi.id`, section)
+	} else {
+		rows, err = p.DB.Query(ctx, `WITH RECURSIVE under(id) AS (
+				SELECT $2::bigint
+				UNION SELECT c.id FROM under CROSS JOIN LATERAL (SELECT m.id FROM metadata_items m WHERE m.parent_id = under.id) c)
+			SELECT `+sweepColumns+` FROM under CROSS JOIN LATERAL (
+				SELECT mi.* FROM media_items mi WHERE mi.metadata_item_id = under.id AND `+sweepFilter+` OFFSET 0) mi
+			ORDER BY mi.id`, section, item)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("plexproject: list section %d for the sweep: %w", section, err)
 	}

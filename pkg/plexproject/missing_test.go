@@ -193,6 +193,55 @@ func TestAnItemOrFolderSweepLooksOnlyThere(t *testing.T) {
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND deleted_at IS NOT NULL", rowB))
 }
 
+// libraryRowsRead is how many media_items and metadata_items rows this
+// database's scans have returned, this connection's own included: each
+// read forces its pending statistics out first.
+func libraryRowsRead(t *testing.T, conn *pgx.Conn) int64 {
+	t.Helper()
+	ctx := context.Background()
+	_, err := conn.Exec(ctx, "SELECT pg_stat_force_next_flush()")
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, "SELECT pg_stat_clear_snapshot()")
+	require.NoError(t, err)
+	var n int64
+	require.NoError(t, conn.QueryRow(ctx, `SELECT sum(coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0))::bigint
+		FROM pg_stat_user_tables WHERE relname IN ('media_items', 'metadata_items')`).Scan(&n))
+	return n
+}
+
+// An item's sweep -- one for every item Plex refreshes -- reads that
+// item's rows, not its section's. Each sweep's query is a statement
+// the connection keeps, so it runs its generic plan, and that plan listed
+// the whole section by library_section_id and filtered the subtree out of
+// it: on talos (2026-10-21) about 3,300 rows a sweep, 9.2 million a minute
+// while Plex refreshed shows, and library pages took 3-14 s behind it.
+func TestAnItemSweepReadsOnlyItsItemsRows(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "TV "+t.Name(), 2, "/media/tv")
+	ctx := context.Background()
+	p := sweeper(conn, &fakeFiles{})
+	a := episodeItem("sa", 1, "ea", 1)
+	require.NoError(t, p.Apply(ctx, section, loc, change("fa", "/media/tv/A (2010)/Season 01/A.mkv", "k1", a)))
+	_, err := conn.Exec(ctx, `INSERT INTO media_items (library_section_id, section_location_id, created_at, updated_at)
+		SELECT $1, $2, 0, 0 FROM generate_series(1, 3000)`, section, loc)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, `INSERT INTO metadata_items (library_section_id, metadata_type, created_at, updated_at)
+		SELECT $1, 4, 0, 0 FROM generate_series(1, 3000)`, section)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, "ANALYZE media_items, metadata_items")
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, "SET plan_cache_mode = force_generic_plan")
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "RESET plan_cache_mode") })
+
+	show := itemByGUID(t, conn, section, a.Chain[0].GUID)
+	before := libraryRowsRead(t, conn)
+	out, err := p.Sweep(ctx, section, SweepScope{Item: show})
+	require.NoError(t, err)
+	require.Equal(t, 1, out.Checked, "the show's one file is judged")
+	require.Less(t, libraryRowsRead(t, conn)-before, int64(100), "the sweep read its section's thousands of rows")
+}
+
 // Without a file checker the projection sweeps nothing.
 func TestASweepWithoutFilesDoesNothing(t *testing.T) {
 	conn := plexDB(t)
