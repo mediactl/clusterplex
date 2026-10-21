@@ -118,14 +118,39 @@ func FileOf(u *unstructured.Unstructured) (File, bool) {
 	return File{Path: p, Kind: k, SizeBytes: size, ModTime: mod}, true
 }
 
+// rewritten is what every metadata refresh in clustarr rewrites under a
+// shown field without changing what Plex shows: when it was fetched, the
+// document's schema, the ratings' drifting votes and scores, and when and
+// from what the overlay was last rendered. A changed rating that changes
+// the poster still moves the overlay's digest. Hashing these made each
+// routine refresh of a Series a whole-show refresh in Plex (2026-10-21).
+var rewritten = map[string][]string{
+	"status.metadata": {"refreshedAt", "schemaVersion", "ratings"},
+	"status.overlay":  {"updatedAt", "renderedFrom"},
+}
+
 // MetadataHash hashes what Plex shows of an item. encoding/json sorts map
 // keys, so equal content hashes equal.
 func MetadataHash(u *unstructured.Unstructured) string {
 	keep := map[string]any{}
 	for _, f := range shown {
-		if v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...); ok {
-			keep[strings.Join(f, ".")] = v
+		v, ok, _ := unstructured.NestedFieldNoCopy(u.Object, f...)
+		if !ok {
+			continue
 		}
+		key := strings.Join(f, ".")
+		if m, isMap := v.(map[string]any); isMap && len(rewritten[key]) > 0 {
+			// A shallow copy: the informer's cached object is not ours to edit.
+			c := make(map[string]any, len(m))
+			for k, x := range m {
+				c[k] = x
+			}
+			for _, k := range rewritten[key] {
+				delete(c, k)
+			}
+			v = c
+		}
+		keep[key] = v
 	}
 	b, _ := json.Marshal(keep)
 	sum := sha256.Sum256(b)

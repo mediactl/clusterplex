@@ -52,6 +52,35 @@ func TestMetadataHashMovesOnlyWithWhatPlexShows(t *testing.T) {
 	assert.NotEqual(t, before, clustarrwatch.MetadataHash(changed))
 }
 
+// Every metadata refresh in clustarr rewrites status.metadata.refreshedAt,
+// and most move a rating's votes or score: on 2026-10-21 that made each
+// routine refresh of a Series a whole-show refresh in Plex -- every season
+// and episode read again from the provider -- 76 shows in an hour, and
+// library pages took 3-14 s behind them. What every refresh rewrites is not
+// a change Plex shows; a new poster still is.
+func TestMetadataHashIgnoresWhatEveryRefreshRewrites(t *testing.T) {
+	movie := load(t, "movie.yaml")
+	require.NoError(t, unstructured.SetNestedField(movie.Object, int64(4), "status", "metadata", "schemaVersion"))
+	require.NoError(t, unstructured.SetNestedMap(movie.Object, map[string]any{
+		"digest": "a91ee21e", "profileRef": "metascore", "renderedFrom": "1f11b248", "updatedAt": "2026-10-15T03:48:59Z",
+	}, "status", "overlay"))
+	before := clustarrwatch.MetadataHash(movie)
+
+	refreshed := movie.DeepCopy()
+	require.NoError(t, unstructured.SetNestedField(refreshed.Object, "2026-10-21T00:20:35Z", "status", "metadata", "refreshedAt"))
+	require.NoError(t, unstructured.SetNestedField(refreshed.Object, int64(5), "status", "metadata", "schemaVersion"))
+	require.NoError(t, unstructured.SetNestedSlice(refreshed.Object, []any{
+		map[string]any{"source": "imdb", "valueCentis": int64(713), "votes": int64(3401)},
+	}, "status", "metadata", "ratings"))
+	require.NoError(t, unstructured.SetNestedField(refreshed.Object, "2026-10-21T00:21:02Z", "status", "overlay", "updatedAt"))
+	require.NoError(t, unstructured.SetNestedField(refreshed.Object, "9c0de4aa", "status", "overlay", "renderedFrom"))
+	assert.Equal(t, before, clustarrwatch.MetadataHash(refreshed), "a refresh that changed nothing Plex shows")
+
+	reposted := movie.DeepCopy()
+	require.NoError(t, unstructured.SetNestedField(reposted.Object, "77b0c1d2", "status", "overlay", "digest"))
+	assert.NotEqual(t, before, clustarrwatch.MetadataHash(reposted), "a new poster is a change")
+}
+
 func TestTrimKeepsExactlyWhatTheWatcherReads(t *testing.T) {
 	for _, name := range []string{"mediafile.yaml", "movie.yaml", "episode.yaml"} {
 		u := load(t, name)
