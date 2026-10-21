@@ -77,8 +77,9 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   deliberately idle. See ADR-0004.
 - **Plex's state is split, and the split is load-bearing.** Shared on the
   ReadWriteMany claim: `Preferences.xml`, `Metadata/`, `Media/`, `Cache/`.
-  Per-pod on an `emptyDir`: `Plug-in Support/Databases/` (the shim's shadow,
-  rebuilt every start), `Logs/`, and the transcode directory. Sharing one of
+  Per-pod on an `emptyDir`: `Plug-in Support/Databases/` (the shim's shadows,
+  rebuilt every start; the Live TV guides' too, each served from a schema
+  `epg_<DVR uuid>` of its own), `Logs/`, and the transcode directory. Sharing one of
   the per-pod ones corrupts the library rather than failing loudly.
 - **Plex's `Preferences.xml` is merged, never regenerated, and under a lock.**
   It holds the server identity and the plex.tv token, which cannot be
@@ -232,6 +233,15 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
     the only call that ends a grab.
   - Two calls that don't: `DELETE /livetv/sessions/<id>` is 404, and a
     stopped timeline only counts from the grab's own client.
+- **PMS loads a Live TV guide into a file of its own and renames it into
+  place.** A guide reload copies Plex's bundled database to
+  `<guide>-loading.db`, fills it, and renames it onto the guide's file
+  (talos, 2026-10-21: the guide file was born when the load began). The shim
+  goes by file name, so a load never reaches the guide's schema on its own.
+  The manager copies each load in (`plexbootstrap.ImportGuide`,
+  `cmd/manager/guides.go`): a staging schema, swapped in by renaming, so PMS
+  never waits on the swap. See "The guide, in PostgreSQL" in
+  `docs/configuration.md`.
 - **Live TV's "Could not tune channel" can be a missing audio decoder,
   not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
   decoders, among others. PMS downloads each into `Codecs/<transcoder

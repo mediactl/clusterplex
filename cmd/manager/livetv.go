@@ -50,6 +50,8 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 		},
 		Logger: log,
 		Record: func(e plexlivetv.Event) { recordLiveTVEvent(recorder, e) },
+		// The shim serves each guide from its schema (guides.go).
+		GuideEmpty: m.guideEmpty,
 	}
 	changes, unsubscribe := m.liveTV.subscribe()
 	defer unsubscribe()

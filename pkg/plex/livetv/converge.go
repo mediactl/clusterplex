@@ -152,6 +152,14 @@ type Converger struct {
 	PMSStarted func() time.Time
 	Logger     *slog.Logger
 	Record     func(Event)
+	// GuideEmpty reports a DVR's guide holding no airings; nil skips the
+	// check. A guide's schema is empty after its first start
+	// (docs/superpowers/specs/2026-10-20-epg-in-postgresql-design.md), and
+	// a pod's SQLite guide after its pod is replaced, while the Lease note
+	// still says the guide was loaded, so nothing else would reload it.
+	GuideEmpty func(ctx context.Context, dvrUUID string) (bool, error)
+	// Now is the clock; nil is time.Now.
+	Now func() time.Time
 
 	mu sync.Mutex
 	// saved is, by device id, the lineup and guide hashes last sent to PMS.
@@ -165,6 +173,19 @@ type Converger struct {
 	held map[string]heldLease
 	// stale is, by device id, the devices staleList asked a restart for.
 	stale map[string]staleDVR
+	// emptyReloaded is, by device id, when an empty guide was last
+	// reloaded: a guide its feed leaves empty is tried again only hourly.
+	emptyReloaded map[string]time.Time
+}
+
+// emptyGuideRetry is how soon an empty guide is reloaded again.
+const emptyGuideRetry = time.Hour
+
+func (c *Converger) now() time.Time {
+	if c.Now == nil {
+		return time.Now()
+	}
+	return c.Now()
 }
 
 type heldLease struct {
@@ -263,6 +284,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	defer c.mu.Unlock()
 	if c.saved == nil {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
+		c.emptyReloaded = map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -572,9 +594,36 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		s.guide = b.GuideHash
 		c.saved[id] = s
 		c.note(ctx, p, id, dvr.Key, s)
+	} else if c.emptyGuide(ctx, id, dvr) {
+		if err := c.idle(ctx, ps); err != nil {
+			return c.wait(p, b, "reload the empty guide", err)
+		}
+		if err := c.PMS.ReloadGuide(ctx, string(dvr.Key)); err != nil {
+			return fmt.Errorf("reload the empty guide: %w", err)
+		}
+		ps.guideBusy = true
+		c.emptyReloaded[id] = c.now()
+		c.log("Live TV: reloaded a guide that held no airings", "block", b.Start, "dvr", dvr.Key)
 	}
 	delete(c.told, "wait/"+id)
 	return nil
+}
+
+// emptyGuide is whether a DVR's guide holds no airings and was not reloaded
+// for being empty within the last emptyGuideRetry.
+func (c *Converger) emptyGuide(ctx context.Context, id string, dvr plexapi.DVR) bool {
+	if c.GuideEmpty == nil || dvr.UUID == "" {
+		return false
+	}
+	if at, ok := c.emptyReloaded[id]; ok && c.now().Sub(at) < emptyGuideRetry {
+		return false
+	}
+	empty, err := c.GuideEmpty(ctx, dvr.UUID)
+	if err != nil {
+		c.log("Live TV: could not tell whether a guide is empty", "dvr", dvr.Key, "error", err)
+		return false
+	}
+	return empty
 }
 
 // staleList holds back a DVR for a device the database already ties to one

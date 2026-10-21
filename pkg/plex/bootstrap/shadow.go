@@ -309,7 +309,12 @@ func convertValue(v any, dataType string) (any, error) {
 	}
 }
 
-func sqliteColumns(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+// sqlQuerier is a SQLite database or a transaction on one.
+type sqlQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func sqliteColumns(ctx context.Context, db sqlQuerier, table string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, "SELECT name FROM pragma_table_info(?)", table)
 	if err != nil {
 		return nil, err

@@ -658,6 +658,38 @@ which restarts Plex and, if it keeps failing, the pod.
 **The calls** are recorded against the owner's PMS in
 `docs/livetv-pms-calls.md`.
 
+### The guide, in PostgreSQL
+
+To PMS each DVR's guide is a database of its own:
+`Plug-in Support/Databases/tv.plex.providers.epg.<provider>-<DVR uuid>.db`,
+with the library's schema. The shim serves it from the schema
+`epg_<uuid without dashes>` in the library's database. Every pod therefore
+reads one guide, and a replaced pod starts with it. Before this, each pod's
+guide was a SQLite file on its emptyDir. On talos, 2026-10-20, plex-0 read
+"Unknown Airing" on every channel after its pod was replaced.
+
+- **Before each PMS start,** the manager makes the schema of each DVR the
+  library lists, as a copy of the library schema's structure: its tables,
+  sequences, views and triggers, without the spelling-vocabulary triggers.
+  It then replaces the guide's file with a shadow, as it does the library's.
+- **A guide load never passes through the shim.** PMS copies its bundled
+  database to `<guide>-loading.db`, fills it, and renames it onto the
+  guide's file. The shim goes by file name, so the load stays in SQLite.
+- **The manager copies each load into the schema.** Every 30 seconds each
+  pod copies a guide file its PMS changed. The copy fills a staging schema,
+  which then takes the guide schema's name, so PMS reads the old guide or
+  the new one and never waits.
+  - A file holding no airings (the shadow) is not copied.
+  - Nor is a file modified before the schema's last copy, such as another
+    pod's older load.
+  - A load not yet copied when PMS restarts is copied before the shadow
+    replaces it.
+- **A guide with no airings** is reloaded by the lease holder, at most
+  hourly.
+- **A DVR created while PMS runs** gets a SQLite guide, because the shim
+  finds no schema for it. Its first load is copied into a new schema, and
+  this PMS keeps reading the file until it reopens the guide.
+
 ### Grabs no player watches
 
 PMS ends a Live TV grab only when its client reports that playback

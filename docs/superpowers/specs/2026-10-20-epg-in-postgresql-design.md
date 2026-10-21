@@ -1,7 +1,7 @@
 # Live TV's guide in PostgreSQL
 
-Status: proposed, 2026-10-20. Owner asked for the full move ("Do the full
-PostgreSQL move").
+Status: approved by the owner, 2026-10-20 ("Do the full PostgreSQL move").
+Built 2026-10-21, with changes recorded under "As built" below.
 
 ## Problem
 
@@ -155,3 +155,64 @@ reloaded into PostgreSQL. A DVR's creation is rare (once per block).
 - **The 2026-10-16 migration's `plex.`-scoped objects** (collations, `fold`,
   the trigram indexes) must exist per guide schema, or full-text guide
   search fails.
+
+## As built (2026-10-21)
+
+The build departs from the design above in five places. Where they
+disagree, this section is right.
+
+1. **PMS's loads never reach the shim.** A full guide refresh copies Plex's
+   bundled `Resources/com.plexapp.plugins.library.db` to
+   `<guide>-loading.db`. PMS migrates and fills that file, then renames it
+   onto the guide's file. On talos's plex-0 the guide file's birth time was
+   00:22:02.290 on 2026-10-21, the moment of the log's "Installing Library
+   Database … -loading.db". Its `-wal` and `-shm` were born at 00:24:34, when
+   the load ended. clustarr-c2 found this.
+   - The shim goes by file name and never redirects `-loading.db`, so the
+     load stays in SQLite.
+   - The manager copies each load into the schema instead:
+     `plexbootstrap.ImportGuide`, called from `cmd/manager/guides.go`
+     (`copyGuideLoads` runs every 30 s on every pod, and `guideEmpty` copies
+     before it judges).
+   - The copy runs in four steps. A staging schema `epg_<uuid>_next` is
+     cloned from the library. Every table the file and the schema share is
+     copied in, each column through SQLite's `CAST` to its PostgreSQL kind,
+     with user triggers held off. The sequences are reset past the copied
+     rows. Finally the schemas are renamed: the guide schema becomes
+     `_old`, and `_next` takes its name.
+   - Renaming a schema waits on no reader, so PMS never stalls behind a swap.
+     `_old` is dropped under a 5 s lock timeout, or at the next look.
+   - The schema's comment records the copied file's modification time. Only
+     a file that holds airings and is newer than that record is copied.
+   - On talos's real guide (2,385 programmes, 7,157 airings) the copy takes
+     3.7 s, most of it the clone.
+   - `PrepareGuides` copies a load the pod's file still holds before the
+     shadow replaces it.
+2. **No PMS restart when a DVR is created.** The converger no longer asks
+   for one (`GuidesInPostgres` is gone). A new DVR's guide stays SQLite
+   until its first load is copied into a new schema. Other pods read that
+   schema from their next start, which the DVR-change round already causes.
+3. **The schema is copied, not replayed** (`CloneSchema`). It gets the live
+   library schema's structure: tables `LIKE … INCLUDING ALL`, its own
+   sequences with their defaults pointed at them, views, and triggers.
+   Functions, collations and extensions stay `plex.`'s, which the
+   translator names in full. The `spellfix_vocab_add` triggers are left
+   out, because they write into `plex.spellfix_vocab` by name.
+4. **The shim gives each guide handle its own connection,** instead of
+   switching schemas on pooled ones (plex-postgresql 6677276):
+   - only the library and blobs use the shared pool;
+   - a guide's dedicated connection is set to `search_path` `epg_<uuid>`,
+     and so is each of its reconnects;
+   - the result cache key carries the schema;
+   - a guide whose schema is missing stays SQLite (fail closed).
+5. **Shim rule 5, the argv[0] check, was built and then backed out**
+   (plex-postgresql 44b3c47). Nothing here needs it, and it changes which
+   processes get the shim, which nothing has looked into on PMS. The check
+   still reads the text after the command line's last `/`, so a test harness
+   must not pass the shim a path argument: such a process passes everything
+   through to SQLite. talos's subreaper is a static binary, and the shim
+   never loads in it.
+
+Not yet done: the standalone rig run in "Testing" above (a PMS load
+against PostgreSQL), and talos.
+

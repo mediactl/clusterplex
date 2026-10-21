@@ -64,6 +64,11 @@ type Supervisor struct {
 	// and starting Plex anyway would run it with a configuration that differs
 	// from the declared one.
 	Preferences func(ctx context.Context) error
+	// BeforeStart, when set, runs before each start after Preferences: the
+	// Live TV guides' schemas and shadows (prepareGuides), which the shim
+	// reads when PMS opens them. A failure is logged, not fatal: a guide
+	// without its schema stays the SQLite file it was.
+	BeforeStart func(ctx context.Context) error
 	// Proxy, when set, starts before Plex and stops after it.
 	Proxy *proxy.TCP
 	// OnUnexpectedExit is called when Plex exits without Stop having been called.
@@ -107,6 +112,11 @@ func (s *Supervisor) Start(ctx context.Context) error {
 				s.Proxy.Wait()
 			}
 			return fmt.Errorf("apply Plex preferences: %w", err)
+		}
+	}
+	if s.BeforeStart != nil {
+		if err := s.BeforeStart(ctx); err != nil {
+			s.Logger.Warn("prepare before Plex starts", "error", err)
 		}
 	}
 

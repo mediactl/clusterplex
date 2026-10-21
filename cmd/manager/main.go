@@ -109,6 +109,8 @@ type Manager struct {
 	// enabled.
 	liveTV  *liveTVFeed
 	proxies *plexlivetv.ProxySet
+	// guides is what copyGuides has seen of the pod's guide files.
+	guides guideCopies
 
 	mu         sync.RWMutex
 	isReady    bool
@@ -294,6 +296,7 @@ func run() int {
 			// terminate with Plex's own certificate.
 			Divert: scanDiverter(cfg.ScanRoute),
 		},
+		BeforeStart:      m.prepareGuides,
 		OnUnexpectedExit: func(err error) { m.plexLost(err) },
 	}
 	// Losing Plex means restarting Plex, not replacing the pod.
@@ -342,6 +345,9 @@ func run() int {
 		m.startLiveTV(ctx)
 	}
 	m.runPlex(ctx)
+	// Every pod, Live TV managed or not: any DVR's guide is served from
+	// PostgreSQL, and PMS loads it into a SQLite file of its own.
+	go m.copyGuideLoads(ctx)
 	if cfg.LiveTV.Enabled && m.Dynamic != nil {
 		go m.watchLiveTVRestart(ctx)
 		go m.endStaleGrabs(ctx)
