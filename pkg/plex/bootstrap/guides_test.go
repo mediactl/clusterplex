@@ -256,6 +256,7 @@ func TestAGuidePMSLoadedIsCopiedIntoItsSchema(t *testing.T) {
 	assert.Equal(t, libraryRows, one[int](t, conn, "SELECT count(*) FROM plex.metadata_items"), "the library is untouched")
 	assert.Equal(t, vocab, one[int](t, conn, "SELECT count(*) FROM plex.spellfix_vocab"))
 	assert.Equal(t, []string{epg}, schemasLike(t, conn, epg), "no staging schema is left")
+	assertAnalyzed(t, conn, epg)
 
 	imported, err = ImportGuide(ctx, quiet, conn, "plex", testGuide, file)
 	require.NoError(t, err)
@@ -269,6 +270,7 @@ func TestAGuidePMSLoadedIsCopiedIntoItsSchema(t *testing.T) {
 	require.True(t, imported)
 	assert.Equal(t, 2, one[int](t, conn, "SELECT count(*) FROM "+epg+".media_items"))
 	assert.Equal(t, []string{epg}, schemasLike(t, conn, epg))
+	assertAnalyzed(t, conn, epg)
 
 	// Another pod's older load, imported at its start, does not undo it.
 	loadedGuide(t, conn, file, 5)
@@ -277,6 +279,16 @@ func TestAGuidePMSLoadedIsCopiedIntoItsSchema(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, imported)
 	assert.Equal(t, 2, one[int](t, conn, "SELECT count(*) FROM "+epg+".media_items"))
+}
+
+// assertAnalyzed checks that every table of schema has the planner's
+// statistics: a guide is swapped in analyzed, never left to autovacuum.
+func assertAnalyzed(t *testing.T, conn *pgx.Conn, schema string) {
+	t.Helper()
+	tables := one[int](t, conn, "SELECT count(*) FROM pg_stat_user_tables WHERE schemaname = $1", schema)
+	require.Positive(t, tables)
+	assert.Equal(t, tables, one[int](t, conn, "SELECT count(*) FROM pg_stat_user_tables WHERE schemaname = $1 AND last_analyze IS NOT NULL", schema),
+		"every table of the swapped-in guide is analyzed")
 }
 
 // The shadow PrepareGuides builds holds no programmes: there is nothing

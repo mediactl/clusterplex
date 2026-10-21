@@ -499,6 +499,11 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 	}
 	rows, err := copyGuide(ctx, conn, db, staging)
 	if err == nil {
+		if aerr := analyzeSchema(ctx, conn, staging); aerr != nil {
+			// Statistics are not the guide: swap it in without them, and
+			// autovacuum gathers them later.
+			log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
+		}
 		err = swapGuide(ctx, conn, schema, staging, old, modified)
 	}
 	if err != nil {
@@ -755,6 +760,28 @@ func swapGuide(ctx context.Context, conn *pgx.Conn, schema, staging, old string,
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// analyzeSchema gathers the planner's statistics for every table in schema,
+// in one ANALYZE. A schema the clone just made has none, and autovacuum
+// reaches its tables only past a naptime and each table's change threshold,
+// so a guide swapped in without them is planned blind until then.
+func analyzeSchema(ctx context.Context, conn *pgx.Conn, schema string) error {
+	rows, err := conn.Query(ctx, `SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relkind = 'r' ORDER BY 1`, schema)
+	if err != nil {
+		return err
+	}
+	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(tables) == 0 {
+		return err
+	}
+	names := make([]string, len(tables))
+	for i, t := range tables {
+		names[i] = pgx.Identifier{schema, t}.Sanitize()
+	}
+	_, err = conn.Exec(ctx, "ANALYZE "+strings.Join(names, ", "))
+	return err
 }
 
 // dropSchema drops schema if it is there, waiting at most guideLockTimeout
