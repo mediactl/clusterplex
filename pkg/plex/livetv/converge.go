@@ -2,8 +2,9 @@
 // Live TV spec 2026-10-07 §6.1). clustarr splits a provider's channels into
 // blocks of contiguous numbers, because PMS takes at most ~454 channels in
 // one device's channel map; each block is one HDHomeRun device at its own
-// port on a link-local address every Plex pod serves (proxies.go), and one
-// DVR over that block's slice of the guide. The lease holder registers each
+// port on a link-local address every Plex pod serves (proxies.go: an HTTP
+// proxy to the block's device endpoint on clustarr's livetv Service), and
+// one DVR over that block's slice of the guide. The lease holder registers each
 // block it holds the Lease for, creates its DVR, saves its channel map and
 // reloads its guide when they change. It manages only devices on the
 // link-local address or carrying a live block's device id (rule M), and
@@ -89,7 +90,10 @@ type Result struct {
 type Block struct {
 	Start, DeviceID, FriendlyName, GuidePath string
 	LineupHash, GuideHash                    string
-	Port                                     int32
+	// Endpoint is the block's device under its provider's Address: the path
+	// the block's proxy sends every request below.
+	Endpoint string
+	Port     int32
 }
 
 // Provider is an IPTVProvider as the converger needs it.

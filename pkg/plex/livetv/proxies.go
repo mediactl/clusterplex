@@ -1,25 +1,26 @@
 package livetv
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/mediactl/clusterplex/pkg/proxy"
+	"time"
 )
 
-// ProxySet serves every block's port on the link-local address, piping each
-// connection to its provider's livetv Service (Live TV spec §5.0). Every
-// Plex pod runs one, so whichever PMS registered a block, every PMS reaches
-// its device at the same http://<LocalAddress>:<Port>. The proxy is
-// byte-level: the Host header carries the port to the tuner, which routes
-// by it.
+// ProxySet serves every block's port on the link-local address, sending each
+// request below the block's device endpoint on its provider's livetv Service
+// (clustarr 2026-10-20-iptv-xtream-ranges-design.md). Every Plex pod runs
+// one, so whichever PMS registered a block, every PMS reaches its device at
+// the same http://<LocalAddress>:<Port>. The proxy names the port PMS dialled
+// in X-Forwarded-Host and its root in X-Forwarded-Prefix, from which the
+// tuner builds every URL it hands out, so PMS comes back the same way.
 type ProxySet struct {
 	LocalAddress string
 	Logger       *slog.Logger
@@ -30,27 +31,32 @@ type ProxySet struct {
 }
 
 type blockProxy struct {
-	target string
-	tcp    *proxy.TCP
-	cancel context.CancelFunc
+	target string // http://<address><endpoint>
+	srv    *http.Server
+	done   chan struct{}
+}
+
+// target is where a block's port sends its requests: below its endpoint on
+// the provider's address; "" for a block clustarr has not given one.
+func target(p Provider, b Block) string {
+	if p.Address == "" || b.Endpoint == "" {
+		return ""
+	}
+	return "http://" + p.Address + b.Endpoint
 }
 
 // Apply makes the listeners exactly the blocks' ports. A listener whose
 // port and target are unchanged is left alone, so open streams survive; a
 // port that cannot be bound is reported and tried again on the next Apply.
-// Two providers claiming one port is clustarr's to prevent; here the first
-// in name order keeps it.
 func (s *ProxySet) Apply(providers []Provider) error {
 	want := map[int32]string{}
 	providers = slices.Clone(providers)
 	slices.SortFunc(providers, func(a, b Provider) int { return strings.Compare(a.key(), b.key()) })
 	for _, p := range providers {
-		if p.Address == "" {
-			continue
-		}
 		for _, b := range p.Blocks {
-			if _, dup := want[b.Port]; b.Port > 0 && !dup {
-				want[b.Port] = p.Address
+			to := target(p, b)
+			if _, dup := want[b.Port]; b.Port > 0 && to != "" && !dup {
+				want[b.Port] = to
 			}
 		}
 	}
@@ -76,20 +82,54 @@ func (s *ProxySet) Apply(providers []Provider) error {
 			continue
 		}
 		listen := net.JoinHostPort(s.localAddress(), strconv.Itoa(int(port)))
-		ctx, cancel := context.WithCancel(context.Background())
-		tcp := &proxy.TCP{Listen: listen, Target: want[port], Logger: s.log().With("component", "livetv-proxy", "port", port)}
-		if _, err := tcp.Start(ctx); err != nil {
-			cancel()
+		ln, err := net.Listen("tcp", listen)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("listen %s: %w", listen, err))
 			continue
 		}
-		s.running[port] = &blockProxy{target: want[port], tcp: tcp, cancel: cancel}
+		bp := &blockProxy{target: want[port], done: make(chan struct{})}
+		bp.srv = &http.Server{
+			Handler:           blockHandler(want[port], s.log().With("component", "livetv-proxy", "port", port)),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       90 * time.Second,
+		}
+		go func() {
+			defer close(bp.done)
+			if err := bp.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.log().Warn("livetv: a block's proxy stopped", "listen", listen, "error", err)
+			}
+		}()
+		s.running[port] = bp
 		s.log().Info("livetv: a block's proxy is listening", "listen", listen, "target", want[port])
 	}
 	return errors.Join(errs...)
 }
 
-// Ports is the ports being served, in order.
+// blockHandler sends every request below to, unbuffered: a stream is
+// written as it arrives.
+func blockHandler(to string, log *slog.Logger) http.Handler {
+	base, prefix, _ := strings.Cut(strings.TrimPrefix(to, "http://"), "/")
+	prefix = "/" + prefix
+	return &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.Out.URL.Scheme, r.Out.URL.Host = "http", base
+			r.Out.URL.Path = prefix + r.In.URL.Path
+			r.Out.URL.RawPath = ""
+			r.Out.Host = base
+			r.SetXForwarded()
+			r.Out.Header.Set("X-Forwarded-Prefix", "/")
+		},
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if r.Context().Err() == nil {
+				log.Warn("livetv: the tuner did not answer a block's request", "path", r.URL.Path, "error", err)
+			}
+			w.WriteHeader(http.StatusBadGateway)
+		},
+	}
+}
+
+// Ports lists the ports being served, sorted.
 func (s *ProxySet) Ports() []int32 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,8 +153,8 @@ func (s *ProxySet) Close() {
 }
 
 func (bp *blockProxy) stop() {
-	bp.cancel()
-	bp.tcp.Wait()
+	_ = bp.srv.Close()
+	<-bp.done
 }
 
 func (s *ProxySet) localAddress() string {

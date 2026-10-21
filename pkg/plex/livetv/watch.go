@@ -145,6 +145,7 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 			GuidePath:    nestedString(m, "guidePath"),
 			LineupHash:   nestedString(m, "lineupHash"),
 			GuideHash:    nestedString(m, "guideHash"),
+			Endpoint:     nestedString(m, "endpoint"),
 			Port:         int32(port),
 		})
 	}
