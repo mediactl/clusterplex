@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,4 +159,98 @@ func TestAGuideLoadIsCopiedBeforeItsGuideIsJudgedEmpty(t *testing.T) {
 	writeGuideLoad(t, db, filepath.Join(dir, guide.File()), 3, at.Add(24*time.Hour))
 	m.copyGuides(ctx, "")
 	assert.Equal(t, 3, airings(), "the next day's load")
+}
+
+// The shim asks for a load's copy over the guide socket before PMS renames
+// the load onto the guide: the copy lands before PMS reopens the guide, and
+// the poll does not copy the renamed file again.
+func TestALoadIsCopiedAtTheShimsRenameAndNotAgainByThePoll(t *testing.T) {
+	db := libraryDatabase(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pool, err := plexdb.Open(ctx, db)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	m := newTestManager()
+	m.pool = pool
+	m.Config.Postgres = db
+	m.Config.PlexDir = t.TempDir()
+	guide := plexbootstrap.Guide{Provider: "tv.plex.providers.epg.xmltv", DVR: "adfe4a6f-79d0-4135-93d5-edf0235ec02b"}
+	dir := m.guideDir()
+	load := filepath.Join(dir, guide.LoadFile())
+	at := time.Unix(1792540000, 0)
+	writeGuideLoad(t, db, load, 5, at)
+	m.Config.GuideSocket = filepath.Join(t.TempDir(), "g.sock")
+
+	ln, err := m.listenGuideSocket()
+	require.NoError(t, err)
+	go m.serveGuideSocket(ctx, ln)
+	ask := func(line string) string {
+		c, err := net.Dial("unix", m.Config.GuideSocket)
+		require.NoError(t, err)
+		defer func() { _ = c.Close() }()
+		_, err = fmt.Fprintln(c, line)
+		require.NoError(t, err)
+		answer, err := bufio.NewReader(c).ReadString('\n')
+		require.NoError(t, err)
+		return strings.TrimSpace(answer)
+	}
+	assert.Equal(t, "fail unknown request", ask("rename "+load))
+	assert.Equal(t, "fail not under the Databases directory", ask("swap "+filepath.Join(t.TempDir(), guide.LoadFile())))
+	assert.Equal(t, "fail not a guide load", ask("swap "+filepath.Join(dir, guide.File())))
+	assert.Equal(t, "ok", ask("swap "+load))
+	airings := func() int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM "+guide.Schema()+".media_items").Scan(&n))
+		return n
+	}
+	assert.Equal(t, 5, airings())
+	assert.Equal(t, "skip no newer load with airings", ask("swap "+load), "copied once")
+
+	// PMS renames the load onto the guide and reopens it, which writes a
+	// write-ahead log; a row written to the schema meanwhile survives the
+	// poll, which has nothing new to copy.
+	file := filepath.Join(dir, guide.File())
+	require.NoError(t, os.Rename(load, file))
+	require.NoError(t, os.WriteFile(file+"-wal", []byte("reopened"), 0o644))
+	require.NoError(t, os.Chtimes(file+"-wal", at.Add(time.Hour), at.Add(time.Hour)))
+	require.NoError(t, pool.Exec(ctx, "INSERT INTO "+guide.Schema()+".media_items (metadata_item_id) VALUES (1)"))
+	m.copyGuides(ctx, "")
+	assert.Equal(t, 6, airings(), "the poll left the hooked load alone")
+
+	// The next load is a new file: copied by the poll when the hook is
+	// not there, and the staging schema the poll makes for a load under
+	// way is the one the copy fills.
+	writeGuideLoad(t, db, load, 2, at.Add(24*time.Hour))
+	m.copyGuides(ctx, "")
+	var staged bool
+	require.NoError(t, pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", guide.Staging()).Scan(&staged))
+	assert.True(t, staged, "a load under way gets its staging schema from the poll")
+	require.NoError(t, os.Rename(load, file))
+	m.copyGuides(ctx, "")
+	assert.Equal(t, 2, airings())
+	require.NoError(t, pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", guide.Staging()).Scan(&staged))
+	assert.False(t, staged)
+}
+
+func TestALoadBeginningIsWatchedForItsStagingSchema(t *testing.T) {
+	db := libraryDatabase(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pool, err := plexdb.Open(ctx, db)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	m := newTestManager()
+	m.pool = pool
+	m.Config.Postgres = db
+	m.Config.PlexDir = t.TempDir()
+	require.NoError(t, os.MkdirAll(m.guideDir(), 0o755))
+	guide := plexbootstrap.Guide{Provider: "tv.plex.providers.epg.xmltv", DVR: "adfe4a6f-79d0-4135-93d5-edf0235ec02b"}
+	go m.watchGuideLoads(ctx)
+	time.Sleep(200 * time.Millisecond) // the watch is added before the file appears
+	require.NoError(t, os.WriteFile(filepath.Join(m.guideDir(), guide.LoadFile()), []byte("PMS's template copy"), 0o644))
+	assert.Eventually(t, func() bool {
+		var staged bool
+		return pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", guide.Staging()).Scan(&staged) == nil && staged
+	}, 30*time.Second, 100*time.Millisecond)
 }

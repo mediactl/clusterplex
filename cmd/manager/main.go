@@ -344,9 +344,17 @@ func run() int {
 		// Before Plex: PMS asks its devices for their lineups at start.
 		m.startLiveTV(ctx)
 	}
-	m.runPlex(ctx)
 	// Every pod, Live TV managed or not: any DVR's guide is served from
-	// PostgreSQL, and PMS loads it into a SQLite file of its own.
+	// PostgreSQL, and PMS loads it into a SQLite file of its own. The shim
+	// asks for the copy at PMS's rename over the guide socket, which listens
+	// before PMS starts; the poll is the fallback for a rename it never sees.
+	if ln, err := m.listenGuideSocket(); err != nil {
+		logger.Warn("Live TV: the guide socket; loads are copied on the poll alone", "error", err)
+	} else {
+		go m.serveGuideSocket(ctx, ln)
+	}
+	m.runPlex(ctx)
+	go m.watchGuideLoads(ctx)
 	go m.copyGuideLoads(ctx)
 	if cfg.LiveTV.Enabled && m.Dynamic != nil {
 		go m.watchLiveTVRestart(ctx)

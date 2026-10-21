@@ -73,6 +73,11 @@ func shimEnv(base []string, cfg Config) []string {
 	if !hasEnv(base, "PLEX_PG_LOG_FILE") {
 		env = append(env, "PLEX_PG_LOG_FILE=stderr")
 	}
+	// Where the shim asks for a Live TV guide load's copy before PMS
+	// renames the load onto the guide (listenGuideSocket).
+	if cfg.GuideSocket != "" {
+		env = append(env, "PLEX_PG_GUIDE_SOCKET="+cfg.GuideSocket)
+	}
 	return append(env, pgEnv(cfg)...)
 }
 

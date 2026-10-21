@@ -110,9 +110,12 @@ load, it costs one string comparison.
 
 ### The manager: the guide socket
 
-The manager listens on `<PlexDir>/Plug-in Support/Databases/clusterplex-guides.sock`
-(a path no shim redirect, `copyGuides` glob or PMS file matches), created
-before PMS starts, mode 0600, and passes it as `PLEX_PG_GUIDE_SOCKET`.
+The manager listens on `/tmp/clusterplex-guides.sock` (`--guide-socket`;
+/tmp is the container's own, shared with the PMS the manager starts),
+created before PMS starts, mode 0600, and passes it as
+`PLEX_PG_GUIDE_SOCKET`. A Unix socket path is at most 108 bytes, and
+`<PlexDir>/Plug-in Support/Databases/<name>` is 101 on the pod, which the
+first draft of this design overlooked.
 
 On `swap <path>`:
 
@@ -239,4 +242,5 @@ pre-clone exists for it, so this one swap waits the full 3.3 s.
   behaviour under a slow rename is unrecorded; the rig records it.
 - **The socket is reachable by any process in the pod's user**, which is
   PMS's. A request only ever copies a load file PMS wrote, under the
-  directory check, so the worst a stray request does is an extra copy.
+  Databases-directory check, so the worst a stray request does is an extra
+  copy.

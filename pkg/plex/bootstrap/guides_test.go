@@ -390,3 +390,62 @@ func TestAGuideLoadedBeforeARestartIsCopiedBeforeItsShadowReplacesIt(t *testing.
 	require.NoError(t, err)
 	assert.False(t, imported, "the file is the shadow now")
 }
+
+func TestALoadFileIsKnownByItsGuide(t *testing.T) {
+	assert.Equal(t, "tv.plex.providers.epg.xmltv-adfe4a6f-79d0-4135-93d5-edf0235ec02b-loading.db", testGuide.LoadFile())
+	g, ok := GuideForLoadFile(testGuide.LoadFile())
+	require.True(t, ok)
+	assert.Equal(t, testGuide, g)
+	_, ok = GuideForLoadFile(testGuide.File())
+	assert.False(t, ok, "the guide's own file is no load")
+	_, ok = GuideForLoadFile("tv.plex.providers.epg.xmltv-loading.db")
+	assert.False(t, ok)
+	assert.Equal(t, "adfe4a6f-79d0-4135-93d5-edf0235ec02b", dvrOfSchema(testGuide.Schema()))
+	assert.Empty(t, dvrOfSchema(testGuide.Staging()))
+	assert.Empty(t, dvrOfSchema("epg_xyz"))
+}
+
+// A staging schema made while PMS loads (PrepareStaging) is what the copy
+// fills, so the rename waits for the rows alone, not the clone.
+func TestAStagingSchemaMadeDuringTheLoadIsTheOneTheCopyFills(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	made, err := PrepareStaging(ctx, conn, "plex", testGuide)
+	require.NoError(t, err)
+	require.True(t, made)
+	made, err = PrepareStaging(ctx, conn, "plex", testGuide)
+	require.NoError(t, err)
+	assert.False(t, made, "made once")
+	// A mark only this staging schema carries.
+	_, err = conn.Exec(ctx, "CREATE TABLE "+testGuide.Staging()+".clusterplex_mark (id int)")
+	require.NoError(t, err)
+
+	file := filepath.Join(t.TempDir(), testGuide.File())
+	loadedGuide(t, conn, file, 3)
+	touch(t, file, time.Unix(1792540000, 0))
+	imported, err := ImportGuide(ctx, quiet, conn, "plex", testGuide, file)
+	require.NoError(t, err)
+	require.True(t, imported)
+	assert.Equal(t, 3, one[int](t, conn, "SELECT count(*) FROM "+testGuide.Schema()+".media_items"))
+	assert.True(t, one[bool](t, conn, "SELECT to_regclass($1) IS NOT NULL", testGuide.Schema()+".clusterplex_mark"),
+		"the staging schema made during the load became the guide")
+	assert.Equal(t, []string{testGuide.Schema()}, schemasLike(t, conn, testGuide.Schema()))
+}
+
+func TestTheSweepDropsWhatNoGuideNeeds(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	other := Guide{Provider: "tv.plex.providers.epg.xmltv", DVR: "7f4d37cb-fada-46d8-8fcb-fe1b0cff2d85"}
+	gone := Guide{Provider: "tv.plex.providers.epg.xmltv", DVR: "16cac8a1-0746-4e63-9a32-c9d0fd96a0c1"}
+	for _, s := range []string{testGuide.Schema(), testGuide.Staging(), other.Schema(), other.Staging(), other.Replaced(), gone.Schema(), "epg_notaguide"} {
+		_, err := conn.Exec(ctx, "CREATE SCHEMA "+s)
+		require.NoError(t, err)
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, testGuide.LoadFile()), []byte("loading"), 0o644))
+
+	require.NoError(t, SweepGuides(ctx, quiet, conn, []Guide{testGuide, other}, dir))
+	assert.ElementsMatch(t, []string{testGuide.Schema(), testGuide.Staging(), other.Schema(), "epg_notaguide"}, schemasLike(t, conn, "epg_"),
+		"kept: the listed guides, a staging schema with its load under way, and a name that is no guide's; "+
+			"dropped: a staging schema with no load, a replaced guide, and an unlisted DVR's guide")
+}

@@ -106,6 +106,11 @@ type Config struct {
 	// SchemaDir holds the shim's SQL files, from which the databases are
 	// prepared before Plex starts; see cmd/manager/bootstrap.go.
 	SchemaDir string
+	// GuideSocket is the Unix socket the shim asks for a Live TV guide
+	// load's copy on, before PMS renames the load onto the guide
+	// (listenGuideSocket). A Unix socket path is at most 108 bytes, so it
+	// lives in /tmp, not in Plex's state directory.
+	GuideSocket string
 	// ShadowSyncTables are copied from PostgreSQL into the SQLite shadow of
 	// the library before Plex starts, comma-separated; "none" copies nothing.
 	ShadowSyncTables string
@@ -209,6 +214,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
 	fs.String("schema-dir", SchemaDir, "directory holding the PostgreSQL shim's SQL files, loaded before Plex starts")
+	fs.String("guide-socket", GuideSocket, "Unix socket the PostgreSQL shim asks for a Live TV guide load's copy on, before Plex renames the load onto the guide")
 	fs.String("shadow-sync-tables", plexbootstrap.DefaultShadowSyncTables, "tables copied from PostgreSQL into the library's SQLite shadow before Plex starts, comma-separated; none disables")
 	fs.String("plex-machine-identifier", "", "UUID pinning the Plex server identity, so it survives a rebuild (default: whatever Plex generated)")
 	fs.StringArray(prefFlag, nil, "Plex preference to enforce, as Name=Value (repeatable)")
@@ -276,6 +282,7 @@ func loadConfig(args []string) (Config, error) {
 		ShimLibrary:      v.GetString("shim-library"),
 		SubreaperBinary:  v.GetString("plex-subreaper"),
 		SchemaDir:        v.GetString("schema-dir"),
+		GuideSocket:      v.GetString("guide-socket"),
 		ShadowSyncTables: v.GetString("shadow-sync-tables"),
 		Claim:            strings.TrimSpace(v.GetString(claimKey)),
 		Postgres: plexdb.Config{

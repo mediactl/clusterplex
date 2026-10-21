@@ -177,3 +177,10 @@ func TestAnOperatorCanStillPointTheShimLogAtAFile(t *testing.T) {
 	assert.NotContains(t, env, "PLEX_PG_LOG_FILE=stderr",
 		"two values for one variable leave it to whichever libc reads it first")
 }
+
+func TestShimEnvNamesTheGuideSocket(t *testing.T) {
+	cfg := Config{ShimLibrary: "/usr/local/lib/plex-postgresql/db_interpose_pg.so", GuideSocket: GuideSocket, Postgres: plexdb.Config{Schema: "plex"}}
+	assert.Contains(t, shimEnv(nil, cfg), "PLEX_PG_GUIDE_SOCKET=/tmp/clusterplex-guides.sock")
+	cfg.GuideSocket = ""
+	assert.NotContains(t, strings.Join(shimEnv(nil, cfg), "\n"), "PLEX_PG_GUIDE_SOCKET", "no socket, and the poll copies every load")
+}

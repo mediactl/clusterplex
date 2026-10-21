@@ -66,8 +66,30 @@ func GuideForFile(name string) (Guide, bool) {
 	return Guide{Provider: m[1], DVR: m[2]}, true
 }
 
+// LoadSuffix is what PMS appends to a guide's file name, before ".db", for
+// the file it loads a guide into and then renames onto the guide.
+const LoadSuffix = "-loading"
+
+// LoadFile is the file PMS loads the guide into.
+func (g Guide) LoadFile() string { return strings.TrimSuffix(g.File(), ".db") + LoadSuffix + ".db" }
+
+// GuideForLoadFile is the guide a load file's name belongs to, if it is one
+// (<guide>-loading.db).
+func GuideForLoadFile(name string) (Guide, bool) {
+	stem, ok := strings.CutSuffix(name, LoadSuffix+".db")
+	if !ok {
+		return Guide{}, false
+	}
+	return GuideForFile(stem + ".db")
+}
+
 // ValidDVR is whether uuid is a DVR uuid a guide's schema can be named for.
 func ValidDVR(uuid string) bool { return guideUUID.MatchString(uuid) }
+
+// Staging is the schema a guide's load is copied into before it is swapped
+// in, and Replaced the one the swap moves the old guide to.
+func (g Guide) Staging() string  { return g.Schema() + "_next" }
+func (g Guide) Replaced() string { return g.Schema() + "_old" }
 
 // guidesQuery lists the DVRs and their guide providers: a DVR is a
 // tv.plex.harvesters.dvr resource (type 1), its guide the
@@ -402,6 +424,9 @@ func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, libra
 			errs = append(errs, fmt.Errorf("build the shadow of %s: %w", g.File(), err))
 		}
 	}
+	if err := SweepGuides(ctx, log, conn, guides, dir); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -468,16 +493,13 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 	}
 
 	schema := g.Schema()
-	staging, old := schema+"_next", schema+"_old"
+	staging, old := g.Staging(), g.Replaced()
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", "clusterplex-guide-"+schema); err != nil {
 		return false, err
 	}
 	defer func() {
 		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "clusterplex-guide-"+schema)
 	}()
-	if err := dropSchema(ctx, conn, staging); err != nil {
-		return false, err
-	}
 	if err := dropSchema(ctx, conn, old); err != nil {
 		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
 	}
@@ -494,8 +516,18 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 	}
 
 	start := time.Now()
-	if err := CloneSchema(ctx, conn, library, staging); err != nil {
-		return false, fmt.Errorf("make %s from %s: %w", staging, library, err)
+	// A staging schema PrepareStaging made while PMS loaded is taken as it
+	// is: nothing but this copy fills one, a failed copy drops it, and the
+	// copy truncates every table it fills. The clone is most of the copy's
+	// time, so a pre-made one is what keeps PMS's rename short.
+	staged, err := schemaExists(ctx, conn, staging)
+	if err != nil {
+		return false, err
+	}
+	if !staged {
+		if err := CloneSchema(ctx, conn, library, staging); err != nil {
+			return false, fmt.Errorf("make %s from %s: %w", staging, library, err)
+		}
 	}
 	rows, err := copyGuide(ctx, conn, db, staging)
 	if err == nil {
@@ -516,8 +548,102 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
 	}
 	log.Info("copied a Live TV guide PMS loaded into its schema", "guide", g.File(), "schema", schema,
-		"rows", rows, "took", time.Since(start).Round(time.Millisecond))
+		"rows", rows, "staged", staged, "took", time.Since(start).Round(time.Millisecond))
 	return true, nil
+}
+
+// PrepareStaging makes g's staging schema from the library's, if there is
+// none, so the copy at the load's end has only the rows to move. It
+// reports whether it made one.
+func PrepareStaging(ctx context.Context, conn *pgx.Conn, library string, g Guide) (bool, error) {
+	if !g.Valid() {
+		return false, fmt.Errorf("not a guide the shim reads: %+v", g)
+	}
+	schema := g.Schema()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", "clusterplex-guide-"+schema); err != nil {
+		return false, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "clusterplex-guide-"+schema)
+	}()
+	exists, err := schemaExists(ctx, conn, g.Staging())
+	if err != nil || exists {
+		return false, err
+	}
+	if err := CloneSchema(ctx, conn, library, g.Staging()); err != nil {
+		return false, fmt.Errorf("make %s from %s: %w", g.Staging(), library, err)
+	}
+	return true, nil
+}
+
+func schemaExists(ctx context.Context, conn *pgx.Conn, schema string) (bool, error) {
+	var exists bool
+	err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", schema).Scan(&exists)
+	return exists, err
+}
+
+// SweepGuides drops the guide schemas nothing needs: a staging schema with
+// no load file beside it in dir (an abandoned load, or one the next start
+// clones again), every replaced schema, and the live schema of a DVR the
+// library no longer lists (guides). A DVR's row is written when it is
+// created, before its first load, so a new DVR's schema is never swept.
+// Each drop waits at most guideLockTimeout for the schema's readers; one
+// still read is left for the next sweep.
+func SweepGuides(ctx context.Context, log *slog.Logger, conn *pgx.Conn, guides []Guide, dir string) error {
+	rows, err := conn.Query(ctx, "SELECT nspname::text FROM pg_namespace WHERE nspname LIKE 'epg\\_%' ORDER BY 1")
+	if err != nil {
+		return err
+	}
+	schemas, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	listed := map[string]bool{}
+	for _, g := range guides {
+		listed[g.Schema()] = true
+	}
+	var errs []error
+	for _, schema := range schemas {
+		var why string
+		switch {
+		case strings.HasSuffix(schema, "_old"):
+			why = "a replaced guide"
+		case strings.HasSuffix(schema, "_next"):
+			loads, _ := filepath.Glob(filepath.Join(dir, "tv.plex.providers.epg.*-"+dvrOfSchema(strings.TrimSuffix(schema, "_next"))+LoadSuffix+".db"))
+			if len(loads) > 0 {
+				continue
+			}
+			why = "a staging schema with no load beside it"
+		case !listed[schema]:
+			if dvrOfSchema(schema) == "" {
+				continue // not a guide's name
+			}
+			why = "the guide of a DVR the library no longer lists"
+		default:
+			continue
+		}
+		if err := dropSchema(ctx, conn, schema); err != nil {
+			errs = append(errs, fmt.Errorf("drop %s, %s: %w", schema, why, err))
+			continue
+		}
+		log.Info("dropped a Live TV guide schema", "schema", schema, "why", why)
+	}
+	return errors.Join(errs...)
+}
+
+// dvrOfSchema is the DVR uuid a live guide schema is named for, with
+// dashes, or "" when the name is not epg_<32 hex>.
+func dvrOfSchema(schema string) string {
+	hex, ok := strings.CutPrefix(schema, "epg_")
+	if !ok || len(hex) != 32 {
+		return ""
+	}
+	for _, b := range []byte(hex) {
+		if (b < '0' || b > '9') && (b < 'a' || b > 'f') {
+			return ""
+		}
+	}
+	return hex[:8] + "-" + hex[8:12] + "-" + hex[12:16] + "-" + hex[16:20] + "-" + hex[20:]
 }
 
 // guideModified is when file or its write-ahead log last changed.
