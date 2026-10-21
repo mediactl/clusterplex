@@ -65,8 +65,10 @@ function plex.word_similarity_dist_op(text, text)
 function plex.word_similarity_op(text, text)
 function public.eq_bool_int(b boolean, i integer)
 function public.eq_int_bool(i integer, b boolean)
+function public.integer_equals_text(integer, text)
 function public.json_valid(val text)
 function public.jsonb_mergepatch(target jsonb, patch jsonb)
+function public.text_equals_integer(text, integer)
 index plex.accounts_pkey
 index plex.activities_pkey
 index plex.blobs_pkey
@@ -246,6 +248,8 @@ operator plex.=(integer, text)
 operator plex.=(text, integer)
 operator public.=(boolean, integer)
 operator public.=(integer, boolean)
+operator public.=(integer, text)
+operator public.=(text, integer)
 sequence plex.accounts_id_seq 1
 sequence plex.activities_id_seq 2
 sequence plex.blobs_id_seq unset
