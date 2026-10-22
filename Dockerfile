@@ -36,7 +36,7 @@ FROM alpine:3.15 AS shim
 # the maintainer has not answered a pull request since April 2026. Fixes go to
 # the fork and come back here as a tag; see hack/plex-postgresql/README.md.
 ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
-ARG PLEX_PG_REF=v1.3.17-clusterplex.38
+ARG PLEX_PG_REF=v1.3.17-clusterplex.39
 RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
 WORKDIR /build
 ENV CARGO_HOME=/usr/local/cargo \
@@ -99,7 +99,15 @@ ARG TARGETARCH
 # and 202608120900, and both apply. The rebuild, and the vacuum and the planner
 # statistics read that follow it, took three fixes in the shim — which is what
 # v1.3.17-clusterplex.13 above carries.
-ARG VERSION=1.43.4.10903-e5521bd8c
+#
+# 1.43.4.10903 -> 1.43.5.11029 leaves one outstanding, 202609141200, which
+# changes no schema: it upserts a preference with INSERT ... ON CONFLICT ...
+# RETURNING id and reads the id from the row. The shim stepped a write to
+# DONE without its row and ran it a second time for its column metadata, so
+# the migration threw, rolled back and the server never set up;
+# v1.3.17-clusterplex.39 answers the row and describes a write instead
+# (verified on the standalone rig against the 10903 database, 2026-10-22).
+ARG VERSION=1.43.5.11029-6bf8af3f0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends wget ca-certificates tzdata \
