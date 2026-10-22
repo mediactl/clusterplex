@@ -56,6 +56,30 @@ func TestAFileChangeOnAnExistingItemStampsAndRefreshesIt(t *testing.T) {
 	require.Empty(t, r.ids, "a current row asks for nothing")
 }
 
+// An episode's new file refreshes its season, the only refresh PMS fills
+// a plex:// episode from (talos, 2026-10-22: Monster's replaced files).
+func TestAFileChangeOnAnEpisodeRefreshesItsSeason(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "TV "+t.Name(), 2, "/media/tv")
+	r := &refreshes{}
+	p := projector(conn, r)
+	ctx := context.Background()
+	require.NoError(t, p.Apply(ctx, section, loc, change("f1", "/media/tv/Show/Season 01/Show - S01E01.mkv", "k1", episodeItem("s1", 1, "e1", 1))))
+	item := itemOf(t, conn, section, "f1")
+	var season int64
+	require.NoError(t, conn.QueryRow(ctx, "SELECT parent_id FROM metadata_items WHERE id = $1", item).Scan(&season))
+	r.ids = nil
+
+	later := now0.Add(time.Hour)
+	p.Now = func() time.Time { return later }
+	p.Seeder.Now = p.Now
+	c := change("f1", "/media/tv/Show/Season 01/Show - S01E01.mp4", "k2", episodeItem("s1", 1, "e1", 1))
+	c.Input.Probe.Container = "mp4"
+	require.NoError(t, p.Apply(ctx, section, loc, c))
+	require.Equal(t, []int64{season}, r.ids, "the episode's season is refreshed")
+	require.Equal(t, later.Unix(), itemUpdatedAt(t, conn, item), "the episode's updated_at is the change's")
+}
+
 // A rename alone -- the same probe at a new path -- is a file change too.
 func TestARenameAloneStampsAndRefreshesTheItem(t *testing.T) {
 	conn := plexDB(t)

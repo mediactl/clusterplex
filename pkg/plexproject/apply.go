@@ -136,7 +136,11 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 		if _, err := tx.Exec(ctx, `UPDATE metadata_items SET updated_at = $2 WHERE id = $1`, item, now.Unix()); err != nil {
 			return fmt.Errorf("plexproject: stamp item %d: %w", item, err)
 		}
-		pending.NeedsRefresh(item)
+		target, err := refreshTarget(ctx, tx, item)
+		if err != nil {
+			return fmt.Errorf("plexproject: refresh target of item %d: %w", item, err)
+		}
+		pending.NeedsRefresh(target)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err

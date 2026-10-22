@@ -80,7 +80,27 @@ func TestAnEpisodeChainIsInsertedTopDownWithParents(t *testing.T) {
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND metadata_type = 2 AND parent_id IS NULL AND year = 2010", showID))
 	require.Equal(t, 1, count(t, conn, `SELECT count(*) FROM metadata_items WHERE id = $1 AND metadata_type = 3 AND "index" = 1 AND year IS NULL`, seasonID))
 	require.Equal(t, 1, count(t, conn, `SELECT count(*) FROM metadata_items WHERE id = $1 AND metadata_type = 4 AND "index" = 1 AND title = 'Pilot'`, epID))
-	require.Len(t, r.ids, 3)
+	require.Equal(t, []int64{showID, seasonID}, r.ids, "the episode's refresh is its season's, asked once")
+}
+
+// PMS cannot refresh a lone plex:// episode: it fails building the match
+// ("Missing parameters for match request") and asks the provider nothing,
+// and it fills a season's episodes from the season's includeChildren=1
+// answer (talos, 2026-10-22: 128 new Monster and Love is Blind episodes
+// got no metadata). An episode inserted under a season Plex has asks for
+// the season's refresh.
+func TestANewEpisodeAsksForItsSeasonsRefresh(t *testing.T) {
+	conn := plexDB(t)
+	section, _ := newSection(t, conn, "TV "+t.Name(), 2, "/media/tv")
+	r := &refreshes{}
+	first := ensure(t, conn, section, episodeItem("s1", 1, "e1", 1), r)
+	var season int64
+	require.NoError(t, conn.QueryRow(context.Background(), "SELECT parent_id FROM metadata_items WHERE id = $1", first).Scan(&season))
+	r.ids = nil
+
+	second := ensure(t, conn, section, episodeItem("s1", 1, "e2", 2), r)
+	require.NotEqual(t, first, second)
+	require.Equal(t, []int64{season}, r.ids)
 }
 
 // A row Plex already filled keeps what Plex wrote: the chain only finds it.

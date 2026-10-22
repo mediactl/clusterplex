@@ -21,9 +21,11 @@ type Refresher interface {
 // so Plex's refresh fills the rest (the capture doc: Plex writes the
 // provider's answer only when its hash differs from the row's). An
 // existing row is left as Plex made it. A node whose Plex id clustarr has
-// since learned is re-keyed from its custom guid first.
+// since learned is re-keyed from its custom guid first. An inserted
+// episode asks for its season's refresh ([refreshTarget]), once.
 func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now time.Time, refresh Refresher) (int64, error) {
 	var parent *int64
+	var asked int64
 	for _, n := range it.Chain {
 		if n.PriorGUID != "" {
 			if err := ReKey(ctx, tx, section, n.PriorGUID, n.GUID); err != nil {
@@ -37,7 +39,14 @@ func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now tim
 			if errors.Is(err, pgx.ErrNoRows) {
 				id, err = insertItem(ctx, tx, section, parent, n, now)
 				if err == nil && refresh != nil {
-					refresh.NeedsRefresh(id)
+					target := id
+					if n.Type == TypeEpisode && parent != nil {
+						target = *parent
+					}
+					if target != asked {
+						refresh.NeedsRefresh(target)
+						asked = target
+					}
 				}
 			}
 		case err == nil:
@@ -52,6 +61,24 @@ func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now tim
 		return 0, errors.New("plexproject: an item with no chain")
 	}
 	return *parent, nil
+}
+
+// refreshTarget is the row whose Plex refresh fills item: an episode's
+// season, the row itself otherwise. PMS cannot refresh a lone plex://
+// episode -- it fails building the match ("Missing parameters for match
+// request") and asks the provider nothing -- and fills a season's episodes
+// from the season's includeChildren=1 answer (talos, 2026-10-22: 128 new
+// Monster and Love is Blind episodes were refreshed and got no metadata).
+func refreshTarget(ctx context.Context, tx pgx.Tx, item int64) (int64, error) {
+	var typ ItemType
+	var parent *int64
+	if err := tx.QueryRow(ctx, `SELECT metadata_type, parent_id FROM metadata_items WHERE id = $1`, item).Scan(&typ, &parent); err != nil {
+		return 0, err
+	}
+	if typ == TypeEpisode && parent != nil {
+		return *parent, nil
+	}
+	return item, nil
 }
 
 func findItem(ctx context.Context, tx pgx.Tx, section int64, guid string) (int64, error) {
