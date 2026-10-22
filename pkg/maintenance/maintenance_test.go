@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -199,4 +200,47 @@ func TestEveryButlerTaskNamesOnePlexRuns(t *testing.T) {
 		}
 		assert.Contains(t, plexButlerTasks, butler, "%s posts to %s, which Plex answers 404", name, task.Path)
 	}
+}
+
+// deadlineOf runs task with a dispatch that records how long its context gives
+// it, measured from just before Run.
+func deadlineOf(t *testing.T, task Task) time.Duration {
+	t.Helper()
+	var got time.Duration
+	var mu sync.Mutex
+	f := &Fanout{
+		Libraries: func(context.Context) ([]string, error) { return []string{"1"}, nil },
+		Members:   func(context.Context) ([]string, error) { return []string{"a"}, nil },
+		Dispatch: func(ctx context.Context, _, _, _ string) error {
+			deadline, ok := ctx.Deadline()
+			if !assert.True(t, ok, "a dispatch must not run unbounded") {
+				return nil
+			}
+			mu.Lock()
+			got = time.Until(deadline)
+			mu.Unlock()
+			return nil
+		},
+	}
+	_, err := f.Run(context.Background(), task)
+	require.NoError(t, err)
+	return got
+}
+
+func TestATaskPlexOnlyQueuesHasTheDefaultDeadline(t *testing.T) {
+	// Plex answers an analyze or a refresh once it has queued the work, so a
+	// pod that has not answered in DefaultTimeout is not going to.
+	got := deadlineOf(t, Tasks["refresh"])
+	assert.InDelta(t, DefaultTimeout.Seconds(), got.Seconds(), 1)
+}
+
+func TestEmptyTrashHasTimeToEmptyIt(t *testing.T) {
+	// Plex answers PUT /library/sections/{id}/emptyTrash only once the trash
+	// is gone: 6 s for talos's TV library with nothing in it, and more than a
+	// minute after a few shows were deleted (2026-10-22). Under the 30 s every
+	// task had, each run's first one or two attempts failed with "context
+	// deadline exceeded" and only a retry, after Plex had finished on its own,
+	// passed.
+	got := deadlineOf(t, Tasks["empty-trash"])
+	assert.Greater(t, got, 29*time.Minute)
 }

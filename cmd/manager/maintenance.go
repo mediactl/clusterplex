@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,8 +29,6 @@ const MaintenancePrefix = "/api/v1/maintenance/"
 // in elected mode is one pod and in active mode is all of them, so it cannot
 // come from the Lease: that names a single holder.
 const servingAnnotation = "clusterplex.io/plex-serving"
-
-const maintenanceTimeout = 30 * time.Second
 
 // registerMaintenance adds the fan-out endpoint. Scheduling lives in
 // Kubernetes CronJobs rather than in this process, so this only ever reacts.
@@ -53,10 +50,8 @@ func (m *Manager) handleMaintenance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), maintenanceTimeout)
-	defer cancel()
-
-	result, err := m.fanout().Run(ctx, task)
+	// Run bounds itself by the task's own deadline.
+	result, err := m.fanout().Run(r.Context(), task)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		// The caller is a Job. Failing loudly is the point: it retries, and

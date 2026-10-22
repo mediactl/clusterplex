@@ -19,9 +19,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mediactl/clusterplex/pkg/hashring"
 )
+
+// DefaultTimeout bounds a task Plex only queues: it answers an analyze, a
+// refresh or a butler task once the work is scheduled, so a pod that has not
+// answered by then is not going to.
+const DefaultTimeout = 30 * time.Second
 
 // Task is a unit of maintenance and how to ask Plex to do it.
 type Task struct {
@@ -36,6 +42,17 @@ type Task struct {
 	// Butler names the Plex scheduled task this replaces, for the check that
 	// nothing was disabled without a replacement.
 	Butler []string
+	// Timeout bounds the whole fan-out, for a task Plex does before it
+	// answers. Zero is DefaultTimeout.
+	Timeout time.Duration
+}
+
+// Deadline is how long the fan-out may take.
+func (t Task) Deadline() time.Duration {
+	if t.Timeout > 0 {
+		return t.Timeout
+	}
+	return DefaultTimeout
 }
 
 // Tasks is what a CronJob may ask for.
@@ -60,8 +77,12 @@ var Tasks = map[string]Task{
 		Name: "refresh", Method: "GET", Path: "/library/sections/{id}/refresh", PerLibrary: true,
 		Butler: []string{"ButlerTaskRefreshLocalMedia", "ButlerTaskRefreshPeriodicMetadata"},
 	},
+	// Plex empties the trash before it answers: 6 s for talos's TV library
+	// with nothing in it, more than a minute once a few shows were deleted
+	// (2026-10-22), so DefaultTimeout failed each run's first attempts.
 	"empty-trash": {
 		Name: "empty-trash", Method: "PUT", Path: "/library/sections/{id}/emptyTrash", PerLibrary: true,
+		Timeout: 30 * time.Minute,
 	},
 	"media-index": {
 		Name: "media-index", Method: "POST", Path: "/butler/GenerateMediaIndexFiles",
@@ -137,10 +158,13 @@ type Fanout struct {
 	Logger   *slog.Logger
 }
 
-// Run distributes task and reports what happened. It returns an error when any
-// piece failed, having still attempted all of them: the caller is a Job, and a
-// partial failure should be visible rather than swallowed.
+// Run distributes task and reports what happened, within the task's Deadline.
+// It returns an error when any piece failed, having still attempted all of
+// them: the caller is a Job, and a partial failure should be visible rather
+// than swallowed.
 func (f *Fanout) Run(ctx context.Context, task Task) (Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, task.Deadline())
+	defer cancel()
 	result := Result{Task: task.Name}
 
 	members, err := f.Members(ctx)

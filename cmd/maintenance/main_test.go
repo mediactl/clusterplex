@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/mediactl/clusterplex/pkg/maintenance"
 )
 
 func trigger(t *testing.T, handler http.HandlerFunc) (int, string) {
@@ -70,4 +72,22 @@ func TestTrailingSlashesOnTheEndpointDoNotMatter(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run(context.Background(), srv.URL+"/", "analyze", 5*time.Second, &out, &errOut)
 	assert.Zero(t, code)
+}
+
+func TestTheTriggerOutwaitsTheManager(t *testing.T) {
+	// A trigger that gives up first fails the Job while the manager is still
+	// working, and the retry asks Plex for the same work again.
+	for _, name := range maintenance.Names() {
+		task, _ := maintenance.Lookup(name)
+		assert.Greater(t, waitFor(name, 0), task.Deadline(), "task %s", name)
+	}
+}
+
+func TestAnExplicitTimeoutIsKept(t *testing.T) {
+	assert.Equal(t, 5*time.Second, waitFor("empty-trash", 5*time.Second))
+}
+
+func TestAnUnknownTaskWaitsAMinute(t *testing.T) {
+	// The manager answers 404 at once; there is nothing to wait for.
+	assert.Equal(t, time.Minute, waitFor("no-such-task", 0))
 }

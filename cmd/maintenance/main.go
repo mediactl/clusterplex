@@ -17,12 +17,29 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mediactl/clusterplex/pkg/maintenance"
 )
+
+// waitFor is how long the trigger waits for the manager: timeout when one is
+// given, else a minute past the task's own deadline, so the Job never gives up
+// while the manager is still working and its retry never asks Plex for the
+// same work a second time.
+func waitFor(task string, timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	if t, ok := maintenance.Lookup(task); ok {
+		return t.Deadline() + time.Minute
+	}
+	// The manager answers an unknown task 404 at once.
+	return time.Minute
+}
 
 func main() {
 	endpoint := flag.String("endpoint", "", "base URL of a manager, for example http://plex-workers:8080")
 	task := flag.String("task", "", "the maintenance task to distribute")
-	timeout := flag.Duration("timeout", time.Minute, "how long to wait for the manager to accept")
+	timeout := flag.Duration("timeout", 0, "how long to wait for the manager to accept; 0 waits a minute past the task's own deadline")
 	flag.Parse()
 
 	if *endpoint == "" || *task == "" {
@@ -31,7 +48,7 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	code := run(ctx, *endpoint, *task, *timeout, os.Stdout, os.Stderr)
+	code := run(ctx, *endpoint, *task, waitFor(*task, *timeout), os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
