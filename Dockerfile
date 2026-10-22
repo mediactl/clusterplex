@@ -36,7 +36,7 @@ FROM alpine:3.15 AS shim
 # the maintainer has not answered a pull request since April 2026. Fixes go to
 # the fork and come back here as a tag; see hack/plex-postgresql/README.md.
 ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
-ARG PLEX_PG_REF=v1.3.17-clusterplex.39
+ARG PLEX_PG_REF=v1.3.17-clusterplex.40
 RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
 WORKDIR /build
 ENV CARGO_HOME=/usr/local/cargo \
@@ -107,6 +107,10 @@ ARG TARGETARCH
 # the migration threw, rolled back and the server never set up;
 # v1.3.17-clusterplex.39 answers the row and describes a write instead
 # (verified on the standalone rig against the 10903 database, 2026-10-22).
+# On talos 11029 then still died at start: it registers a metadata agent
+# provider as BEGIN, INSERT, last_insert_rowid, and the shim answered the
+# row id from the handle's connection while the INSERT had run on the
+# transaction's; v1.3.17-clusterplex.40 answers from the transaction's.
 ARG VERSION=1.43.5.11029-6bf8af3f0
 
 RUN apt-get update \
