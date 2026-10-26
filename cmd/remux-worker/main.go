@@ -24,6 +24,23 @@ import (
 	"github.com/mediactl/clusterplex/proto/remuxpb"
 )
 
+// minShimAPI is the ffgo shim API the pinned ffgo reads FFmpeg 9 through
+// (1 = v0.0.0-clustarr.13). An older shim reads FFmpeg 9's structs at the
+// offsets of an older FFmpeg.
+const minShimAPI = 1
+
+// checkRuntime refuses an FFmpeg other than 9 (libavcodec 63) or a shim
+// older than minShim: ffgo reports a shim that predates its API as 0.
+func checkRuntime(version func() (uint32, uint32, uint32), shimAPI func() int, minShim int) error {
+	if _, avc, _ := version(); avc>>16 != 63 {
+		return fmt.Errorf("libavcodec %d is not FFmpeg 9's (63)", avc>>16)
+	}
+	if n := shimAPI(); n < minShim {
+		return fmt.Errorf("ffgo shim API %d is older than %d", n, minShim)
+	}
+	return nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("remux-worker", "error", err)
@@ -42,11 +59,11 @@ func run() error {
 	if err := ffgo.Init(); err != nil {
 		return fmt.Errorf("load FFmpeg: %w", err)
 	}
-	if _, avc, _ := ffgo.Version(); avc>>16 != 63 {
-		return fmt.Errorf("libavcodec %d is not FFmpeg 9's (63)", avc>>16)
-	}
 	if d := ffgo.Diagnose(); !d.ShimLoaded {
 		return fmt.Errorf("no ffgo shim for FFmpeg 9 loaded: %s", d.ShimError)
+	}
+	if err := checkRuntime(ffgo.Version, ffgo.ShimAPIVersion, minShimAPI); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(*dir, 0o755); err != nil {
 		return err

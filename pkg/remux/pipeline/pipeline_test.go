@@ -26,10 +26,10 @@ import (
 func clip(t *testing.T, s, gop int) string {
 	t.Helper()
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("no ffmpeg to make the clip")
+		skipOrFail(t, "no ffmpeg to make the clip")
 	}
 	if err := ffgo.Init(); err != nil {
-		t.Skipf("FFmpeg libraries not available: %v", err)
+		skipOrFail(t, "FFmpeg libraries not available: %v", err)
 	}
 	out := filepath.Join(t.TempDir(), "clip.mkv")
 	cmd := exec.Command("ffmpeg", "-v", "error", "-y",
@@ -42,6 +42,16 @@ func clip(t *testing.T, s, gop int) string {
 		t.Fatalf("make clip: %v %s", err, b)
 	}
 	return out
+}
+
+// skipOrFail skips a test that needs FFmpeg 9, unless make test-native
+// asked for the ffgo suites to run for real (CLUSTERPLEX_REQUIRE_FFGO=1).
+func skipOrFail(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("CLUSTERPLEX_REQUIRE_FFGO") == "1" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 func job(input string, skip int) remux.Job {

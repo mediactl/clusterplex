@@ -48,6 +48,21 @@ build: ## Build the manager, shim, proxy, maintenance trigger and remux worker i
 test: ## Unit tests
 	go test ./... -coverprofile cover.out
 
+# FFGO_DIR is the pinned ffgo's module source, whose shim the native suites
+# load, built against the system FFmpeg 9 as images/Dockerfile.remux builds it.
+FFGO_DIR = $(shell go list -m -f '{{.Dir}}' github.com/obinnaokechukwu/ffgo)
+
+bin/libffshim.so: go.mod
+	mkdir -p bin
+	gcc -shared -fPIC -O2 -Wall -DFFSHIM_HAVE_AVDEVICE=1 -DFFSHIM_HAVE_AVFILTER=1 \
+		$$(pkg-config --cflags libavutil libavcodec libavformat libavdevice libavfilter) \
+		-o $@ $(FFGO_DIR)/shim/ffshim.c \
+		$$(pkg-config --libs libavutil libavcodec libavformat libavdevice libavfilter)
+
+.PHONY: test-native
+test-native: bin/libffshim.so ## The ffgo suites against the system FFmpeg 9; they fail rather than skip
+	FFGO_SHIM_DIR=$(CURDIR)/bin CLUSTERPLEX_REQUIRE_FFGO=1 go test ./pkg/remux/pipeline/... ./pkg/video/...
+
 .PHONY: test-netns
 test-netns: ## pkg/plex/net and Live TV's link-local address against real network namespaces
 	# Provisioning a namespace needs CAP_SYS_ADMIN. unshare gives it over the
