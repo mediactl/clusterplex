@@ -141,11 +141,14 @@ func TestRequiredTurnsOffEveryOtherLocalAnalysis(t *testing.T) {
 	}
 }
 
-// Video is never re-encoded by Plex: squasharr made every file playable, so a
-// stream needs at most a remux and an audio conversion. It was set by hand
-// in the Plex UI until now, so nothing held it.
-func TestRequiredKeepsPlexFromTranscodingVideo(t *testing.T) {
-	assert.Equal(t, "1", Required()["TranscoderCanOnlyRemuxVideo"])
+// Plex may convert video (owner, 2026-10-26). Plex for iOS asks Live TV for a
+// video transcode (directPlay=0, directStream=0) even on the LAN at original
+// quality, and with the remux-only rule every such tune was refused with
+// decision 4010 and the app showed "This item can't be played right now".
+// The setting is still written on every start, so a value set by hand in the
+// Plex UI (the rule was "1" from 2026-10-01) cannot linger.
+func TestRequiredLetsPlexTranscodeVideo(t *testing.T) {
+	assert.Equal(t, "0", Required()["TranscoderCanOnlyRemuxVideo"])
 }
 
 // clustarr owns the files: a Plex user deleting one bypasses it, and an
@@ -158,8 +161,8 @@ func TestRequiredLeavesTheFilesToClustarr(t *testing.T) {
 }
 
 // A relayed connection is capped, so Plex would transcode the video down to
-// fit it, which TranscoderCanOnlyRemuxVideo forbids: the stream would stall
-// instead of failing to connect.
+// fit it on the pod's CPU: the relay stays off, and a client that cannot
+// reach the server fails to connect.
 func TestRequiredTurnsTheRelayOff(t *testing.T) {
 	assert.Equal(t, "0", Required()["RelayEnabled"])
 }

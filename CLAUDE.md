@@ -257,9 +257,10 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
     transcode of a library item that copies the video and converts the
     audio, and fetch its first segment. Fetching is the only proof: the
     variant playlist lists every segment of the file from the start. It asks as "Plex for Android (TV)"
-    with HEVC appended, because Plex Web's profile copies only H.264 and
-    `TranscoderCanOnlyRemuxVideo` refuses every video conversion with
-    decision 4010, "maximum simultaneous video transcodes". It records what
+    with HEVC appended, because Plex Web's profile copies only H.264, and a
+    decision that converts the video (allowed since 2026-10-26,
+    `TranscoderCanOnlyRemuxVideo=0`; until then refused with decision 4010,
+    "maximum simultaneous video transcodes") is refused. It records what
     it fetched in `Codecs/.clusterplex-prefetch.json` per platform and PMS
     version.
   - **Pods of another architecture** share the volume but not the

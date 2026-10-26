@@ -67,12 +67,20 @@ var required = map[string]string{
 	"GenerateChapterThumbBehavior": "never",
 	"GenerateBIFBehavior":          "never",
 	"GenerateVADBehavior":          "never",
-	// Plex never re-encodes video. squasharr made the files playable, so a
-	// stream needs at most a remux and an audio conversion.
-	"TranscoderCanOnlyRemuxVideo": "1",
+	// Plex may convert video (owner, 2026-10-26). From 2026-10-01 this was
+	// "1", Plex never re-encoding video, since squasharr made the files
+	// playable. But Plex for iOS asks Live TV for a video transcode
+	// (directPlay=0, directStream=0) even on the LAN at original quality,
+	// and every such tune was refused with decision 4010, "the server has
+	// reached its configured limit for maximum simultaneous video
+	// transcodes". A conversion runs on the CPU of the pod's node, which on
+	// talos is a 4-core arm64 one, so any client that cannot copy a stream
+	// now costs a real-time transcode, library playback included.
+	"TranscoderCanOnlyRemuxVideo": "0",
 	// A relayed connection is capped, so Plex would have to transcode the
-	// video down to it, which the setting above forbids: the stream would
-	// stall rather than fail to connect.
+	// video down to it on the pod's CPU; the relay stays off and a client
+	// that cannot reach the server fails to connect rather than stream a
+	// transcode through plex.tv's capped relay.
 	"RelayEnabled": "0",
 	// clustarr owns the files. A Plex user deleting one goes behind its
 	// back; an automatic trash empty after a scan that met a stalled NFS

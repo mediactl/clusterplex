@@ -54,8 +54,9 @@ const (
 )
 
 // ErrNotAudioOnly is a decision that would not copy the video and convert
-// the audio: no profile may convert video under cluster-plex
-// (TranscoderCanOnlyRemuxVideo), and copying the audio fetches nothing.
+// the audio: converting the video is a real-time transcode on the pod's CPU
+// that fetches no audio decoder (Plex may convert video since 2026-10-26,
+// TranscoderCanOnlyRemuxVideo=0), and copying the audio fetches nothing.
 var ErrNotAudioOnly = errors.New("codecs: PMS would not copy the video and convert the audio")
 
 // Client is the Plex client the transcodes are asked for: Android TV, with

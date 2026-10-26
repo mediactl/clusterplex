@@ -178,8 +178,8 @@ instead. They are not defaults to be overridden.
 | `FSEventLibraryUpdatesEnabled`, `FSEventLibraryPartialScanEnabled`, `ScheduledLibraryUpdatesEnabled` | `0` | The two ways Plex starts a scan nobody asked for. Every pod mounts the same media on the same paths, so each would watch the same tree, wake on the same event and scan it into the same library at once — and Plex's scanner assumes it is the only one running. The `refresh` maintenance task replaces them, fanned out to one pod per library. |
 | `GenerateIntroMarkerBehavior`, `GenerateCreditsMarkerBehavior`, `GenerateAdMarkerBehavior`, `GenerateBIFBehavior`, `GenerateVADBehavior`, `GenerateChapterThumbBehavior`, `LoudnessAnalysisBehavior`, `MusicAnalysisBehavior` | `never` | Plex is a UI and API: clustarr probes the media and detects intros and credits, and the analysis is seeded (ADR 0006). A behaviour at `scheduled` runs in Plex's maintenance window whatever the `ButlerTask*` switches say — plex-2 ran loudness analysis over 11,922 audio tracks and sonic analysis that way with all of them off (2026-10-01). The provisioner also turns off each provisioned library's own switches (`enableBIFGeneration`, `enableIntroMarkerGeneration`, `enableCreditsMarkerGeneration`, `enableAdMarkerGeneration`, `enableVoiceActivityGeneration`, `enableLoudnessAnalysis`), which a library falls back to if one of these is ever reset. |
 | `MarkerSource` | `cloud` | Only online markers, never local detection, so credits detection cannot run on a pod even if its behaviour is turned back on. |
-| `TranscoderCanOnlyRemuxVideo` | `1` | Plex never re-encodes video. squasharr made the files playable, so a stream needs at most a remux and an audio conversion. |
-| `RelayEnabled` | `0` | A relayed connection is capped, so Plex would have to transcode the video down to fit it, which the setting above forbids: the stream would stall instead of failing to connect. |
+| `TranscoderCanOnlyRemuxVideo` | `0` | Plex may convert video (owner, 2026-10-26). It was `1` from 2026-10-01, since squasharr made the files playable, but Plex for iOS asks Live TV for a video transcode (`directPlay=0&directStream=0`) even on the LAN at original quality, and every such tune was refused with decision 4010. A conversion runs on the CPU of the pod's node, so any client that cannot copy a stream costs a real-time transcode, library playback included. Written on every start, so a value set by hand in the Plex UI does not linger. |
+| `RelayEnabled` | `0` | A relayed connection is capped, so Plex would have to transcode the video down to fit it on the pod's CPU: the relay stays off, and a client that cannot reach the server fails to connect. |
 | `allowMediaDeletion`, `autoEmptyTrash` | `0` | clustarr owns the files. A Plex user deleting one goes behind its back, and emptying the trash automatically after a scan that met a stalled NFS mount deletes the items whose files only looked missing. The `empty-trash` maintenance task still empties it deliberately. |
 | `allowedNetworks` | *refused, not set* | It grants access **without authentication** by client source address, and Plex never sees one here: it runs in its own network namespace behind the in-pod L4 proxy, so every request arrives from the pod end of the veth. A range covering the link drops authentication for everyone who reaches the proxy; any other range matches nothing. |
 | `customConnections` | `plex-external-url` | It has to match the address the proxy actually serves, which only that setting knows. |
@@ -756,8 +756,8 @@ streams carry; `none` turns it off):
    whose video is H.264 or HEVC.
 2. It asks PMS for an HLS transcode that copies the video and converts the
    audio, as "Plex for Android (TV)" with HEVC appended to its profile. Plex
-   Web's profile copies H.264 alone, and no profile may convert video here
-   (`TranscoderCanOnlyRemuxVideo`).
+   Web's profile copies H.264 alone, and a decision that converts the video
+   is refused: it would be a real-time transcode that fetches no decoder.
 3. It fetches the transcode's first segment, then stops the transcode. The
    transcoder cannot write a segment without the decoder, and only a served
    segment proves anything: PMS's variant playlist lists every segment of

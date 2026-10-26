@@ -4,6 +4,13 @@
 **Date:** 2026-10-01 (built 2026-10-05)
 **Deciders:** cluster-plex maintainers, with the owner
 
+**Amended 2026-10-26 (owner):** `TranscoderCanOnlyRemuxVideo` is `0`, so
+Plex may convert video again. Plex for iOS asks Live TV for a video
+transcode, and every such tune was refused with decision 4010. The remux
+pool still serves Plex Web's copied-video DASH streams; a stream that needs
+its video converted now runs as Plex's own transcode on the serving pod's
+CPU instead of being refused.
+
 ## Context
 
 Plex is a UI and API here: clustarr probes, detects and transcodes, and
