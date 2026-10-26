@@ -115,4 +115,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
 
-replace github.com/obinnaokechukwu/ffgo => github.com/mediactl/ffgo v0.0.0-clustarr.13
+replace github.com/obinnaokechukwu/ffgo => github.com/mediactl/ffgo v0.0.0-clustarr.14

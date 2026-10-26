@@ -25,9 +25,9 @@ import (
 )
 
 // minShimAPI is the ffgo shim API the pinned ffgo reads FFmpeg 9 through
-// (1 = v0.0.0-clustarr.13). An older shim reads FFmpeg 9's structs at the
-// offsets of an older FFmpeg.
-const minShimAPI = 1
+// (2 = v0.0.0-clustarr.14, which forces keyframes). An older shim reads
+// FFmpeg 9's structs at the offsets of an older FFmpeg.
+const minShimAPI = 2
 
 // checkRuntime refuses an FFmpeg other than 9 (libavcodec 63) or a shim
 // older than minShim: ffgo reports a shim that predates its API as 0.

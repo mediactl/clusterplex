@@ -21,4 +21,8 @@ func TestTheWorkerRefusesAnOldShim(t *testing.T) {
 
 	err = checkRuntime(v(62), api(1), 1)
 	require.ErrorContains(t, err, "libavcodec")
+
+	// The pinned ffgo forces keyframes through API 2 (v0.0.0-clustarr.14).
+	require.ErrorContains(t, checkRuntime(v(63), api(1), minShimAPI), "shim API")
+	require.NoError(t, checkRuntime(v(63), api(2), minShimAPI))
 }
