@@ -32,10 +32,7 @@ func posts(t *testing.T, shape string) []string {
 	t.Helper()
 	b, err := os.ReadFile("testdata/segment-lists/" + shape + ".txt")
 	require.NoError(t, err)
-	var out []string
-	for _, block := range strings.Split(string(b), "-- POST\n")[1:] {
-		out = append(out, block)
-	}
+	out := strings.Split(string(b), "-- POST\n")[1:]
 	require.NotEmpty(t, out)
 	return out
 }
