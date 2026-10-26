@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/mediactl/clusterplex/pkg/video"
 	pb "github.com/mediactl/clusterplex/proto"
 )
 
@@ -59,6 +60,14 @@ type RemuxRoute interface {
 	Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) (done bool, err error)
 }
 
+// VideoRoute runs every job that converts video on the GPU pool
+// (pkg/video/relay). It always answers -- served, or refused with the
+// reason -- so a video conversion never reaches a worker pod or Plex's own
+// transcoder (owner, 2026-10-26: no fallback).
+type VideoRoute interface {
+	Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) error
+}
+
 // Dispatcher decides where a shimmed job runs. Eligible jobs go to a ready
 // worker in round-robin order; everything else, and anything a worker fails
 // to accept, runs on the local Executor.
@@ -66,6 +75,7 @@ type Dispatcher struct {
 	Local   *Executor
 	Workers WorkerLister // nil means never dispatch remotely
 	Remux   RemuxRoute   // nil leaves every job to Plex's helpers
+	Video   VideoRoute   // nil refuses every video conversion: no-pool
 	Scan    ScanRoute    // nil runs every scanner job as Plex's binary
 	Dial    Dialer
 	// PMSAddr is how workers reach this node's Plex Media Server (host:port).
@@ -74,6 +84,9 @@ type Dispatcher struct {
 	Logger  *slog.Logger
 	// OnRoute, when set, is told the target and "local" or "remote" per job.
 	OnRoute func(target, mode string)
+	// OnRefused, when set, is told the reason of a video conversion the
+	// dispatcher itself refused (a video.Reason).
+	OnRefused func(reason string)
 
 	next atomic.Uint64
 }
@@ -98,6 +111,16 @@ func (d *Dispatcher) Execute(ctx context.Context, req *pb.ExecRequest, sink Sink
 			d.route(req.GetTargetBinary(), "remux")
 			return err
 		}
+	}
+	if req.GetTargetBinary() == Transcoder && video.IsConversion(req.GetArgs()) {
+		d.route(req.GetTargetBinary(), "video")
+		if d.Video == nil {
+			if d.OnRefused != nil {
+				d.OnRefused(string(video.ReasonNoPool))
+			}
+			return Finish(sink, "video", fmt.Errorf("%s: no video transcode pool is configured", video.ReasonNoPool))
+		}
+		return d.Video.Execute(ctx, req, sink)
 	}
 	if RemoteEligible(req) {
 		if done, err := d.tryRemote(ctx, req, sink); done {

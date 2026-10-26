@@ -109,12 +109,13 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 		Logger: m.Logger.With("component", "executor"),
 	}
 	dispatcher := &remoteexec.Dispatcher{
-		Local:   local,
-		Workers: &remoteexec.PodWorkerLister{Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName, Port: cfg.WorkerPort},
-		Dial:    remoteexec.GRPCDialer,
-		PMSAddr: cfg.PMSAddr(),
-		Logger:  m.Logger.With("component", "dispatcher"),
-		OnRoute: func(target, mode string) { m.Metrics.JobsRouted.WithLabelValues(target, mode).Inc() },
+		Local:     local,
+		Workers:   &remoteexec.PodWorkerLister{Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName, Port: cfg.WorkerPort},
+		Dial:      remoteexec.GRPCDialer,
+		PMSAddr:   cfg.PMSAddr(),
+		Logger:    m.Logger.With("component", "dispatcher"),
+		OnRoute:   func(target, mode string) { m.Metrics.JobsRouted.WithLabelValues(target, mode).Inc() },
+		OnRefused: func(reason string) { m.Metrics.VideoRefusals.WithLabelValues(reason).Inc() },
 	}
 	// An analyze of an item the projection wrote is answered without
 	// running Plex's binary (pkg/plexscan.AnalyzeRoute): clustarr's probe

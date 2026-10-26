@@ -16,6 +16,9 @@ type Metrics struct {
 	ActiveJobs prometheus.Gauge
 	// JobsRouted counts intercepted jobs by binary and where they ran.
 	JobsRouted *prometheus.CounterVec
+	// VideoRefusals counts the video conversions refused, by reason: no-pool,
+	// full, shape, worker-error or cancelled (pkg/video.Reason).
+	VideoRefusals *prometheus.CounterVec
 	// LeaderStatus is 1 on the pod that holds the plex.tv lease.
 	LeaderStatus prometheus.Gauge
 	// ProxyConnections counts open client connections through the port proxy.
@@ -69,6 +72,10 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Name: "clusterplex_jobs_routed_total",
 			Help: "Intercepted Plex helper invocations by binary and execution mode (local or remote)",
 		}, []string{"binary", "mode"}),
+		VideoRefusals: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_video_refusals_total",
+			Help: "Video conversions refused rather than run on the GPU pool, by reason (no-pool, full, shape, worker-error, cancelled)",
+		}, []string{"reason"}),
 		LeaderStatus: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "clusterplex_manager_is_leader",
 			Help: "1 on the pod that holds the plex.tv lease, 0 on the others; every pod serves regardless",
