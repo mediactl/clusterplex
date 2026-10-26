@@ -13,12 +13,15 @@ all: build
 
 
 .PHONY: proto
-proto: ## Regenerate the gRPC bindings from proto/transcoder.proto and proto/remux.proto
+proto: ## Regenerate the gRPC bindings from proto/transcoder.proto, proto/remux.proto and proto/video.proto
 	protoc -I proto --go_out=proto --go_opt=paths=source_relative \
 		--go-grpc_out=proto --go-grpc_opt=paths=source_relative proto/transcoder.proto
 	mkdir -p proto/remuxpb
 	protoc -I proto --go_out=proto/remuxpb --go_opt=paths=source_relative \
 		--go-grpc_out=proto/remuxpb --go-grpc_opt=paths=source_relative proto/remux.proto
+	mkdir -p proto/videopb
+	protoc -I proto --go_out=proto/videopb --go_opt=paths=source_relative \
+		--go-grpc_out=proto/videopb --go-grpc_opt=paths=source_relative proto/video.proto
 
 .PHONY: fmt
 fmt: ## gofmt the module

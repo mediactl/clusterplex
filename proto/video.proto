@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package video;
+
+option go_package = "github.com/mediactl/clusterplex/proto/videopb";
+
+// Video runs one of Plex's video conversions on the GPU pool. The first Up
+// is the Job; every later Up is a streamed input's bytes. Every Down is the
+// job's output in order, the last a Done. A worker with no free slot answers
+// RESOURCE_EXHAUSTED before any Down; a job it cannot run, INVALID_ARGUMENT.
+service Video {
+  rpc Convert(stream Up) returns (stream Down);
+}
+
+message Up {
+  oneof kind {
+    Job job = 1;
+    Chunk input = 2;
+  }
+}
+
+// Chunk is the next bytes of Job.inputs[input]; eof ends it, error ends it
+// failed (the manager lost its source).
+message Chunk {
+  int32 input = 1;
+  bytes data = 2;
+  bool eof = 3;
+  string error = 4;
+}
+
+message Job {
+  string output = 1;           // "hls", "dash" or "file"
+  string session = 2;
+  repeated Input inputs = 3;   // [0] the media
+  int64 start_us = 4;
+  VideoOut video = 5;
+  AudioOut audio = 6;           // unset: no audio output
+  BurnIn burn = 7;             // unset: none
+  Segmenting segments = 8;
+  FileOut file = 9;
+}
+
+message Input {
+  string path = 1;    // under /media; empty when streamed
+  bool streamed = 2;
+  string format = 3;  // a streamed input's demuxer, e.g. "mpegts"
+  string name = 4;    // a streamed file's base name, e.g. "sub.srt"
+}
+
+message VideoOut {
+  int32 stream = 1;
+  int32 width = 2;
+  int32 height = 3;
+  string pix_fmt = 4;
+  int32 crf = 5;
+  int64 max_rate = 6;
+  int64 buf_size = 7;
+  int32 rate_num = 8;
+  int32 rate_den = 9;
+  int64 keyframe_every_us = 10;
+  bool deinterlace = 11;
+  bool tone_map = 12;
+}
+
+message AudioOut {
+  int32 stream = 1;
+  bool copy = 2;
+  int32 channels = 3;
+  int32 sample_rate = 4;
+  int64 bit_rate = 5;
+  string language = 6;
+}
+
+message BurnIn {
+  int32 input = 1;
+  int32 stream = 2;
+  bool image = 3;
+}
+
+message Segmenting {
+  int64 duration_us = 1;
+  int32 start_number = 2;
+  string pattern = 3;
+  int32 list_size = 4;
+  int64 time_delta_us = 5;
+}
+
+message FileOut {
+  string format = 1;
+  map<string, string> muxer_options = 2;
+}
+
+message Down {
+  oneof kind {
+    Segment segment = 1;
+    File file = 2;
+    Manifest manifest = 3;
+    Progress progress = 4;
+    Write write = 5;
+    Done done = 6;
+  }
+}
+
+// Segment is one whole HLS segment and the times its list line reports.
+// next_start_us is where the next segment, now being written, starts: Plex
+// lists it as unfinished. It is unset on the last segment.
+message Segment {
+  string name = 1;
+  bytes data = 2;
+  int64 start_us = 3;
+  int64 end_us = 4;
+  repeated Span streams = 5;
+  optional int64 next_start_us = 6;
+}
+
+message Span {
+  int32 stream = 1;
+  int64 start_us = 2;
+  int64 end_us = 3;
+}
+
+message File {
+  string name = 1;     // a DASH init or chunk
+  bytes data = 2;
+}
+
+message Manifest {
+  bytes mpd = 1;
+}
+
+message Progress {
+  string path = 1;
+  string query = 2;
+}
+
+message Write {
+  int64 offset = 1;    // a whole-file output's bytes at offset
+  bytes data = 2;
+}
+
+message Done {
+  string error = 1;    // empty: success
+  string reason = 2;   // a video.Reason when error is set
+}
