@@ -1,6 +1,6 @@
 # GPU video-transcode pool: Plex's video conversions on the Intel NUC
 
-**Status:** draft for the owner's review (2026-10-26)
+**Status:** approved by the owner (2026-10-26); amended the same day (owner): the worker writes nothing to disk
 **Repositories:** cluster-plex (the pool, the route, the chart) and clustarr
 (the transcode admission's yield to live streams)
 
@@ -359,6 +359,13 @@ A pod whose device fails stays unready and takes no work.
    A DASH job with an encoded video uses the remux pool's DASH contract
    instead.
 
+**Nothing on disk (owner, 2026-10-26).** The worker muxes every output in
+memory and streams it back: an HLS or DASH segment whole, a whole-file job's
+bytes as (offset, data) writes the relay applies to the output file. No
+FFmpeg muxer writes a file on the NUC and there is no temporary output file.
+The one file the worker holds is a subtitle the manager streams for burn-in,
+in a memory-backed emptyDir, because FFmpeg's `subtitles` filter reads a file.
+
 **Concurrency:**
 - Each pod runs at most `maxJobs` conversions at once (default 3). `/readyz`
   reports not ready when full.
@@ -454,6 +461,15 @@ holder is the manager that last updated it. It carries:
 Every manager updates it while it relays a conversion, at least every
 10 s, and sets it to `0` when its last one ends. A Lease not renewed for
 30 s counts as `0`.
+
+Each manager keeps its own count in `clusterplex.io/video-transcodes.<pod>:
+"<n> <unix seconds>"` and writes the annotation as the sum of the entries
+renewed within 30 s, so one manager's last conversion ending cannot zero
+another's (the plan's call; one manager is the talos case). clustarr's flag
+is `--video-transcode-lease <namespace>/<name>`, chart value
+`manager.videoTranscodeLease`, empty for no yield. clustarr's manager role
+already grants get, list and watch on leases (for Live TV's), so the yield
+adds no grant; a ClusterRole generated from markers cannot name one Lease.
 
 **The yield, in clustarr.** clustarr's transcode admission
 (`app/transcode/admission`, controller `transcode-admission`) reads that
@@ -567,8 +583,12 @@ the Lease. The clustarr chart gains the admission flags for the Lease.
 - **QSV encoder settings:** the rate-control mode, look-ahead, async depth
   and low-power choice within the start-up and quality targets.
 - **Where burn-in is drawn:** CPU composite or `overlay_qsv`.
-- **How to segment:** ffgo's `NewHLSSegmenter`, or cutting segments
-  directly.
+- **How to segment** (decided in the plan): one MPEG-TS muxer per job
+  writing into memory, drained and cut at each forced keyframe the cut rule
+  names; ffgo's HLS segmenter is not used, since it writes files.
+- **Image subtitles** (decided in the plan): composited in Go onto the CPU
+  frame from ffgo's decoded bitmaps; ffgo's filter graph is one linear chain,
+  so FFmpeg's two-input `overlay` is not available.
 - **Code layout:** package and binary names, and whether the HLS and video
   code shares packages with `pkg/remux`.
 - **Proto:** whether it extends `remuxpb` or adds a sibling service.
