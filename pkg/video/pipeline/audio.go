@@ -16,7 +16,7 @@ import (
 type audioPath struct {
 	job    video.Job
 	in     *input
-	c      *cutter
+	c      segmenter
 	sd     *ffgo.StreamDecoder
 	enc    *ffgo.AudioEncoder
 	res    *ffgo.Resampler
@@ -25,7 +25,7 @@ type audioPath struct {
 	shift  int64 // -start_at_zero's shift in the decoder's time base
 }
 
-func newAudioPath(job video.Job, in *input, c *cutter) (*audioPath, error) {
+func newAudioPath(job video.Job, in *input, c segmenter) (*audioPath, error) {
 	a, src := job.Audio, in.audio
 	ap := &audioPath{job: job, in: in, c: c}
 	if a.Copy {
@@ -52,6 +52,7 @@ func newAudioPath(job video.Job, in *input, c *cutter) (*audioPath, error) {
 	ap.shift = int64(in.shift.Seconds() * float64(sd.TimeBase().Den) / float64(sd.TimeBase().Num))
 	if ap.enc, err = ffgo.NewAudioEncoder(ffgo.AudioEncoderConfig2{
 		EncoderName: "aac", SampleRate: ap.rate, Layout: ap.layout, BitRate: a.BitRate, InputTimeBase: sd.TimeBase(),
+		GlobalHeader: c.globalHeader(),
 	}); err != nil {
 		_ = sd.Close()
 		return nil, fmt.Errorf("aac: %w", err)

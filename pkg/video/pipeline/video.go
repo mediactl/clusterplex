@@ -23,7 +23,7 @@ type videoPath struct {
 	o         Options
 	in        *input
 	devs      *devices
-	c         *cutter
+	c         segmenter
 	sd        *ffgo.StreamDecoder
 	gpuDecode bool
 	tenBit    bool
@@ -52,7 +52,7 @@ type videoPath struct {
 	slot  int64
 }
 
-func newVideoPath(job video.Job, in *input, o Options, devs *devices, c *cutter, burn *burner) (*videoPath, error) {
+func newVideoPath(job video.Job, in *input, o Options, devs *devices, c segmenter, burn *burner) (*videoPath, error) {
 	vs := in.video
 	bits := 8
 	if name := ffgo.PixelFormatName(vs.PixelFmt); strings.Contains(name, "10") || strings.HasPrefix(name, "p010") {
@@ -366,6 +366,7 @@ func (v *videoPath) openEncoder() error {
 		},
 		TimeBase:       outTB,
 		KeepFrameTypes: true,
+		GlobalHeader:   v.c.globalHeader(),
 	}
 	if v.o.onGPU() {
 		last := v.graph

@@ -552,3 +552,73 @@ func TestAFailedThrottleAnswerReleasesTheWorker(t *testing.T) {
 	_, lists := h.pms.snapshot()
 	assert.Len(t, lists, 1)
 }
+
+// shapeArgs is a captured job's argv (pkg/video's fixture).
+func shapeArgs(t *testing.T, shape string) []string {
+	t.Helper()
+	b, err := os.ReadFile("../testdata/plex-video-jobs.jsonl")
+	require.NoError(t, err)
+	for _, line := range strings.Split(string(b), "\n") {
+		var c struct {
+			Shape string   `json:"shape"`
+			Args  []string `json:"args"`
+		}
+		if json.Unmarshal([]byte(line), &c) == nil && c.Shape == shape {
+			return c.Args
+		}
+	}
+	t.Fatalf("no %s fixture", shape)
+	return nil
+}
+
+func file(name, data string) *videopb.Down {
+	return &videopb.Down{Kind: &videopb.Down_File{File: &videopb.File{Name: name, Data: []byte(data)}}}
+}
+
+func manifest(mpd string) *videopb.Down {
+	return &videopb.Down{Kind: &videopb.Down_Manifest{Manifest: &videopb.Manifest{Mpd: []byte(mpd)}}}
+}
+
+func TestADashConversionLandsItsFilesBeforeItsManifest(t *testing.T) {
+	// Finding W: Plex Web's converted DASH, as the remux relay lands it:
+	// each file in Plex's session directory, then the MPD POSTed to the
+	// job's -manifest_name with the session's token.
+	h := setup(t, map[string]*worker{"video-0": {run: script(
+		file("init-stream0.m4s", "i0"), file("init-stream1.m4s", "i1"),
+		file("chunk-stream0-00001.m4s", "v1"), file("chunk-stream1-00001.m4s", "a1"),
+		manifest("<MPD>1</MPD>"), done("", ""),
+	)}})
+	h.req.Args = shapeArgs(t, "dash-encode")
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, s))
+	require.EqualValues(t, 0, s.exit(), s.stderr())
+	for name, want := range map[string]string{"init-stream0.m4s": "i0", "init-stream1.m4s": "i1", "chunk-stream0-00001.m4s": "v1", "chunk-stream1-00001.m4s": "a1"} {
+		b, err := os.ReadFile(filepath.Join(h.req.Cwd, name))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(b))
+	}
+	_, lists := h.pms.snapshot()
+	require.Equal(t, []string{"<MPD>1</MPD>"}, lists)
+	assert.Subset(t, h.pms.present[0], []string{"init-stream0.m4s", "init-stream1.m4s", "chunk-stream0-00001.m4s", "chunk-stream1-00001.m4s"},
+		"every file in place before the manifest that lists it")
+	for _, tok := range h.pms.tokens {
+		assert.Equal(t, "tok", tok)
+	}
+}
+
+func TestADashFileOutsideItsNamesFailsTheJob(t *testing.T) {
+	for _, name := range []string{"../init-stream0.m4s", "media-00000.ts", "chunk-stream2-00001.m4s"} {
+		h := setup(t, map[string]*worker{"video-0": {run: script(file(name, "x"), done("", ""))}})
+		h.req.Args = shapeArgs(t, "dash-encode")
+		s := &sink{}
+		require.Error(t, h.relay.Execute(t.Context(), h.req, s), name)
+		assert.Contains(t, s.stderr(), "video: worker-error: refusing file name", name)
+	}
+}
+
+func TestAnHLSJobTakesNoDashOutput(t *testing.T) {
+	h := setup(t, map[string]*worker{"video-0": {run: script(file("init-stream0.m4s", "x"), done("", ""))}})
+	s := &sink{}
+	require.Error(t, h.relay.Execute(t.Context(), h.req, s))
+	assert.Contains(t, s.stderr(), "video: worker-error")
+}

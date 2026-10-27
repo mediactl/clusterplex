@@ -55,7 +55,10 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if job.Output != video.OutputHLS {
+	switch {
+	case job.Output == video.OutputDASH && job.Audio == nil:
+		return fmt.Errorf("%w: a DASH job without audio", video.ErrShape)
+	case job.Output != video.OutputHLS && job.Output != video.OutputDASH:
 		return fmt.Errorf("%w: output %s", video.ErrShape, job.Output)
 	}
 	in, err := openInput(ctx, job, o)
@@ -77,7 +80,10 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	if burn != nil {
 		defer burn.close()
 	}
-	c := newCutter(job, sink)
+	var c segmenter = newCutter(job, sink)
+	if job.Output == video.OutputDASH {
+		c = newDashCutter(job, sink, in.d.Duration())
+	}
 	defer c.close()
 	vp, err := newVideoPath(job, in, o, devs, c, burn)
 	if err != nil {

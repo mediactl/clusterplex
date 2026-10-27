@@ -7,6 +7,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -34,8 +35,12 @@ import (
 	"github.com/mediactl/clusterplex/proto/videopb"
 )
 
-// hlsName is the only segment name a worker may write: Plex's pattern.
-var hlsName = regexp.MustCompile(`^media-\d{5,}\.ts$`)
+// hlsName is the only segment name a worker may write for an HLS job:
+// Plex's pattern; dashName a DASH job's, the remux pool's names.
+var (
+	hlsName  = regexp.MustCompile(`^media-\d{5,}\.ts$`)
+	dashName = regexp.MustCompile(`^(init-stream[01]|chunk-stream[01]-\d{5,})\.m4s$`)
+)
 
 // inputChunk is how much of a streamed input one Chunk carries.
 const inputChunk = 256 << 10
@@ -295,8 +300,33 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			}
 			return refuse(video.ReasonWorkerError, err)
 		}
+		dash := job.Output == video.OutputDASH
 		switch k := down.GetKind().(type) {
+		case *videopb.Down_File:
+			if !dash {
+				return refuse(video.ReasonWorkerError, errors.New("a file for an HLS job"))
+			}
+			if err := plexsession.WriteFile(cwd, k.File.GetName(), k.File.GetData(), dashName); err != nil {
+				return refuse(video.ReasonWorkerError, err)
+			}
+		case *videopb.Down_Manifest:
+			if !dash {
+				return refuse(video.ReasonWorkerError, errors.New("a manifest for an HLS job"))
+			}
+			if first {
+				first = false
+				if r.Startup != nil {
+					r.Startup(r.now().Sub(began) - job.Segments.Duration)
+				}
+			}
+			// Files before the manifest that lists them, as the remux relay does.
+			if err := r.PMS.Send(ctx, http.MethodPost, job.ManifestURL, "", "", bytes.NewReader(k.Manifest.GetMpd()), job.Token); err != nil {
+				return refuse(video.ReasonWorkerError, fmt.Errorf("manifest: %w", err))
+			}
 		case *videopb.Down_Segment:
+			if dash {
+				return refuse(video.ReasonWorkerError, errors.New("an HLS segment for a DASH job"))
+			}
 			s := k.Segment
 			if err := plexsession.WriteFile(cwd, s.GetName(), s.GetData(), hlsName); err != nil {
 				return refuse(video.ReasonWorkerError, err)
