@@ -146,6 +146,16 @@ live media is soft-deleted, and so on up the chain. The `empty-trash`
 CronJob empties them as today, so a mistaken delete shows in Plex's trash
 before it is gone.
 
+As built (2026-10-27): an item that keeps another live version keeps no
+deleted one beside it. Plex showed such a row as the item's missing file
+until the trash was emptied, which an upgrade (a new MediaFile, the old one
+deleted) left on every upgraded episode. `clearSuperseded` removes the row
+outright, as Empty Trash does: its streams, part settings, parts and the
+row. It runs after a delete, after a file moves off an item, and after
+every apply, which covers an old MediaFile deleted before its replacement
+arrived. A row the sweep took (`cp:missing`, §9) stays, since it is put back
+when its file returns. A whole item with nothing live is still only trashed.
+
 ## 8. Reconcile
 
 Input: the informer cache filtered to the section's mapped roots, or to

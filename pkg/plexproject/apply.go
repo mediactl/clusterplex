@@ -102,6 +102,9 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 		if err := retireMedia(ctx, tx, f.media, now.Unix()); err != nil {
 			return fmt.Errorf("plexproject: retire %s's row on item %d: %w", c.UID, f.item, err)
 		}
+		if err := clearSuperseded(ctx, tx, f.item, now.Unix()); err != nil {
+			return fmt.Errorf("plexproject: clear item %d: %w", f.item, err)
+		}
 		if err := trashIfEmpty(ctx, tx, f.item, now.Unix()); err != nil {
 			return fmt.Errorf("plexproject: recount item %d: %w", f.item, err)
 		}
@@ -121,6 +124,11 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	target, err := upsertMedia(ctx, tx, section, location, item, dir, f, have, c, now)
 	if err != nil {
 		return fmt.Errorf("plexproject: media row for %s: %w", c.UID, err)
+	}
+	// A replacement whose old MediaFile went first finds that version
+	// trashed with the item, which EnsureChain just revived.
+	if err := clearSuperseded(ctx, tx, item, now.Unix()); err != nil {
+		return fmt.Errorf("plexproject: clear item %d: %w", item, err)
 	}
 	// A new row, an adopted one, a changed probe or an older row format:
 	// the row's streams are the probe's and nothing else. Otherwise (a path

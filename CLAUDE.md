@@ -202,7 +202,11 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   `media_analysis_version` 8) and, through `pkg/plexseed.SeedTx`, the
   streams and markers, from the MediaFile the watcher hands it; a path or
   probe change updates the same row; a deleted file trashes its rows and
-  the items left empty. A node's row is found by every key it may carry
+  the items left empty, and an item keeping another version keeps no
+  deleted one beside it (`plexproject.clearSuperseded`, after every delete,
+  move and apply; a `cp:missing` row stays for the sweep to put back), since
+  Plex showed such a row as the item's missing file until the empty-trash
+  job ran (every upgraded episode, talos 2026-10-27). A node's row is found by every key it may carry
   (`plexproject.locate`): its guid or prior custom form, a movie's with any
   `/edition/<title>`, a season's or an episode's place under its parent,
   and the row the file's media hangs off while stamped for the same item
