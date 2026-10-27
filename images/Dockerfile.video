@@ -82,7 +82,7 @@ RUN set -eux; \
     printf 'Package: *\nPin: release n=bookworm\nPin-Priority: 100\n' > /etc/apt/preferences.d/bookworm; \
     apt-get update; \
     apt-get install -y --no-install-recommends pax-utils ca-certificates gcc \
-      intel-media-va-driver-non-free libmfx-gen1.2 libva2 libva-drm2 libmfx1/bookworm; \
+      intel-media-va-driver-non-free libmfx-gen1.2 libva2 libva-drm2 libmfx1/bookworm fonts-noto-core fonts-noto-extra; \
     rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /out/ /
 COPY --from=build /out/video-worker /usr/bin/video-worker
@@ -93,6 +93,22 @@ RUN set -eux; \
     BINARY=/usr/bin/video-worker \
     EXTRA_DLOPEN="$d/dri/iHD_drv_video.so $d/libva.so.2 $d/libva-drm.so.2 $d/libmfx-gen.so.1.2 $(ls $d/libmfx-gen/*.so) $d/libmfxhw64.so.1 $(ls $d/mfx/*.so)" \
       /stage.sh /staging
+# Burned-in text is drawn by libass in Noto Sans, the face Plex draws it in
+# (Medium is in Debian's fonts-noto-extra, Regular and Bold in -core);
+# its fontconfig (in BtbN's libavfilter) finds them through this file and
+# substitutes Noto Sans for any face a subtitle names that the image lacks.
+# The cache goes to the memory-backed inputs directory, the one writable
+# path the pod has.
+RUN set -eux; \
+    mkdir -p /staging/usr/share/fonts/noto /staging/etc/fonts /staging/usr/share/licenses/fonts-noto; \
+    for f in Regular Medium Bold; do cp /usr/share/fonts/truetype/noto/NotoSans-$f.ttf /staging/usr/share/fonts/noto/; done; \
+    cp /usr/share/doc/fonts-noto-core/copyright /staging/usr/share/licenses/fonts-noto/copyright; \
+    cp /usr/share/doc/fonts-noto-extra/copyright /staging/usr/share/licenses/fonts-noto/copyright-extra; \
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' '<fontconfig>' \
+      '  <dir>/usr/share/fonts</dir>' '  <cachedir>/run/video-inputs/.fontconfig</cachedir>' \
+      '  <alias><family>sans-serif</family><prefer><family>Noto Sans</family></prefer></alias>' \
+      '  <match target="pattern"><edit name="family" mode="append_last"><string>Noto Sans</string></edit></match>' \
+      '</fontconfig>' > /staging/etc/fonts/fonts.conf
 
 # ---------------------------------------------------------------------------
 # video: FROM scratch
@@ -103,6 +119,7 @@ LABEL org.opencontainers.image.source="https://github.com/mediactl/cluster-plex"
 COPY --from=staging /staging/ /
 # libva logs every driver load at info level on stderr; errors only.
 ENV FFGO_SHIM_DIR=/usr/lib \
+    FONTCONFIG_FILE=/etc/fonts/fonts.conf \
     LIBVA_MESSAGING_LEVEL=1 \
     LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri \
     LIBVA_DRIVER_NAME=iHD

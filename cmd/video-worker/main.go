@@ -72,6 +72,7 @@ var (
 	selfCheckEncoders = []string{"h264_qsv", "libx264", "aac"}
 	selfCheckFilters  = []string{"vpp_qsv", "hwmap", "hwupload", "subtitles", "bwdif", "zscale", "tonemap", "scale"}
 	selfCheckDriver   = "/usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so"
+	selfCheckFiles    = []string{selfCheckDriver, "/usr/share/fonts/noto/NotoSans-Medium.ttf", "/etc/fonts/fonts.conf"}
 )
 
 // selfCheck prints the runtime and what the image carries, and fails on
@@ -94,10 +95,12 @@ func selfCheck(w io.Writer) error {
 			missing = append(missing, f)
 		}
 	}
-	_, err := os.Stat(selfCheckDriver)
-	_, _ = fmt.Fprintf(w, "driver %s: %s\n", selfCheckDriver, map[bool]string{true: "present", false: "missing"}[err == nil])
-	if err != nil {
-		missing = append(missing, selfCheckDriver)
+	for _, f := range selfCheckFiles {
+		_, err := os.Stat(f)
+		_, _ = fmt.Fprintf(w, "file %s: %s\n", f, map[bool]string{true: "present", false: "missing"}[err == nil])
+		if err != nil {
+			missing = append(missing, f)
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing %v", missing)
@@ -119,6 +122,7 @@ func run() error {
 	node := pflag.String("render-node", "/dev/dri/renderD128", "the Intel GPU's render node")
 	encoder := pflag.String("encoder", "h264_qsv", "h264_qsv on the GPU; libx264 encodes and scales on the CPU")
 	inputsDir := pflag.String("inputs-dir", "/run/video-inputs", "memory-backed directory a streamed subtitle is held in for burn-in")
+	fontsDir := pflag.String("fonts-dir", "/usr/share/fonts/noto", "the fonts burned-in text is drawn in (Noto Sans)")
 	check := pflag.Bool("self-check", false, "print the runtime and what the image carries, then exit")
 	pflag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -148,7 +152,7 @@ func run() error {
 	var measured atomic.Bool
 	srv := &worker.Server{
 		Slots: worker.NewSlots(*maxJobs), Run: pipeline.Run, Logger: log, Measured: measured.Load,
-		Options: pipeline.Options{Encoder: *encoder, RenderNode: *node, InputsDir: *inputsDir},
+		Options: pipeline.Options{Encoder: *encoder, RenderNode: *node, InputsDir: *inputsDir, FontsDir: *fontsDir},
 		Active:  func(k video.OutputKind, d int) { active.WithLabelValues(string(k)).Add(float64(d)) },
 		Speed:   speed.Observe,
 	}

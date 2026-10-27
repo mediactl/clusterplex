@@ -403,12 +403,19 @@ func (j *Job) imageBurn(video int, v VideoOut, o overlay) error {
 	return nil
 }
 
+// libassLines is the height libass draws a SubRip on (FFmpeg's SRT-to-ASS
+// PlayResY); plexLines the picture Plex's inlineass sizes are for: its
+// font_size 54 is a 5% subtitle on 1080 lines, a fifth of the picture on 288.
+const libassLines, plexLines = 288.0, 1080.0
+
 // inlineStyle reads Plex's inlineass filter into the ASS style libass is
-// given: its overrides, then its font size (scaled), outline and shadow.
-// Plex's font paths and the subtitle's language are its own: the worker
-// draws with its own Noto Sans.
+// given: its overrides, then its font size (scaled by font_scale), outline
+// and shadow, each from Plex's 1080 lines to libass's 288. Plex's font
+// paths and the subtitle's language are its own: the worker draws with its
+// own Noto Sans.
 func inlineStyle(args []kv) (string, error) {
-	var overrides, outline, shadow string
+	var overrides string
+	var outline, shadow float64 = -1, -1
 	size, scale := 0, 1.0
 	for _, a := range args {
 		v := unescape(unescape(a.v)) // the graph's escaping, then the option string's
@@ -421,14 +428,10 @@ func inlineStyle(args []kv) (string, error) {
 			size, err = strconv.Atoi(v)
 		case "font_scale":
 			scale, err = strconv.ParseFloat(v, 64)
-		case "outline", "shadow":
-			if _, err = strconv.ParseFloat(v, 64); err == nil {
-				if a.k == "outline" {
-					outline = v
-				} else {
-					shadow = v
-				}
-			}
+		case "outline":
+			outline, err = strconv.ParseFloat(v, 64)
+		case "shadow":
+			shadow, err = strconv.ParseFloat(v, 64)
 		default:
 			return "", refuse("inlineass option %q", a.k)
 		}
@@ -440,14 +443,15 @@ func inlineStyle(args []kv) (string, error) {
 	if overrides != "" {
 		style = append(style, overrides)
 	}
+	k := libassLines / plexLines
 	if size > 0 {
-		style = append(style, fmt.Sprintf("Fontsize=%d", int(math.Round(float64(size)*scale))))
+		style = append(style, fmt.Sprintf("Fontsize=%d", int(math.Round(float64(size)*scale*k))))
 	}
-	if outline != "" {
-		style = append(style, "Outline="+outline)
+	if outline >= 0 {
+		style = append(style, "Outline="+strconv.FormatFloat(math.Round(outline*k*100)/100, 'f', -1, 64))
 	}
-	if shadow != "" {
-		style = append(style, "Shadow="+shadow)
+	if shadow >= 0 {
+		style = append(style, "Shadow="+strconv.FormatFloat(math.Round(shadow*k*100)/100, 'f', -1, 64))
 	}
 	return strings.Join(style, ","), nil
 }

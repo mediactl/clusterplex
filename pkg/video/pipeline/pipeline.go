@@ -26,6 +26,7 @@ type Options struct {
 	RenderNode string
 	Inputs     func(i int) io.Reader // a streamed input's bytes
 	InputsDir  string                // the memory-backed emptyDir (burn-in)
+	FontsDir   string                // the fonts text burn-in draws with (Noto Sans)
 }
 
 func (o Options) onGPU() bool { return o.Caps != nil }
@@ -57,10 +58,6 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	if job.Output != video.OutputHLS {
 		return fmt.Errorf("%w: output %s", video.ErrShape, job.Output)
 	}
-	// Refused, never converted without what Plex asked for, until drawn.
-	if job.Burn != nil {
-		return fmt.Errorf("%w: a burn-in", video.ErrShape)
-	}
 	in, err := openInput(ctx, job, o)
 	if err != nil {
 		return err
@@ -73,9 +70,16 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	}
 	defer devs.close()
 
+	burn, err := newBurner(ctx, job, in, o)
+	if err != nil {
+		return err
+	}
+	if burn != nil {
+		defer burn.close()
+	}
 	c := newCutter(job, sink)
 	defer c.close()
-	vp, err := newVideoPath(job, in, o, devs, c)
+	vp, err := newVideoPath(job, in, o, devs, c, burn)
 	if err != nil {
 		return err
 	}
@@ -110,6 +114,8 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 			err = vp.send(p)
 		case ap != nil && idx == in.audio.Index:
 			err = ap.send(p)
+		case burn != nil && burn.sd != nil && idx == burn.index:
+			err = burn.send(p)
 		}
 		if err != nil {
 			if ctx.Err() != nil {

@@ -334,18 +334,3 @@ func TestProgressNamesPlexsKeys(t *testing.T) {
 		}
 	}
 }
-
-func TestAJobItCannotDrawYetIsRefused(t *testing.T) {
-	// Until burn-in is built (Task 12), such a job is refused as a shape,
-	// never converted without it.
-	for name, edit := range map[string]func(*video.Job){
-		"a burn-in": func(j *video.Job) { j.Burn = &video.BurnIn{Stream: 3, Image: true} },
-	} {
-		t.Run(name, func(t *testing.T) {
-			job := library(t, "/media/none.mkv")
-			edit(&job)
-			err := pipeline.Run(t.Context(), job, cpu, &recorder{})
-			require.ErrorIs(t, err, video.ErrShape)
-		})
-	}
-}

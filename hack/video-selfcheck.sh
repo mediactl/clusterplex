@@ -1,7 +1,7 @@
 #!/bin/sh
 # video-selfcheck.sh proves a cluster-plex-video image: its worker loads
 # FFmpeg 9 through a shim of API 2 or later, and finds the encoders,
-# filters and Intel media driver the GPU pool converts with. It needs no
+# filters, Intel media driver and fonts the GPU pool converts with. It needs no
 # GPU: the self-check measures nothing.
 #
 #   hack/video-selfcheck.sh <image>
@@ -28,5 +28,7 @@ api=$(echo "$out" | sed -n 's/^shim api //p')
 }
 for e in h264_qsv libx264 aac; do want "encoder $e: found"; done
 for f in vpp_qsv hwmap hwupload subtitles bwdif zscale tonemap scale; do want "filter $f: found"; done
-want "driver /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so: present"
+for f in /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so /usr/share/fonts/noto/NotoSans-Medium.ttf /etc/fonts/fonts.conf; do
+	want "file $f: present"
+done
 exit $fail

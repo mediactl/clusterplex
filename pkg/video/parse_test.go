@@ -203,7 +203,8 @@ func TestTheImageBurnInJobParses(t *testing.T) {
 func TestTheTextBurnInJobParses(t *testing.T) {
 	// Finding B: PMS copies the sidecar into the session's directory and
 	// burns it in with its own inlineass, whose style the worker hands to
-	// libass; Plex's extra subtitle output to null is dropped.
+	// libass; Plex's extra subtitle output to null is dropped. Plex's sizes
+	// are on a 1080-line picture, libass's for a SubRip on 288 lines.
 	c := fixture(t, "burn-text-sidecar")
 	j, err := video.Parse(c.Args, c.Env)
 	require.NoError(t, err)
@@ -214,7 +215,7 @@ func TestTheTextBurnInJobParses(t *testing.T) {
 	require.Equal(t, &video.BurnIn{
 		Input: 1, Stream: 0,
 		Style: "ScaledBorderAndShadow=yes,FontName=Noto Sans Medium,Bold=500,PrimaryColour=&H00FFFFFF," +
-			"OutlineColour=&H00020713,BackColour=&HCC000000,Fontsize=54,Outline=2.6,Shadow=1.7",
+			"OutlineColour=&H00020713,BackColour=&HCC000000,Fontsize=14,Outline=0.69,Shadow=0.45",
 	}, j.Burn)
 	require.Equal(t, 0, j.Video.Stream)
 	require.Equal(t, 2, j.Audio.Stream)

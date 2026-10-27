@@ -37,8 +37,12 @@ type videoPath struct {
 	// bitstream alone.
 	colourKnown bool
 	graph       *ffgo.FilterGraph
-	enc         *ffgo.VideoStreamEncoder
-	forced      int
+	// burn draws the job's subtitle (nil: none); a burn-in job is filtered
+	// on the CPU, and on a GPU pod upload then takes its frames to QSV.
+	burn   *burner
+	upload *ffgo.FilterGraph
+	enc    *ffgo.VideoStreamEncoder
+	forced int
 
 	// The grid (finding R): output frame j is at job.Start + j frames, and
 	// takes the source frame nearest it, as -fps_mode cfr does.
@@ -48,14 +52,14 @@ type videoPath struct {
 	slot  int64
 }
 
-func newVideoPath(job video.Job, in *input, o Options, devs *devices, c *cutter) (*videoPath, error) {
+func newVideoPath(job video.Job, in *input, o Options, devs *devices, c *cutter, burn *burner) (*videoPath, error) {
 	vs := in.video
 	bits := 8
 	if name := ffgo.PixelFormatName(vs.PixelFmt); strings.Contains(name, "10") || strings.HasPrefix(name, "p010") {
 		bits = 10
 	}
 	v := &videoPath{
-		job: job, o: o, in: in, devs: devs, c: c, tenBit: bits == 10,
+		job: job, o: o, in: in, devs: devs, c: c, tenBit: bits == 10, burn: burn,
 		forced: video.FirstForced(job.Start, job.Video.KeyframeEvery),
 	}
 	v.colour(vs.Color.Transfer)
@@ -70,7 +74,7 @@ func newVideoPath(job video.Job, in *input, o Options, devs *devices, c *cutter)
 	v.deinterlace = v.deinterlace || job.Video.Deinterlace
 	// Frames decoded on the GPU stay there, so they are decoded so only
 	// where vpp_qsv does everything they need.
-	v.gpuDecode = o.onGPU() && o.Caps.DecodesOnGPU(vs.Codec, bits) &&
+	v.gpuDecode = o.onGPU() && burn == nil && o.Caps.DecodesOnGPU(vs.Codec, bits) &&
 		(!mayBeHDR || o.Caps.ToneMap) && (!v.deinterlace || o.Caps.Deinterlace)
 	cfg := &ffgo.StreamDecoderConfig{}
 	if v.gpuDecode {
@@ -104,6 +108,9 @@ func (v *videoPath) close() {
 	if v.enc != nil {
 		_ = v.enc.Close()
 	}
+	if v.upload != nil {
+		_ = v.upload.Close()
+	}
 	if v.graph != nil {
 		_ = v.graph.Close()
 	}
@@ -134,6 +141,18 @@ func (v *videoPath) flush() error {
 	}
 	if v.graph != nil {
 		outs, err := v.graph.Flush()
+		if err != nil {
+			return err
+		}
+		if outs, err = v.post(outs); err != nil {
+			return err
+		}
+		if err := v.encode(outs); err != nil {
+			return err
+		}
+	}
+	if v.upload != nil {
+		outs, err := v.upload.Flush()
 		if err != nil {
 			return err
 		}
@@ -197,7 +216,56 @@ func (v *videoPath) emit(f ffgo.Frame, j int64) error {
 	if err != nil {
 		return fmt.Errorf("video filter: %w", err)
 	}
+	if outs, err = v.post(outs); err != nil {
+		return err
+	}
 	return v.encode(outs)
+}
+
+// post draws an image subtitle onto the CPU chain's frames and, on a GPU
+// pod, uploads a burn-in job's frames for h264_qsv. It frees every frame
+// it replaces, and all of them on an error.
+func (v *videoPath) post(outs []*ffgo.Frame) ([]*ffgo.Frame, error) {
+	if v.burn == nil {
+		return outs, nil
+	}
+	fail := func(err error, frames []*ffgo.Frame) ([]*ffgo.Frame, error) {
+		for _, f := range frames {
+			_ = f.Free()
+		}
+		return nil, err
+	}
+	if v.burn.sd != nil {
+		for _, o := range outs {
+			if err := composite(*o, v.burn.at(toTime(o.PTS(), outTB)), v.burn.canvasW, v.burn.canvasH); err != nil {
+				return fail(err, outs)
+			}
+		}
+	}
+	if !v.o.onGPU() {
+		return outs, nil
+	}
+	var up []*ffgo.Frame
+	for i, o := range outs {
+		if v.upload == nil {
+			g, err := ffgo.NewFilterGraph(ffgo.FilterGraphConfig{
+				Width: v.job.Video.Width, Height: v.job.Video.Height, PixelFmt: ffgo.PixelFormat(o.Format()),
+				TimeBase: outTB, SAR: v.in.video.SampleAspectRatio, HWDevice: v.devs.qsv,
+				Filters: "format=nv12,hwupload=extra_hw_frames=64,vpp_qsv=format=nv12",
+			})
+			if err != nil {
+				return fail(fmt.Errorf("upload filters: %w", err), append(up, outs[i:]...))
+			}
+			v.upload = g
+		}
+		fs, err := v.upload.Filter(o)
+		_ = o.Free()
+		if err != nil {
+			return fail(fmt.Errorf("upload: %w", err), append(up, outs[i+1:]...))
+		}
+		up = append(up, fs...)
+	}
+	return up, nil
 }
 
 func (v *videoPath) graphConfig(g ffgo.Frame) ffgo.FilterGraphConfig {
@@ -207,9 +275,12 @@ func (v *videoPath) graphConfig(g ffgo.Frame) ffgo.FilterGraphConfig {
 		TimeBase: outTB, SAR: vs.SampleAspectRatio, HWFramesCtx: g.HWFramesCtx(),
 	}
 	// On a GPU pod, vpp_qsv deinterlaces and tone-maps where the device
-	// measured it could; anything else runs on the CPU before the upload.
-	qsvDeint := v.o.onGPU() && v.deinterlace && v.o.Caps.Deinterlace
-	qsvTone := v.o.onGPU() && v.toneMap && v.o.Caps.ToneMap
+	// measured it could; anything else runs on the CPU before the upload. A
+	// burn-in job's chain is the CPU's alone, its subtitle drawn at the
+	// output's size.
+	cpuOnly := !v.o.onGPU() || v.burn != nil
+	qsvDeint := !cpuOnly && v.deinterlace && v.o.Caps.Deinterlace
+	qsvTone := !cpuOnly && v.toneMap && v.o.Caps.ToneMap
 	vpp := fmt.Sprintf("vpp_qsv=w=%d:h=%d:format=nv12", out.Width, out.Height)
 	if qsvTone {
 		vpp = "vpp_qsv=tonemap=1:" + vpp[len("vpp_qsv="):]
@@ -221,14 +292,17 @@ func (v *videoPath) graphConfig(g ffgo.Frame) ffgo.FilterGraphConfig {
 	if v.deinterlace && !qsvDeint {
 		cpu = append(cpu, "bwdif=mode=send_frame")
 	}
-	if !v.o.onGPU() {
+	if cpuOnly {
 		cpu = append(cpu, fmt.Sprintf("scale=w=%d:h=%d", out.Width, out.Height))
 	}
 	if v.toneMap && !qsvTone {
 		cpu = append(cpu, toneMapChain(v.transfer))
 	}
+	if v.burn != nil && v.burn.filter != "" {
+		cpu = append(cpu, v.burn.filter)
+	}
 	switch {
-	case !v.o.onGPU():
+	case cpuOnly:
 		cfg.Filters = strings.Join(append(cpu, "format=yuv420p"), ",")
 	case v.gpuDecode:
 		cfg.Filters = "hwmap=derive_device=qsv,format=qsv," + vpp
@@ -294,7 +368,11 @@ func (v *videoPath) openEncoder() error {
 		KeepFrameTypes: true,
 	}
 	if v.o.onGPU() {
-		cfg.HWFramesCtx = v.graph.OutputHWFramesCtx()
+		last := v.graph
+		if v.upload != nil {
+			last = v.upload
+		}
+		cfg.HWFramesCtx = last.OutputHWFramesCtx()
 		cfg.Bitrate = out.MaxRate * 8 / 10
 		cfg.CodecOptions = map[string]string{"bf": "0", "forced_idr": "1", "async_depth": "1"}
 	} else {
