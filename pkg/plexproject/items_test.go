@@ -14,7 +14,7 @@ var now0 = time.Unix(1790800000, 0)
 
 func movieItem(uid, plexID, title string) Item {
 	return Item{Provider: MoviesProvider, Chain: []Node{{
-		Type: TypeMovie, GUID: GUID(MoviesProvider, TypeMovie, uid, plexID), PriorGUID: prior(MoviesProvider, TypeMovie, uid, plexID),
+		Type: TypeMovie, UID: uid, GUID: GUID(MoviesProvider, TypeMovie, uid, plexID), PriorGUID: prior(MoviesProvider, TypeMovie, uid, plexID),
 		Title: title, TitleSort: strings.ToLower(title), Year: 1995, AddedAt: now0,
 	}}}
 }

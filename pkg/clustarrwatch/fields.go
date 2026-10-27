@@ -55,6 +55,9 @@ var (
 	// sidecarsField lists the subtitle files beside the file, which the
 	// projection writes as external subtitle streams.
 	sidecarsField = []string{"status", "sidecars"}
+	// editionField is a movie file's edition, frozen at import, which the
+	// projection writes as the Plex item's edition (plexproject.Resolve).
+	editionField = []string{"spec", "edition"}
 	// shown is what Plex displays of an item, and so what a refresh is for.
 	shown = [][]string{
 		{"status", "metadata"},
@@ -84,7 +87,7 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 	}
 	switch gvr {
 	case MediaFiles:
-		return [][]string{pathField, kindField, mediaRefNameField, mediaRefKeysField, sizeField, modTimeField, probeField, probeHashField, markersField, sidecarsField}
+		return [][]string{pathField, kindField, mediaRefNameField, mediaRefKeysField, sizeField, modTimeField, probeField, probeHashField, markersField, sidecarsField, editionField}
 	case Movies:
 		return item
 	case Series:

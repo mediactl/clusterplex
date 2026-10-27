@@ -191,7 +191,22 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   `media_analysis_version` 8) and, through `pkg/plexseed.SeedTx`, the
   streams and markers, from the MediaFile the watcher hands it; a path or
   probe change updates the same row; a deleted file trashes its rows and
-  the items left empty. Plex 1.43 scans a library inside its own process,
+  the items left empty. A node's row is found by every key it may carry
+  (`plexproject.locate`): its guid or prior custom form, a movie's with any
+  `/edition/<title>`, a season's or an episode's place under its parent,
+  and the row the file's media hangs off while stamped for the same item
+  (`cp:itemUID`). Never look one up by a single exact guid: Plex's refresh
+  rewrites a row's guid to whatever the provider answers, and the exact
+  lookup left 73 bogus movie editions and 454 episode twins in Plex's trash
+  on talos (2026-10-16 to 27). A file that moves to another item
+  soft-deletes its row there instead of carrying it along, since PMS's Empty
+  Trash removes a trashed item only through its deleted media rows
+  (captured on stock PMS 1.43.5). An episode is keyed by its Plex id only
+  inside a season Plex knows (`plexproject.EpisodePlexID`, the provider's
+  own rule). A movie file's `spec.edition` is Plex's edition: `edition_title`
+  and the guid `<guid>/edition/<path-escaped title>`, under which Plex keys
+  the edition's watched state, so a re-key moves it.
+  Plex 1.43 scans a library inside its own process,
   so the shim never sees a scan: the proxy catches the plain-HTTP
   `POST /library/sections/{id}/refresh` and sends it to `--scan-route`
   (the manager's `/api/v1/scan`, 404 for an unprovisioned section so the

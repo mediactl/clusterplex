@@ -5,7 +5,12 @@
 // of an item it has never seen.
 package plexproject
 
-import "k8s.io/apimachinery/pkg/runtime/schema"
+import (
+	"net/url"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
 
 // The provider identifiers clustarr's chart registers with Plex.
 const (
@@ -41,4 +46,27 @@ func GUID(provider string, t ItemType, ratingKey, plexID string) string {
 		return "plex://" + typeNames[t] + "/" + plexID
 	}
 	return provider + "://" + typeNames[t] + "/" + ratingKey
+}
+
+// editionMarker joins a movie's guid and its edition in the guid PMS
+// stores for an edition: plex://movie/<id>/edition/Final%20Cut (talos,
+// 2026-10-15). PMS keeps each edition of a movie as an item of its own and
+// lists them together.
+const editionMarker = "/edition/"
+
+// EditionGUID is the guid of guid's edition, as PMS writes it: the title
+// path-escaped behind editionMarker. guid itself when there is no edition.
+func EditionGUID(guid, edition string) string {
+	if guid == "" || edition == "" {
+		return guid
+	}
+	return guid + editionMarker + url.PathEscape(edition)
+}
+
+// BaseGUID is guid without its edition: the movie's own guid.
+func BaseGUID(guid string) string {
+	if i := strings.Index(guid, editionMarker); i >= 0 {
+		return guid[:i]
+	}
+	return guid
 }

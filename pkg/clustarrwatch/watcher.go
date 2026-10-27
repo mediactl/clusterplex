@@ -393,7 +393,7 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 					w.enqueueSeed(u)
 				}
 			}
-			w.sched.EnqueueRefresh(itemGUID(provider, plexType, n))
+			w.sched.EnqueueRefresh(w.itemGUID(provider, plexType, n))
 		},
 	}
 }

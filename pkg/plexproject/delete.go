@@ -29,14 +29,22 @@ func (p *Projector) Delete(ctx context.Context, section int64, uid string) error
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE media_parts SET deleted_at = $2, updated_at = $2 WHERE media_item_id = $1 AND deleted_at IS NULL`, media, now); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE media_items SET deleted_at = $2, updated_at = $2 WHERE id = $1`, media, now); err != nil {
+	if err := retireMedia(ctx, tx, media, now); err != nil {
 		return err
 	}
 	if err := trashIfEmpty(ctx, tx, item, now); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// retireMedia soft-deletes a media row and its parts, as Plex's scanner
+// does when a file is gone from an item: PMS's Empty Trash removes them,
+// and with them an item they leave with nothing live.
+func retireMedia(ctx context.Context, tx pgx.Tx, media, now int64) error {
+	if _, err := tx.Exec(ctx, `UPDATE media_parts SET deleted_at = $2, updated_at = $2 WHERE media_item_id = $1 AND deleted_at IS NULL`, media, now); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE media_items SET deleted_at = $2, updated_at = $2 WHERE id = $1`, media, now)
+	return err
 }

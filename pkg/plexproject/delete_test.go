@@ -11,9 +11,9 @@ import (
 // episodeItem is a show/season/episode chain for tests.
 func episodeItem(seriesUID string, season int32, epUID string, ep int32) Item {
 	return Item{Provider: TVProvider, Chain: []Node{
-		{Type: TypeShow, GUID: GUID(TVProvider, TypeShow, seriesUID, ""), Title: "Show", TitleSort: "show", Year: 2010, AddedAt: now0},
-		{Type: TypeSeason, GUID: GUID(TVProvider, TypeSeason, fmt.Sprintf("%s-s%02d", seriesUID, season), ""), Title: fmt.Sprintf("Season %d", season), Index: season, AddedAt: now0},
-		{Type: TypeEpisode, GUID: GUID(TVProvider, TypeEpisode, epUID, ""), Title: "Episode", Index: ep, AddedAt: now0},
+		{Type: TypeShow, UID: seriesUID, GUID: GUID(TVProvider, TypeShow, seriesUID, ""), Title: "Show", TitleSort: "show", Year: 2010, AddedAt: now0},
+		{Type: TypeSeason, UID: fmt.Sprintf("%s-s%02d", seriesUID, season), GUID: GUID(TVProvider, TypeSeason, fmt.Sprintf("%s-s%02d", seriesUID, season), ""), Title: fmt.Sprintf("Season %d", season), Index: season, AddedAt: now0},
+		{Type: TypeEpisode, UID: epUID, GUID: GUID(TVProvider, TypeEpisode, epUID, ""), Title: "Episode", Index: ep, AddedAt: now0},
 	}}
 }
 

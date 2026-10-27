@@ -294,3 +294,49 @@ clustarr's resources; ADR-0019 already forbids the latter.
 Descriptive metadata and image bundles (Plex's refresh keeps them); files
 clustarr does not know; non-provisioned sections; Live TV and DVR rows;
 music, books and photos.
+
+## 14. As built: row identity, trash and editions (2026-10-27)
+
+§4 keyed every item row by one exact guid. Three things on talos showed
+that is not enough, and §6 and §7 changed with them.
+
+- **Plex rewrites the guid.** Its refresh writes whatever guid the provider
+  answers. The provider gives an episode its `plex://` guid only inside a
+  season Plex knows (`ui/plex`, 2026-10-06), while the projection keyed it
+  by its Plex id regardless. A Plex id can also change. Plex's own scan,
+  before the projection, keyed an edition as `<guid>/edition/<title>`. In
+  each case the exact lookup missed the row, inserted a second one and
+  moved the file onto it. The first was left in the trash: 73 movies showed
+  an edition with no file (2026-10-16) and 454 episodes had a trashed twin
+  (2026-10-22 to 27).
+- **Empty Trash never removed those rows.** On stock PMS 1.43.5 (SQLite,
+  unclaimed, generated files), Empty Trash removed a trashed item with
+  soft-deleted media still on it, whatever its `media_item_count`. It left
+  a trashed item whose media row had moved to another item. The daily
+  CronJob therefore removed none of the 527, which were deleted by hand
+  through `DELETE /library/metadata/<id>`.
+- **Editions are keyed per guid.** PMS writes an edition's title as
+  `edition_title` and stores its guid with the title path-escaped
+  (`/edition/Director%27s%20Cut`). It shows `editionTitle`, keeps both
+  across a forced refresh, and keys the edition's watched state by that
+  full guid.
+
+As built:
+
+- `locate` finds a node's row by its guid or prior custom form (a movie's
+  with or without an edition), by its place under its parent for a season
+  or an episode, and live before trashed. The row the file's media hangs
+  off is taken for the item it was stamped for (`cp:itemUID`) when no live
+  row matches. `keyItem` gives the found row the node's guid and edition,
+  revives it if trashed, keeps PMS's escaping of the same edition, and
+  moves the watched state to the new guid. An account already keyed there
+  keeps its own; the schema's `metadata_item_settings_account_guid_unique`
+  refuses a second row.
+- An episode's guid follows the provider's rule (`EpisodePlexID`), and so
+  does the watcher's refresh lookup. The manager's `plexItemID` finds a
+  movie past its edition and never a trashed row.
+- A file that moves to another item soft-deletes its row on the old one
+  (`retireMedia`, shared with Delete) and gets a new row on the new one,
+  so Empty Trash removes the old item as it removes any other.
+- A movie file's `spec.edition` (kept by the watcher's `Trim`) is the node's
+  `Edition` and part of its guid, written into `edition_title`.

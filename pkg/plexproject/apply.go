@@ -76,9 +76,30 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 		return nil
 	}
 	pending := &pendingRefresh{}
-	item, err := EnsureChain(ctx, tx, section, c.Item, now, pending)
+	chain := c.Item
+	if have && f.itemUID != "" && f.itemUID == chain.leafUID() {
+		chain.hint = f.item
+	}
+	item, err := EnsureChain(ctx, tx, section, chain, now, pending)
 	if err != nil {
 		return err
+	}
+	if have && f.item != 0 && f.item != item {
+		// The file moved to another item (review I7). It leaves the item
+		// as Plex's scanner leaves a file gone from one -- its row there
+		// soft-deleted, the item trashed if nothing else is on it -- and
+		// the item it moved to gets a row of its own. PMS's Empty Trash
+		// removes a trashed item only through its deleted media rows (the
+		// capture of 2026-10-27), so an item whose row was carried away
+		// stayed in Plex's trash for good: on talos 73 movies showed an
+		// edition with no file.
+		if err := retireMedia(ctx, tx, f.media, now.Unix()); err != nil {
+			return fmt.Errorf("plexproject: retire %s's row on item %d: %w", c.UID, f.item, err)
+		}
+		if err := trashIfEmpty(ctx, tx, f.item, now.Unix()); err != nil {
+			return fmt.Errorf("plexproject: recount item %d: %w", f.item, err)
+		}
+		f, have = found{}, false
 	}
 	if c.Location != 0 {
 		location = c.Location
@@ -94,13 +115,6 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	target, err := upsertMedia(ctx, tx, section, location, item, dir, f, have, c, now)
 	if err != nil {
 		return fmt.Errorf("plexproject: media row for %s: %w", c.UID, err)
-	}
-	if have && f.item != 0 && f.item != item {
-		// The file moved to another item: the one it left is recounted and
-		// trashed if nothing else is on it (review I7).
-		if err := trashIfEmpty(ctx, tx, f.item, now.Unix()); err != nil {
-			return fmt.Errorf("plexproject: recount item %d: %w", f.item, err)
-		}
 	}
 	// A new row, an adopted one, a changed probe or an older row format:
 	// the row's streams are the probe's and nothing else. Otherwise (a path

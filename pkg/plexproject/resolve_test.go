@@ -95,3 +95,23 @@ func TestAFileWhoseItemIsNotCachedYetDoesNotResolve(t *testing.T) {
 	_, ok = Resolve(fixture(t, "mediafile-episode.yaml"), lookupOf(ep))
 	require.False(t, ok, "an episode without its series does not resolve either")
 }
+
+// An episode is keyed by its Plex id only inside a season Plex knows too,
+// as clustarr's provider answers it; keyed by it regardless, Plex's next
+// refresh wrote the provider's custom guid back over the projection's
+// (talos, 2026-10-27: My Happy Marriage season 2).
+func TestAnEpisodeIsKeyedByItsPlexIDOnlyInsideASeasonPlexKnows(t *testing.T) {
+	file, ep, series := fixture(t, "mediafile-episode.yaml"), fixture(t, "episode.yaml"), fixture(t, "series.yaml")
+	require.NoError(t, unstructured.SetNestedField(ep.Object, "68063da0818203abfa0cc498", "status", "plexID"))
+	it, ok := Resolve(file, lookupOf(ep, series))
+	require.True(t, ok)
+	require.Equal(t, "plex://episode/68063da0818203abfa0cc498", it.Chain[2].GUID, "season 1 is in plexSeasons")
+	require.Equal(t, string(ep.GetUID()), it.Chain[2].UID)
+
+	require.NoError(t, unstructured.SetNestedField(ep.Object, int64(2), "spec", "seasonNumber"))
+	it, ok = Resolve(file, lookupOf(ep, series))
+	require.True(t, ok)
+	require.Equal(t, GUID(TVProvider, TypeSeason, string(series.GetUID())+"-s02", ""), it.Chain[1].GUID, "season 2 has no Plex id")
+	require.Equal(t, GUID(TVProvider, TypeEpisode, string(ep.GetUID()), ""), it.Chain[2].GUID, "nor, then, its episode")
+	require.Empty(t, it.Chain[2].PriorGUID)
+}

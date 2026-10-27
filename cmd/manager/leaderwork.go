@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
@@ -208,13 +209,20 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 }
 
 // plexItemID finds the Plex item clustarr's provider matched, by the guid
-// Plex stored. Read-only: the API has no documented filter by guid.
+// Plex stored. Read-only: the API has no documented filter by guid. A
+// trashed row is no item to refresh, and a movie's edition is keyed
+// <guid>/edition/<title> (plexproject.EditionGUID) while clustarr's movie
+// names no edition: the edition is its file's.
 func (m *Manager) plexItemID(ctx context.Context, guid string) (int64, bool, error) {
 	if m.pool == nil {
 		return 0, false, nil
 	}
 	var id int64
-	err := m.pool.QueryRow(ctx, "SELECT id FROM metadata_items WHERE guid = $1 LIMIT 1", guid).Scan(&id)
+	err := m.pool.QueryRow(ctx, "SELECT id FROM metadata_items WHERE guid = $1 AND deleted_at IS NULL ORDER BY id LIMIT 1", guid).Scan(&id)
+	if errors.Is(err, plexdb.ErrNoRows) && strings.Contains(guid, "://movie/") {
+		err = m.pool.QueryRow(ctx, `SELECT id FROM metadata_items WHERE metadata_type = $2 AND deleted_at IS NULL
+			AND split_part(guid::text, '/edition/', 1) = $1 ORDER BY id LIMIT 1`, guid, int(plexproject.TypeMovie)).Scan(&id)
+	}
 	if errors.Is(err, plexdb.ErrNoRows) {
 		return 0, false, nil
 	}

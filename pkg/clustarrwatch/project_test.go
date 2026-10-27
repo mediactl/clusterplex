@@ -358,13 +358,16 @@ func TestAnEpisodesPlexIDOrSeasonIDArrivingReappliesItsFile(t *testing.T) {
 	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
 	require.Equal(t, "tv.plex.agents.custom.clustarr.tv://episode/uid-ep", rp.Applied()[0].change.Item.Chain[2].GUID)
 
+	// The episode's Plex id alone keys nothing while its season has none,
+	// as clustarr's provider answers it (plexproject.EpisodePlexID).
 	dyn.update(t, clustarrwatch.Episodes, episode("ep", "show", 1, 1, "bbbbbbbbbbbbbbbbbbbbbbbb"))
 	require.Eventually(t, func() bool { return len(rp.Applied()) == 2 }, 5*time.Second, 10*time.Millisecond, "events: %v", rp.Events())
-	require.Equal(t, "plex://episode/bbbbbbbbbbbbbbbbbbbbbbbb", rp.Applied()[1].change.Item.Chain[2].GUID)
+	require.Equal(t, "tv.plex.agents.custom.clustarr.tv://episode/uid-ep", rp.Applied()[1].change.Item.Chain[2].GUID)
 
 	dyn.update(t, clustarrwatch.Series, series("show", "aaaaaaaaaaaaaaaaaaaaaaaa", map[int]string{1: "cccccccccccccccccccccccc"}))
 	require.Eventually(t, func() bool { return len(rp.Applied()) == 3 }, 5*time.Second, 10*time.Millisecond)
 	require.Equal(t, "plex://season/cccccccccccccccccccccccc", rp.Applied()[2].change.Item.Chain[1].GUID)
+	require.Equal(t, "plex://episode/bbbbbbbbbbbbbbbbbbbbbbbb", rp.Applied()[2].change.Item.Chain[2].GUID, "now the season has one")
 }
 
 // C2: an upgrade's new file is applied before the old one is removed,

@@ -405,8 +405,21 @@ func plexIDOf(u *unstructured.Unstructured) string {
 }
 
 // itemGUID is the guid Plex stores for an item today: its Plex id's form
-// once clustarr knows it, the provider's custom form before.
-func itemGUID(provider, plexType string, u *unstructured.Unstructured) string {
+// once clustarr knows it, the provider's custom form before -- an
+// episode's Plex id only inside a season Plex knows too, as the projection
+// keys it (plexproject.EpisodePlexID). A movie's edition is its file's,
+// which the refresh's lookup matches past (the manager's plexItemID).
+func (w *Watcher) itemGUID(provider, plexType string, u *unstructured.Unstructured) string {
 	t := map[string]plexproject.ItemType{"movie": plexproject.TypeMovie, "show": plexproject.TypeShow, "episode": plexproject.TypeEpisode}[plexType]
-	return plexproject.GUID(provider, t, string(u.GetUID()), plexIDOf(u))
+	plexID := plexIDOf(u)
+	if t == plexproject.TypeEpisode {
+		series, _, _ := unstructured.NestedString(u.Object, seriesRefField...)
+		s, ok := w.item(Series, u.GetNamespace(), series)
+		if !ok {
+			plexID = ""
+		} else {
+			plexID = plexproject.EpisodePlexID(u, s)
+		}
+	}
+	return plexproject.GUID(provider, t, string(u.GetUID()), plexID)
 }

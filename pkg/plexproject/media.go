@@ -26,6 +26,10 @@ const (
 	// SeedVersionKey is the seeder's row format; a row stamped with an
 	// older one has its streams replaced (review I6).
 	SeedVersionKey = "cp:seedVersion"
+	// ItemUIDKey is the clustarr item the row was applied for (the chain's
+	// last Node.UID): while the file stays that item's, the row's item is
+	// that item's row, whatever guid Plex has written on it since.
+	ItemUIDKey = "cp:itemUID"
 )
 
 // SeedVersion is the seeder's current row format: 2 added color_trc, the
@@ -36,6 +40,7 @@ const SeedVersion = "2"
 type found struct {
 	media, part, item int64
 	seedKey, itemKey  string
+	itemUID           string
 	probeHash         string
 	seedVersion       string
 	file              string // media_parts.file as the row last had it
@@ -69,6 +74,7 @@ func findMedia(ctx context.Context, tx pgx.Tx, section int64, uid, plexPath stri
 	}
 	m := extraMap(extra)
 	f.seedKey, f.itemKey, f.probeHash, f.seedVersion = m[SeedKeyKey], m[ItemKeyKey], m[plexseed.ProbeHashKey], m[SeedVersionKey]
+	f.itemUID = m[ItemUIDKey]
 	return f, true, nil
 }
 
@@ -127,6 +133,9 @@ func stampMedia(ctx context.Context, tx pgx.Tx, media int64, c Change, seeded bo
 	m[FileUIDKey] = c.UID
 	m[SeedKeyKey] = c.SeedKey
 	m[ItemKeyKey] = c.Item.Key()
+	if uid := c.Item.leafUID(); uid != "" {
+		m[ItemUIDKey] = uid
+	}
 	if seeded {
 		m[plexseed.ProbeHashKey] = c.Input.ProbeHash
 		m[SeedVersionKey] = SeedVersion
