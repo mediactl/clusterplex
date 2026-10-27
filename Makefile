@@ -86,6 +86,15 @@ REMUX_IMG ?= ghcr.io/mediactl/cluster-plex-remux:dev
 docker-build-remux: ## Build the remux worker's image
 	docker build -f images/Dockerfile.remux --target remux -t $(REMUX_IMG) .
 
+VIDEO_IMG ?= ghcr.io/mediactl/cluster-plex-video:dev
+.PHONY: docker-build-video
+docker-build-video: ## Build the GPU pool's worker image (amd64)
+	docker build -f images/Dockerfile.video --target video --platform linux/amd64 -t $(VIDEO_IMG) .
+
+.PHONY: docker-selfcheck-video
+docker-selfcheck-video: docker-build-video ## Prove the GPU pool's image: FFmpeg 9, the shim, the encoders, filters and Intel driver
+	hack/video-selfcheck.sh $(VIDEO_IMG)
+
 .PHONY: docker-build
 docker-build: ## Build the image; DOCKER_TARGET=debug adds busybox, which make e2e needs
 	docker build -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
@@ -106,6 +115,10 @@ docker-buildx: ## Build and push $(IMG) for $(PLATFORMS)
 .PHONY: docker-buildx-remux
 docker-buildx-remux: ## Build and push $(REMUX_IMG) for $(PLATFORMS)
 	$(BUILDX) -f images/Dockerfile.remux --target remux -t $(REMUX_IMG) .
+
+.PHONY: docker-buildx-video
+docker-buildx-video: ## Build and push $(VIDEO_IMG), amd64 only
+	docker buildx build $(if $(BUILDER),--builder $(BUILDER)) --platform linux/amd64 --push -f images/Dockerfile.video --target video -t $(VIDEO_IMG) .
 
 .PHONY: helm-lint
 helm-lint: ## Lint and render the Helm chart

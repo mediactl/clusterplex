@@ -1,0 +1,119 @@
+# The GPU pool's worker: Plex's video conversions decoded, scaled and
+# encoded in process with ffgo on an Intel GPU
+# (docs/superpowers/specs/2026-10-26-gpu-video-transcode-pool-design.md).
+#
+# The build and ffmpeg stages are images/Dockerfile.remux's; the Intel
+# runtime is clustarr's images/Dockerfile.native's (same owner): Debian 13's
+# iHD driver and libva 2.22, oneVPL's libmfx-gen for Gen12 and newer, and
+# Media SDK's libmfxhw64 for Broadwell..Ice Lake from Debian 12. amd64 only:
+# there is no Intel GPU on arm64. No ffmpeg executable (stage.sh refuses one).
+#
+# video-test adds the gpu and pipeline test binaries, which run only on the
+# NUC (CLUSTERPLEX_EXPECT_INTEL=1, Task 19 of the plan).
+
+ARG GO_VERSION=1.27
+ARG FFMPEG_BRANCH=9.0
+
+# ---------------------------------------------------------------------------
+# build: the worker and its GPU tests (CGO_ENABLED=0), the ffgo shim's source
+# ---------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+ENV CGO_ENABLED=0 GOFLAGS=-trimpath
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags "-s -w" \
+      -o /out/video-worker ./cmd/video-worker \
+ && GOOS=${TARGETOS} GOARCH=${TARGETARCH} go test -c -o /out/tests/gpu.test ./pkg/video/gpu \
+ && GOOS=${TARGETOS} GOARCH=${TARGETARCH} go test -c -o /out/tests/pipeline.test ./pkg/video/pipeline \
+ && mkdir -p /out/ffgo /out/licenses/ffgo \
+ && ffgo="$(go list -m -f '{{.Dir}}' github.com/obinnaokechukwu/ffgo)" \
+ && cp -r "$ffgo/shim" /out/ffgo/ \
+ && cp "$ffgo/LICENSE" /out/licenses/ffgo/LICENSE
+
+# ---------------------------------------------------------------------------
+# ffmpeg: BtbN's shared build into /usr, and the shim against its headers
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS ffmpeg
+ARG TARGETARCH
+ARG FFMPEG_BRANCH
+# One dated BtbN build, checked by its published SHA-256 (clustarr's pin).
+ARG FFMPEG_RELEASE=autobuild-2026-09-30-13-08
+ARG FFMPEG_VERSION=n9.0.2-17-g2a571b6068
+ARG FFMPEG_SHA256_AMD64=01a9764d0b5364b66cfeb4617557c64321b0e232e172ec73f0a701c5f7694326
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/ffgo/shim /src/shim
+RUN set -eux; \
+    [ "${TARGETARCH}" = amd64 ] || { echo "the video worker is amd64 only (TARGETARCH=${TARGETARCH})" >&2; exit 1; }; \
+    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE}/ffmpeg-${FFMPEG_VERSION}-linux64-gpl-shared-${FFMPEG_BRANCH}.tar.xz"; \
+    curl -fsSL -o /tmp/ff.tar.xz "${url}"; \
+    echo "${FFMPEG_SHA256_AMD64}  /tmp/ff.tar.xz" | sha256sum -c -; \
+    mkdir -p /opt/ffmpeg; \
+    tar -xJf /tmp/ff.tar.xz --strip-components=1 -C /opt/ffmpeg; \
+    mkdir -p /out/usr/lib; \
+    cp -a /opt/ffmpeg/lib/lib*.so* /out/usr/lib/; \
+    mkdir -p /out/usr/share/licenses/ffmpeg; \
+    cp /opt/ffmpeg/LICENSE.txt /out/usr/share/licenses/ffmpeg/LICENSE.txt; \
+    printf 'FFmpeg %s, built by BtbN/FFmpeg-Builds (GPL, shared): %s\nSource: https://github.com/FFmpeg/FFmpeg (the commit after the last "g" in the version)\nBuild scripts: https://github.com/BtbN/FFmpeg-Builds\n' \
+      "$(LD_LIBRARY_PATH=/opt/ffmpeg/lib /opt/ffmpeg/bin/ffmpeg -hide_banner -version 2>/dev/null | head -n1 || echo "${FFMPEG_VERSION}")" "${url}" \
+      > /out/usr/share/licenses/ffmpeg/SOURCE; \
+    gcc -shared -fPIC -O2 -Wall -DFFSHIM_HAVE_AVDEVICE=1 -DFFSHIM_HAVE_AVFILTER=1 \
+      -I/opt/ffmpeg/include -o /out/usr/lib/libffshim.so /src/shim/ffshim.c \
+      -L/opt/ffmpeg/lib -lavutil -lavcodec -lavformat -lavdevice -lavfilter
+
+# ---------------------------------------------------------------------------
+# staging: the Intel runtime, then lddtree everything the worker loads
+# ---------------------------------------------------------------------------
+# Debian 13: BtbN's FFmpeg 9 calls libva 2.21's vaMapBuffer2, which Debian
+# 12's libva 2.17 lacks.
+FROM debian:trixie-slim AS staging
+RUN set -eux; \
+    sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources; \
+    grep -q '^Components: main non-free$' /etc/apt/sources.list.d/debian.sources; \
+    printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+      > /etc/apt/sources.list.d/bookworm.sources; \
+    printf 'Package: *\nPin: release n=bookworm\nPin-Priority: 100\n' > /etc/apt/preferences.d/bookworm; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends pax-utils ca-certificates gcc \
+      intel-media-va-driver-non-free libmfx-gen1.2 libva2 libva-drm2 libmfx1/bookworm; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /out/ /
+COPY --from=build /out/video-worker /usr/bin/video-worker
+COPY --from=build /out/licenses/ /usr/share/licenses/
+COPY images/stage.sh /stage.sh
+RUN set -eux; \
+    d=/usr/lib/x86_64-linux-gnu; \
+    BINARY=/usr/bin/video-worker \
+    EXTRA_DLOPEN="$d/dri/iHD_drv_video.so $d/libva.so.2 $d/libva-drm.so.2 $d/libmfx-gen.so.1.2 $(ls $d/libmfx-gen/*.so) $d/libmfxhw64.so.1 $(ls $d/mfx/*.so)" \
+      /stage.sh /staging
+
+# ---------------------------------------------------------------------------
+# video: FROM scratch
+# ---------------------------------------------------------------------------
+FROM scratch AS video
+LABEL org.opencontainers.image.source="https://github.com/mediactl/cluster-plex" \
+      org.opencontainers.image.title="cluster-plex-video"
+COPY --from=staging /staging/ /
+# libva logs every driver load at info level on stderr; errors only.
+ENV FFGO_SHIM_DIR=/usr/lib \
+    LIBVA_MESSAGING_LEVEL=1 \
+    LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri \
+    LIBVA_DRIVER_NAME=iHD
+USER 1000:1000
+ENTRYPOINT ["/usr/bin/video-worker"]
+
+# ---------------------------------------------------------------------------
+# video-test: the worker's image and its GPU tests, for the NUC alone
+# ---------------------------------------------------------------------------
+FROM video AS video-test
+COPY --from=build /out/tests/ /usr/bin/
+# The tests read pkg/video's fixtures as ../testdata from their package.
+COPY pkg/video/testdata /video/testdata
+WORKDIR /video/pipeline

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Stages into $1 exactly what the remux worker loads, for a FROM-scratch image.
+# Stages into $1 exactly what a pool worker loads, for a FROM-scratch image.
 # Adapted from clustarr's images/distroless/stage.sh (same owner): the binary
-# is the remux worker, and its working directory is /cache.
+# is $BINARY, the remux worker by default, and its working directory /cache.
 #
 # lddtree follows each file's DT_NEEDED tree: the worker (a purego binary,
 # so it brings the dynamic linker and libc), the ffgo shim and every FFmpeg
@@ -37,7 +37,7 @@ mkdir -p "$dst/usr/lib" "$dst/usr/lib64" "$dst/usr/bin"
 ln -sfn usr/lib "$dst/lib"
 ln -sfn usr/lib64 "$dst/lib64"
 
-trace /usr/bin/remux-worker /usr/lib/libffshim.so
+trace "${BINARY:-/usr/bin/remux-worker}" /usr/lib/libffshim.so
 for f in /usr/lib/libav*.so.* /usr/lib/libsw*.so.* /usr/lib/libpostproc.so.*; do
 	[ -e "$f" ] && [ ! -L "$f" ] && trace "$f"
 done
@@ -76,7 +76,7 @@ chmod 1777 "$dst/tmp"
 # weight at best, and at worst a path back to exec'ing it.
 for f in ffmpeg ffprobe; do
 	if [ -n "$(find "$dst" -name "$f" \( -type f -o -type l \) | head -n1)" ]; then
-		echo "stage.sh: $f was staged; the remux image carries no FFmpeg executable" >&2
+		echo "stage.sh: $f was staged; a pool image carries no FFmpeg executable" >&2
 		exit 1
 	fi
 done
