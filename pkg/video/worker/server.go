@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -21,11 +22,21 @@ import (
 )
 
 // ServerOptions are the pool's gRPC server options: fixed windows for what
-// the relay streams in, small messages in and whole segments out.
+// the relay streams in, small messages in and whole segments out, and
+// keepalive: Plex's node losing power resets no connection, and a
+// conversion's sends would block until TCP gave up, about 15 minutes, its
+// slot taken meanwhile. The relay pings every 10 s (DialOptions), which the
+// enforcement policy admits.
 func ServerOptions() []grpc.ServerOption {
+	return serverOptions(keepalive.ServerParameters{Time: 10 * time.Second, Timeout: 10 * time.Second})
+}
+
+func serverOptions(ka keepalive.ServerParameters) []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.InitialWindowSize(1 << 20), grpc.InitialConnWindowSize(1 << 22),
 		grpc.MaxRecvMsgSize(1 << 20), grpc.MaxSendMsgSize(256 << 20),
+		grpc.KeepaliveParams(ka),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Second}),
 	}
 }
 

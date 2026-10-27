@@ -21,12 +21,14 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/remoteexec"
 	"github.com/mediactl/clusterplex/pkg/video"
+	"github.com/mediactl/clusterplex/pkg/video/internal/netcut"
 	"github.com/mediactl/clusterplex/pkg/video/pipeline"
 	"github.com/mediactl/clusterplex/pkg/video/relay"
 	"github.com/mediactl/clusterplex/pkg/video/worker"
@@ -405,4 +407,30 @@ func TestAConversionThatOutlivesItsContextIsAbandoned(t *testing.T) {
 	require.Eventually(t, func() bool { return s.Abandoned() == 0 }, 2*time.Second, 10*time.Millisecond)
 	assert.Zero(t, sent.Load(), "an abandoned conversion sends nothing on its ended stream")
 	assert.True(t, s.Wedged(), "a wedged pod stays wedged until it restarts")
+}
+
+func TestARelayThatGoesSilentFreesItsSlot(t *testing.T) {
+	// Plex's node losing power resets no connection: without keepalive the
+	// conversion's sends would block until TCP gave up, about 15 minutes,
+	// its slot taken meanwhile.
+	slots := worker.NewSlots(1)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer(worker.ServerOptionsWith(keepalive.ServerParameters{Time: time.Second, Timeout: time.Second})...)
+	videopb.RegisterVideoServer(srv, &worker.Server{Slots: slots, Run: blocking})
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(srv.Stop)
+	p, err := netcut.New(l.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = p.Close() })
+	conn, err := grpc.NewClient(p.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	_, err = open(t, videopb.NewVideoClient(conn), job("A", false))
+	require.NoError(t, err)
+	require.Zero(t, slots.Free())
+
+	p.Cut()
+	require.Eventually(t, func() bool { return slots.Free() == 1 }, 10*time.Second, 50*time.Millisecond,
+		"the silent relay's conversion ends and frees its slot")
 }

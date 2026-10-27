@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
@@ -32,6 +33,7 @@ import (
 	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/remoteexec"
 	"github.com/mediactl/clusterplex/pkg/video"
+	"github.com/mediactl/clusterplex/pkg/video/internal/netcut"
 	"github.com/mediactl/clusterplex/pkg/video/relay"
 	pb "github.com/mediactl/clusterplex/proto"
 	"github.com/mediactl/clusterplex/proto/videopb"
@@ -621,4 +623,46 @@ func TestAnHLSJobTakesNoDashOutput(t *testing.T) {
 	s := &sink{}
 	require.Error(t, h.relay.Execute(t.Context(), h.req, s))
 	assert.Contains(t, s.stderr(), "video: worker-error")
+}
+
+func TestAPoolPodThatGoesSilentEndsItsJob(t *testing.T) {
+	// A pool pod whose node loses power resets no connection: the relay's
+	// pings end the job, rather than leave Plex's transcoder waiting.
+	accepted := make(chan struct{})
+	w := &worker{run: func(ctx context.Context, _ func(*videopb.Down) error) error {
+		close(accepted)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer(grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Second}))
+	videopb.RegisterVideoServer(srv, w)
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(srv.Stop)
+	p, err := netcut.New(l.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = p.Close() })
+
+	h := setup(t, map[string]*worker{})
+	h.relay.Workers = workers{{Name: "video-0", Addr: p.Addr()}}
+	h.relay.Dial = func(_ context.Context, addr string) (videopb.VideoClient, io.Closer, error) {
+		conn, err := grpc.NewClient(addr, relay.DialOptionsWith(keepalive.ClientParameters{Time: 10 * time.Second, Timeout: time.Second})...)
+		if err != nil {
+			return nil, nil, err
+		}
+		return videopb.NewVideoClient(conn), conn, nil
+	}
+	s := &sink{}
+	ran := make(chan error, 1)
+	go func() { ran <- h.relay.Execute(t.Context(), h.req, s) }()
+	<-accepted
+	p.Cut()
+	select {
+	case err := <-ran:
+		require.Error(t, err)
+		assert.Contains(t, s.stderr(), "video: worker-error: ")
+	case <-time.After(25 * time.Second):
+		t.Fatal("the relay still waits on a pod that went silent")
+	}
 }

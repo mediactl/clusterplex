@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	"github.com/mediactl/clusterplex/pkg/hashring"
@@ -396,14 +397,21 @@ func segmentTimes(s *videopb.Segment) video.SegmentTimes {
 const maxSegmentBytes = 256 << 20
 
 // DialOptions are the relay's gRPC options toward a pool pod: plaintext
-// inside the cluster, and fixed windows, so a relay that stops reading
-// holds the worker's pipeline within about a segment (finding P; a fixed
-// window also turns off gRPC's growing ones).
+// inside the cluster; fixed windows, so a relay that stops reading holds
+// the worker's pipeline within about a segment (finding P; a fixed window
+// also turns off gRPC's growing ones); and a ping every 10 s of silence
+// during a conversion, so a pod whose node lost power ends its job within
+// 20 s rather than leave Plex's transcoder waiting on TCP.
 func DialOptions() []grpc.DialOption {
+	return dialOptions(keepalive.ClientParameters{Time: 10 * time.Second, Timeout: 10 * time.Second})
+}
+
+func dialOptions(ka keepalive.ClientParameters) []grpc.DialOption {
 	return []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithInitialWindowSize(1 << 20), grpc.WithInitialConnWindowSize(1 << 22),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxSegmentBytes)),
+		grpc.WithKeepaliveParams(ka),
 	}
 }
 
