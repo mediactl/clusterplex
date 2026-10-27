@@ -479,3 +479,17 @@ func TestTheClaimCodeComesFromTheEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "claim-abc", c.Claim)
 }
+
+// The GPU pool is found by its pods' label; an empty selector leaves no
+// pool, and every video conversion is refused (never run on Plex's node).
+func TestTheVideoPoolDefaults(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "app=plex-video-transcode", c.VideoSelector)
+	assert.Equal(t, 50053, c.VideoPort)
+	assert.Equal(t, "cluster-plex-video-transcodes", c.VideoLeaseName)
+	c, err = loadConfig([]string{"--video-selector="})
+	require.NoError(t, err)
+	assert.Empty(t, c.VideoSelector)
+}

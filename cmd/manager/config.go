@@ -140,6 +140,15 @@ type Config struct {
 	ScanRoute string
 	// RemuxPort is the remux workers' gRPC port.
 	RemuxPort int
+	// VideoSelector picks the GPU pool's pods (pkg/video/relay); empty
+	// leaves no pool, and every video conversion is refused, never run on
+	// Plex's node.
+	VideoSelector string
+	// VideoPort is the GPU pool's gRPC port.
+	VideoPort int
+	// VideoLeaseName is the Lease, in this pod's namespace, that counts the
+	// conversions the pool runs for clustarr's transcode admission.
+	VideoLeaseName string
 	// ProbePort serves the health probes and metrics.
 	ProbePort int
 	// DrainTimeout is how long a stopping pod lets the client connections it
@@ -195,6 +204,9 @@ func newFlagSet() *pflag.FlagSet {
 	fs.Int("worker-port", 50051, "gRPC port on which a worker accepts jobs")
 	fs.String("remux-selector", "app=plex-remux", "label selector of the remux pool's pods; empty leaves every browser stream to Plex's transcoder")
 	fs.Int("remux-port", 50052, "gRPC port of the remux workers")
+	fs.String("video-selector", "app=plex-video-transcode", "label selector of the GPU pool's pods; empty refuses every video conversion")
+	fs.Int("video-port", 50053, "gRPC port of the GPU pool's pods")
+	fs.String("video-lease-name", "cluster-plex-video-transcodes", "Lease counting the GPU pool's conversions, which clustarr's transcode admission yields to")
 	fs.String("scan-route", "", "URL a library scan of a provisioned section is sent to instead of Plex, normally this pod's http://127.0.0.1:<probe-port>/api/v1/scan; empty leaves every scan to Plex")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
 	fs.Duration("drain-timeout", 2*time.Minute, "how long a stopping pod lets the client connections it holds finish before Plex is stopped; the pod's termination grace period must cover it plus Plex's own 30s")
@@ -272,6 +284,9 @@ func loadConfig(args []string) (Config, error) {
 		WorkerPort:       port("worker-port"),
 		RemuxSelector:    strings.TrimSpace(v.GetString("remux-selector")),
 		RemuxPort:        port("remux-port"),
+		VideoSelector:    strings.TrimSpace(v.GetString("video-selector")),
+		VideoPort:        port("video-port"),
+		VideoLeaseName:   strings.TrimSpace(v.GetString("video-lease-name")),
 		ScanRoute:        strings.TrimSpace(v.GetString("scan-route")),
 		ProbePort:        port("probe-port"),
 		DrainTimeout:     v.GetDuration("drain-timeout"),

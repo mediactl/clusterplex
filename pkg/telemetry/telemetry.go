@@ -19,6 +19,10 @@ type Metrics struct {
 	// VideoRefusals counts the video conversions refused, by reason: no-pool,
 	// full, shape, worker-error or cancelled (pkg/video.Reason).
 	VideoRefusals *prometheus.CounterVec
+	// VideoStartup is each conversion's start-up overhead: its first
+	// segment's arrival less the input time that segment covers (the
+	// owner's target: about 2 s at most).
+	VideoStartup prometheus.Histogram
 	// LeaderStatus is 1 on the pod that holds the plex.tv lease.
 	LeaderStatus prometheus.Gauge
 	// ProxyConnections counts open client connections through the port proxy.
@@ -76,6 +80,11 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Name: "clusterplex_video_refusals_total",
 			Help: "Video conversions refused rather than run on the GPU pool, by reason (no-pool, full, shape, worker-error, cancelled)",
 		}, []string{"reason"}),
+		VideoStartup: promauto.NewHistogram(prometheus.HistogramOpts{
+			Name:    "clusterplex_video_startup_overhead_seconds",
+			Help:    "A video conversion's first segment's arrival less the input time it covers",
+			Buckets: []float64{0.25, 0.5, 1, 1.5, 2, 3, 5, 10, 20},
+		}),
 		LeaderStatus: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "clusterplex_manager_is_leader",
 			Help: "1 on the pod that holds the plex.tv lease, 0 on the others; every pod serves regardless",

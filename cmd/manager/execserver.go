@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"google.golang.org/grpc"
 
 	"github.com/mediactl/clusterplex/pkg/plexscan"
+	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/remoteexec"
 	"github.com/mediactl/clusterplex/pkg/remux/relay"
+	"github.com/mediactl/clusterplex/pkg/video"
+	"github.com/mediactl/clusterplex/pkg/video/lease"
+	videorelay "github.com/mediactl/clusterplex/pkg/video/relay"
 	pb "github.com/mediactl/clusterplex/proto"
 )
 
@@ -139,6 +144,29 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 			Dial:   relay.GRPCDialer,
 			PMS:    "http://" + m.plexAddr,
 			Logger: m.Logger.With("component", "remux"),
+		}
+	}
+	// Every video conversion goes to the GPU pool (pkg/video/relay) or is
+	// refused: none runs on Plex's node. The Lease counts what runs, for
+	// clustarr's transcode admission.
+	if cfg.VideoSelector != "" {
+		if m.videoCount == nil {
+			m.videoCount = &lease.Counter{
+				Client: m.K8sClient, Namespace: cfg.Namespace, Name: cfg.VideoLeaseName, Identity: cfg.PodName,
+				Logger: m.Logger.With("component", "video-lease"),
+			}
+		}
+		dispatcher.Video = &videorelay.Relay{
+			Workers: &remoteexec.PodWorkerLister{
+				Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,
+				Selector: cfg.VideoSelector, Port: cfg.VideoPort,
+			},
+			Dial:    videorelay.GRPCDialer,
+			PMS:     plexsession.PMS{Addr: "http://" + m.plexAddr},
+			Count:   m.videoCount,
+			Refused: func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
+			Startup: func(d time.Duration) { m.Metrics.VideoStartup.Observe(d.Seconds()) },
+			Logger:  m.Logger.With("component", "video"),
 		}
 	}
 	active := func(delta int) { m.Metrics.ActiveJobs.Add(float64(delta)) }

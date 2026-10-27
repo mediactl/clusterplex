@@ -44,6 +44,7 @@ import (
 	"github.com/mediactl/clusterplex/pkg/plexscan"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
+	videolease "github.com/mediactl/clusterplex/pkg/video/lease"
 )
 
 // Manager holds the pod-wide state and dependencies.
@@ -82,6 +83,9 @@ type Manager struct {
 	plexAddr     string
 	shimServer   *grpc.Server
 	workerServer *grpc.Server
+	// videoCount publishes the GPU pool's conversions in a Lease; nil
+	// without a pool.
+	videoCount *videolease.Counter
 	// onPlexLost gives this pod up. Both ways of losing Plex end here: the
 	// supervisor seeing it exit, and the health watch seeing it stop
 	// answering. Tests replace it; in the manager it restarts the container.
@@ -339,6 +343,9 @@ func run() int {
 	if err := m.startExecServers(ctx); err != nil {
 		logger.Error("start job listeners", "error", err)
 		return 1
+	}
+	if m.videoCount != nil {
+		go m.videoCount.Run(ctx)
 	}
 	if cfg.LiveTV.Enabled && m.Dynamic != nil {
 		// Before Plex: PMS asks its devices for their lineups at start.
