@@ -595,3 +595,37 @@ the Lease. The clustarr chart gains the admission flags for the Lease.
 - **Metric names and labels,** within cluster-plex's conventions.
 - **The image build:** copying clustarr's Intel stage, or building a shared
   base.
+
+## As captured (2026-10-26/27)
+
+Plex's own transcoder was recorded on talos's plex-0 (`hack/capture-video-jobs.sh`): its argv, its process state, and its socket calls through strace. The fixtures are in `pkg/video/testdata` (`plex-video-jobs.jsonl`, `segment-lists/`, `progress/`, `clips/`), and the ledger's `Finding` lines hold the evidence counts.
+
+- **L, the segment list.**
+  - Every update is a separate chunked POST (`Connection: close`) of the whole list to `-segment_list`.
+  - At a cut, the transcoder posts the finished list, then again with the next segment opened as `#name,start,start,start,start`.
+  - A list holds at most `-segment_list_size` - 1 entries, newest last.
+  - A line is `name,start,end,<stream ends>`. The stream ends come highest stream index first: the audio's, then the video's, even where the audio outlasts the video.
+  - The answer is never read. Five shapes' lists replay byte for byte.
+- **R, the cut rule.** Output frames sit on a constant-rate grid anchored at `-ss`, and keyframes are forced as that grid reaches multiples of `-force_key_frames`' interval. A segment ends at the first forced keyframe at or after (k+1) × `-segment_time` - `-segment_time_delta`, where k is the segment's number. A restart is `-ss 1800 -segment_start_number 225`. The rule holds at 8 s and at 5 s.
+- **V, progress.**
+  - A PUT to `-progressurl` about every 0.5 s on one keep-alive connection, carrying `progress`, `size=-1`, `remaining`, `speed` and `vdec_hw_status`.
+  - PMS answers 206 with `<MediaContainer size="0"/>`.
+- **P, throttling: `answer`.**
+  - While the job is `TranscoderThrottleBuffer` ahead of what the client has fetched (8-9 segments, about 60 s), PMS answers the progress PUT with `canThrottle="1"`.
+  - On that answer the transcoder logs `Throttle - Going into sloth mode.` to `<progress>/log` and stops producing. It keeps PUTting progress every 0.5 s, with no `speed` and `remaining=2147483647`.
+  - At the first plain answer it logs `Throttle - Getting back to work.` and resumes: about one sloth/work cycle per segment, 1× in steady state.
+  - PMS never stops the process. PMS also ends a session nobody reads from after about 180 s, so throttling shows only with a client reading.
+- **H, HDR.** On the Pi, Plex asks no tone map (it has none on arm64): HDR10 goes through `scale` and `format=yuv420p|nv12` alone. The pool tone-maps from the source.
+- **W, DASH with an encode.** Plex Web's job is the remux pool's DASH muxer: the same names, `-seg_duration 8`, `-window_size 5` and `-skip_to_segment 1`, with the video encoded. Each POST is FFmpeg's dynamic MPD.
+- **B, burn-in.**
+  - **An image (PGS):** `[0:N]scale=W:H[s];…;[v][s]overlay`.
+  - **A sidecar:** PMS copies it into the session directory as `temp-0.srt`, a second `-i`, with `-map_inlineass 1:s:0`.
+  - **An embedded text track:** `-map_inlineass 0:N` (the track's index).
+  - **The renderer:** text burns through Plex's own `inlineass` filter. A sidecar's carries Plex's style overrides on a 1080-line scale; an embedded ASS keeps its own.
+  - **Extra output:** each text burn-in ends with a second output, `-map … -f null -codec ass nullfile`.
+- **Not yet captured.** These need the owner:
+  - **I:** Live TV, a tune in Plex for iOS;
+  - **D:** an interlaced channel;
+  - **F:** a download, Optimize, and the DVR's convert-while-recording.
+  
+  Until each is captured, the parser refuses that shape as `shape`.
