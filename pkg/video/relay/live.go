@@ -84,15 +84,15 @@ func (c *conversion) followLive(ctx context.Context, r *Relay, job video.Job, i 
 	}
 	next := int64(-1)
 	for {
-		pl, err := r.livePlaylist(ctx, in.Source, job.Token)
+		pl, err := r.livePlaylist(ctx, in.Source)
 		if err != nil {
 			return err
 		}
 		next = max(next, pl.seq)
 		if k := next - pl.seq; k < int64(len(pl.segments)) {
 			for _, s := range pl.segments[k:] {
-				if err := c.liveSegment(ctx, r, job, i, base, s); err != nil {
-					again, aerr := r.livePlaylist(ctx, in.Source, job.Token)
+				if err := c.liveSegment(ctx, r, i, base, s); err != nil {
+					again, aerr := r.livePlaylist(ctx, in.Source)
 					if aerr != nil || next >= again.seq {
 						return fmt.Errorf("live segment %d: %w", next, err)
 					}
@@ -113,8 +113,11 @@ func (c *conversion) followLive(ctx context.Context, r *Relay, job video.Job, i 
 	}
 }
 
-func (r *Relay) livePlaylist(ctx context.Context, src, token string) (playlist, error) {
-	rc, err := r.PMS.Open(ctx, src, token)
+// livePlaylist reads the session's playlist as Plex's transcoder does
+// (plexsession.OpenAsTranscoder): Plex serves a live session to no other
+// client of a session that converts.
+func (r *Relay) livePlaylist(ctx context.Context, src string) (playlist, error) {
+	rc, err := r.PMS.OpenAsTranscoder(ctx, src)
 	if err != nil {
 		return playlist{}, err
 	}
@@ -130,12 +133,12 @@ func (r *Relay) livePlaylist(ctx context.Context, src, token string) (playlist, 
 }
 
 // liveSegment streams one segment, which must be MPEG-TS, to input i.
-func (c *conversion) liveSegment(ctx context.Context, r *Relay, job video.Job, i int32, base *url.URL, uri string) error {
+func (c *conversion) liveSegment(ctx context.Context, r *Relay, i int32, base *url.URL, uri string) error {
 	u, err := base.Parse(uri)
 	if err != nil {
 		return err
 	}
-	rc, err := r.PMS.Open(ctx, u.String(), job.Token)
+	rc, err := r.PMS.OpenAsTranscoder(ctx, u.String())
 	if err != nil {
 		return err
 	}

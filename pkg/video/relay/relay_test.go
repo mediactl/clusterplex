@@ -678,12 +678,15 @@ func TestALiveSessionsPlaylistIsFollowed(t *testing.T) {
 	// Plex's Live TV session (finding I, livetv-dash): its playlist from the
 	// first segment, the last listed still being written; the next read
 	// names one more and ends. The worker gets the segments in order as one
-	// MPEG-TS, and never the session's address or token.
+	// MPEG-TS, and never the session's address or token. Plex serves a live
+	// session only to its transcoder: a request as any other client's is
+	// "direct play", which a session that converts refuses with 404 (talos,
+	// rev 111), so each request is the one the capture's trace shows.
 	segs := map[string]string{"00007.ts": "G seven ", "00008.ts": "G eight ", "00009.ts": "G nine"}
 	var reads atomic.Int32
 	plex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Plex-Token") != "tok" {
-			http.Error(w, "no token", http.StatusUnauthorized)
+		if !strings.HasPrefix(r.UserAgent(), "Lavf/") || r.Header.Get("Range") != "bytes=0-" || r.Header.Get("X-Plex-Token") != "" {
+			http.NotFound(w, r) // "Session ... doesn't allow direct play"
 			return
 		}
 		name := path.Base(r.URL.Path)
@@ -719,7 +722,9 @@ func TestALiveSessionsPlaylistIsFollowed(t *testing.T) {
 	h.relay.LivePoll = time.Millisecond
 	h.req.Args = argsOf(t, "livetv-dash")
 	s := &sink{}
-	require.NoError(t, h.relay.Execute(t.Context(), h.req, s), s.stderr())
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, h.relay.Execute(ctx, h.req, s), s.stderr())
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	assert.Equal(t, "G seven G eight G nine", w.input.String())
