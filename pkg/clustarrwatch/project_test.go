@@ -386,6 +386,24 @@ func TestAnUpgradeAppliesTheNewFileBeforeRemovingTheOld(t *testing.T) {
 	require.Equal(t, []string{"apply:uid-old", "apply:uid-new", "delete:uid-old"}, rp.Events())
 }
 
+// A file's edition is its Plex item's, so a corrected edition is applied
+// at once, though nothing the seeder writes changed (Uncut Gems' frozen
+// "Uncut", talos 2026-10-27).
+func TestAFilesEditionChangeIsApplied(t *testing.T) {
+	rp, _, _, dyn := startProjecting(t, time.Hour, movie("m1", "Heat"))
+	time.Sleep(50 * time.Millisecond)
+	f := mediaFile("a", "/data/media/movies/Heat (1995)/Heat.mkv")
+	require.NoError(t, unstructured.SetNestedField(f.Object, "Uncut", "spec", "edition"))
+	dyn.add(t, clustarrwatch.MediaFiles, f)
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, "Uncut", rp.Applied()[0].change.Item.Chain[0].Edition)
+
+	unstructured.RemoveNestedField(f.Object, "spec", "edition")
+	dyn.update(t, clustarrwatch.MediaFiles, f)
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 2 }, 5*time.Second, 10*time.Millisecond, "events: %v", rp.Events())
+	require.Empty(t, rp.Applied()[1].change.Item.Chain[0].Edition)
+}
+
 // C4: a scan request before the informers have synced is refused, never
 // run against an empty want list.
 func TestAReconcileBeforeTheWatchSyncedIsRefused(t *testing.T) {

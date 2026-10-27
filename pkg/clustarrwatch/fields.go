@@ -264,6 +264,12 @@ func SeedKey(u *unstructured.Unstructured) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// editionOf is a MediaFile's edition, "" for none.
+func editionOf(u *unstructured.Unstructured) string {
+	s, _, _ := unstructured.NestedString(u.Object, editionField...)
+	return s
+}
+
 // ItemLookup finds a cached clustarr object by resource, namespace and name.
 type ItemLookup func(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool)
 

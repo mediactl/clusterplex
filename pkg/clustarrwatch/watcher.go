@@ -611,7 +611,9 @@ func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 		UpdateFunc: func(oldObj, newObj any) {
 			o, ok1 := oldObj.(*unstructured.Unstructured)
 			n, ok2 := newObj.(*unstructured.Unstructured)
-			if ok1 && ok2 && SeedKey(o) != SeedKey(n) {
+			// A file's edition is its Plex item's (plexproject.Resolve), so
+			// a corrected one is applied as a seed change is.
+			if ok1 && ok2 && (SeedKey(o) != SeedKey(n) || editionOf(o) != editionOf(n)) {
 				w.enqueueSeed(n)
 			}
 		},
