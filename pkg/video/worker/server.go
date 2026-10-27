@@ -153,6 +153,13 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	defer in.close()
 	o := s.Options
 	o.Inputs = in.reader
+	var skipped atomic.Int64
+	var firstSkip atomic.Value
+	o.Skipped = func(err error) {
+		if skipped.Add(1) == 1 {
+			firstSkip.Store(err.Error())
+		}
+	}
 	out := &sink{stream: stream}
 	began := time.Now()
 	err = s.run(ctx, job, o, out)
@@ -160,6 +167,9 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 		// The call may still be sending: no Done; the stream ends with this.
 		log.Error("conversion abandoned", "error", err, "abandoned", s.Abandoned())
 		return status.Error(codes.Aborted, err.Error())
+	}
+	if n := skipped.Load(); n > 0 {
+		log.Warn("the decoders refused packets and the conversion carried on", "skipped", n, "first", firstSkip.Load())
 	}
 	if c := time.Duration(out.covered.Load()); s.Speed != nil && c > 0 {
 		s.Speed(c.Seconds() / max(time.Since(began).Seconds(), 0.001))

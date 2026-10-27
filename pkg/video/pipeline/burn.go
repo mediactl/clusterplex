@@ -41,6 +41,7 @@ type burner struct {
 	// first; its canvas is the source video's size.
 	index            int
 	sd               *ffgo.SubtitleDecoder
+	refused          refusals
 	shows            []show
 	canvasW, canvasH int
 	shift            time.Duration
@@ -279,12 +280,17 @@ func newImageBurner(job video.Job, in *input) (*burner, error) {
 	return &burner{index: si.Index, sd: sd, canvasW: in.video.Width, canvasH: in.video.Height, shift: in.shift}, nil
 }
 
-// send decodes one of the image subtitle's packets into a display.
+// send decodes one of the image subtitle's packets into a display; one the
+// decoder refuses is skipped, as ffmpeg(1) skips it.
 func (b *burner) send(p *ffgo.Packet) error {
 	s, err := b.sd.Decode(p)
-	if err != nil || s == nil {
-		return err // a packet the decoder refuses fails the job, as ffmpeg's would
+	if err != nil {
+		return b.refused.refused(err)
 	}
+	if s == nil {
+		return nil
+	}
+	b.refused.inRow = 0
 	at := time.Duration(s.PTS)*time.Microsecond - b.shift
 	sh := show{start: at + s.StartTime, end: -1, rects: s.Rects}
 	// PGS leaves the end open (UINT32_MAX ms) until the next display.

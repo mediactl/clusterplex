@@ -25,6 +25,7 @@ type videoPath struct {
 	devs      *devices
 	c         segmenter
 	sd        *ffgo.StreamDecoder
+	refused   refusals
 	gpuDecode bool
 	tenBit    bool
 	// What the source needs that Plex's argv does not ask on the Pi
@@ -125,10 +126,10 @@ func (v *videoPath) slotTime(j int64) time.Duration {
 
 func (v *videoPath) frameDur() time.Duration { return v.slotTime(1) - v.slotTime(0) }
 
-func (v *videoPath) send(p *ffgo.Packet) error { return decode(v.sd, p, v.frame) }
+func (v *videoPath) send(p *ffgo.Packet) error { return decode(v.sd, p, v.frame, &v.refused) }
 
 func (v *videoPath) flush() error {
-	if err := decode(v.sd, nil, v.frame); err != nil {
+	if err := decode(v.sd, nil, v.frame, &v.refused); err != nil {
 		return err
 	}
 	if v.have {
@@ -395,13 +396,39 @@ func (v *videoPath) openEncoder() error {
 	return v.c.openVideo(enc)
 }
 
+// maxRefusals packets or frames refused in a row fail a job: a decoder
+// that refuses everything has met no damaged packet but a stream it cannot
+// decode.
+const maxRefusals = 500
+
+// refusals counts what a decoder refused in a row and tells Skipped.
+type refusals struct {
+	inRow   int
+	skipped func(error)
+}
+
+func (r *refusals) refused(err error) error {
+	r.inRow++
+	if r.inRow > maxRefusals {
+		return fmt.Errorf("decode: %d in a row refused: %w", r.inRow, err)
+	}
+	if r.skipped != nil {
+		r.skipped(err)
+	}
+	return nil
+}
+
 // decode sends p (nil at the end) and hands each frame to each, which the
-// frame is freed after.
-func decode(sd *ffgo.StreamDecoder, p *ffgo.Packet, each func(ffgo.Frame) error) error {
+// frame is freed after. A packet or frame the decoder refuses is skipped,
+// as ffmpeg(1) skips it without -xerror -- a damaged TS packet after a
+// network hiccup, one bad AAC frame in a file -- and counted in r.
+func decode(sd *ffgo.StreamDecoder, p *ffgo.Packet, each func(ffgo.Frame) error, r *refusals) error {
 	for {
 		err := sd.Send(p)
 		if err != nil && !errors.Is(err, ffgo.ErrAgain) && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("decode: %w", err)
+			if rerr := r.refused(err); rerr != nil {
+				return rerr
+			}
 		}
 		for {
 			f, rerr := sd.Receive()
@@ -409,8 +436,12 @@ func decode(sd *ffgo.StreamDecoder, p *ffgo.Packet, each func(ffgo.Frame) error)
 				break
 			}
 			if rerr != nil {
-				return fmt.Errorf("decode: %w", rerr)
+				if rerr = r.refused(rerr); rerr != nil {
+					return rerr
+				}
+				break
 			}
+			r.inRow = 0
 			rerr = each(f)
 			_ = f.Free()
 			if rerr != nil {

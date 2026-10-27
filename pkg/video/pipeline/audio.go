@@ -14,15 +14,16 @@ import (
 // audioPath is the mapped audio: copied, or decoded, resampled to Plex's
 // layout and rate (its aresample) and encoded to AAC at Plex's bit rate.
 type audioPath struct {
-	job    video.Job
-	in     *input
-	c      segmenter
-	sd     *ffgo.StreamDecoder
-	enc    *ffgo.AudioEncoder
-	res    *ffgo.Resampler
-	rate   int
-	layout string
-	shift  int64 // -start_at_zero's shift in the decoder's time base
+	job     video.Job
+	in      *input
+	c       segmenter
+	sd      *ffgo.StreamDecoder
+	refused refusals
+	enc     *ffgo.AudioEncoder
+	res     *ffgo.Resampler
+	rate    int
+	layout  string
+	shift   int64 // -start_at_zero's shift in the decoder's time base
 }
 
 func newAudioPath(job video.Job, in *input, c segmenter) (*audioPath, error) {
@@ -102,7 +103,7 @@ func (a *audioPath) send(p *ffgo.Packet) error {
 		}
 		return a.c.audio(c)
 	}
-	return decode(a.sd, p, a.frame)
+	return decode(a.sd, p, a.frame, &a.refused)
 }
 
 func (a *audioPath) frame(f ffgo.Frame) error {
@@ -130,7 +131,7 @@ func (a *audioPath) flush() error {
 	if a.sd == nil {
 		return nil
 	}
-	if err := decode(a.sd, nil, a.frame); err != nil {
+	if err := decode(a.sd, nil, a.frame, &a.refused); err != nil {
 		return err
 	}
 	if a.res != nil {

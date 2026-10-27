@@ -27,6 +27,9 @@ type Options struct {
 	Inputs     func(i int) io.Reader // a streamed input's bytes
 	InputsDir  string                // the memory-backed emptyDir (burn-in)
 	FontsDir   string                // the fonts text burn-in draws with (Noto Sans)
+	// Skipped is told each packet or frame a decoder refused and the job
+	// carried on past; nil tells nothing.
+	Skipped func(err error)
 }
 
 func (o Options) onGPU() bool { return o.Caps != nil }
@@ -90,16 +93,22 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 		return err
 	}
 	defer vp.close()
+	vp.refused.skipped = o.Skipped
 	var ap *audioPath
 	if job.Audio != nil {
 		if ap, err = newAudioPath(job, in, c); err != nil {
 			return err
 		}
 		defer ap.close()
+		ap.refused.skipped = o.Skipped
 	} else {
 		c.noAudio()
 	}
+	if burn != nil {
+		burn.refused.skipped = o.Skipped
+	}
 	prog := newProgress(job, in.d.Duration(), vp.gpuDecode, sink)
+	tl := newTimeline(in, job.Inputs[0].Streamed)
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -115,6 +124,7 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 		if p == nil {
 			break
 		}
+		tl.fix(p)
 		switch idx := p.StreamIndex(); {
 		case idx == in.video.Index:
 			err = vp.send(p)
