@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -233,6 +234,12 @@ func (c *counter) Begin(context.Context) func() {
 // libraryArgs is the captured library HLS job (pkg/video's fixture).
 func libraryArgs(t *testing.T) []string {
 	t.Helper()
+	return argsOf(t, "library-hls")
+}
+
+// argsOf is the captured job of shape's argv (pkg/video's fixture).
+func argsOf(t *testing.T, shape string) []string {
+	t.Helper()
 	f, err := os.Open("../testdata/plex-video-jobs.jsonl")
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
@@ -244,11 +251,11 @@ func libraryArgs(t *testing.T) []string {
 			Args  []string `json:"args"`
 		}
 		require.NoError(t, json.Unmarshal(s.Bytes(), &c))
-		if c.Shape == "library-hls" {
+		if c.Shape == shape {
 			return c.Args
 		}
 	}
-	t.Fatal("no library-hls fixture")
+	t.Fatalf("no %s fixture", shape)
 	return nil
 }
 
@@ -665,4 +672,57 @@ func TestAPoolPodThatGoesSilentEndsItsJob(t *testing.T) {
 	case <-time.After(25 * time.Second):
 		t.Fatal("the relay still waits on a pod that went silent")
 	}
+}
+
+func TestALiveSessionsPlaylistIsFollowed(t *testing.T) {
+	// Plex's Live TV session (finding I, livetv-dash): its playlist from the
+	// first segment, the last listed still being written; the next read
+	// names one more and ends. The worker gets the segments in order as one
+	// MPEG-TS, and never the session's address or token.
+	segs := map[string]string{"00007.ts": "G seven ", "00008.ts": "G eight ", "00009.ts": "G nine"}
+	var reads atomic.Int32
+	plex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Plex-Token") != "tok" {
+			http.Error(w, "no token", http.StatusUnauthorized)
+			return
+		}
+		name := path.Base(r.URL.Path)
+		if name == "index.m3u8" {
+			pl := "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:7\n" +
+				"#EXTINF:0.967633, nodesc\n00007.ts?X-Plex-Incomplete-Segments=1\n" +
+				"#EXTINF:0.066733, nodesc\n00008.ts?X-Plex-Incomplete-Segments=1\n"
+			if reads.Add(1) > 1 {
+				pl += "#EXTINF:1.001000, nodesc\n00009.ts?X-Plex-Incomplete-Segments=1\n#EXT-X-ENDLIST\n"
+			}
+			_, _ = io.WriteString(w, pl)
+			return
+		}
+		b, ok := segs[name]
+		if !ok || r.URL.Query().Get("X-Plex-Incomplete-Segments") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, b)
+	}))
+	t.Cleanup(plex.Close)
+	w := &worker{eof: make(chan struct{})}
+	w.run = func(ctx context.Context, send func(*videopb.Down) error) error {
+		select {
+		case <-w.eof:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return send(done("", ""))
+	}
+	h := setup(t, map[string]*worker{"video-0": w})
+	h.relay.PMS = plexsession.PMS{Addr: plex.URL, HTTP: plex.Client()}
+	h.relay.LivePoll = time.Millisecond
+	h.req.Args = argsOf(t, "livetv-dash")
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, s), s.stderr())
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	assert.Equal(t, "G seven G eight G nine", w.input.String())
+	assert.NotContains(t, string(w.job), "livetv/sessions", "the worker never sees where its input comes from")
+	assert.NotContains(t, string(w.job), "REDACTED")
 }

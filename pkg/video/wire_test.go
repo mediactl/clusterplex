@@ -24,7 +24,7 @@ func TestAJobCrossesTheWireWithoutSecrets(t *testing.T) {
 			want.Token, want.ProgressURL, want.SegmentListURL, want.ManifestURL, want.OutputPath = "", "", "", "", ""
 			want.Inputs = append([]video.Input(nil), j.Inputs...)
 			for i := range want.Inputs {
-				want.Inputs[i].Source = ""
+				want.Inputs[i].Source, want.Inputs[i].Live = "", false // the manager's alone
 			}
 			require.Equal(t, want, video.JobFromProto(j.Proto()))
 

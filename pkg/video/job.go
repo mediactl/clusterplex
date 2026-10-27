@@ -56,6 +56,10 @@ type Input struct {
 	// Source is the manager's alone, never on the wire: the URL or local
 	// path it streams.
 	Source string
+	// Live is the manager's alone too: Source is a Live TV session's HLS
+	// playlist on Plex (-live_start_index 0), whose MPEG-TS segments the
+	// manager follows and streams as one input of Format mpegts.
+	Live bool
 }
 
 // VideoOut is the converted video stream.

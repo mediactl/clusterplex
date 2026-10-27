@@ -3,6 +3,7 @@ package video
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -20,7 +21,7 @@ import (
 var valueOptions = map[string]bool{
 	"-codec": true, "-analyzeduration": true, "-probesize": true, "-eae_prefix": true,
 	"-ss": true, "-i": true, "-fps_mode": true, "-loglevel": true, "-loglevel_plex": true,
-	"-progressurl": true, "-filter_complex": true, "-map": true,
+	"-progressurl": true, "-filter_complex": true, "-map": true, "-live_start_index": true, "-copypriorss": true,
 	"-crf": true, "-maxrate": true, "-bufsize": true, "-r": true, "-preset": true, "-x264opts": true,
 	"-force_key_frames": true, "-metadata": true, "-b": true,
 	"-segment_format": true, "-f": true, "-individual_header_trailer": true,
@@ -36,12 +37,14 @@ var valueOptions = map[string]bool{
 
 var flagOptions = map[string]bool{
 	"-start_at_zero": true, "-copyts": true, "-y": true, "-nostats": true,
+	// Live TV's: stop on an input's I/O error, which the pool's inputs do.
+	"-xioerror": true,
 }
 
 // perOutput are the options whose specifier is an output stream's index.
 var perOutput = map[string]bool{
 	"-codec": true, "-crf": true, "-maxrate": true, "-bufsize": true, "-r": true,
-	"-preset": true, "-x264opts": true, "-force_key_frames": true, "-b": true,
+	"-preset": true, "-x264opts": true, "-force_key_frames": true, "-b": true, "-copypriorss": true,
 }
 
 // fixed are options whose one captured value Plex's segmenting relies on:
@@ -114,6 +117,7 @@ func Parse(args []string, env map[string]string) (Job, error) {
 	var chains []chain
 	opts := map[string]string{}
 	perOut := map[int]map[string]string{}
+	live := false // -live_start_index 0, for the next -i
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if flagOptions[a] {
@@ -132,7 +136,20 @@ func Parse(args []string, env map[string]string) (Job, error) {
 			if err != nil {
 				return j, err
 			}
+			if live {
+				if in, err = liveInput(in); err != nil {
+					return j, err
+				}
+				live = false
+			}
 			j.Inputs = append(j.Inputs, in)
+		case base == "-live_start_index":
+			// Live TV reads its session's playlist from its first segment
+			// (finding I); the manager follows it.
+			if !input || v != "0" {
+				return j, refuse("-live_start_index %q", v)
+			}
+			live = true
 		case base == "-ss":
 			if !input {
 				return j, refuse("-ss after the input")
@@ -187,6 +204,9 @@ func Parse(args []string, env map[string]string) (Job, error) {
 	if len(j.Inputs) == 0 {
 		return j, refuse("no input")
 	}
+	if live {
+		return j, refuse("-live_start_index without an input")
+	}
 	j.ProgressURL, j.SegmentListURL, j.ManifestURL = opts["-progressurl"], opts["-segment_list"], opts["-manifest_name"]
 	j.Session = sessionOf(j.ProgressURL)
 	if j.ProgressURL == "" || j.Session == "" {
@@ -234,6 +254,17 @@ func inputOf(v string) (Input, error) {
 		name = v[strings.LastIndex(v, "/")+1:]
 	}
 	return Input{Streamed: true, Source: v, Name: name}, nil
+}
+
+// liveInput is a Live TV session's playlist on Plex, an HLS playlist of
+// MPEG-TS segments (finding I), which the manager follows.
+func liveInput(in Input) (Input, error) {
+	u, err := url.Parse(in.Source)
+	if err != nil || !in.Streamed || (u.Scheme != "http" && u.Scheme != "https") || !strings.HasSuffix(u.Path, ".m3u8") {
+		return in, refuse("a live input that is no playlist on Plex")
+	}
+	in.Live, in.Format, in.Name = true, "mpegts", ""
+	return in, nil
 }
 
 // outputs reads each -map: one video stream encoded to H.264 through
@@ -544,6 +575,11 @@ func audioOut(o output) (AudioOut, error) {
 	for k, val := range o.opts {
 		switch k {
 		case "-codec", "language":
+		case "-copypriorss":
+			// 0: no audio before -ss, which the pool drops anyway.
+			if val != "0" {
+				return a, refuse("-copypriorss %q", val)
+			}
 		case "-b":
 			n, err := bitRate(val)
 			if err != nil {

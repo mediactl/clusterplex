@@ -2,8 +2,10 @@ package pipeline_test
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,6 +52,14 @@ func (r *dashRecorder) Manifest(mpd []byte) error {
 // dashJob is the captured dash-encode job on input, its audio stream 1.
 func dashJob(t *testing.T, input string) video.Job {
 	t.Helper()
+	j := jobOf(t, "dash-encode")
+	j.Inputs[0].Path = input
+	return j
+}
+
+// jobOf is the captured job of shape as the worker gets it.
+func jobOf(t *testing.T, shape string) video.Job {
+	t.Helper()
 	f, err := os.Open("../testdata/plex-video-jobs.jsonl")
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
@@ -62,15 +72,14 @@ func dashJob(t *testing.T, input string) video.Job {
 			Env   map[string]string `json:"env"`
 		}
 		require.NoError(t, json.Unmarshal(s.Bytes(), &c))
-		if c.Shape != "dash-encode" {
+		if c.Shape != shape {
 			continue
 		}
 		j, err := video.Parse(c.Args, c.Env)
 		require.NoError(t, err)
-		j.Inputs[0].Path = input
 		return video.JobFromProto(j.Proto())
 	}
-	t.Fatal("no dash-encode fixture")
+	t.Fatalf("no %s fixture", shape)
 	return video.Job{}
 }
 
@@ -120,4 +129,52 @@ func TestADashEncodeKeepsTheRemuxPoolsContract(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(strings.TrimSpace(string(out)), "1"), "chunk %d starts %q", i, out)
 	}
+}
+
+func TestALiveTVDashCopiesItsAudio(t *testing.T) {
+	// livetv-dash: Plex's live session as one MPEG-TS, 1 s segments, the
+	// AAC copied. ADTS in MPEG-TS names no AudioSpecificConfig, so the audio
+	// init carries the one its first header describes (48 kHz mono here),
+	// the chunks decode, and the manifest lists the last -window_size (5)
+	// segments, as FFmpeg's live DASH does.
+	need(t)
+	job := jobOf(t, "livetv-dash")
+	data := liveTS(t, 12, 100)
+	o := cpu
+	o.Inputs = func(int) io.Reader { return bytes.NewReader(data) }
+	r := &dashRecorder{}
+	require.NoError(t, pipeline.Run(t.Context(), job, o, r))
+
+	ainit := r.files[remux.InitFile(1)]
+	require.NotEmpty(t, ainit)
+	i := bytes.Index(ainit, []byte("esds"))
+	require.Positive(t, i, "the audio init has an esds")
+	// DecoderSpecificInfo (tag 5), its length in the muxer's four-byte form.
+	assert.True(t, bytes.Contains(ainit[i:], []byte{0x05, 0x80, 0x80, 0x80, 0x02, 0x11, 0x88}),
+		"its decoder config is AAC-LC 48 kHz mono: % x", ainit[i:min(len(ainit), i+48)])
+
+	n := 0
+	for ; ; n++ {
+		if _, ok := r.files[remux.ChunkFile(1, n+1)]; !ok {
+			break
+		}
+	}
+	require.InDelta(t, 12, n, 1, "12 s in 1 s segments")
+	final := r.manifests[len(r.manifests)-1]
+	assert.Contains(t, final, `codecs="mp4a.40.2"`)
+	assert.Contains(t, final, `audioSamplingRate="48000"`)
+	assert.Contains(t, final, fmt.Sprintf(`startNumber="%d"`, n-4), "the window's first segment")
+	assert.Equal(t, 10, strings.Count(final, "<S "), "five segments of each representation")
+
+	path := filepath.Join(t.TempDir(), "audio.mp4")
+	all := append([]byte(nil), ainit...)
+	for k := 1; k <= n; k++ {
+		all = append(all, r.files[remux.ChunkFile(1, k)]...)
+	}
+	require.NoError(t, os.WriteFile(path, all, 0o644))
+	out, err := exec.Command("ffmpeg", "-v", "error", "-xerror", "-i", path, "-f", "null", "-").CombinedOutput()
+	require.NoError(t, err, "the copied audio decodes: %s", out)
+	probe, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path).Output()
+	require.NoError(t, err)
+	assert.Contains(t, []string{"11", "12"}, strings.SplitN(strings.TrimSpace(string(probe)), ".", 2)[0], "its duration")
 }

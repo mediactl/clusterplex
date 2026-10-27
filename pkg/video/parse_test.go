@@ -80,7 +80,7 @@ func TestTheLibraryHLSJobParses(t *testing.T) {
 
 func TestEveryCapturedVideoJobParses(t *testing.T) {
 	want := map[string]video.OutputKind{
-		"dash-encode": video.OutputDASH, "download": video.OutputFile,
+		"dash-encode": video.OutputDASH, "livetv-dash": video.OutputDASH, "download": video.OutputFile,
 		"optimize": video.OutputFile, "dvr-convert": video.OutputFile,
 	}
 	for _, c := range fixtures(t) {
@@ -106,6 +106,16 @@ func edit(t *testing.T, fn func([]string) []string) ([]string, map[string]string
 	return fn(slices.Clone(c.Args)), c.Env
 }
 
+// setValue sets option opt's value.
+func setValue(args []string, opt, v string) []string {
+	for i := range len(args) - 1 {
+		if args[i] == opt {
+			args[i+1] = v
+		}
+	}
+	return args
+}
+
 func replaceArg(args []string, old, new string) []string {
 	for i, a := range args {
 		if a == old {
@@ -113,6 +123,56 @@ func replaceArg(args []string, old, new string) []string {
 		}
 	}
 	return args
+}
+
+func TestTheLiveTVDashJobParses(t *testing.T) {
+	// A browser's Live TV tune (talos, 2026-10-27): Plex's live session as
+	// an HLS playlist from its first segment, 1 s DASH segments, the audio
+	// copied.
+	c := fixture(t, "livetv-dash")
+	j, err := video.Parse(c.Args, c.Env)
+	require.NoError(t, err)
+	require.Equal(t, video.OutputDASH, j.Output)
+	require.Len(t, j.Inputs, 1)
+	in := j.Inputs[0]
+	require.True(t, in.Streamed && in.Live, "the manager follows the session's playlist")
+	require.Equal(t, "mpegts", in.Format, "its segments reach the worker as one MPEG-TS")
+	require.Contains(t, in.Source, "/livetv/sessions/79290666-a30d-4acd-a687-e333d1b9a715/t55ke0psb8hxtg2d4ax4hml9/index.m3u8?offset=6.873533")
+	require.Equal(t, video.VideoOut{
+		Stream: 0, Width: 1280, Height: 720, PixFmt: "nv12", CRF: 16,
+		MaxRate: 9_000_000, BufSize: 18_000_000, FrameRate: video.Rational{Num: 30000, Den: 1001},
+		KeyframeEvery: time.Second,
+	}, j.Video)
+	require.Equal(t, &video.AudioOut{Stream: 1, Copy: true}, j.Audio)
+	require.Equal(t, video.Segmenting{Duration: time.Second, Pattern: "chunk-stream$RepresentationID$-$Number%05d$.m4s", StartNumber: 1, ListSize: 5}, j.Segments)
+	require.Equal(t, "b3ub8tqf4v85wnlo2v156fuh", j.Session)
+	require.Contains(t, j.ManifestURL, "/manifest?X-Plex-Http-Pipeline=infinite")
+
+	wire := video.JobFromProto(j.Proto())
+	require.False(t, wire.Inputs[0].Live, "the worker never sees where the input comes from")
+	require.Empty(t, wire.Inputs[0].Source)
+	require.Equal(t, "mpegts", wire.Inputs[0].Format)
+}
+
+func TestALiveInputOutsideItsShapeIsRefused(t *testing.T) {
+	for name, edit := range map[string]func([]string) []string{
+		"another start index": func(a []string) []string { return setValue(a, "-live_start_index", "-3") },
+		"no playlist": func(a []string) []string {
+			for i, v := range a {
+				if strings.Contains(v, "index.m3u8") {
+					a[i] = strings.Replace(v, "index.m3u8", "00007.ts", 1)
+				}
+			}
+			return a
+		},
+		"copypriorss 1": func(a []string) []string { return setValue(a, "-copypriorss:1", "1") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := fixture(t, "livetv-dash")
+			_, err := video.Parse(edit(slices.Clone(c.Args)), c.Env)
+			require.ErrorIs(t, err, video.ErrShape)
+		})
+	}
 }
 
 func TestAnUnknownVideoOptionIsRefused(t *testing.T) {

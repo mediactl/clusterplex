@@ -66,6 +66,9 @@ type Relay struct {
 	// go on, as Plex's transcoder PUTs progress in sloth mode. Default
 	// DefaultThrottlePoll.
 	ThrottlePoll time.Duration
+	// LivePoll is how long a Live TV input waits for its playlist to name a
+	// new segment. Default DefaultLivePoll.
+	LivePoll time.Duration
 }
 
 // DefaultThrottlePoll is Plex's own sloth-mode cadence (finding P).
@@ -258,6 +261,9 @@ func (c *conversion) pump(ctx context.Context, r *Relay, job video.Job) {
 }
 
 func (c *conversion) stream1(ctx context.Context, r *Relay, job video.Job, i int32, in video.Input) error {
+	if in.Live {
+		return c.followLive(ctx, r, job, i, in)
+	}
 	var (
 		rc  io.ReadCloser
 		err error

@@ -8,6 +8,7 @@ import (
 
 	"github.com/obinnaokechukwu/ffgo"
 	"github.com/obinnaokechukwu/ffgo/avcodec"
+	"github.com/obinnaokechukwu/ffgo/avformat"
 	"github.com/obinnaokechukwu/ffgo/avutil"
 
 	"github.com/mediactl/clusterplex/pkg/remux"
@@ -116,13 +117,22 @@ type dashCutter struct {
 	job      video.Job
 	sink     Sink
 	duration time.Duration
-	now      func() time.Time
+	// live is a streamed input (Live TV), whose manifest lists the last
+	// -window_size segments as FFmpeg's does; a file's lists every one
+	// (Task 13).
+	live bool
+	now  func() time.Time
 
 	v, a  *dashRep
 	venc  *ffgo.VideoStreamEncoder
 	aenc  *ffgo.AudioEncoder
 	acopy *ffgo.StreamInfo
 	atb   ffgo.Rational
+	// adts is copied AAC that names no AudioSpecificConfig (Live TV's ADTS
+	// in MPEG-TS): asc is the one its first header describes, and every
+	// packet loses its header, as aac_adtstoasc does.
+	adts bool
+	asc  []byte
 
 	aq       []queued // audio past the open segment's earliest end, until the video cuts
 	n        int
@@ -133,16 +143,24 @@ type dashCutter struct {
 }
 
 func newDashCutter(job video.Job, sink Sink, duration time.Duration) *dashCutter {
-	return &dashCutter{job: job, sink: sink, duration: duration, now: time.Now, n: job.Segments.StartNumber}
+	live := len(job.Inputs) > 0 && job.Inputs[0].Streamed
+	return &dashCutter{job: job, sink: sink, duration: duration, live: live, now: time.Now, n: job.Segments.StartNumber}
 }
 
-func (c *dashCutter) noAudio()                          {}
-func (c *dashCutter) globalHeader() bool                { return true }
-func (c *dashCutter) videoTime() time.Duration          { return c.last }
-func (c *dashCutter) openAudio(enc *ffgo.AudioEncoder)  { c.aenc, c.atb = enc, enc.TimeBase() }
-func (c *dashCutter) openAudioCopy(si *ffgo.StreamInfo) { c.acopy, c.atb = si, si.TimeBase }
+func (c *dashCutter) noAudio()                         {}
+func (c *dashCutter) globalHeader() bool               { return true }
+func (c *dashCutter) videoTime() time.Duration         { return c.last }
+func (c *dashCutter) openAudio(enc *ffgo.AudioEncoder) { c.aenc, c.atb = enc, enc.TimeBase() }
+func (c *dashCutter) openAudioCopy(si *ffgo.StreamInfo) {
+	c.acopy, c.atb = si, si.TimeBase
+	c.adts = si.Codec == "aac" && len(avformat.GetCodecParExtradata(si.CodecParameters())) == 0
+}
 
-// openVideo starts both representations once the video encoder exists.
+// openVideo starts the video representation once the video encoder
+// exists, and the audio one beside it -- but for copied AAC that names no
+// AudioSpecificConfig (Live TV's ADTS in MPEG-TS), which opens at its first
+// packet: an fMP4's init carries the config, and only the ADTS header says
+// what it is.
 func (c *dashCutter) openVideo(enc *ffgo.VideoStreamEncoder) error {
 	c.venc = enc
 	var err error
@@ -155,15 +173,55 @@ func (c *dashCutter) openVideo(enc *ffgo.VideoStreamEncoder) error {
 	if err := c.v.header(enc.TimeBase()); err != nil {
 		return err
 	}
+	v := c.job.Video
+	c.manifest = remux.Manifest{
+		Duration: c.duration, StartNumber: c.job.Segments.StartNumber, SegmentDuration: c.job.Segments.Duration, Start: c.now(),
+		Video: remux.Representation{
+			Codecs: avcCodecs(c.v.init), Bandwidth: v.MaxRate, Width: v.Width, Height: v.Height,
+			FrameRate: fmt.Sprintf("%d/%d", v.FrameRate.Num, v.FrameRate.Den), Timescale: c.v.scale.Den,
+		},
+	}
+	if c.acopy != nil {
+		switch {
+		case c.acopy.Codec != "aac":
+			// The mp4 muxer writes an AC-3 or E-AC-3 init only from a packet,
+			// after the moov it must write first.
+			return fmt.Errorf("%w: a DASH copy of %s audio", video.ErrShape, c.acopy.Codec)
+		case c.adts:
+			return nil // audio() opens it at its first packet
+		}
+	}
+	return c.openAudioRep(nil)
+}
+
+// openAudioRep starts the audio representation; asc, when set, is a copied
+// AAC stream's AudioSpecificConfig.
+func (c *dashCutter) openAudioRep(asc []byte) error {
+	var err error
 	if c.a, err = newDashRep(); err != nil {
 		return err
 	}
-	lang := ffgo.StreamOptions{Language: c.job.Audio.Language}
+	a := *c.job.Audio
+	lang := ffgo.StreamOptions{Language: a.Language}
+	codecs := "mp4a.40.2"
 	switch {
 	case c.aenc != nil:
 		c.a.ms, err = c.a.m.AddEncoderStream(c.aenc, lang)
 	case c.acopy != nil:
-		c.a.ms, err = c.a.m.AddCopyStream(&ffgo.CopyStreamConfig{CodecParameters: c.acopy.CodecParameters(), TimeBase: c.acopy.TimeBase, Options: lang})
+		// The source's parameters less its container's codec tag (MPEG-TS's
+		// is no mp4 tag, which the muxer refuses), as ffmpeg(1) copies.
+		par := avcodec.ParametersAlloc()
+		defer avcodec.ParametersFree(&par)
+		if err := avcodec.ParametersCopy(par, c.acopy.CodecParameters()); err != nil {
+			return err
+		}
+		avcodec.SetCodecParTag(par, 0)
+		if asc != nil {
+			avformat.SetCodecParExtradata(par, asc)
+			codecs = fmt.Sprintf("mp4a.40.%d", asc[0]>>3)
+		}
+		c.a.ms, err = c.a.m.AddCopyStream(&ffgo.CopyStreamConfig{CodecParameters: par, TimeBase: c.acopy.TimeBase, Options: lang})
+		a.BitRate, a.SampleRate, a.Channels = c.acopy.BitRate, c.acopy.SampleRate, c.acopy.Channels
 	default:
 		err = errors.New("a DASH job without audio")
 	}
@@ -173,20 +231,61 @@ func (c *dashCutter) openVideo(enc *ffgo.VideoStreamEncoder) error {
 	if err := c.a.header(c.atb); err != nil {
 		return err
 	}
-	a := c.job.Audio
-	v := c.job.Video
-	c.manifest = remux.Manifest{
-		Duration: c.duration, StartNumber: c.job.Segments.StartNumber, SegmentDuration: c.job.Segments.Duration, Start: c.now(),
-		Video: remux.Representation{
-			Codecs: avcCodecs(c.v.init), Bandwidth: v.MaxRate, Width: v.Width, Height: v.Height,
-			FrameRate: fmt.Sprintf("%d/%d", v.FrameRate.Num, v.FrameRate.Den), Timescale: c.v.scale.Den,
-		},
-		Audio: remux.Representation{
-			Codecs: "mp4a.40.2", Bandwidth: a.BitRate, SampleRate: a.SampleRate, Channels: a.Channels,
-			Language: a.Language, Timescale: c.a.scale.Den,
-		},
+	c.manifest.Audio = remux.Representation{
+		Codecs: codecs, Bandwidth: a.BitRate, SampleRate: a.SampleRate, Channels: a.Channels,
+		Language: a.Language, Timescale: c.a.scale.Den,
 	}
 	return nil
+}
+
+// withoutADTS is p less its ADTS header (7 bytes, 9 with a CRC), its
+// timestamps, duration and flags kept.
+func withoutADTS(p *ffgo.Packet) (*ffgo.Packet, error) {
+	d := p.Data()
+	if len(d) < 7 || d[0] != 0xFF || d[1]&0xF0 != 0xF0 {
+		return nil, fmt.Errorf("%w: copied AAC that is not ADTS", video.ErrShape)
+	}
+	if d[6]&0x03 != 0 {
+		return nil, fmt.Errorf("%w: an ADTS frame of several AAC frames", video.ErrShape)
+	}
+	n := 7
+	if d[1]&0x01 == 0 {
+		n = 9
+	}
+	if len(d) <= n {
+		return nil, fmt.Errorf("%w: an empty ADTS frame", video.ErrShape)
+	}
+	q, err := ffgo.NewPacketFromData(d[n:])
+	if err != nil {
+		return nil, err
+	}
+	src, dst := p.Raw(), q.Raw()
+	avcodec.SetPacketPTS(dst, p.PTS())
+	avcodec.SetPacketDTS(dst, p.DTS())
+	avcodec.SetPacketDuration(dst, avcodec.GetPacketDuration(src))
+	avcodec.SetPacketFlags(dst, avcodec.GetPacketFlags(src))
+	avcodec.SetPacketStreamIndex(dst, int32(p.StreamIndex()))
+	return q, nil
+}
+
+// adtsConfig is the AudioSpecificConfig an ADTS header describes, as
+// FFmpeg's aac_adtstoasc builds it (ISO/IEC 14496-3 1.6.2.1): its object
+// type, sampling frequency index and channel configuration. The cutter
+// strips each packet's header (withoutADTS).
+func adtsConfig(p []byte) ([]byte, error) {
+	if len(p) < 7 || p[0] != 0xFF || p[1]&0xF0 != 0xF0 {
+		return nil, fmt.Errorf("%w: copied AAC that is not ADTS", video.ErrShape)
+	}
+	object := p[2]>>6 + 1
+	freq := (p[2] >> 2) & 0x0F
+	channels := (p[2]&0x01)<<2 | p[3]>>6
+	if freq > 12 || channels == 0 {
+		// Channels 0 is a layout in a program config element, which no
+		// capture carries.
+		return nil, fmt.Errorf("%w: an ADTS header the pool does not copy", video.ErrShape)
+	}
+	v := uint16(object)<<11 | uint16(freq)<<7 | uint16(channels)<<3
+	return []byte{byte(v >> 8), byte(v)}, nil
 }
 
 // avcCodecs is the RFC 6381 name of the H.264 stream an init describes:
@@ -230,16 +329,31 @@ func (c *dashCutter) video(p *ffgo.Packet) error {
 // audio writes an audio packet into the open segment, or holds it while
 // it may belong to the next: the video's keyframe decides where that starts.
 func (c *dashCutter) audio(p *ffgo.Packet) error {
+	if c.adts && c.asc == nil {
+		var err error
+		if c.asc, err = adtsConfig(p.Data()); err != nil {
+			return err
+		}
+	}
 	q, err := c.queue(p)
 	if err != nil {
 		return err
 	}
 	c.aq = append(c.aq, q)
+	if c.a == nil && c.v != nil && c.asc != nil {
+		if err := c.openAudioRep(c.asc); err != nil {
+			return err
+		}
+	}
 	return c.writeAudio(c.boundary())
 }
 
 func (c *dashCutter) queue(p *ffgo.Packet) (queued, error) {
-	cl, err := p.Clone()
+	clone := p.Clone
+	if c.adts {
+		clone = func() (*ffgo.Packet, error) { return withoutADTS(p) }
+	}
+	cl, err := clone()
 	if err != nil {
 		return queued{}, err
 	}
@@ -269,6 +383,9 @@ func (c *dashCutter) writeAudio(until time.Duration) error {
 
 // cut ends segment n at the video keyframe at, and sends it.
 func (c *dashCutter) cut(at time.Duration) error {
+	if c.a == nil {
+		return errors.New("no audio by the end of the first segment")
+	}
 	if err := c.writeAudio(at); err != nil {
 		return err
 	}
@@ -301,6 +418,12 @@ func (c *dashCutter) emit(vf, af remux.Fragment) error {
 	}
 	c.manifest.Video.Timeline = append(c.manifest.Video.Timeline, remux.TimelineEntry{T: vf.T, D: vf.D})
 	c.manifest.Audio.Timeline = append(c.manifest.Audio.Timeline, remux.TimelineEntry{T: af.T, D: af.D})
+	if w := c.job.Segments.ListSize; c.live && w > 0 && len(c.manifest.Video.Timeline) > w {
+		drop := len(c.manifest.Video.Timeline) - w
+		c.manifest.Video.Timeline = c.manifest.Video.Timeline[drop:]
+		c.manifest.Audio.Timeline = c.manifest.Audio.Timeline[drop:]
+		c.manifest.StartNumber += drop
+	}
 	c.manifest.Now = c.now()
 	c.n++
 	return c.sink.Manifest(c.manifest.Render())
@@ -313,6 +436,9 @@ func (c *dashCutter) finish() error {
 	}
 	if !c.open {
 		return errors.New("no segment was written")
+	}
+	if c.a == nil {
+		return errors.New("no audio was written")
 	}
 	if err := c.writeAudio(time.Duration(1<<62 - 1)); err != nil {
 		return err
