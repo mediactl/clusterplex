@@ -50,11 +50,17 @@ func checkRuntime(version func() (uint32, uint32, uint32), shimAPI func() int, m
 	return nil
 }
 
-// probes serves /healthz, always, and /readyz while ready: the device
-// proved itself.
-func probes(ready func() bool) http.Handler {
+// probes serves /healthz until the pod is wedged (abandoned conversions,
+// pkg/video/worker), and /readyz while ready: the device proved itself.
+func probes(ready, wedged func() bool) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if wedged() {
+			http.Error(w, "wedged", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !ready() {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
@@ -156,22 +162,18 @@ func run() error {
 		Active:  func(k video.OutputKind, d int) { active.WithLabelValues(string(k)).Add(float64(d)) },
 		Speed:   speed.Observe,
 	}
-	hs := &http.Server{Addr: *probe, Handler: probes(srv.Ready)}
+	hs := &http.Server{Addr: *probe, Handler: probes(srv.Ready, srv.Wedged)}
 	go func() { _ = hs.ListenAndServe() }()
-	if *encoder == "libx264" {
-		measured.Store(true)
-	} else {
-		caps, err := gpu.Measure(ctx, *node)
-		if err != nil {
-			// The pod stays unready and takes no work (spec §3).
-			log.Error("the device failed its measure; the pod takes no work", "node", *node, "error", err)
-		} else {
-			srv.Options.Caps = &caps
-			measured.Store(true)
-			log.Info("device measured", "node", *node, "decode", caps.Decode, "deinterlace", caps.Deinterlace,
-				"tonemap", caps.ToneMap, "took", caps.Took)
-		}
+	caps, err := measureDevice(ctx, *encoder, *node, gpu.Measure)
+	if err != nil {
+		return err
 	}
+	if caps != nil {
+		srv.Options.Caps = caps
+		log.Info("device measured", "node", *node, "decode", caps.Decode, "deinterlace", caps.Deinterlace,
+			"tonemap", caps.ToneMap, "took", caps.Took)
+	}
+	measured.Store(true)
 
 	gs := grpc.NewServer(worker.ServerOptions()...)
 	videopb.RegisterVideoServer(gs, srv)
@@ -189,4 +191,19 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// measureDevice proves the GPU before the pod takes work; the CPU encoder
+// has nothing to measure. A failed measure is the process's error, so the
+// kubelet restarts the pod with backoff rather than leave it unready for
+// good.
+func measureDevice(ctx context.Context, encoder, node string, measure func(context.Context, string) (gpu.Caps, error)) (*gpu.Caps, error) {
+	if encoder == "libx264" {
+		return nil, nil
+	}
+	caps, err := measure(ctx, node)
+	if err != nil {
+		return nil, fmt.Errorf("the device %s failed its measure: %w", node, err)
+	}
+	return &caps, nil
 }

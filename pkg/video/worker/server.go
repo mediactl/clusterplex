@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -50,6 +51,42 @@ type Server struct {
 	// segments cover per second it ran.
 	Speed  func(x float64)
 	Logger *slog.Logger
+	// Grace is how long a conversion may run on once its context ends
+	// before it is abandoned: its slot freed, the call left running and
+	// counted until it returns. DefaultGrace when zero.
+	Grace time.Duration
+	// MaxAbandoned abandoned conversions still running wedge the pod for
+	// good: it takes no work and Wedged reports it, so /healthz fails and
+	// the kubelet restarts it. DefaultMaxAbandoned when zero.
+	MaxAbandoned int
+
+	abandonMu sync.Mutex
+	abandoned int
+	wedged    bool
+}
+
+// DefaultGrace and DefaultMaxAbandoned bound ffgo's calls as clustarr's
+// pkg/ffruntime does: a QSV call the iHD driver never returns must not hold
+// a slot, nor leave a pod that can no longer convert passing its probes.
+const (
+	DefaultGrace        = 5 * time.Second
+	DefaultMaxAbandoned = 4
+)
+
+var errAbandoned = errors.New("the conversion outlived its stream and was abandoned")
+
+// Wedged reports MaxAbandoned abandoned conversions; it never clears.
+func (s *Server) Wedged() bool {
+	s.abandonMu.Lock()
+	defer s.abandonMu.Unlock()
+	return s.wedged
+}
+
+// Abandoned is how many abandoned conversions are still running.
+func (s *Server) Abandoned() int {
+	s.abandonMu.Lock()
+	defer s.abandonMu.Unlock()
+	return s.abandoned
 }
 
 func (s *Server) log() *slog.Logger {
@@ -80,6 +117,9 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	if s.Measured != nil && !s.Measured() {
 		return status.Error(codes.Unavailable, "the device has not proved itself")
 	}
+	if s.Wedged() {
+		return status.Error(codes.Unavailable, "the pod is wedged: its abandoned conversions still run")
+	}
 	ctx, cancel := context.WithCancelCause(stream.Context())
 	defer cancel(nil)
 	release, ok := s.Slots.Acquire(job.Session, job.Output, func() { cancel(context.Canceled) })
@@ -104,9 +144,14 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	o.Inputs = in.reader
 	out := &sink{stream: stream}
 	began := time.Now()
-	err = s.Run(ctx, job, o, out)
-	if s.Speed != nil && out.covered > 0 {
-		s.Speed(out.covered.Seconds() / max(time.Since(began).Seconds(), 0.001))
+	err = s.run(ctx, job, o, out)
+	if errors.Is(err, errAbandoned) {
+		// The call may still be sending: no Done; the stream ends with this.
+		log.Error("conversion abandoned", "error", err, "abandoned", s.Abandoned())
+		return status.Error(codes.Aborted, err.Error())
+	}
+	if c := time.Duration(out.covered.Load()); s.Speed != nil && c > 0 {
+		s.Speed(c.Seconds() / max(time.Since(began).Seconds(), 0.001))
 	}
 	if cause := context.Cause(ctx); err != nil && cause != nil && !errors.Is(cause, context.Canceled) {
 		err = cause
@@ -120,6 +165,54 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	}
 	_ = stream.Send(&videopb.Down{Kind: &videopb.Down_Done{Done: done}})
 	return nil
+}
+
+// run runs the pipeline bounded by ctx: once ctx ends, it has Grace to
+// return, or it is abandoned -- left running with its sink closed, and
+// counted until it returns.
+func (s *Server) run(ctx context.Context, job video.Job, o pipeline.Options, out *sink) error {
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, job, o, out) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+	t := time.NewTimer(s.grace())
+	defer t.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-t.C:
+	}
+	out.closed.Store(true)
+	s.abandonMu.Lock()
+	s.abandoned++
+	if s.abandoned >= s.maxAbandoned() {
+		s.wedged = true
+	}
+	s.abandonMu.Unlock()
+	go func() {
+		<-done
+		s.abandonMu.Lock()
+		s.abandoned--
+		s.abandonMu.Unlock()
+	}()
+	return fmt.Errorf("%w: %w", errAbandoned, context.Cause(ctx))
+}
+
+func (s *Server) grace() time.Duration {
+	if s.Grace <= 0 {
+		return DefaultGrace
+	}
+	return s.Grace
+}
+
+func (s *Server) maxAbandoned() int {
+	if s.MaxAbandoned <= 0 {
+		return DefaultMaxAbandoned
+	}
+	return s.MaxAbandoned
 }
 
 func (s *Server) inputStall() time.Duration {
@@ -263,14 +356,26 @@ func (in *inputs) close() {
 	}
 }
 
-// sink sends a run's output on the stream. Only the run's goroutine sends.
+// sink sends a run's output on the stream. Only the run's goroutine sends;
+// once the run is abandoned, nothing is sent.
 type sink struct {
 	stream  videopb.Video_ConvertServer
-	covered time.Duration // the media time the segments sent cover
+	covered atomic.Int64 // the media time the segments sent cover
+	closed  atomic.Bool
+}
+
+func (s *sink) send(d *videopb.Down) error {
+	if s.closed.Load() {
+		return errAbandoned
+	}
+	return s.stream.Send(d)
 }
 
 func (s *sink) Segment(seg pipeline.Segment) error {
-	s.covered += seg.End - seg.Start
+	if s.closed.Load() {
+		return errAbandoned
+	}
+	s.covered.Add(int64(seg.End - seg.Start))
 	p := &videopb.Segment{
 		Name: seg.Name, Data: seg.Data, StartUs: seg.Start.Microseconds(), EndUs: seg.End.Microseconds(),
 	}
@@ -281,21 +386,21 @@ func (s *sink) Segment(seg pipeline.Segment) error {
 		n := seg.NextStart.Microseconds()
 		p.NextStartUs = &n
 	}
-	return s.stream.Send(&videopb.Down{Kind: &videopb.Down_Segment{Segment: p}})
+	return s.send(&videopb.Down{Kind: &videopb.Down_Segment{Segment: p}})
 }
 
 func (s *sink) File(name string, data []byte) error {
-	return s.stream.Send(&videopb.Down{Kind: &videopb.Down_File{File: &videopb.File{Name: name, Data: data}}})
+	return s.send(&videopb.Down{Kind: &videopb.Down_File{File: &videopb.File{Name: name, Data: data}}})
 }
 
 func (s *sink) Manifest(mpd []byte) error {
-	return s.stream.Send(&videopb.Down{Kind: &videopb.Down_Manifest{Manifest: &videopb.Manifest{Mpd: mpd}}})
+	return s.send(&videopb.Down{Kind: &videopb.Down_Manifest{Manifest: &videopb.Manifest{Mpd: mpd}}})
 }
 
 func (s *sink) Write(off int64, p []byte) error {
-	return s.stream.Send(&videopb.Down{Kind: &videopb.Down_Write{Write: &videopb.Write{Offset: off, Data: p}}})
+	return s.send(&videopb.Down{Kind: &videopb.Down_Write{Write: &videopb.Write{Offset: off, Data: p}}})
 }
 
 func (s *sink) Progress(path, query string) {
-	_ = s.stream.Send(&videopb.Down{Kind: &videopb.Down_Progress{Progress: &videopb.Progress{Path: path, Query: query}}})
+	_ = s.send(&videopb.Down{Kind: &videopb.Down_Progress{Progress: &videopb.Progress{Path: path, Query: query}}})
 }

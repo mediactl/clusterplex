@@ -853,8 +853,10 @@ A pod is ready only once its device has passed the start-up measure (an
 h264_qsv encode through vpp_qsv, plus a VA-API decode of each format), and
 stays ready while full: a seek restarts its session in the session's own
 slot, and a new session a full pod refuses is passed to the next pod or
-refused `full`. A pod whose device fails the measure stays unready and takes
-no work. With kustomize, add the component
+refused `full`. A pod whose device fails the measure exits, so the kubelet
+restarts it with backoff. A conversion that outlives its stream by 5 s (a
+GPU call that never returns) is abandoned and its slot freed; four still
+running fail `/healthz`, and the kubelet restarts the pod. With kustomize, add the component
 `k8s/components/video-transcode`.
 
 ## Applying a change

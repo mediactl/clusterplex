@@ -330,7 +330,10 @@ clustarr's pool does with `inprocess.Engine.Measure`:
 - a `vpp_qsv` scale;
 - VA-API decodes, recording which formats decode on the GPU.
 
-A pod whose device fails stays unready and takes no work.
+A pod whose device fails stays unready and takes no work. *As built
+(2026-10-27, final review):* a failed measure ends the process, so the
+kubelet restarts the pod with backoff; unready, it would have refused every
+conversion until restarted by hand.
 
 **The pipeline**, per job, every step through ffgo (see Constraints):
 1. **Decode** on the GPU through VA-API when the format was measured to
@@ -533,7 +536,10 @@ the Lease. The clustarr chart gains the admission flags for the Lease.
     them.
 - **Code:**
   - Go, with ffgo calls bounded by context as clustarr's `pkg/ffruntime`
-    bounds them;
+    bounds them (*as built:* each conversion, whose calls run on its own
+    goroutine, has 5 s once its context ends before it is abandoned -- its
+    slot freed, the call counted until it returns -- and four abandoned
+    still running wedge the pod: it takes no work and `/healthz` fails);
   - GPL-compatible dependencies only.
 - **Deploying to talos:**
   - All talos deploys go through cluster-bootstrap's Terraform path: edit

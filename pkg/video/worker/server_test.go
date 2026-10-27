@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -349,4 +350,59 @@ func fixture(t *testing.T) struct{ Args []string } {
 	}
 	t.Fatal("no library-hls fixture")
 	return struct{ Args []string }{}
+}
+
+// openCtx is open on a context of its own, which the caller cancels.
+func openCtx(t *testing.T, ctx context.Context, c videopb.VideoClient, j *videopb.Job) error {
+	t.Helper()
+	s, err := c.Convert(ctx)
+	require.NoError(t, err)
+	require.NoError(t, s.Send(&videopb.Up{Kind: &videopb.Up_Job{Job: j}}))
+	md, err := s.Header()
+	if err != nil {
+		return err
+	}
+	if len(md.Get(video.AcceptedHeader)) > 0 {
+		return nil
+	}
+	_, err = s.Recv()
+	return err
+}
+
+func TestAConversionThatOutlivesItsContextIsAbandoned(t *testing.T) {
+	// An ffgo call that hangs (a QSV encode the iHD driver never returns)
+	// must not hold its slot for good: once its stream ends and it has not
+	// returned within the grace, its slot is freed and it is counted, and
+	// at MaxAbandoned the pod reports itself wedged, so /healthz fails and
+	// the kubelet restarts it, as clustarr's pkg/ffruntime does.
+	unblock := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(unblock) }) }
+	t.Cleanup(release)
+	var sent atomic.Int32
+	hang := func(_ context.Context, _ video.Job, _ pipeline.Options, sink pipeline.Sink) error {
+		<-unblock
+		if sink.Segment(pipeline.Segment{SegmentTimes: video.SegmentTimes{Name: "media-00000.ts", End: time.Second}}) == nil {
+			sent.Add(1)
+		}
+		return nil
+	}
+	slots := worker.NewSlots(2)
+	s := &worker.Server{Slots: slots, Run: hang, Grace: 50 * time.Millisecond, MaxAbandoned: 2}
+	c := serve(t, s)
+	for i, session := range []string{"A", "B"} {
+		ctx, cancel := context.WithCancel(t.Context())
+		require.NoError(t, openCtx(t, ctx, c, job(session, false)))
+		require.False(t, s.Wedged(), "after %d abandoned", i)
+		cancel()
+		require.Eventually(t, func() bool { return slots.Free() == 2 }, 2*time.Second, 10*time.Millisecond,
+			"session %s's slot is freed though its conversion never returned", session)
+	}
+	require.True(t, s.Wedged(), "two abandoned conversions wedge the pod")
+	err := openCtx(t, t.Context(), c, job("C", false))
+	require.Equal(t, codes.Unavailable, status.Code(err), "a wedged pod takes no work: %v", err)
+	release()
+	require.Eventually(t, func() bool { return s.Abandoned() == 0 }, 2*time.Second, 10*time.Millisecond)
+	assert.Zero(t, sent.Load(), "an abandoned conversion sends nothing on its ended stream")
+	assert.True(t, s.Wedged(), "a wedged pod stays wedged until it restarts")
 }
