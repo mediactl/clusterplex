@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/obinnaokechukwu/ffgo"
@@ -42,6 +43,9 @@ var decodeTrials = []struct {
 // does not open or cannot encode and scale: such a pod stays unready.
 func Measure(ctx context.Context, renderNode string) (Caps, error) {
 	began := time.Now()
+	if err := IsRenderNode(renderNode); err != nil {
+		return Caps{}, err
+	}
 	vaapi, err := ffgo.NewHWDevice(ffgo.HWDeviceTypeVAAPI, renderNode)
 	if err != nil {
 		return Caps{}, fmt.Errorf("open %s for VA-API: %w", renderNode, err)
@@ -75,6 +79,20 @@ func Measure(ctx context.Context, renderNode string) (Caps, error) {
 	}
 	caps.Took = time.Since(began)
 	return caps, nil
+}
+
+// IsRenderNode fails unless path is a character device: FFmpeg takes any
+// other VA-API device string for an X11 display, and BtbN's build aborts the
+// process where libX11 is absent (the pool's image has none).
+func IsRenderNode(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("render node: %w", err)
+	}
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return fmt.Errorf("render node %s is no character device", path)
+	}
+	return nil
 }
 
 // decodeOn decodes clip's video on dev and fails unless frames come out.

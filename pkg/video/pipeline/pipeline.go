@@ -212,6 +212,9 @@ func openDevices(o Options) (*devices, error) {
 	if !o.onGPU() {
 		return &devices{}, nil
 	}
+	if err := gpu.IsRenderNode(o.RenderNode); err != nil {
+		return nil, err
+	}
 	vaapi, err := ffgo.NewHWDevice(ffgo.HWDeviceTypeVAAPI, o.RenderNode)
 	if err != nil {
 		return nil, fmt.Errorf("open %s for VA-API: %w", o.RenderNode, err)

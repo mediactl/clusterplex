@@ -78,3 +78,10 @@ func TestTheNUCsDeviceMeasures(t *testing.T) {
 	require.True(t, caps.DecodesOnGPU("h264", 8))
 	t.Logf("measured %+v", caps)
 }
+
+func TestAPathThatIsNoRenderNodeIsRefusedBeforeFFmpeg(t *testing.T) {
+	require.Error(t, gpu.IsRenderNode("/dev/dri/none"))
+	require.Error(t, gpu.IsRenderNode(t.TempDir()), "a directory")
+	require.Error(t, gpu.IsRenderNode("/etc/hostname"), "a regular file")
+	require.NoError(t, gpu.IsRenderNode("/dev/null"), "a character device")
+}
