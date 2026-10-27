@@ -152,8 +152,10 @@ wire() {
 #   dash-encode        the newest film, in Plex Web, 720p 3 Mb/s
 #   burn-image         Arrietty (2010), its PGS subtitle burned in
 #   burn-text-sidecar  127 Hours (2010), its SRT sidecar burned in
+#   burn-text-embedded eXistenZ (1999), its embedded ASS track burned in
 # A burn-in mode selects the subtitle for the item as a client does, and
-# selects none again afterwards.
+# selects again afterwards whichever subtitle was selected before (none if
+# none was).
 api() {
 	apk add -q curl >/dev/null 2>&1 || true
 	R=/proc/$PMS/root
@@ -168,6 +170,7 @@ api() {
 	dash-encode) product="Plex Web" platform=Chrome device=Linux proto=dash ext=mpd ;;
 	burn-image) title="Arrietty" burn=image ;;
 	burn-text-sidecar) title="127 Hours" burn=sidecar ;;
+	burn-text-embedded) title="eXistenZ" burn=embedded ;;
 	esac
 	set -- -H "X-Plex-Token: $T" -H "X-Plex-Client-Identifier: $SID" -H "X-Plex-Product: $product" \
 		-H "X-Plex-Platform: $platform" -H "X-Plex-Device: $device" -H "Accept: application/json"
@@ -186,7 +189,10 @@ api() {
 		case "$burn" in
 		image) pick='select(.streamType == 3 and (.codec == "pgs" or .codec == "vobsub" or .codec == "dvd_subtitle"))' ;;
 		sidecar) pick='select(.streamType == 3 and .key != null)' ;;
+		embedded) pick='select(.streamType == 3 and .key == null and (.codec == "ass" or .codec == "ssa" or .codec == "srt"))' ;;
 		esac
+		was=$(echo "$meta" | jq -r '[.MediaContainer.Metadata[0].Media[0].Part[0].Stream[] | select(.streamType == 3 and .selected == true)][0].id // 0')
+		echo "API subtitle selected before: $was"
 		sub=$(echo "$meta" | jq -r "[.MediaContainer.Metadata[0].Media[0].Part[0].Stream[] | $pick][0].id // empty")
 		echo "API subtitle $sub ($burn) on part $part"
 		curl -s -o /dev/null -w "API select %{http_code}\n" -X PUT "$@" "$B/library/parts/$part?subtitleStreamID=$sub&allParts=1"
@@ -215,7 +221,7 @@ api() {
 	fi
 	curl -s -o /dev/null -w "API stop %{http_code}\n" "$@" "$B/video/:/transcode/universal/stop?session=$SID"
 	if [ -n "$part" ]; then
-		curl -s -o /dev/null -w "API unselect %{http_code}\n" -X PUT "$@" "$B/library/parts/$part?subtitleStreamID=0&allParts=1"
+		curl -s -o /dev/null -w "API restore $was %{http_code}\n" -X PUT "$@" "$B/library/parts/$part?subtitleStreamID=$was&allParts=1"
 	fi
 }
 
@@ -249,7 +255,7 @@ main() {
 	w=$!
 	a=
 	case "$mode" in
-	library-hls | library-hls-seek | library-hls-fast | library-hls-play | hdr-sdr | dash-encode | burn-image | burn-text-sidecar)
+	library-hls | library-hls-seek | library-hls-fast | library-hls-play | hdr-sdr | dash-encode | burn-image | burn-text-sidecar | burn-text-embedded)
 		api >"$D/api" 2>&1 &
 		a=$!
 		;;

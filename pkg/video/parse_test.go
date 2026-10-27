@@ -221,6 +221,17 @@ func TestTheTextBurnInJobParses(t *testing.T) {
 	require.Equal(t, video.OutputHLS, j.Output)
 }
 
+func TestTheEmbeddedTextBurnInJobParses(t *testing.T) {
+	// Finding B: an embedded ASS track is named by its index (-map_inlineass
+	// 0:9) and keeps its own styles: inlineass carries no overrides.
+	c := fixture(t, "burn-text-embedded")
+	j, err := video.Parse(c.Args, c.Env)
+	require.NoError(t, err)
+	require.Len(t, j.Inputs, 1)
+	require.Equal(t, &video.BurnIn{Input: 0, Stream: 9}, j.Burn)
+	require.Equal(t, 5*time.Second, j.Segments.Duration)
+}
+
 func TestABurnInOutsideItsShapeIsRefused(t *testing.T) {
 	edited := func(shape string, fn func([]string) []string) ([]string, map[string]string) {
 		c := fixture(t, shape)
@@ -248,6 +259,9 @@ func TestABurnInOutsideItsShapeIsRefused(t *testing.T) {
 			return slices.Delete(a, i, i+2)
 		}, "inlineass"},
 		"an inlineass option it does not know": {"burn-text-sidecar", inArg("inlineass", "shadow=", "blur=1:shadow="), "blur"},
+		"a subtitle-relative map into the library file": {"burn-text-embedded", func(a []string) []string {
+			return replaceArg(a, "0:9", "0:s:2")
+		}, "0:s:2"},
 		"a null output of another stream": {"burn-text-sidecar", func(a []string) []string {
 			a[len(a)-6] = "0:s:0" // the null output's -map, not -map_inlineass's
 			return a

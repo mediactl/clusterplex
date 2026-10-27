@@ -74,7 +74,7 @@ var videoEncoders = map[string]bool{"libx264": true}
 
 var (
 	streamRef     = regexp.MustCompile(`^0:(\d+)$`)
-	subtitleRef   = regexp.MustCompile(`^(\d+):s:(\d+)$`)
+	inlineRef     = regexp.MustCompile(`^(\d+):(s:)?(\d+)$`)
 	keyframeExpr  = regexp.MustCompile(`^expr:gte\(t,n_forced\*([0-9]+(?:\.[0-9]+)?)\)$`)
 	segmentPatten = regexp.MustCompile(`^media-%05d\.ts$`)
 )
@@ -453,7 +453,9 @@ func inlineStyle(args []kv) (string, error) {
 }
 
 // textBurn ties an inlineass filter to -map_inlineass, which names the
-// subtitle it burns (input:s:N), and to Plex's null output of the same.
+// subtitle it burns, and to Plex's null output of the same: an embedded
+// track by its index (0:9), a sidecar Plex copied into the session as its
+// one subtitle (1:s:0).
 func (j *Job) textBurn(mapped, nullMap string) error {
 	text := j.Burn != nil && !j.Burn.Image
 	switch {
@@ -466,14 +468,17 @@ func (j *Job) textBurn(mapped, nullMap string) error {
 	case nullMap != mapped:
 		return refuse("a null output of %s, the burn-in %s", nullMap, mapped)
 	}
-	m := subtitleRef.FindStringSubmatch(mapped)
+	m := inlineRef.FindStringSubmatch(mapped)
 	if m == nil {
 		return refuse("-map_inlineass %q", mapped)
 	}
 	in, _ := strconv.Atoi(m[1])
-	n, _ := strconv.Atoi(m[2])
+	n, _ := strconv.Atoi(m[3])
 	if in >= len(j.Inputs) {
 		return refuse("-map_inlineass names input %d of %d", in, len(j.Inputs))
+	}
+	if m[2] != "" && (!j.Inputs[in].Streamed || n != 0) {
+		return refuse("-map_inlineass %q: by subtitle number only a sidecar's one subtitle", mapped)
 	}
 	j.Burn.Input, j.Burn.Stream = in, n
 	return nil

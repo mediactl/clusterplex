@@ -54,7 +54,7 @@ func times(t *testing.T, line string) (name string, start, end time.Duration, st
 }
 
 func TestSegmentListLinesArePlexs(t *testing.T) {
-	for _, shape := range []string{"library-hls", "library-hls-seek", "hdr-sdr", "burn-image", "burn-text-sidecar"} {
+	for _, shape := range []string{"library-hls", "library-hls-seek", "hdr-sdr", "burn-image", "burn-text-sidecar", "burn-text-embedded"} {
 		t.Run(shape, func(t *testing.T) { replayList(t, shape) })
 	}
 }
