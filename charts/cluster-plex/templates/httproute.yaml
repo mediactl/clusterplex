@@ -1,0 +1,30 @@
+{{/*
+A Gateway API HTTPRoute to the client Service, with httpRoute.enabled: every
+hostname named, every path, to port 32400 (values.yaml, httpRoute). Rendered
+only with one Plex pod, which cluster-plex.validate holds: through a Gateway
+every client arrives from the Gateway's own address, and the client Service's
+ClientIP affinity would pin all of them to one pod (ADR-0005).
+*/}}
+{{- if .Values.httpRoute.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+  {{- with .Values.httpRoute.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs: {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  {{- with .Values.httpRoute.hostnames }}
+  hostnames: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "cluster-plex.fullname" . }}
+          port: 32400
+{{- end }}

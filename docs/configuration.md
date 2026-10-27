@@ -277,6 +277,24 @@ fails the handshake for every client that follows the published connection. This
 is the same constraint [ADR-0002](adr/0002-proxy-plex-through-port-redirect.md)
 records for the proxy tier, and it applies to anything put in front of Plex.
 
+### A hostname through a Gateway (HTTPRoute)
+
+The chart can also publish Plex on a Gateway API listener, for a browser or
+an app typing a hostname: `httpRoute.enabled`, with `httpRoute.parentRefs`
+naming the Gateway (name, namespace, and `sectionName` for one listener) and
+`httpRoute.hostnames` the names. It routes every path to the client Service's
+port 32400, so the listener's own certificate fronts Plex; name the hostname
+in `plex.externalURL` (`https://plex.example.com:443`) so Plex advertises it.
+The `plex.direct` connection plex.tv publishes still needs the L4 path above:
+the Gateway terminates TLS with its own certificate, which that name's
+handshake refuses.
+
+The chart refuses the route with more than one Plex pod. Through a Gateway
+every client arrives from the Gateway's own address, so the client Service's
+`ClientIP` affinity below pins all of them to one pod, and a session spread
+across pods loses its transcode. Several pods are reached through the
+LoadBalancer Service.
+
 ### Sessions have to stay on one pod
 
 `plex-main` (the chart's client Service, `<fullname>`) sets `sessionAffinity:

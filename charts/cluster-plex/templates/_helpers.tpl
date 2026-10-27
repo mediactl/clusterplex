@@ -77,4 +77,12 @@ advertises another address, which works until a client signs in.
 {{- if and (not .Values.proxy.enabled) (or .Values.proxy.service.loadBalancerIP .Values.proxy.service.annotations) -}}
 {{- fail "proxy.service.* is the media proxy's own Service since chart 0.3.0, rendered only with proxy.enabled; the Service clients connect to is configured under service.*" -}}
 {{- end -}}
+{{- if .Values.httpRoute.enabled -}}
+{{- if not .Values.httpRoute.parentRefs -}}
+{{- fail "httpRoute.enabled needs httpRoute.parentRefs: the Gateway (name, namespace, and sectionName for one listener) the route attaches to; a route with no parent is attached to nothing" -}}
+{{- end -}}
+{{- if gt (int .Values.plex.replicas) 1 -}}
+{{- fail (printf "httpRoute.enabled needs plex.replicas 1 (it is %v): through a Gateway every client arrives from the Gateway's own address, so the client Service's ClientIP affinity pins all of them to one pod and a session spread across pods loses its transcode (ADR-0005). Reach several Plex pods through the LoadBalancer Service instead" .Values.plex.replicas) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}

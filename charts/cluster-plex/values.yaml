@@ -206,6 +206,28 @@ service:
   # mid-film loses its transcode. Three hours covers a feature-length one.
   sessionAffinityTimeoutSeconds: 10800
 
+# A Gateway API HTTPRoute to the client Service above, opt in: a hostname on
+# a Gateway listener (its certificate) in front of Plex for browsers and
+# apps, beside the LoadBalancer address. parentRefs are verbatim (name,
+# namespace, and sectionName for one listener); every hostname is routed,
+# every path, to port 32400. Name the route's hostname in plex.externalURL
+# (https://plex.example.com:443) so Plex advertises it; clients that follow
+# the plex.direct connection plex.tv publishes still need the L4 path (see
+# docs/configuration.md, "Advertising an address clients can use"). The
+# chart refuses it with more than one Plex pod: through a Gateway every
+# client arrives from the Gateway's own address, so the client Service's
+# ClientIP affinity pins all of them to one pod and a session spread across
+# pods loses its transcode (ADR-0005).
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  #  - name: cilium
+  #    namespace: gateway
+  #    sectionName: https
+  hostnames: []
+  #  - plex.example.com
+
 # The media proxy tier (cmd/proxy, docs/media-proxy-pattern.md): a Deployment
 # that serves direct-play bytes itself from the shared library and forwards
 # everything else to a Plex pod, so media throughput scales with the nodes
