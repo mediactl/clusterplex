@@ -185,12 +185,23 @@ SELECT (SELECT count(*) FROM media_streams WHERE media_item_id = $1),
 		return false, nil
 	}
 	m, rows := MediaRows(*in.Probe, in.ProbeHash, in.OriginalLanguage)
+	if in.FastStart != nil {
+		v := int32(0)
+		if *in.FastStart {
+			v = 1
+		}
+		m.OptimizedForStreaming = &v
+	}
+	// optimized_for_streaming is written only when known: a NULL in $16 keeps
+	// the column, Plex's own analysis included.
 	if _, err := tx.Exec(ctx, `
 UPDATE media_items SET container = $2, video_codec = $3, audio_codec = $4, width = $5, height = $6,
        duration = $7, bitrate = $8, frames_per_second = $9, display_aspect_ratio = $10,
-       audio_channels = $11, extra_data = $12, updated_at = $13, color_trc = $14, media_analysis_version = $15
+       audio_channels = $11, extra_data = $12, updated_at = $13, color_trc = $14, media_analysis_version = $15,
+       optimized_for_streaming = coalesce($16, optimized_for_streaming)
  WHERE id = $1`, t.Media, m.Container, m.VideoCodec, nullString(m.AudioCodec), m.Width, m.Height,
-		m.Duration, m.Bitrate, m.FPS, m.AspectRatio, m.AudioChannels, m.ItemExtra, now, m.ColorTRC, m.AnalysisVersion); err != nil {
+		m.Duration, m.Bitrate, m.FPS, m.AspectRatio, m.AudioChannels, m.ItemExtra, now, m.ColorTRC, m.AnalysisVersion,
+		m.OptimizedForStreaming); err != nil {
 		return false, fmt.Errorf("plexseed: media item %d: %w", t.Media, err)
 	}
 	if _, err := tx.Exec(ctx, `

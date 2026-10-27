@@ -33,8 +33,10 @@ const (
 )
 
 // SeedVersion is the seeder's current row format: 2 added color_trc, the
-// analysis version and the commentary and bitmap flags.
-const SeedVersion = "2"
+// analysis version and the commentary and bitmap flags; 3 the streaming
+// flag read from an MP4's leading boxes (optimized_for_streaming), so every
+// projected MP4 is read once more for it.
+const SeedVersion = "3"
 
 // found is a media row located by UID, or adopted by path.
 type found struct {

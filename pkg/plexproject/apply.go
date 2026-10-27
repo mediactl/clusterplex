@@ -135,6 +135,21 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	// change alone) the seeder keeps them and fixes languages. Without a
 	// probe there is nothing to replace them with, so whatever the row
 	// carries -- Plex's own analysis included -- stays until one arrives.
+	if p.Files != nil && c.Input.Probe != nil && c.Input.FastStart == nil && isoBaseMedia(c.Input.Probe.Container) {
+		// Plex Web direct-plays a progressive MP4 only when its row says the
+		// file is optimized for streaming (the moov atom leads the mdat);
+		// otherwise it asks PMS to remux the file into DASH on Plex's own
+		// node. Plex's analysis sets the flag and never runs on a projected
+		// row, so the projection reads the file's first boxes for it (talos,
+		// 2026-10-27: 5,812 seeded MP4s carried none, and every Plex Web play
+		// of one was a remux on the Raspberry Pi). A file that does not
+		// answer leaves the column as it is.
+		if fast, err := p.Files.FastStart(ctx, c.PlexPath); err != nil {
+			p.log().Warn("plexproject: mp4 layout unread; the streaming flag stays", "path", c.PlexPath, "error", err)
+		} else {
+			c.Input.FastStart = &fast
+		}
+	}
 	seeded := c.seedable()
 	replace := seeded && (!have || f.adopted || f.probeHash != c.Input.ProbeHash || f.seedVersion != SeedVersion)
 	if replace {
@@ -234,4 +249,14 @@ func locationRoot(ctx context.Context, tx pgx.Tx, location int64) (string, error
 	var root string
 	err := tx.QueryRow(ctx, `SELECT root_path FROM section_locations WHERE id = $1`, location).Scan(&root)
 	return root, err
+}
+
+// isoBaseMedia reports whether a probe's container is an ISO base media
+// file, whose streaming flag plexseed.FastStart reads.
+func isoBaseMedia(container string) bool {
+	switch container {
+	case "mp4", "m4v", "mov", "mov,mp4,m4a,3gp,3g2,mj2":
+		return true
+	}
+	return false
 }

@@ -42,6 +42,9 @@ type MediaRow struct {
 	// from; AnalysisVersion is MediaAnalysisVersion.
 	ColorTRC        string
 	AnalysisVersion int32
+	// OptimizedForStreaming is media_items.optimized_for_streaming: 1 when
+	// the moov atom leads, 0 when the mdat does, nil when unknown.
+	OptimizedForStreaming *int32
 }
 
 // MediaAnalysisVersion is the media_analysis_version Plex 1.43.4 stamps on

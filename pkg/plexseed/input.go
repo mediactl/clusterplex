@@ -23,6 +23,11 @@ type Input struct {
 	// Sidecars are the subtitle files beside the file (status.sidecars),
 	// which the projection writes as external subtitle streams.
 	Sidecars []Sidecar
+	// FastStart is whether the file's moov atom leads its mdat, which Plex
+	// records as media_items.optimized_for_streaming and Plex Web direct-plays
+	// a progressive MP4 on; nil leaves the column as it is (unread, or not an
+	// MP4). The projection reads it from the file (FastStart).
+	FastStart *bool
 }
 
 // Probe is status.mediaInfo.

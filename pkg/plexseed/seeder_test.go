@@ -486,3 +486,27 @@ func TestLabelsAreReconciledAroundTheOwnersOwn(t *testing.T) {
 	assert.Equal(t, 2, removed, "no keywords: ours go, the owner's stays")
 	assert.Equal(t, [][]any{{"Favourite", int64(0), ""}}, labelRows(t, conn, l.item))
 }
+
+// The streaming flag is written only when the caller read it: a nil
+// FastStart keeps whatever the column holds, Plex's own analysis included.
+func TestTheStreamingFlagIsWrittenOnlyWhenRead(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr Movies")
+	ctx := context.Background()
+	_, err := conn.Exec(ctx, "UPDATE media_items SET optimized_for_streaming = 1 WHERE id = $1", l.media)
+	require.NoError(t, err)
+
+	in := plexseed.Input{Path: "/data/media/x.mp4", SizeBytes: 1000, ProbeHash: "h1", Probe: &andor}
+	_, err = seeder(conn).Seed(ctx, l.path, in)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND optimized_for_streaming = 1", l.media), "unread: the column stays")
+
+	slow := false
+	in.FastStart, in.ProbeHash = &slow, "h2"
+	tx, err := conn.Begin(ctx)
+	require.NoError(t, err)
+	_, err = seeder(conn).ReplaceTx(ctx, tx, plexseed.Target{Part: l.part, Media: l.media, Item: l.item}, in)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(ctx))
+	assert.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND optimized_for_streaming = 0", l.media), "read as mdat-first: 0")
+}

@@ -388,3 +388,15 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   function. Anything worth a comment about *why* goes in the test name or a
   comment above it.
 - Commit messages are plain imperative sentences, matching this repo's history.
+
+A projected MP4 carries Plex's streaming flag (2026-10-27,
+`media_items.optimized_for_streaming`, `SeedVersion` 3): Plex Web
+direct-plays a progressive MP4 only when that flag is 1, else it asks PMS
+to remux the file into DASH on Plex's own node, and Plex's analysis, which
+sets it, never runs on a projected row, so 5,812 seeded MP4s carried none
+and every Plex Web play of one was a remux on the Raspberry Pi. The
+projection reads the file's leading boxes (`plexseed.FastStart`, through
+`Files.FastStart` under the sweep's timeout) at each apply of an ISO base
+media file and writes 1 (moov first) or 0 (mdat first); an unread file
+keeps the column. Direct streams that remain go to the remux pool
+(`remux.enabled`), never Plex's transcoder on the Pi.

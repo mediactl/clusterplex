@@ -18,7 +18,16 @@ type fakeFiles struct {
 	gone   map[string]bool
 	broken map[string]bool
 	down   map[string]bool
+	fast   map[string]bool
 	asked  []string
+}
+
+// FastStart answers from fast, else an error, as an unread file would.
+func (f *fakeFiles) FastStart(_ context.Context, path string) (bool, error) {
+	if v, ok := f.fast[path]; ok {
+		return v, nil
+	}
+	return false, errors.New("the file was not read")
 }
 
 func (f *fakeFiles) Root(_ context.Context, root string) error {

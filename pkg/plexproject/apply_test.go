@@ -320,3 +320,36 @@ func TestAnItemsLabelsFollowItsKeywords(t *testing.T) {
 	require.NoError(t, p.Apply(ctx, section, loc, change("f9", "/media/movies/Heat (1995)/Heat.mkv", "k1", it)))
 	require.Equal(t, []string{"heist", "bank robbery"}, labels())
 }
+
+// Plex Web direct-plays a progressive MP4 only when its row says the file
+// is optimized for streaming; Plex's analysis never runs on a projected
+// row, so the projection reads the file's leading boxes for the flag
+// (talos, 2026-10-27: 5,812 seeded MP4s carried none and every Plex Web
+// play of one was a remux on Plex's node). A file the disk does not
+// answer for leaves the column alone, and a Matroska file is never read.
+func TestAProjectedMP4CarriesPlexsStreamingFlag(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	files := &fakeFiles{fast: map[string]bool{"/media/movies/Heat (1995)/Heat.mp4": true, "/media/movies/Ronin (1998)/Ronin.mp4": false}}
+	p.Files = files
+
+	fast := change("fs1", "/media/movies/Heat (1995)/Heat.mp4", "k1", movieItem("fs-u1", "", "Heat"))
+	fast.Input.Probe.Container = "mp4"
+	require.NoError(t, p.Apply(context.Background(), section, loc, fast))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND optimized_for_streaming = 1", mediaID(t, conn, section, "fs1")))
+
+	slow := change("fs2", "/media/movies/Ronin (1998)/Ronin.mp4", "k1", movieItem("fs-u2", "", "Ronin"))
+	slow.Input.Probe.Container = "mp4"
+	require.NoError(t, p.Apply(context.Background(), section, loc, slow))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND optimized_for_streaming = 0", mediaID(t, conn, section, "fs2")))
+
+	unread := change("fs3", "/media/movies/Thief (1981)/Thief.mp4", "k1", movieItem("fs-u3", "", "Thief"))
+	unread.Input.Probe.Container = "mp4"
+	require.NoError(t, p.Apply(context.Background(), section, loc, unread))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND optimized_for_streaming IS NULL", mediaID(t, conn, section, "fs3")), "an unread file keeps the column")
+
+	mkv := change("fs4", "/media/movies/Manhunter (1986)/Manhunter.mkv", "k1", movieItem("fs-u4", "", "Manhunter"))
+	require.NoError(t, p.Apply(context.Background(), section, loc, mkv))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_items WHERE id = $1 AND optimized_for_streaming IS NULL", mediaID(t, conn, section, "fs4")), "a Matroska file has no such flag")
+}

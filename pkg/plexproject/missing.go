@@ -36,6 +36,9 @@ type Files interface {
 	// Missing reports whether path is gone: true only for a definite "no
 	// such file", an error for any answer that is not one.
 	Missing(ctx context.Context, path string) (bool, error)
+	// FastStart reports whether the MP4 at path has its moov atom before
+	// its mdat (plexseed.FastStart), from its leading box headers.
+	FastStart(ctx context.Context, path string) (bool, error)
 }
 
 // DiskFiles is Files on this process's file system, where Plex's library
@@ -81,6 +84,19 @@ func (d *DiskFiles) Missing(ctx context.Context, path string) (bool, error) {
 	default:
 		return false, err
 	}
+}
+
+// FastStart is Files.FastStart: a few header reads at the file's start,
+// under the same timeout as a stat, since the file is on the same NFS.
+func (d *DiskFiles) FastStart(ctx context.Context, path string) (bool, error) {
+	return within(ctx, d.timeout(), func() (bool, error) {
+		f, err := os.Open(path)
+		if err != nil {
+			return false, err
+		}
+		defer func() { _ = f.Close() }()
+		return plexseed.FastStart(f)
+	})
 }
 
 func (d *DiskFiles) timeout() time.Duration {
