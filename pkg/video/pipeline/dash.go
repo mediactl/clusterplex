@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/obinnaokechukwu/ffgo"
@@ -54,6 +55,7 @@ type dashRep struct {
 	scale ffgo.Rational
 	first int64 // the open fragment's first timestamp in scale; -1 none
 	end   int64
+	n     int // packets in the open fragment
 }
 
 func newDashRep() (*dashRep, error) {
@@ -79,15 +81,27 @@ func (r *dashRep) header(tb ffgo.Rational) error {
 	return r.m.Flush() // the init reaches the splitter
 }
 
+// write muxes p, whose presentation ends at end. The fragment's end is
+// counted in the muxer's ticks from the packet's own timestamp and
+// duration where it has one, so that one fragment's end is the next one's
+// start to the tick, as dashenc's timeline is.
 func (r *dashRep) write(p *ffgo.Packet, end time.Duration) error {
 	pts := dashRescale(p.PTS(), r.tb, r.scale)
 	if r.first < 0 {
 		r.first = pts
 	}
-	if e := int64(end) * int64(r.scale.Den) / (int64(r.scale.Num) * int64(time.Second)); e > r.end {
-		r.end = e
+	e := muxTicks(end, r.scale)
+	if d := avcodec.GetPacketDuration(p.Raw()); d > 0 && pts != avutil.AV_NOPTS_VALUE {
+		e = pts + dashRescale(d, r.tb, r.scale)
 	}
+	r.end = max(r.end, e)
+	r.n++
 	return r.m.WritePacket(r.ms, p)
+}
+
+// muxTicks is d in the muxer's time base, rounded.
+func muxTicks(d time.Duration, scale ffgo.Rational) int64 {
+	return int64(math.Round(float64(d) * float64(scale.Den) / (float64(scale.Num) * float64(time.Second))))
 }
 
 func (r *dashRep) cut() (remux.Fragment, error) {
@@ -96,7 +110,7 @@ func (r *dashRep) cut() (remux.Fragment, error) {
 		return remux.Fragment{}, err
 	}
 	f := remux.Fragment{Data: r.frag, T: r.first, D: r.end - r.first}
-	r.first = -1
+	r.first, r.n = -1, 0
 	return f, nil
 }
 
@@ -174,8 +188,13 @@ func (c *dashCutter) openVideo(enc *ffgo.VideoStreamEncoder) error {
 		return err
 	}
 	v := c.job.Video
+	window := 0
+	if c.live {
+		window = c.job.Segments.ListSize
+	}
 	c.manifest = remux.Manifest{
 		Duration: c.duration, StartNumber: c.job.Segments.StartNumber, SegmentDuration: c.job.Segments.Duration, Start: c.now(),
+		Window: window,
 		Video: remux.Representation{
 			Codecs: avcCodecs(c.v.init), Bandwidth: v.MaxRate, Width: v.Width, Height: v.Height,
 			FrameRate: fmt.Sprintf("%d/%d", v.FrameRate.Num, v.FrameRate.Den), Timescale: c.v.scale.Den,
@@ -288,6 +307,13 @@ func adtsConfig(p []byte) ([]byte, error) {
 	return []byte{byte(v >> 8), byte(v)}, nil
 }
 
+func deref(f *remux.Fragment) remux.Fragment {
+	if f == nil {
+		return remux.Fragment{}
+	}
+	return *f
+}
+
 // avcCodecs is the RFC 6381 name of the H.264 stream an init describes:
 // avc1.PPCCLL from its avcC box, or avc1 alone.
 func avcCodecs(init []byte) string {
@@ -312,8 +338,18 @@ func (c *dashCutter) video(p *ffgo.Packet) error {
 	pts := toTime(p.PTS(), c.v.tb)
 	key := avcodec.GetPacketFlags(p.Raw())&avcodec.PacketFlagKey != 0
 	if key && c.open && pts >= c.boundary() {
-		if err := c.cut(pts); err != nil {
+		// A segment ends only once its audio has a packet: an audio chunk
+		// of nothing has no start on the timeline.
+		if err := c.writeAudio(pts); err != nil {
 			return err
+		}
+		switch {
+		case c.a != nil && c.a.n > 0:
+			if err := c.cut(pts); err != nil {
+				return err
+			}
+		case pts >= c.boundary()+10*c.job.Segments.Duration:
+			return errors.New("no audio for ten segments")
 		}
 	}
 	if !c.open {
@@ -323,6 +359,14 @@ func (c *dashCutter) video(p *ffgo.Packet) error {
 		c.open = true
 	}
 	c.last = pts
+	// A packet that names no duration lasts one frame of the grid, in
+	// ticks, so each fragment ends where the next begins.
+	if avcodec.GetPacketDuration(p.Raw()) <= 0 {
+		r, tb := c.job.Video.FrameRate, c.v.tb
+		if n, d := int64(tb.Den)*int64(r.Den), int64(tb.Num)*int64(r.Num); d > 0 && n%d == 0 {
+			avcodec.SetPacketDuration(p.Raw(), n/d)
+		}
+	}
 	return c.v.write(p, packetEnd(p, c.v.tb, c.frame()))
 }
 
@@ -383,9 +427,6 @@ func (c *dashCutter) writeAudio(until time.Duration) error {
 
 // cut ends segment n at the video keyframe at, and sends it.
 func (c *dashCutter) cut(at time.Duration) error {
-	if c.a == nil {
-		return errors.New("no audio by the end of the first segment")
-	}
 	if err := c.writeAudio(at); err != nil {
 		return err
 	}
@@ -397,10 +438,15 @@ func (c *dashCutter) cut(at time.Duration) error {
 	if err != nil {
 		return err
 	}
-	return c.emit(vf, af)
+	if err := c.emit(vf, &af); err != nil {
+		return err
+	}
+	return c.sink.Manifest(c.manifest.Render())
 }
 
-func (c *dashCutter) emit(vf, af remux.Fragment) error {
+// emit sends segment n: its files, then the manifest that lists them. af
+// is nil for a last segment without audio.
+func (c *dashCutter) emit(vf remux.Fragment, af *remux.Fragment) error {
 	if !c.sentInit {
 		if err := c.sink.File(remux.InitFile(0), c.v.init); err != nil {
 			return err
@@ -413,11 +459,25 @@ func (c *dashCutter) emit(vf, af remux.Fragment) error {
 	if err := c.sink.File(remux.ChunkFile(0, c.n), vf.Data); err != nil {
 		return err
 	}
-	if err := c.sink.File(remux.ChunkFile(1, c.n), af.Data); err != nil {
-		return err
+	if af != nil {
+		if err := c.sink.File(remux.ChunkFile(1, c.n), af.Data); err != nil {
+			return err
+		}
+	}
+	// A bit rate the stream does not name is its first segment's, as
+	// dashenc's (a copied Live TV audio names none).
+	for _, r := range []struct {
+		rep *remux.Representation
+		f   remux.Fragment
+	}{{&c.manifest.Video, vf}, {&c.manifest.Audio, deref(af)}} {
+		if r.rep.Bandwidth <= 0 && r.f.D > 0 && r.rep.Timescale > 0 {
+			r.rep.Bandwidth = int64(len(r.f.Data)) * 8 * int64(r.rep.Timescale) / r.f.D
+		}
 	}
 	c.manifest.Video.Timeline = append(c.manifest.Video.Timeline, remux.TimelineEntry{T: vf.T, D: vf.D})
-	c.manifest.Audio.Timeline = append(c.manifest.Audio.Timeline, remux.TimelineEntry{T: af.T, D: af.D})
+	if af != nil {
+		c.manifest.Audio.Timeline = append(c.manifest.Audio.Timeline, remux.TimelineEntry{T: af.T, D: af.D})
+	}
 	if w := c.job.Segments.ListSize; c.live && w > 0 && len(c.manifest.Video.Timeline) > w {
 		drop := len(c.manifest.Video.Timeline) - w
 		c.manifest.Video.Timeline = c.manifest.Video.Timeline[drop:]
@@ -426,7 +486,7 @@ func (c *dashCutter) emit(vf, af remux.Fragment) error {
 	}
 	c.manifest.Now = c.now()
 	c.n++
-	return c.sink.Manifest(c.manifest.Render())
+	return nil
 }
 
 // finish sends the last segment and the static manifest.
@@ -447,10 +507,16 @@ func (c *dashCutter) finish() error {
 	if err != nil {
 		return err
 	}
-	af, err := c.a.cut()
-	if err != nil {
-		return err
+	// The last segment's audio may be none: it is left off the timeline.
+	var af *remux.Fragment
+	if c.a.n > 0 {
+		f, err := c.a.cut()
+		if err != nil {
+			return err
+		}
+		af = &f
 	}
+	// Its files, then only the static manifest, as dashenc's trailer.
 	if err := c.emit(vf, af); err != nil {
 		return err
 	}

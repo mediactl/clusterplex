@@ -207,7 +207,10 @@ func (v *videoPath) emit(f ffgo.Frame, j int64) error {
 		return err
 	}
 	defer func() { _ = g.Free() }()
-	g.SetPTS(v.slotTime(j).Nanoseconds() * int64(outTB.Den) / int64(time.Second))
+	// Slot j in exact ticks of outTB, so frames are a whole frame apart
+	// (3003 at 29.97 fps), as -fps_mode cfr stamps them.
+	r := v.job.Video.FrameRate
+	g.SetPTS(v.job.Start.Nanoseconds()*int64(outTB.Den)/int64(time.Second) + j*int64(outTB.Den)*int64(r.Den)/(int64(outTB.Num)*int64(r.Num)))
 	if v.graph == nil {
 		if v.graph, err = ffgo.NewFilterGraph(v.graphConfig(g)); err != nil {
 			return fmt.Errorf("video filters: %w", err)

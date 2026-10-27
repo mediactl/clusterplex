@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -106,18 +108,21 @@ func TestADashEncodeKeepsTheRemuxPoolsContract(t *testing.T) {
 	require.Equal(t, 3, n, "20 s in 8 s segments")
 	require.Len(t, r.files, 2+2*n, "no other file")
 
-	require.Len(t, r.manifests, n+1, "one manifest a segment, and the final one")
-	for i := range n {
+	// dashenc's: a running manifest a segment but the last, whose files the
+	// final, static one lists.
+	require.Len(t, r.manifests, n, "one manifest a segment, the last the final one")
+	for i := range n - 1 {
 		assert.Equal(t, 2+2*(i+1), r.before[i], "manifest %d after its segment's files", i)
 		assert.Contains(t, r.manifests[i], `type="dynamic"`)
 	}
-	final := r.manifests[n]
+	assert.Equal(t, 2+2*n, r.before[n-1], "the final manifest after every file")
+	final := r.manifests[n-1]
 	assert.Contains(t, final, `type="static"`)
 	assert.Contains(t, final, `startNumber="1"`)
 	assert.Contains(t, final, `codecs="avc1.`)
 	assert.Contains(t, final, `codecs="mp4a.40.2"`)
 	assert.Contains(t, final, `width="720" height="404"`)
-	assert.Equal(t, 2*n, strings.Count(final, "<S "), "every segment of both representations on the timeline")
+	assert.Equal(t, 2*n, segmentsListed(final), "every segment of both representations on the timeline")
 
 	// Each video chunk, after its init, starts on a keyframe.
 	dir := t.TempDir()
@@ -155,21 +160,29 @@ func TestALiveTVDashCopiesItsAudio(t *testing.T) {
 
 	n := 0
 	for ; ; n++ {
-		if _, ok := r.files[remux.ChunkFile(1, n+1)]; !ok {
+		if _, ok := r.files[remux.ChunkFile(0, n+1)]; !ok {
 			break
 		}
 	}
 	require.InDelta(t, 12, n, 1, "12 s in 1 s segments")
+	for _, m := range r.manifests[:len(r.manifests)-1] {
+		assert.Equal(t, 2, strings.Count(m, "<S t="), "no timeline gap: only each representation's first segment names its start: %s", m)
+	}
 	final := r.manifests[len(r.manifests)-1]
 	assert.Contains(t, final, `codecs="mp4a.40.2"`)
 	assert.Contains(t, final, `audioSamplingRate="48000"`)
 	assert.Contains(t, final, fmt.Sprintf(`startNumber="%d"`, n-4), "the window's first segment")
-	assert.Equal(t, 10, strings.Count(final, "<S "), "five segments of each representation")
+	assert.LessOrEqual(t, strings.Count(final, "<S "), 10, "five segments of each representation, repeats folded")
+	assert.NotContains(t, final, `lang=""`, "no language is named when the stream has none")
+	assert.NotContains(t, final, `bandwidth="0"`)
+	for _, m := range r.manifests[:len(r.manifests)-1] {
+		assert.Contains(t, m, `timeShiftBufferDepth="PT5.`, "a running live manifest's window, as Plex's")
+	}
 
 	path := filepath.Join(t.TempDir(), "audio.mp4")
 	all := append([]byte(nil), ainit...)
 	for k := 1; k <= n; k++ {
-		all = append(all, r.files[remux.ChunkFile(1, k)]...)
+		all = append(all, r.files[remux.ChunkFile(1, k)]...) // the last may be none
 	}
 	require.NoError(t, os.WriteFile(path, all, 0o644))
 	out, err := exec.Command("ffmpeg", "-v", "error", "-xerror", "-i", path, "-f", "null", "-").CombinedOutput()
@@ -177,4 +190,17 @@ func TestALiveTVDashCopiesItsAudio(t *testing.T) {
 	probe, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path).Output()
 	require.NoError(t, err)
 	assert.Contains(t, []string{"11", "12"}, strings.SplitN(strings.TrimSpace(string(probe)), ".", 2)[0], "its duration")
+}
+
+// segmentsListed counts a manifest's segments, each <S> one and its r more.
+func segmentsListed(mpd string) int {
+	n := 0
+	for _, entry := range regexp.MustCompile(`<S [^>]*/>`).FindAllString(mpd, -1) {
+		n++
+		if m := regexp.MustCompile(`r="(\d+)"`).FindStringSubmatch(entry); m != nil {
+			r, _ := strconv.Atoi(m[1])
+			n += r
+		}
+	}
+	return n
 }

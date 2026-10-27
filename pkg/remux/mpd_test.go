@@ -76,3 +76,25 @@ func TestARunningManifestIsDynamic(t *testing.T) {
 	assert.Contains(t, string(b), `availabilityStartTime="2026-10-01T16:44:21.000Z"`)
 	assert.NotContains(t, string(b), "mediaPresentationDuration")
 }
+
+// The first manifest Plex's own transcoder posted for a browser's Live TV
+// tune (talos, 2026-10-27; the capture's socket trace), and ours for the
+// same segments, byte for byte: Plex threw on ours ("Uncaught exception
+// running async task") and failed to start the session.
+func TestARunningManifestHasPlexsShape(t *testing.T) {
+	plex, err := os.ReadFile("testdata/plex-live.mpd")
+	require.NoError(t, err)
+	ours := Manifest{
+		StartNumber: 1, SegmentDuration: time.Second, Window: 5,
+		Start: time.Date(2026, 10, 27, 3, 17, 20, 87_000_000, time.UTC), Now: time.Date(2026, 10, 27, 3, 17, 21, 669_000_000, time.UTC),
+		Video: Representation{
+			Codecs: "avc1.4d4020", Bandwidth: 2401516, Width: 1280, Height: 720, FrameRate: "2997/100", Timescale: 11988,
+			Timeline: []TimelineEntry{{0, 12000}, {12000, 12000}, {24000, 12000}},
+		},
+		Audio: Representation{
+			Codecs: "mp4a.40.2", Bandwidth: 127423, SampleRate: 48000, Channels: 2, Timescale: 48000,
+			Timeline: []TimelineEntry{{0, 45056}, {45056, 48128}, {93184, 48128}},
+		},
+	}.Render()
+	assert.Equal(t, string(plex), string(ours))
+}
