@@ -434,3 +434,64 @@ func TestARelayThatGoesSilentFreesItsSlot(t *testing.T) {
 	require.Eventually(t, func() bool { return slots.Free() == 1 }, 10*time.Second, 50*time.Millisecond,
 		"the silent relay's conversion ends and frees its slot")
 }
+
+// reading is a pipeline reading its streamed input as the demuxer does,
+// blind to its context: only the input's end stops it.
+func reading(returned chan<- error) func(context.Context, video.Job, pipeline.Options, pipeline.Sink) error {
+	return func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
+		_, err := io.Copy(io.Discard, o.Inputs(0))
+		if err == nil {
+			err = errors.New("the input ended without its Eof")
+		}
+		returned <- err
+		return err
+	}
+}
+
+func TestARelayThatHangsUpEndsItsInputs(t *testing.T) {
+	// On Plex's cancel the relay half-closes its stream before it cancels
+	// it. Seen first, the half-close left the input open, and the pipeline
+	// read it until the 30 s stall (talos, rev 118: three of nine
+	// conversions abandoned).
+	returned := make(chan error, 1)
+	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: reading(returned)})
+	s, err := open(t, c, job("A", true))
+	require.NoError(t, err)
+	require.NoError(t, s.Send(&videopb.Up{Kind: &videopb.Up_Input{Input: &videopb.Chunk{Input: 0, Data: []byte("a little")}}}))
+	require.NoError(t, s.CloseSend())
+	select {
+	case err := <-returned:
+		assert.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pipeline still reads an input the relay hung up on")
+	}
+	d := last(t, s)
+	require.NotNil(t, d)
+	assert.NotContains(t, d.GetError(), "input stalled")
+}
+
+func TestATakenOverConversionStopsReading(t *testing.T) {
+	// A seek's restart takes its session's slot over and cancels the old
+	// job, whose stream can stay open: its read must end with its context,
+	// not wait for input that will not come.
+	returned := make(chan error, 1)
+	var runs atomic.Int32
+	read := reading(returned)
+	s := &worker.Server{Slots: worker.NewSlots(1), Grace: 200 * time.Millisecond, Run: func(ctx context.Context, j video.Job, o pipeline.Options, sink pipeline.Sink) error {
+		if runs.Add(1) == 1 {
+			return read(ctx, j, o, sink)
+		}
+		return blocking(ctx, j, o, sink)
+	}}
+	c := serve(t, s)
+	old, err := open(t, c, job("A", true))
+	require.NoError(t, err)
+	require.NoError(t, old.Send(&videopb.Up{Kind: &videopb.Up_Input{Input: &videopb.Chunk{Input: 0, Data: []byte("a little")}}}))
+	restart, err := open(t, c, job("A", true))
+	require.NoError(t, err)
+	defer func() { _ = restart.CloseSend() }()
+	d := last(t, old)
+	require.NotNil(t, d, "the old job ends with its Done, not abandoned")
+	assert.Equal(t, string(video.ReasonCancelled), d.GetReason())
+	assert.Zero(t, s.Abandoned())
+}

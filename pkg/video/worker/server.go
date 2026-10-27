@@ -46,6 +46,11 @@ const DefaultInputStall = 30 * time.Second
 
 var errStalled = errors.New("input stalled")
 
+// errHungUp ends an input still open when the relay closes its side of the
+// stream, as it does on Plex's cancel just before it cancels the stream:
+// nothing can be sent on it again.
+var errHungUp = errors.New("the relay closed the stream with an input open")
+
 // Server is the pool's Video service: one conversion per slot.
 type Server struct {
 	videopb.UnimplementedVideoServer
@@ -148,7 +153,7 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	log := s.log().With("session", job.Session, "output", job.Output)
 	log.Info("conversion started")
 
-	in := newInputs(job, s.inputStall(), cancel)
+	in := newInputs(ctx, job, s.inputStall(), cancel)
 	go in.receive(stream)
 	defer in.close()
 	o := s.Options
@@ -270,15 +275,21 @@ type inputs struct {
 	held   atomic.Bool
 	cancel context.CancelCauseFunc
 	done   chan struct{}
+	stop   func() bool
 }
 
-func newInputs(job video.Job, stall time.Duration, cancel context.CancelCauseFunc) *inputs {
+// newInputs ends every input with ctx: the demuxer sees its interrupt only
+// between reads, so a read of an input nothing writes to again would
+// outlive the job (a seek's restart cancels the job it takes over, whose
+// stream can stay open).
+func newInputs(ctx context.Context, job video.Job, stall time.Duration, cancel context.CancelCauseFunc) *inputs {
 	in := &inputs{r: map[int]*io.PipeReader{}, w: map[int]*io.PipeWriter{}, stall: stall, cancel: cancel, done: make(chan struct{})}
 	for i, src := range job.Inputs {
 		if src.Streamed {
 			in.r[i], in.w[i] = io.Pipe()
 		}
 	}
+	in.stop = context.AfterFunc(ctx, func() { in.fail(context.Cause(ctx)) })
 	in.last.Store(time.Now().UnixNano())
 	if len(in.w) > 0 {
 		go in.watch()
@@ -294,9 +305,10 @@ func (in *inputs) receive(stream videopb.Video_ConvertServer) {
 	for {
 		up, err := stream.Recv()
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				in.fail(err)
+			if errors.Is(err, io.EOF) {
+				err = errHungUp
 			}
+			in.fail(err)
 			return
 		}
 		c := up.GetInput()
@@ -370,6 +382,7 @@ func (in *inputs) watch() {
 }
 
 func (in *inputs) close() {
+	in.stop()
 	close(in.done)
 	in.fail(io.ErrClosedPipe)
 	for _, r := range in.r {
