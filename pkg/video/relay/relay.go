@@ -304,6 +304,10 @@ func (c *conversion) stream1(ctx context.Context, r *Relay, job video.Job, i int
 // relay applies the worker's output until its Done.
 func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *conversion, list *lister, began time.Time) error {
 	first := true
+	// What the log tells of a job: its first output, its first manifest or
+	// list line, the first progress report that failed.
+	output, posted, progressFailed := false, false, false
+	wall := time.Now() // the log's clock, apart from r.Now's
 	for {
 		down, err := c.stream.Recv()
 		if err != nil {
@@ -315,6 +319,10 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 		dash := job.Output == video.OutputDASH
 		switch k := down.GetKind().(type) {
 		case *videopb.Down_File:
+			if !output {
+				output = true
+				r.log().Info("first output from the pool", "session", job.Session, "after", time.Since(wall))
+			}
 			if !dash {
 				return refuse(video.ReasonWorkerError, errors.New("a file for an HLS job"))
 			}
@@ -332,14 +340,23 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 				}
 			}
 			// Files before the manifest that lists them, as the remux relay does.
+			sent := time.Now()
 			if err := r.PMS.Send(ctx, http.MethodPost, job.ManifestURL, "", "", bytes.NewReader(k.Manifest.GetMpd()), job.Token); err != nil {
 				return refuse(video.ReasonWorkerError, fmt.Errorf("manifest: %w", err))
+			}
+			if !posted {
+				posted = true
+				r.log().Info("first manifest posted", "session", job.Session, "after", time.Since(wall), "took", time.Since(sent))
 			}
 		case *videopb.Down_Segment:
 			if dash {
 				return refuse(video.ReasonWorkerError, errors.New("an HLS segment for a DASH job"))
 			}
 			s := k.Segment
+			if !output {
+				output = true
+				r.log().Info("first output from the pool", "session", job.Session, "after", time.Since(wall))
+			}
 			if err := plexsession.WriteFile(cwd, s.GetName(), s.GetData(), hlsName); err != nil {
 				return refuse(video.ReasonWorkerError, err)
 			}
@@ -355,8 +372,13 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 				d := time.Duration(s.GetNextStartUs()) * time.Microsecond
 				next = &d
 			}
+			sent := time.Now()
 			if err := list.Finished(ctx, times, next); err != nil {
 				return refuse(video.ReasonWorkerError, fmt.Errorf("segment list: %w", err))
+			}
+			if !posted {
+				posted = true
+				r.log().Info("first segment listed", "session", job.Session, "after", time.Since(wall), "took", time.Since(sent))
 			}
 		case *videopb.Down_Progress:
 			p := k.Progress
@@ -366,12 +388,19 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			}
 			// Plex's own transcoder carries on past a failed progress PUT too.
 			answer, err := r.PMS.Ask(ctx, http.MethodPut, job.ProgressURL, p.GetPath(), p.GetQuery(), http.NoBody, job.Token)
+			if err != nil && !progressFailed {
+				progressFailed = true
+				r.log().Warn("a progress report failed", "session", job.Session, "path", p.GetPath(), "error", err)
+			}
 			if err == nil && p.GetPath() == "" && canThrottle(answer) {
 				// Held here, the relay reads nothing more from the worker,
 				// whose bounded windows then stop its pipeline (finding P).
+				held := time.Now()
+				r.log().Info("Plex throttles the conversion", "session", job.Session, "after", held.Sub(wall), "progress", p.GetQuery())
 				if err := r.sloth(ctx, job, p.GetQuery()); err != nil {
 					return refuse(video.ReasonCancelled, err)
 				}
+				r.log().Info("Plex released the conversion", "session", job.Session, "held", time.Since(held))
 			}
 		case *videopb.Down_Done:
 			if msg := k.Done.GetError(); msg != "" {

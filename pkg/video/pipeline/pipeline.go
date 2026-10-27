@@ -173,7 +173,14 @@ func openInput(ctx context.Context, job video.Job, o Options) (*input, error) {
 		return nil, fmt.Errorf("%w: no input", video.ErrShape)
 	}
 	src := job.Inputs[0]
-	opts := &ffgo.DecoderOptions{ProbeSizeBytes: 20_000_000, AnalyzeDuration: 20 * time.Second, Interrupt: ctx.Done()}
+	// Plex's library jobs probe 20 s (-analyzeduration 20000000); its Live
+	// TV job names none, so FFmpeg's 5 s, which a live input's real-time
+	// pace makes the start-up's ceiling.
+	analyze := 20 * time.Second
+	if src.Streamed {
+		analyze = 5 * time.Second
+	}
+	opts := &ffgo.DecoderOptions{ProbeSizeBytes: 20_000_000, AnalyzeDuration: analyze, Interrupt: ctx.Done()}
 	var (
 		d   *ffgo.Decoder
 		err error

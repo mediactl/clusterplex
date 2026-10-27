@@ -126,7 +126,7 @@ func (c *conversion) followLive(ctx context.Context, r *Relay, job video.Job, i 
 // (Relay.Live, plexsession.OpenAsTranscoder): Plex serves a live session
 // to no other client of a session that converts.
 func (r *Relay) livePlaylist(ctx context.Context, src string) (playlist, error) {
-	rc, err := r.live().OpenAsTranscoder(ctx, src)
+	rc, err := r.liveOpen(ctx, src)
 	if err != nil {
 		return playlist{}, err
 	}
@@ -141,13 +141,34 @@ func (r *Relay) livePlaylist(ctx context.Context, src string) (playlist, error) 
 	return parsePlaylist(b)
 }
 
+// liveOpen opens raw as Plex's transcoder does, twice more on an error, as
+// FFmpeg's HTTP reconnects: Plex can close a keep-alive connection a
+// request was sent on (talos: "live segment 12: EOF").
+func (r *Relay) liveOpen(ctx context.Context, raw string) (io.ReadCloser, error) {
+	var err error
+	for attempt := range 3 {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		var rc io.ReadCloser
+		if rc, err = r.live().OpenAsTranscoder(ctx, raw); err == nil {
+			return rc, nil
+		}
+	}
+	return nil, err
+}
+
 // liveSegment streams one segment, which must be MPEG-TS, to input i.
 func (c *conversion) liveSegment(ctx context.Context, r *Relay, i int32, base *url.URL, uri string) error {
 	u, err := base.Parse(uri)
 	if err != nil {
 		return err
 	}
-	rc, err := r.live().OpenAsTranscoder(ctx, u.String())
+	rc, err := r.liveOpen(ctx, u.String())
 	if err != nil {
 		return err
 	}

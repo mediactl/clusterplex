@@ -162,7 +162,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 				Selector: cfg.VideoSelector, Port: cfg.VideoPort,
 			},
 			Dial:    videorelay.GRPCDialer,
-			PMS:     plexsession.PMS{Addr: "http://" + m.plexAddr},
+			PMS:     m.relayPMS(),
 			Live:    m.plexLive,
 			Count:   m.videoCount,
 			Refused: func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
@@ -173,4 +173,15 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 	active := func(delta int) { m.Metrics.ActiveJobs.Add(float64(delta)) }
 	return &remoteexec.Service{Execute: dispatcher.Execute, OnActive: active},
 		&remoteexec.Service{Execute: local.Run, OnActive: active}, nil
+}
+
+// relayPMS is Plex as the video relay reaches it for a conversion's
+// progress, manifest, segment list and inputs: from loopback inside Plex's
+// namespace, where Plex's own transcoder talks to it, when the manager made
+// that namespace; else Plex's address.
+func (m *Manager) relayPMS() plexsession.PMS {
+	if m.plexLive.Addr != "" {
+		return m.plexLive
+	}
+	return plexsession.PMS{Addr: "http://" + m.plexAddr}
 }
