@@ -158,3 +158,107 @@ func TestAnIrregularFrameRateIsPlexsRate(t *testing.T) {
 		require.Equal(t, want, j.Video.FrameRate, in)
 	}
 }
+
+func TestTheHDRJobParsesAsPlexAsksIt(t *testing.T) {
+	// Finding H: with this server's settings Plex maps HDR10 to 8 bits
+	// through its scale and format alone, with no tone-map filter, and cuts
+	// 5 s segments.
+	j, err := video.Parse(fixture(t, "hdr-sdr").Args, fixture(t, "hdr-sdr").Env)
+	require.NoError(t, err)
+	require.False(t, j.Video.ToneMap)
+	require.Equal(t, 1280, j.Video.Width)
+	require.Equal(t, 544, j.Video.Height)
+	require.Equal(t, 5*time.Second, j.Video.KeyframeEvery)
+	require.Equal(t, 5*time.Second, j.Segments.Duration)
+	require.Equal(t, 1, j.Audio.Stream)
+}
+
+func TestTheDashEncodeJobParses(t *testing.T) {
+	c := fixture(t, "dash-encode")
+	j, err := video.Parse(c.Args, c.Env)
+	require.NoError(t, err)
+	require.Equal(t, video.OutputDASH, j.Output)
+	require.Equal(t, video.Segmenting{
+		Duration: 8 * time.Second, StartNumber: 1, Pattern: "chunk-stream$RepresentationID$-$Number%05d$.m4s", ListSize: 5,
+	}, j.Segments)
+	require.Contains(t, j.ManifestURL, "/manifest?X-Plex-Http-Pipeline=infinite")
+	require.Empty(t, j.SegmentListURL)
+	require.Equal(t, 720, j.Video.Width)
+	require.Equal(t, 404, j.Video.Height)
+	require.Equal(t, &video.AudioOut{Stream: 1, Channels: 2, SampleRate: 96000, BitRate: 232_000, Language: "eng"}, j.Audio)
+}
+
+func TestTheImageBurnInJobParses(t *testing.T) {
+	// Finding B: Plex overlays a PGS track, scaled to the output's size, on
+	// the scaled video.
+	c := fixture(t, "burn-image")
+	j, err := video.Parse(c.Args, c.Env)
+	require.NoError(t, err)
+	require.Equal(t, &video.BurnIn{Input: 0, Stream: 3, Image: true}, j.Burn)
+	require.Equal(t, 0, j.Video.Stream)
+	require.Equal(t, 720, j.Video.Width)
+	require.Equal(t, 384, j.Video.Height)
+}
+
+func TestTheTextBurnInJobParses(t *testing.T) {
+	// Finding B: PMS copies the sidecar into the session's directory and
+	// burns it in with its own inlineass, whose style the worker hands to
+	// libass; Plex's extra subtitle output to null is dropped.
+	c := fixture(t, "burn-text-sidecar")
+	j, err := video.Parse(c.Args, c.Env)
+	require.NoError(t, err)
+	require.Len(t, j.Inputs, 2)
+	require.True(t, j.Inputs[1].Streamed)
+	require.Equal(t, "temp-0.srt", j.Inputs[1].Name)
+	require.Equal(t, c.Cwd+"/temp-0.srt", j.Inputs[1].Source)
+	require.Equal(t, &video.BurnIn{
+		Input: 1, Stream: 0,
+		Style: "ScaledBorderAndShadow=yes,FontName=Noto Sans Medium,Bold=500,PrimaryColour=&H00FFFFFF," +
+			"OutlineColour=&H00020713,BackColour=&HCC000000,Fontsize=54,Outline=2.6,Shadow=1.7",
+	}, j.Burn)
+	require.Equal(t, 0, j.Video.Stream)
+	require.Equal(t, 2, j.Audio.Stream)
+	require.Equal(t, video.OutputHLS, j.Output)
+}
+
+func TestABurnInOutsideItsShapeIsRefused(t *testing.T) {
+	edited := func(shape string, fn func([]string) []string) ([]string, map[string]string) {
+		c := fixture(t, shape)
+		return fn(slices.Clone(c.Args)), c.Env
+	}
+	inArg := func(sub, old, new string) func([]string) []string {
+		return func(a []string) []string {
+			for i, v := range a {
+				if strings.Contains(v, sub) {
+					a[i] = strings.Replace(v, old, new, 1)
+				}
+			}
+			return a
+		}
+	}
+	for name, tc := range map[string]struct {
+		shape string
+		edit  func([]string) []string
+		says  string
+	}{
+		"a subtitle scaled to another size": {"burn-image", inArg("overlay", "scale=720:384", "scale=1920:1080"), "1920x1080"},
+		"an overlay of a second video":      {"burn-image", inArg("overlay", "[0:3]", "[0:0]"), "overlay"},
+		"inlineass without its map": {"burn-text-sidecar", func(a []string) []string {
+			i := slices.Index(a, "-map_inlineass")
+			return slices.Delete(a, i, i+2)
+		}, "inlineass"},
+		"an inlineass option it does not know": {"burn-text-sidecar", inArg("inlineass", "shadow=", "blur=1:shadow="), "blur"},
+		"a null output of another stream": {"burn-text-sidecar", func(a []string) []string {
+			a[len(a)-6] = "0:s:0" // the null output's -map, not -map_inlineass's
+			return a
+		}, "0:s:0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args, env := edited(tc.shape, tc.edit)
+			_, err := video.Parse(args, env)
+			require.Error(t, err)
+			require.True(t, errors.Is(err, video.ErrShape), "%v is not ErrShape", err)
+			require.Contains(t, err.Error(), tc.says)
+		})
+	}
+}

@@ -44,7 +44,7 @@ func (j Job) Proto() *videopb.Job {
 		}
 	}
 	if b := j.Burn; b != nil {
-		p.Burn = &videopb.BurnIn{Input: int32(b.Input), Stream: int32(b.Stream), Image: b.Image}
+		p.Burn = &videopb.BurnIn{Input: int32(b.Input), Stream: int32(b.Stream), Image: b.Image, Style: b.Style}
 	}
 	return p
 }
@@ -82,7 +82,7 @@ func JobFromProto(p *videopb.Job) Job {
 		}
 	}
 	if b := p.GetBurn(); b != nil {
-		j.Burn = &BurnIn{Input: int(b.GetInput()), Stream: int(b.GetStream()), Image: b.GetImage()}
+		j.Burn = &BurnIn{Input: int(b.GetInput()), Stream: int(b.GetStream()), Image: b.GetImage(), Style: b.GetStyle()}
 	}
 	return j
 }

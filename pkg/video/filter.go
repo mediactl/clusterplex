@@ -79,20 +79,34 @@ func splitUnescaped(s string, sep byte) []string {
 	return append(out, s[start:])
 }
 
+// overlay is what a two-input overlay chain draws on the video: an input
+// stream through its own chain (finding B's image subtitle).
+type overlay struct {
+	src     int
+	filters []filter
+}
+
 // resolve follows a -map back to the input stream it is made from: "0:N"
-// directly, or a chain's output label through every chain feeding it. Only
-// single-input chains are followed.
-func resolve(m string, chains []chain) (int, []filter, error) {
+// directly, or a chain's output label through every chain feeding it.
+// Single-input chains are followed, and one overlay chain: its first input
+// is the video followed on, its second what is drawn over it.
+func resolve(m string, chains []chain) (int, []filter, *overlay, error) {
 	if s := streamRef.FindStringSubmatch(m); s != nil {
 		n, _ := strconv.Atoi(s[1])
-		return n, nil, nil
+		return n, nil, nil, nil
 	}
 	l := label.FindStringSubmatch(m)
 	if l == nil || l[0] != m {
-		return 0, nil, refuse("map %q", m)
+		return 0, nil, nil, refuse("map %q", m)
 	}
-	want := l[1]
-	var filters []filter
+	return follow(l[1], chains, true)
+}
+
+func follow(want string, chains []chain, overlays bool) (int, []filter, *overlay, error) {
+	var (
+		filters []filter
+		over    *overlay
+	)
 	for range len(chains) + 1 {
 		var c *chain
 		for i := range chains {
@@ -102,17 +116,38 @@ func resolve(m string, chains []chain) (int, []filter, error) {
 			}
 		}
 		if c == nil {
-			return 0, nil, refuse("map %q names no chain", m)
+			return 0, nil, nil, refuse("label %q names no chain", want)
 		}
-		if len(c.in) != 1 {
-			return 0, nil, refuse("a chain of %d inputs", len(c.in))
+		switch {
+		case len(c.in) == 2 && len(c.filters) == 1 && c.filters[0].name == "overlay" && len(c.filters[0].args) == 0:
+			if !overlays || over != nil {
+				return 0, nil, nil, refuse("a second overlay")
+			}
+			src, fs, _, err := follow2(c.in[1], chains)
+			if err != nil {
+				return 0, nil, nil, err
+			}
+			over = &overlay{src: src, filters: fs}
+		case len(c.in) != 1:
+			return 0, nil, nil, refuse("a chain of %d inputs", len(c.in))
+		default:
+			filters = append(append([]filter(nil), c.filters...), filters...)
 		}
-		filters = append(append([]filter(nil), c.filters...), filters...)
 		if s := streamRef.FindStringSubmatch(c.in[0]); s != nil {
 			n, _ := strconv.Atoi(s[1])
-			return n, filters, nil
+			return n, filters, over, nil
 		}
 		want = c.in[0]
 	}
-	return 0, nil, refuse("map %q loops", m)
+	return 0, nil, nil, refuse("label %q loops", want)
+}
+
+// follow2 resolves an overlay's second input: a stream, directly or
+// through single-input chains.
+func follow2(in string, chains []chain) (int, []filter, *overlay, error) {
+	if s := streamRef.FindStringSubmatch(in); s != nil {
+		n, _ := strconv.Atoi(s[1])
+		return n, nil, nil, nil
+	}
+	return follow(in, chains, false)
 }

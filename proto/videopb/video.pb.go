@@ -566,10 +566,12 @@ func (x *AudioOut) GetLanguage() string {
 }
 
 type BurnIn struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Input         int32                  `protobuf:"varint,1,opt,name=input,proto3" json:"input,omitempty"`
-	Stream        int32                  `protobuf:"varint,2,opt,name=stream,proto3" json:"stream,omitempty"`
-	Image         bool                   `protobuf:"varint,3,opt,name=image,proto3" json:"image,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Input  int32                  `protobuf:"varint,1,opt,name=input,proto3" json:"input,omitempty"`
+	Stream int32                  `protobuf:"varint,2,opt,name=stream,proto3" json:"stream,omitempty"`
+	Image  bool                   `protobuf:"varint,3,opt,name=image,proto3" json:"image,omitempty"`
+	// A text subtitle's ASS style for libass's force_style.
+	Style         string `protobuf:"bytes,4,opt,name=style,proto3" json:"style,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -623,6 +625,13 @@ func (x *BurnIn) GetImage() bool {
 		return x.Image
 	}
 	return false
+}
+
+func (x *BurnIn) GetStyle() string {
+	if x != nil {
+		return x.Style
+	}
+	return ""
 }
 
 type Segmenting struct {
@@ -1349,11 +1358,12 @@ const file_video_proto_rawDesc = "" +
 	"\vsample_rate\x18\x04 \x01(\x05R\n" +
 	"sampleRate\x12\x19\n" +
 	"\bbit_rate\x18\x05 \x01(\x03R\abitRate\x12\x1a\n" +
-	"\blanguage\x18\x06 \x01(\tR\blanguage\"L\n" +
+	"\blanguage\x18\x06 \x01(\tR\blanguage\"b\n" +
 	"\x06BurnIn\x12\x14\n" +
 	"\x05input\x18\x01 \x01(\x05R\x05input\x12\x16\n" +
 	"\x06stream\x18\x02 \x01(\x05R\x06stream\x12\x14\n" +
-	"\x05image\x18\x03 \x01(\bR\x05image\"\xab\x01\n" +
+	"\x05image\x18\x03 \x01(\bR\x05image\x12\x14\n" +
+	"\x05style\x18\x04 \x01(\tR\x05style\"\xab\x01\n" +
 	"\n" +
 	"Segmenting\x12\x1f\n" +
 	"\vduration_us\x18\x01 \x01(\x03R\n" +

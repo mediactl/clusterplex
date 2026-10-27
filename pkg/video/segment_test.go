@@ -54,7 +54,7 @@ func times(t *testing.T, line string) (name string, start, end time.Duration, st
 }
 
 func TestSegmentListLinesArePlexs(t *testing.T) {
-	for _, shape := range []string{"library-hls", "library-hls-seek"} {
+	for _, shape := range []string{"library-hls", "library-hls-seek", "hdr-sdr", "burn-image", "burn-text-sidecar"} {
 		t.Run(shape, func(t *testing.T) { replayList(t, shape) })
 	}
 }
@@ -70,8 +70,10 @@ func replayList(t *testing.T, shape string) {
 			got = l.Opened(name, start, len(streams))
 		} else {
 			st := video.SegmentTimes{Name: name, Start: start, End: end}
+			// Plex prints the streams' ends highest index first: the
+			// audio's, then the video's.
 			for j, e := range streams {
-				st.Streams = append(st.Streams, video.Span{Stream: j, End: e})
+				st.Streams = append(st.Streams, video.Span{Stream: len(streams) - 1 - j, End: e})
 			}
 			got = l.Finished(st)
 		}
@@ -90,15 +92,20 @@ func TestCutsFallWhereFindingRSays(t *testing.T) {
 		ss    time.Duration
 		first int
 		cuts  int
-	}{{"library-hls", 0, 0, 25}, {"library-hls-seek", 1800 * time.Second, 225, 21}} {
+		every time.Duration
+	}{
+		{"library-hls", 0, 0, 25, 8 * time.Second},
+		{"library-hls-seek", 1800 * time.Second, 225, 21, 8 * time.Second},
+		{"hdr-sdr", 0, 0, 23, 5 * time.Second},
+	} {
 		t.Run(tc.shape, func(t *testing.T) {
-			s := video.Segmenting{Duration: 8 * time.Second, TimeDelta: 62500 * time.Microsecond}
+			s := video.Segmenting{Duration: tc.every, TimeDelta: 62500 * time.Microsecond}
 			frame := func(n int) time.Duration { return tc.ss + time.Duration(n)*time.Second*1001/24000 }
-			forced, cut := video.FirstForced(tc.ss, 8*time.Second), tc.first
+			forced, cut := video.FirstForced(tc.ss, tc.every), tc.first
 			var cuts []time.Duration
 			for n := 0; len(cuts) < tc.cuts; n++ {
 				pts := frame(n)
-				if !video.KeyframeDue(pts, forced, 8*time.Second) {
+				if !video.KeyframeDue(pts, forced, tc.every) {
 					continue
 				}
 				forced++

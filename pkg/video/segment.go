@@ -52,14 +52,17 @@ type SegmentTimes struct {
 }
 
 // SegmentListLine is a finished segment's line in Plex's CSV list
-// (finding L): name, start and end, then each stream's end, ascending
+// (finding L): name, start and end, then each stream's end, the highest
+// stream index first -- the audio's, then the video's, even where the audio
+// outlasts the video (burn-image's last segment)
 // (-segment_list_separate_stream_times 1).
 func SegmentListLine(s SegmentTimes) string {
-	ends := make([]time.Duration, len(s.Streams))
-	for i, sp := range s.Streams {
+	spans := slices.Clone(s.Streams)
+	slices.SortFunc(spans, func(a, b Span) int { return b.Stream - a.Stream })
+	ends := make([]time.Duration, len(spans))
+	for i, sp := range spans {
 		ends[i] = sp.End
 	}
-	slices.Sort(ends)
 	var b strings.Builder
 	b.WriteString(s.Name)
 	for _, d := range append([]time.Duration{s.Start, s.End}, ends...) {

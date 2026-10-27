@@ -334,3 +334,20 @@ func TestProgressNamesPlexsKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestAJobItCannotDrawYetIsRefused(t *testing.T) {
+	// Until burn-in, tone mapping and deinterlacing are built (Tasks 11 and
+	// 12), such a job is refused as a shape, never converted without them.
+	for name, edit := range map[string]func(*video.Job){
+		"a burn-in":     func(j *video.Job) { j.Burn = &video.BurnIn{Stream: 3, Image: true} },
+		"tone mapping":  func(j *video.Job) { j.Video.ToneMap = true },
+		"deinterlacing": func(j *video.Job) { j.Video.Deinterlace = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			job := library(t, "/media/none.mkv")
+			edit(&job)
+			err := pipeline.Run(t.Context(), job, cpu, &recorder{})
+			require.ErrorIs(t, err, video.ErrShape)
+		})
+	}
+}

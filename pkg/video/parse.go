@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mediactl/clusterplex/pkg/remux"
 )
 
 // valueOptions take one argument, the per-stream ones (-codec:0, -b:1,
@@ -26,6 +28,10 @@ var valueOptions = map[string]bool{
 	"-segment_list": true, "-segment_list_type": true, "-segment_list_size": true,
 	"-segment_list_separate_stream_times": true, "-segment_list_unfinished": true,
 	"-max_delay": true, "-avoid_negative_ts": true, "-map_metadata": true, "-map_chapters": true,
+	"-map_inlineass": true,
+	// Plex Web's DASH muxer (dash-encode), as the remux pool reads it.
+	"-seg_duration": true, "-dash_segment_type": true, "-init_seg_name": true, "-media_seg_name": true,
+	"-window_size": true, "-delete_removed": true, "-skip_to_segment": true, "-manifest_name": true,
 }
 
 var flagOptions = map[string]bool{
@@ -44,7 +50,23 @@ var fixed = map[string]string{
 	"-fps_mode": "cfr", "-individual_header_trailer": "0", "-segment_list_type": "csv",
 	"-segment_list_separate_stream_times": "1", "-segment_list_unfinished": "1",
 	"-avoid_negative_ts": "disabled", "-map_metadata": "-1", "-map_chapters": "-1",
+	"-dash_segment_type": "mp4", "-delete_removed": "false",
+	"-init_seg_name": remux.InitName, "-media_seg_name": remux.MediaName,
 }
+
+// segmentOptions and dashOptions belong to one muxer each: either beside
+// the other muxer is a job no capture carries.
+var (
+	segmentOptions = []string{
+		"-segment_format", "-individual_header_trailer", "-segment_time", "-segment_start_number",
+		"-segment_time_delta", "-segment_list", "-segment_list_type", "-segment_list_size",
+		"-segment_list_separate_stream_times", "-segment_list_unfinished",
+	}
+	dashOptions = []string{
+		"-seg_duration", "-dash_segment_type", "-init_seg_name", "-media_seg_name",
+		"-window_size", "-delete_removed", "-skip_to_segment", "-manifest_name",
+	}
+)
 
 // videoEncoders are the encoders whose output the pool makes: H.264, which
 // every captured conversion asks for (the spec's non-goal: no HEVC or AV1).
@@ -52,6 +74,7 @@ var videoEncoders = map[string]bool{"libx264": true}
 
 var (
 	streamRef     = regexp.MustCompile(`^0:(\d+)$`)
+	subtitleRef   = regexp.MustCompile(`^(\d+):s:(\d+)$`)
 	keyframeExpr  = regexp.MustCompile(`^expr:gte\(t,n_forced\*([0-9]+(?:\.[0-9]+)?)\)$`)
 	segmentPatten = regexp.MustCompile(`^media-%05d\.ts$`)
 )
@@ -64,6 +87,7 @@ func refuse(format string, a ...any) error {
 type output struct {
 	src     int      // the input stream it is made from
 	filters []filter // the -filter_complex chain it went through, in order
+	overlay *overlay // what was overlaid on it, if anything
 	opts    map[string]string
 }
 
@@ -74,6 +98,14 @@ func Parse(args []string, env map[string]string) (Job, error) {
 	j := Job{Token: env["X_PLEX_TOKEN"]}
 	if len(args) < 2 || strings.HasPrefix(args[len(args)-1], "-") {
 		return j, refuse("no output")
+	}
+	// A text burn-in ends with Plex's second output, its subtitle rendered
+	// to nothing (-map 1:s:0 -f null -codec ass nullfile): dropped, and held
+	// to the burned subtitle once the job is read.
+	nullMap := ""
+	if n := len(args); n >= 8 && args[n-7] == "-map" && slices.Equal(args[n-5:], []string{"-f", "null", "-codec", "ass", "nullfile"}) {
+		nullMap = args[n-6]
+		args = args[:n-7]
 	}
 	target := args[len(args)-1]
 	args = args[:len(args)-1]
@@ -155,12 +187,15 @@ func Parse(args []string, env map[string]string) (Job, error) {
 	if len(j.Inputs) == 0 {
 		return j, refuse("no input")
 	}
-	j.ProgressURL, j.SegmentListURL = opts["-progressurl"], opts["-segment_list"]
+	j.ProgressURL, j.SegmentListURL, j.ManifestURL = opts["-progressurl"], opts["-segment_list"], opts["-manifest_name"]
 	j.Session = sessionOf(j.ProgressURL)
 	if j.ProgressURL == "" || j.Session == "" {
 		return j, refuse("no progress URL naming a session")
 	}
 	if err := j.outputs(maps, chains, perOut); err != nil {
+		return j, err
+	}
+	if err := j.textBurn(opts["-map_inlineass"], nullMap); err != nil {
 		return j, err
 	}
 	return j, j.muxer(opts, target)
@@ -207,11 +242,11 @@ func inputOf(v string) (Input, error) {
 func (j *Job) outputs(maps []string, chains []chain, perOut map[int]map[string]string) error {
 	outs := make([]output, len(maps))
 	for i, m := range maps {
-		src, filters, err := resolve(m, chains)
+		src, filters, over, err := resolve(m, chains)
 		if err != nil {
 			return err
 		}
-		outs[i] = output{src: src, filters: filters, opts: perOut[i]}
+		outs[i] = output{src: src, filters: filters, overlay: over, opts: perOut[i]}
 		if outs[i].opts == nil {
 			outs[i].opts = map[string]string{}
 		}
@@ -276,6 +311,15 @@ func (j *Job) videoOut(o output) error {
 					return refuse("scale option %q", kv.k)
 				}
 			}
+		case "inlineass":
+			style, err := inlineStyle(f.args)
+			if err != nil {
+				return err
+			}
+			if j.Burn != nil {
+				return refuse("a second burn-in")
+			}
+			j.Burn = &BurnIn{Style: style} // its input and stream are -map_inlineass's (textBurn)
 		case "format":
 			fmts := ""
 			for _, kv := range f.args {
@@ -295,6 +339,11 @@ func (j *Job) videoOut(o output) error {
 	}
 	if v.Width == 0 || v.Height == 0 || v.PixFmt == "" {
 		return refuse("a video output without Plex's scale and format")
+	}
+	if o.overlay != nil {
+		if err := j.imageBurn(o.src, v, *o.overlay); err != nil {
+			return err
+		}
 	}
 	for k, val := range o.opts {
 		var err error
@@ -327,6 +376,119 @@ func (j *Job) videoOut(o output) error {
 	}
 	j.Video = v
 	return nil
+}
+
+// imageBurn reads Plex's image burn-in: an input stream (a PGS or VobSub
+// track), scaled to the output's size, overlaid on the scaled video
+// (finding B).
+func (j *Job) imageBurn(video int, v VideoOut, o overlay) error {
+	if o.src == video {
+		return refuse("an overlay of the video stream on itself")
+	}
+	if len(o.filters) != 1 || o.filters[0].name != "scale" || len(o.filters[0].args) != 2 {
+		return refuse("an overlay not scaled as Plex scales a subtitle")
+	}
+	w, errW := strconv.Atoi(o.filters[0].args[0].v)
+	h, errH := strconv.Atoi(o.filters[0].args[1].v)
+	if o.filters[0].args[0].k != "" || o.filters[0].args[1].k != "" || errW != nil || errH != nil {
+		return refuse("overlay scale %v", o.filters[0].args)
+	}
+	if w != v.Width || h != v.Height {
+		return refuse("a subtitle scaled to %dx%d, the video to %dx%d", w, h, v.Width, v.Height)
+	}
+	if j.Burn != nil {
+		return refuse("a second burn-in")
+	}
+	j.Burn = &BurnIn{Input: 0, Stream: o.src, Image: true}
+	return nil
+}
+
+// inlineStyle reads Plex's inlineass filter into the ASS style libass is
+// given: its overrides, then its font size (scaled), outline and shadow.
+// Plex's font paths and the subtitle's language are its own: the worker
+// draws with its own Noto Sans.
+func inlineStyle(args []kv) (string, error) {
+	var overrides, outline, shadow string
+	size, scale := 0, 1.0
+	for _, a := range args {
+		v := unescape(unescape(a.v)) // the graph's escaping, then the option string's
+		var err error
+		switch a.k {
+		case "font_path", "fontconfig_file", "language":
+		case "overrides":
+			overrides = v
+		case "font_size":
+			size, err = strconv.Atoi(v)
+		case "font_scale":
+			scale, err = strconv.ParseFloat(v, 64)
+		case "outline", "shadow":
+			if _, err = strconv.ParseFloat(v, 64); err == nil {
+				if a.k == "outline" {
+					outline = v
+				} else {
+					shadow = v
+				}
+			}
+		default:
+			return "", refuse("inlineass option %q", a.k)
+		}
+		if err != nil {
+			return "", refuse("inlineass %s %q", a.k, v)
+		}
+	}
+	var style []string
+	if overrides != "" {
+		style = append(style, overrides)
+	}
+	if size > 0 {
+		style = append(style, fmt.Sprintf("Fontsize=%d", int(math.Round(float64(size)*scale))))
+	}
+	if outline != "" {
+		style = append(style, "Outline="+outline)
+	}
+	if shadow != "" {
+		style = append(style, "Shadow="+shadow)
+	}
+	return strings.Join(style, ","), nil
+}
+
+// textBurn ties an inlineass filter to -map_inlineass, which names the
+// subtitle it burns (input:s:N), and to Plex's null output of the same.
+func (j *Job) textBurn(mapped, nullMap string) error {
+	text := j.Burn != nil && !j.Burn.Image
+	switch {
+	case !text && mapped == "" && nullMap == "":
+		return nil
+	case !text && mapped != "":
+		return refuse("-map_inlineass without an inlineass filter")
+	case text && mapped == "":
+		return refuse("an inlineass filter without -map_inlineass")
+	case nullMap != mapped:
+		return refuse("a null output of %s, the burn-in %s", nullMap, mapped)
+	}
+	m := subtitleRef.FindStringSubmatch(mapped)
+	if m == nil {
+		return refuse("-map_inlineass %q", mapped)
+	}
+	in, _ := strconv.Atoi(m[1])
+	n, _ := strconv.Atoi(m[2])
+	if in >= len(j.Inputs) {
+		return refuse("-map_inlineass names input %d of %d", in, len(j.Inputs))
+	}
+	j.Burn.Input, j.Burn.Stream = in, n
+	return nil
+}
+
+// unescape removes one level of FFmpeg's backslash escaping.
+func unescape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // pixFmt is the format the encoder is given from Plex's allowed list: nv12,
@@ -390,9 +552,47 @@ func audioOut(o output) (AudioOut, error) {
 }
 
 // muxer reads the output's format: Plex's stream segmenter writing
-// MPEG-TS segments named media-%05d.ts and listing them in CSV.
+// MPEG-TS segments named media-%05d.ts and listing them in CSV, or Plex
+// Web's DASH muxer, as the remux pool reads it.
 func (j *Job) muxer(opts map[string]string, target string) error {
-	switch f := opts["-f"]; f {
+	f := opts["-f"]
+	other := dashOptions
+	if f == "dash" {
+		other = segmentOptions
+	}
+	for _, o := range other {
+		if _, ok := opts[o]; ok {
+			return refuse("%s with the %s muxer", o, f)
+		}
+	}
+	switch f {
+	case "dash":
+		if target != "dash" {
+			return refuse("dash output %q", target)
+		}
+		for _, o := range []string{"-init_seg_name", "-media_seg_name", "-manifest_name"} {
+			if opts[o] == "" {
+				return refuse("dash without %s", o)
+			}
+		}
+		j.Output = OutputDASH
+		s := Segmenting{Pattern: remux.MediaName, StartNumber: 1}
+		var err error
+		if s.Duration, err = seconds(opts["-seg_duration"]); err != nil || s.Duration <= 0 {
+			return refuse("-seg_duration %q", opts["-seg_duration"])
+		}
+		if v, ok := opts["-skip_to_segment"]; ok {
+			if s.StartNumber, err = strconv.Atoi(v); err != nil || s.StartNumber < 1 {
+				return refuse("-skip_to_segment %q", v)
+			}
+		}
+		if v, ok := opts["-window_size"]; ok {
+			if s.ListSize, err = strconv.Atoi(v); err != nil || s.ListSize < 0 {
+				return refuse("-window_size %q", v)
+			}
+		}
+		j.Segments = s
+		return nil
 	case "ssegment":
 		if sf := opts["-segment_format"]; sf != "mpegts" {
 			return refuse("segment format %q", sf)

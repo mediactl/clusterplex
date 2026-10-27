@@ -85,8 +85,12 @@ type AudioOut struct {
 // BurnIn is a subtitle drawn into the picture.
 type BurnIn struct {
 	Input  int // index into Job.Inputs
-	Stream int // the subtitle stream within that input
+	Stream int // the subtitle stream within that input: its index for an image, its subtitle number (s:N) for text
 	Image  bool
+	// Style is a text subtitle's ASS style, as libass's force_style takes
+	// it: Plex's inlineass overrides plus its font size, outline and
+	// shadow (finding B).
+	Style string
 }
 
 // Segmenting is how an HLS or DASH output is cut.

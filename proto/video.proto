@@ -75,6 +75,8 @@ message BurnIn {
   int32 input = 1;
   int32 stream = 2;
   bool image = 3;
+  // A text subtitle's ASS style for libass's force_style.
+  string style = 4;
 }
 
 message Segmenting {
