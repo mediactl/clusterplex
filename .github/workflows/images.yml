@@ -59,8 +59,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [cluster-plex, cluster-plex-remux]
+        image: [cluster-plex, cluster-plex-remux, cluster-plex-video]
         arch: [amd64, arm64]
+        # The GPU pool's image is amd64 only: there is no Intel GPU on arm64.
+        exclude:
+          - image: cluster-plex-video
+            arch: arm64
         include:
           - image: cluster-plex
             dockerfile: Dockerfile
@@ -68,6 +72,9 @@ jobs:
           - image: cluster-plex-remux
             dockerfile: images/Dockerfile.remux
             target: remux
+          - image: cluster-plex-video
+            dockerfile: images/Dockerfile.video
+            target: video
           - arch: amd64
             runner: ubuntu-24.04
             platform: linux/amd64
@@ -141,7 +148,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        image: [cluster-plex, cluster-plex-remux]
+        image: [cluster-plex, cluster-plex-remux, cluster-plex-video]
     steps:
       - name: Download the digests
         uses: actions/download-artifact@v4
@@ -180,7 +187,9 @@ jobs:
         working-directory: /tmp/digests
         run: |
           set -eu
-          test "$(ls | wc -l)" -eq 2 || { echo "expected two digests, found: $(ls)"; exit 1; }
+          want=2
+          [ "${{ matrix.image }}" != cluster-plex-video ] || want=1 # amd64 only
+          test "$(ls | wc -l)" -eq "$want" || { echo "expected $want digests, found: $(ls)"; exit 1; }
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}@sha256:%s ' *)
