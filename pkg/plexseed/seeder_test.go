@@ -414,3 +414,75 @@ func TestRowsOfEverySourceAreOurs(t *testing.T) {
 	assert.Equal(t, "intro", got[0][0])
 	assert.Contains(t, got[0][4], `"pv:source":"theintrodb"`, "an untagged segment is TheIntroDB's")
 }
+
+func labelRows(t *testing.T, conn *pgx.Conn, item int64) [][]any {
+	t.Helper()
+	rows, err := conn.Query(context.Background(), `
+SELECT tags.tag, g."index", coalesce(g.extra_data, '')
+  FROM taggings g JOIN tags ON tags.id = g.tag_id AND tags.tag_type = $2
+ WHERE g.metadata_item_id = $1 ORDER BY g."index", g.id`, item, plexseed.LabelTagType)
+	require.NoError(t, err)
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) ([]any, error) {
+		var tag, extra string
+		var idx int64
+		err := r.Scan(&tag, &idx, &extra)
+		return []any{tag, idx, extra}, err
+	})
+	require.NoError(t, err)
+	return out
+}
+
+func reconcileLabels(t *testing.T, conn *pgx.Conn, item int64, want []string) (written, removed int) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := conn.Begin(ctx)
+	require.NoError(t, err)
+	written, removed, err = seeder(conn).ReconcileLabelsTx(ctx, tx, item, want, 1790800000)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(ctx))
+	return written, removed
+}
+
+// An item's labels of ours are exactly clustarr's keywords: added under
+// the library's tag of that name (one tag row per name, as Plex keeps
+// them), removed when no longer wanted, and never touching a label the
+// owner set in Plex -- even one of the same name, which is then not
+// written twice. Written rows carry the seeder's mark.
+func TestLabelsAreReconciledAroundTheOwnersOwn(t *testing.T) {
+	conn := plexDB(t)
+	ctx := context.Background()
+	l := insertFile(t, conn, "Clustarr TV")
+	var owners int64
+	require.NoError(t, conn.QueryRow(ctx, "INSERT INTO tags (tag, tag_type) VALUES ('Favourite', $1) RETURNING id", plexseed.LabelTagType).Scan(&owners))
+	_, err := conn.Exec(ctx, `INSERT INTO taggings (metadata_item_id, tag_id, "index") VALUES ($1, $2, 0)`, l.item, owners)
+	require.NoError(t, err)
+
+	written, removed := reconcileLabels(t, conn, l.item, []string{"time travel", " alien ", "Time Travel", "", "favourite"})
+	assert.Equal(t, 2, written, "the repeat, the blank and the owner's own are not written")
+	assert.Zero(t, removed)
+	got := labelRows(t, conn, l.item)
+	require.Len(t, got, 3)
+	assert.Equal(t, []any{"Favourite", int64(0), ""}, got[0], "the owner's label is untouched")
+	assert.Equal(t, []any{"time travel", int64(1), `{"cp:source":"clustarr"}`}, got[1])
+	assert.Equal(t, []any{"alien", int64(2), `{"cp:source":"clustarr"}`}, got[2])
+
+	written, removed = reconcileLabels(t, conn, l.item, []string{"time travel", "alien"})
+	assert.Zero(t, written+removed, "unchanged labels are not rewritten")
+
+	other := insertFile(t, conn, "Clustarr TV")
+	reconcileLabels(t, conn, other.item, []string{"alien"})
+	assert.Equal(t, 1, count(t, conn, "SELECT count(*) FROM tags WHERE tag_type = $1 AND tag = 'alien'", plexseed.LabelTagType), "one tag row serves every item")
+
+	written, removed = reconcileLabels(t, conn, l.item, []string{"alien", "robot"})
+	assert.Equal(t, 1, written)
+	assert.Equal(t, 1, removed)
+	got = labelRows(t, conn, l.item)
+	require.Len(t, got, 3)
+	assert.Equal(t, "Favourite", got[0][0])
+	assert.Equal(t, "alien", got[1][0])
+	assert.Equal(t, "robot", got[2][0])
+
+	_, removed = reconcileLabels(t, conn, l.item, nil)
+	assert.Equal(t, 2, removed, "no keywords: ours go, the owner's stays")
+	assert.Equal(t, [][]any{{"Favourite", int64(0), ""}}, labelRows(t, conn, l.item))
+}

@@ -83,6 +83,9 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 		{"status", "metadata", "overview"},
 		{"status", "metadata", "originalLanguage"},
 		{"status", "metadata", "externalIDs"},
+		// keywords are TMDB's, which the projection writes as the item's
+		// Plex labels (plexseed.ReconcileLabelsTx).
+		{"status", "metadata", "keywords"},
 		{"status", "overlay"},
 	}
 	switch gvr {

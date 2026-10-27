@@ -80,9 +80,15 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 	if have && f.itemUID != "" && f.itemUID == chain.leafUID() {
 		chain.hint = f.item
 	}
-	item, err := EnsureChain(ctx, tx, section, chain, now, pending)
+	item, labelled, err := EnsureChain(ctx, tx, section, chain, now, pending)
 	if err != nil {
 		return err
+	}
+	// The movie's or the show's labels are clustarr's keywords: written
+	// here, since PMS keeps no Label from a provider, and kept by Plex's
+	// refreshes, which rewrite only what the provider answers.
+	if _, _, err := p.Seeder.ReconcileLabelsTx(ctx, tx, labelled, chain.Chain[0].Labels, now.Unix()); err != nil {
+		return fmt.Errorf("plexproject: labels of item %d: %w", labelled, err)
 	}
 	if have && f.item != 0 && f.item != item {
 		// The file moved to another item (review I7). It leaves the item

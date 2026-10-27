@@ -111,7 +111,18 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   `pkg/plexseed` writes clustarr's probe into an unanalysed media item and
   reconciles TheIntroDB's markers, only in the provisioned libraries, never
   over Plex's own analysis, with every row marked (`cp:source`,
-  `pv:source=theintrodb`). Configuration stays API-only.
+  `pv:source=theintrodb`). Since 2026-10-27 it also writes a movie's and a
+  show's **Labels** from clustarr's `status.metadata.keywords` (TMDB's)
+  through `plexseed.ReconcileLabelsTx` on the chain's first row at every
+  apply: PMS keeps no Label from a metadata provider (clustarr's spike,
+  2026-10-08), and a Plex refresh rewrites only what the provider answers,
+  so labels written here stay. A Label is tag_type 11
+  (`plexseed.LabelTagType`, verified on the owner's server with one probe
+  label through the API), one `tags` row per name shared by every item,
+  each of our taggings marked `cp:source`; a label the owner set in Plex is
+  never touched, the same name included. The keywords are part of the
+  item's chain key (`Node.Labels`, `clustarrwatch.chainKey`), so a change
+  re-applies the item's files. Configuration stays API-only.
 - **Only `cmd/remux-worker` and `cmd/video-worker` link ffgo.** The
   manager, shim, proxy and maintenance binaries are static and run from a
   scratch image; ffgo (purego) would make them dynamic.

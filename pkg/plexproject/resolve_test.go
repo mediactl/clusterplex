@@ -115,3 +115,18 @@ func TestAnEpisodeIsKeyedByItsPlexIDOnlyInsideASeasonPlexKnows(t *testing.T) {
 	require.Equal(t, GUID(TVProvider, TypeEpisode, string(ep.GetUID()), ""), it.Chain[2].GUID, "nor, then, its episode")
 	require.Empty(t, it.Chain[2].PriorGUID)
 }
+
+// A movie's keywords (status.metadata.keywords, TMDB's) ride its node as
+// the labels the projection writes into Plex, and move the chain's key so
+// a change is applied; a chain without any keeps the key it had.
+func TestAnItemsKeywordsAreItsLabelsAndMoveTheKey(t *testing.T) {
+	file, movie := fixture(t, "mediafile.yaml"), fixture(t, "movie.yaml")
+	it, ok := Resolve(file, lookupOf(movie))
+	require.True(t, ok)
+	require.Equal(t, []string{"september 11 2001", "new york city", "terrorism"}, it.Chain[0].Labels)
+	withLabels := it.Key()
+	it.Chain[0].Labels = nil
+	require.NotEqual(t, withLabels, it.Key())
+	it.Chain[0].Labels = []string{"terrorism"}
+	require.NotEqual(t, withLabels, it.Key())
+}

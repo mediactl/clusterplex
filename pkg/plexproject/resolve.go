@@ -28,6 +28,11 @@ type Node struct {
 	Index     int32
 	Year      int32
 	AddedAt   time.Time
+	// Labels are the movie's or the show's Plex Labels: clustarr's
+	// status.metadata.keywords (TMDB's), which plexseed writes as label
+	// taggings since PMS keeps no Label from a provider. Only a chain's
+	// first node carries them.
+	Labels []string
 }
 
 // Item is a MediaFile's resolved item: Chain[0] is the movie or the show,
@@ -56,6 +61,11 @@ func (it Item) Key() string {
 	h := sha256.New()
 	for _, n := range it.Chain {
 		_, _ = fmt.Fprintf(h, "%d|%s|%d\n", n.Type, n.GUID, n.Index)
+		if len(n.Labels) > 0 {
+			// Only when there are any, so rows applied before labels
+			// keep their stamp until the item has some.
+			_, _ = fmt.Fprintf(h, "labels|%s\n", strings.Join(n.Labels, "\x00"))
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
@@ -212,9 +222,11 @@ func itemNode(u *unstructured.Unstructured, t ItemType, provider, uid string) No
 	plexID := nested(u, "status", "metadata", "externalIDs", "plex")
 	title := firstOf(nested(u, "status", "metadata", "title"), nested(u, "status", "title"), u.GetName())
 	year := nestedInt(u, "status", "metadata", "year")
+	labels, _, _ := unstructured.NestedStringSlice(u.Object, "status", "metadata", "keywords")
 	return Node{
 		Type: t, UID: uid, GUID: GUID(provider, t, uid, plexID), PriorGUID: prior(provider, t, uid, plexID),
 		Title: title, TitleSort: TitleSort(title), Year: int32(year), AddedAt: u.GetCreationTimestamp().Time,
+		Labels: labels,
 	}
 }
 

@@ -24,8 +24,10 @@ type Refresher interface {
 // An existing row is left as Plex made it but for its key: it takes the
 // node's guid and edition ([keyItem]), and a trashed one is revived with
 // its id. An inserted episode asks for its season's refresh
-// ([refreshTarget]), once.
-func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now time.Time, refresh Refresher) (int64, error) {
+// ([refreshTarget]), once. It returns the leaf's row, which the media
+// hangs off, and the first node's (the movie's or the show's), which
+// carries the item's labels.
+func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now time.Time, refresh Refresher) (leaf, root int64, err error) {
 	var parent *int64
 	var asked int64
 	for i, n := range it.Chain {
@@ -60,14 +62,17 @@ func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now tim
 			}
 		}
 		if err != nil {
-			return 0, fmt.Errorf("plexproject: %s %q: %w", typeNames[n.Type], n.GUID, err)
+			return 0, 0, fmt.Errorf("plexproject: %s %q: %w", typeNames[n.Type], n.GUID, err)
+		}
+		if i == 0 {
+			root = id
 		}
 		parent = &id
 	}
 	if parent == nil {
-		return 0, errors.New("plexproject: an item with no chain")
+		return 0, 0, errors.New("plexproject: an item with no chain")
 	}
-	return *parent, nil
+	return *parent, root, nil
 }
 
 // refreshTarget is the row whose Plex refresh fills item: an episode's

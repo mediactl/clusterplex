@@ -24,7 +24,7 @@ func ensure(t *testing.T, conn *pgx.Conn, section int64, it Item, r Refresher) i
 	ctx := context.Background()
 	tx, err := conn.Begin(ctx)
 	require.NoError(t, err)
-	id, err := EnsureChain(ctx, tx, section, it, now0, r)
+	id, _, err := EnsureChain(ctx, tx, section, it, now0, r)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 	return id

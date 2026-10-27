@@ -294,3 +294,29 @@ func TestAnUnprobedRowIsCurrentAndKeepsPlexsAnalysisUntilTheProbe(t *testing.T) 
 	require.Equal(t, 0, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND codec = 'h264'", media), "the probe's streams replace Plex's")
 	require.Equal(t, 2, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", media))
 }
+
+// A movie's keywords are written as its item's labels when its file is
+// applied, and a change in them -- which moves the chain's key -- is
+// applied over a row otherwise current.
+func TestAnItemsLabelsFollowItsKeywords(t *testing.T) {
+	conn := plexDB(t)
+	ctx := context.Background()
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	p := projector(conn, &refreshes{})
+	it := movieItem("u9", "", "Heat")
+	it.Chain[0].Labels = []string{"heist", "los angeles"}
+	require.NoError(t, p.Apply(ctx, section, loc, change("f9", "/media/movies/Heat (1995)/Heat.mkv", "k1", it)))
+	item := int64(count(t, conn, "SELECT id FROM metadata_items WHERE library_section_id = $1 AND guid = $2", section, it.Chain[0].GUID))
+	labels := func() []string {
+		rows, err := conn.Query(ctx, `SELECT t.tag FROM taggings g JOIN tags t ON t.id = g.tag_id AND t.tag_type = $2 WHERE g.metadata_item_id = $1 ORDER BY g."index"`, item, plexseed.LabelTagType)
+		require.NoError(t, err)
+		out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		require.NoError(t, err)
+		return out
+	}
+	require.Equal(t, []string{"heist", "los angeles"}, labels())
+
+	it.Chain[0].Labels = []string{"heist", "bank robbery"}
+	require.NoError(t, p.Apply(ctx, section, loc, change("f9", "/media/movies/Heat (1995)/Heat.mkv", "k1", it)))
+	require.Equal(t, []string{"heist", "bank robbery"}, labels())
+}

@@ -398,12 +398,15 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 	}
 }
 
-// chainKey is what of an item the projection's chain reads: its Plex id
-// and, for a series, its seasons' ids.
+// chainKey is what of an item the projection's chain reads: its Plex id,
+// for a series its seasons' ids, and its keywords, which the projection
+// writes as the item's labels.
 func chainKey(u *unstructured.Unstructured) string {
 	seasons, _, _ := unstructured.NestedSlice(u.Object, "status", "metadata", "plexSeasons")
 	b, _ := json.Marshal(seasons)
-	return plexIDOf(u) + "|" + string(b)
+	keywords, _, _ := unstructured.NestedStringSlice(u.Object, "status", "metadata", "keywords")
+	k, _ := json.Marshal(keywords)
+	return plexIDOf(u) + "|" + string(b) + "|" + string(k)
 }
 
 func fileOf(obj any) (File, bool) {
