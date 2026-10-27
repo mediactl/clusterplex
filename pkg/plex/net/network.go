@@ -96,6 +96,28 @@ func (n *Network) StartProcess(cmd *exec.Cmd) error {
 // PlexAddrPort is where the proxy dials Plex.
 func (n *Network) PlexAddrPort() netip.AddrPort { return n.cfg.PlexAddrPort() }
 
+// LoopbackAddrPort is Plex's port on loopback inside its namespace, where
+// Plex's own transcoder reaches it.
+func (n *Network) LoopbackAddrPort() netip.AddrPort {
+	return netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(n.cfg.PlexPort))
+}
+
+// DialContext dials addr from inside Plex's namespace: a connection to
+// LoopbackAddrPort comes from loopback, as Plex's transcoder's do, which is
+// the only way Plex serves a Live TV session to a transcoder it did not
+// start itself. The socket is made on Do's thread and stays in Plex's
+// namespace after the thread leaves it.
+func (n *Network) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	var c net.Conn
+	err := n.Do(func() error {
+		var d net.Dialer
+		var err error
+		c, err = d.DialContext(ctx, network, addr)
+		return err
+	})
+	return c, err
+}
+
 // Close removes the veth pair and the nftables table, and releases the
 // namespace, which the kernel reaps once nothing references it.
 func (n *Network) Close() error {

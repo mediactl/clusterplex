@@ -52,6 +52,11 @@ type Relay struct {
 	Workers remoteexec.WorkerLister
 	Dial    func(ctx context.Context, addr string) (videopb.VideoClient, io.Closer, error)
 	PMS     plexsession.PMS
+	// Live is Plex as its own transcoder reaches it: on loopback inside
+	// Plex's network namespace, the only requests Plex serves a Live TV
+	// session to; from PMS's address it is direct play, which a session
+	// that converts refuses. Zero is PMS.
+	Live plexsession.PMS
 	// Count publishes how many conversions run (pkg/video/lease); nil
 	// publishes nothing.
 	Count interface{ Begin(context.Context) func() }

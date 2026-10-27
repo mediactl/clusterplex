@@ -42,6 +42,7 @@ import (
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 	"github.com/mediactl/clusterplex/pkg/plex/servertoken"
 	"github.com/mediactl/clusterplex/pkg/plexscan"
+	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 	"github.com/mediactl/clusterplex/pkg/telemetry"
 	videolease "github.com/mediactl/clusterplex/pkg/video/lease"
@@ -80,7 +81,11 @@ type Manager struct {
 	// plexAddr reaches Plex inside its network namespace, bypassing the proxy.
 	// Anything asking "is Plex up?" has to use this: in the pod namespace the
 	// proxy holds Plex's port, and it answers whether Plex is running or not.
-	plexAddr     string
+	plexAddr string
+	// plexLive reaches Plex as its own transcoder does: on loopback inside
+	// its namespace, which a Live TV session is served on alone (the video
+	// relay's Live).
+	plexLive     plexsession.PMS
 	shimServer   *grpc.Server
 	workerServer *grpc.Server
 	// videoCount publishes the GPU pool's conversions in a Lease; nil
@@ -249,6 +254,10 @@ func run() int {
 	// Everything that needs to reach Plex directly, rather than through the
 	// proxy, uses this address.
 	m.plexAddr = plexNet.PlexAddrPort().String()
+	m.plexLive = plexsession.PMS{
+		Addr: "http://" + plexNet.LoopbackAddrPort().String(),
+		HTTP: &http.Client{Transport: &http.Transport{DialContext: plexNet.DialContext}},
+	}
 	m.startInPlexNS = plexNet.StartProcess
 
 	// Only the lease holder may reach plex.tv. Every pod shares one server

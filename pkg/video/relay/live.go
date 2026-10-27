@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/video"
 	"github.com/mediactl/clusterplex/proto/videopb"
 )
@@ -61,6 +62,14 @@ func parsePlaylist(b []byte) (playlist, error) {
 		}
 	}
 	return pl, nil
+}
+
+// live is Plex as its transcoder reaches it (Relay.Live).
+func (r *Relay) live() plexsession.PMS {
+	if r.Live.Addr == "" {
+		return r.PMS
+	}
+	return r.Live
 }
 
 func (r *Relay) livePoll() time.Duration {
@@ -114,10 +123,10 @@ func (c *conversion) followLive(ctx context.Context, r *Relay, job video.Job, i 
 }
 
 // livePlaylist reads the session's playlist as Plex's transcoder does
-// (plexsession.OpenAsTranscoder): Plex serves a live session to no other
-// client of a session that converts.
+// (Relay.Live, plexsession.OpenAsTranscoder): Plex serves a live session
+// to no other client of a session that converts.
 func (r *Relay) livePlaylist(ctx context.Context, src string) (playlist, error) {
-	rc, err := r.PMS.OpenAsTranscoder(ctx, src)
+	rc, err := r.live().OpenAsTranscoder(ctx, src)
 	if err != nil {
 		return playlist{}, err
 	}
@@ -138,7 +147,7 @@ func (c *conversion) liveSegment(ctx context.Context, r *Relay, i int32, base *u
 	if err != nil {
 		return err
 	}
-	rc, err := r.PMS.OpenAsTranscoder(ctx, u.String())
+	rc, err := r.live().OpenAsTranscoder(ctx, u.String())
 	if err != nil {
 		return err
 	}

@@ -163,6 +163,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 			},
 			Dial:    videorelay.GRPCDialer,
 			PMS:     plexsession.PMS{Addr: "http://" + m.plexAddr},
+			Live:    m.plexLive,
 			Count:   m.videoCount,
 			Refused: func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
 			Startup: func(d time.Duration) { m.Metrics.VideoStartup.Observe(d.Seconds()) },

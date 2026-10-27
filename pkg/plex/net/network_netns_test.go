@@ -277,3 +277,37 @@ func TestBlockingAddressesWorksTheFirstTimeThereIsNoFilterYet(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+func TestDialContextComesFromPlexsLoopback(t *testing.T) {
+	// Plex serves a Live TV session only to a connection from loopback in
+	// its own namespace, as its transcoder makes: the video relay dials
+	// through DialContext, and Plex sees 127.0.0.1.
+	n := provision(t)
+	var l net.Listener
+	require.NoError(t, n.Do(func() error {
+		var err error
+		l, err = net.Listen("tcp", "127.0.0.1:0")
+		return err
+	}))
+	t.Cleanup(func() { _ = l.Close() })
+	peer := make(chan string, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			peer <- err.Error()
+			return
+		}
+		peer <- c.RemoteAddr().String()
+		_ = c.Close()
+	}()
+
+	c, err := n.DialContext(t.Context(), "tcp", l.Addr().String())
+	require.NoError(t, err)
+	_ = c.Close()
+	from, err := netip.ParseAddrPort(<-peer)
+	require.NoError(t, err)
+	assert.True(t, from.Addr().IsLoopback(), "Plex sees the relay on loopback: %s", from)
+
+	_, err = net.Dial("tcp", l.Addr().String())
+	assert.Error(t, err, "the same address from the manager's namespace is not Plex's loopback")
+}

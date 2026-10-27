@@ -679,9 +679,11 @@ func TestALiveSessionsPlaylistIsFollowed(t *testing.T) {
 	// first segment, the last listed still being written; the next read
 	// names one more and ends. The worker gets the segments in order as one
 	// MPEG-TS, and never the session's address or token. Plex serves a live
-	// session only to its transcoder: a request as any other client's is
-	// "direct play", which a session that converts refuses with 404 (talos,
-	// rev 111), so each request is the one the capture's trace shows.
+	// session only to its own transcoder, from loopback inside its network
+	// namespace: from the manager's address it is "direct play", which a
+	// session that converts refuses with 404 (talos, revs 111 and 112), so
+	// the relay reads it through Live, as the capture's trace shows the
+	// transcoder does.
 	segs := map[string]string{"00007.ts": "G seven ", "00008.ts": "G eight ", "00009.ts": "G nine"}
 	var reads atomic.Int32
 	plex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -718,7 +720,7 @@ func TestALiveSessionsPlaylistIsFollowed(t *testing.T) {
 		return send(done("", ""))
 	}
 	h := setup(t, map[string]*worker{"video-0": w})
-	h.relay.PMS = plexsession.PMS{Addr: plex.URL, HTTP: plex.Client()}
+	h.relay.Live = plexsession.PMS{Addr: plex.URL, HTTP: plex.Client()}
 	h.relay.LivePoll = time.Millisecond
 	h.req.Args = argsOf(t, "livetv-dash")
 	s := &sink{}
