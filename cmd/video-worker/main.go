@@ -169,8 +169,7 @@ func run() error {
 		}
 	}
 
-	gs := grpc.NewServer(grpc.InitialWindowSize(1<<20), grpc.InitialConnWindowSize(1<<22),
-		grpc.MaxRecvMsgSize(1<<20), grpc.MaxSendMsgSize(256<<20))
+	gs := grpc.NewServer(worker.ServerOptions()...)
 	videopb.RegisterVideoServer(gs, srv)
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {

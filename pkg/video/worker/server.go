@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -17,6 +18,15 @@ import (
 	"github.com/mediactl/clusterplex/pkg/video/pipeline"
 	"github.com/mediactl/clusterplex/proto/videopb"
 )
+
+// ServerOptions are the pool's gRPC server options: fixed windows for what
+// the relay streams in, small messages in and whole segments out.
+func ServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.InitialWindowSize(1 << 20), grpc.InitialConnWindowSize(1 << 22),
+		grpc.MaxRecvMsgSize(1 << 20), grpc.MaxSendMsgSize(256 << 20),
+	}
+}
 
 // DefaultInputStall is how long a streamed input may send nothing before
 // its job fails: a Live TV upstream that stalls must not hold a slot.
@@ -134,11 +144,14 @@ func reasonOf(ctx context.Context, err error) video.Reason {
 // stream's Chunks, which the pipeline reads; a watchdog fails the job when
 // an open input sends nothing for stall.
 type inputs struct {
-	mu     sync.Mutex
-	r      map[int]*io.PipeReader
-	w      map[int]*io.PipeWriter
-	stall  time.Duration
-	last   atomic.Int64
+	mu    sync.Mutex
+	r     map[int]*io.PipeReader
+	w     map[int]*io.PipeWriter
+	stall time.Duration
+	last  atomic.Int64
+	// held is set while a chunk waits for the pipeline to read it: the
+	// pipeline holds the input then (a throttled relay), not the upstream.
+	held   atomic.Bool
 	cancel context.CancelCauseFunc
 	done   chan struct{}
 }
@@ -185,7 +198,11 @@ func (in *inputs) receive(stream videopb.Video_ConvertServer) {
 		case c.GetError() != "":
 			in.end(int(c.GetInput()), errors.New(c.GetError()))
 		case len(c.GetData()) > 0:
-			if _, err := w.Write(c.GetData()); err != nil {
+			in.held.Store(true)
+			_, err := w.Write(c.GetData())
+			in.held.Store(false)
+			in.last.Store(time.Now().UnixNano())
+			if err != nil {
 				return
 			}
 		}
@@ -214,7 +231,8 @@ func (in *inputs) fail(err error) {
 	}
 }
 
-// watch fails the job when an open input has sent nothing for stall.
+// watch fails the job when an open input has sent nothing for stall, the
+// time a chunk waited on the pipeline aside.
 func (in *inputs) watch() {
 	t := time.NewTicker(max(in.stall/4, 10*time.Millisecond))
 	defer t.Stop()
@@ -226,7 +244,7 @@ func (in *inputs) watch() {
 			in.mu.Lock()
 			open := len(in.w)
 			in.mu.Unlock()
-			if open > 0 && time.Since(time.Unix(0, in.last.Load())) > in.stall {
+			if open > 0 && !in.held.Load() && time.Since(time.Unix(0, in.last.Load())) > in.stall {
 				in.cancel(errStalled)
 				in.fail(errStalled)
 				return

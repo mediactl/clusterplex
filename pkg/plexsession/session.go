@@ -7,6 +7,7 @@ package plexsession
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,26 +72,47 @@ func (p PMS) at(raw, sub, query string) (*url.URL, error) {
 // Send makes a request to Plex with the session's token and fails on any
 // status from 300 up.
 func (p PMS) Send(ctx context.Context, method, raw, sub, query string, body io.Reader, token string) error {
+	_, err := p.Ask(ctx, method, raw, sub, query, body, token)
+	return err
+}
+
+// MaxAnswerBytes caps an answer Ask reads: Plex answers a transcoder's
+// requests with an empty MediaContainer.
+const MaxAnswerBytes = 64 << 10
+
+// ErrAnswerTooLarge is an answer over MaxAnswerBytes.
+var ErrAnswerTooLarge = errors.New("plex answered more than expected")
+
+// Ask is Send that returns Plex's answer, such as a progress PUT's
+// canThrottle.
+func (p PMS) Ask(ctx context.Context, method, raw, sub, query string, body io.Reader, token string) ([]byte, error) {
 	u, err := p.at(raw, sub, query)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if token != "" {
 		req.Header.Set("X-Plex-Token", token)
 	}
 	resp, err := p.client().Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, MaxAnswerBytes+1))
+	if err != nil {
+		return nil, err
+	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: %s", method, u.Path, resp.Status)
+		return nil, fmt.Errorf("%s %s: %s", method, u.Path, resp.Status)
 	}
-	return nil
+	if len(answer) > MaxAnswerBytes {
+		return nil, ErrAnswerTooLarge
+	}
+	return answer, nil
 }
 
 // Open reads raw from Plex with the session's token: an input Plex serves

@@ -3,9 +3,15 @@ package worker_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,9 +23,13 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/mediactl/clusterplex/pkg/plexsession"
+	"github.com/mediactl/clusterplex/pkg/remoteexec"
 	"github.com/mediactl/clusterplex/pkg/video"
 	"github.com/mediactl/clusterplex/pkg/video/pipeline"
+	"github.com/mediactl/clusterplex/pkg/video/relay"
 	"github.com/mediactl/clusterplex/pkg/video/worker"
+	pb "github.com/mediactl/clusterplex/proto"
 	"github.com/mediactl/clusterplex/proto/videopb"
 )
 
@@ -194,4 +204,141 @@ func TestTheEncodeSpeedIsObserved(t *testing.T) {
 	require.NotNil(t, last(t, s))
 	require.Len(t, speeds, 1)
 	assert.Greater(t, speeds[0], 10.0, "16 s of media in about 0.1 s")
+}
+
+// shimSink is the shim's side of a relayed job: what it was told.
+type shimSink struct{}
+
+func (shimSink) Send(*pb.TranscodeLog) error { return nil }
+
+func TestAHeldRelayStallsThePipeline(t *testing.T) {
+	// The relay held by Plex's throttle (finding P) reads nothing, and the
+	// worker's bounded windows then stop its pipeline in Send: no more than
+	// about a segment is made ahead. Released, it carries on to the end.
+	const segments = 12
+	var made atomic.Int32
+	l := bufconn.Listen(64 << 20)
+	srv := grpc.NewServer(worker.ServerOptions()...)
+	videopb.RegisterVideoServer(srv, &worker.Server{Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, _ pipeline.Options, sink pipeline.Sink) error {
+		sink.Progress("", "progress=1.0&size=-1&remaining=60&speed=2.0&vdec_hw_status=0")
+		for i := range segments {
+			start := time.Duration(i) * 8 * time.Second
+			st := video.SegmentTimes{
+				Name: video.SegmentName("media-%05d.ts", i), Start: start, End: start + 8*time.Second,
+				Streams: []video.Span{{Stream: 0, Start: start, End: start + 8*time.Second}},
+			}
+			if err := sink.Segment(pipeline.Segment{SegmentTimes: st, Data: make([]byte, 2<<20)}); err != nil {
+				return err
+			}
+			made.Add(1)
+			time.Sleep(10 * time.Millisecond)
+		}
+		return nil
+	}})
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(srv.Stop)
+
+	var throttled atomic.Bool
+	throttled.Store(true)
+	var sloth atomic.Bool
+	pms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		switch {
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/progress"):
+			w.WriteHeader(http.StatusPartialContent)
+			if throttled.Load() {
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<MediaContainer size="0" canThrottle="1">`+"\n</MediaContainer>\n")
+				return
+			}
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<MediaContainer size="0">`+"\n</MediaContainer>\n")
+		case strings.Contains(r.URL.RawQuery, "sloth"):
+			sloth.Store(true)
+		}
+	}))
+	t.Cleanup(pms.Close)
+	r := &relay.Relay{
+		Workers: readyPool{{Name: "video-0", Addr: "video-0"}},
+		Dial: func(context.Context, string) (videopb.VideoClient, io.Closer, error) {
+			conn, err := grpc.NewClient("passthrough:///video-0", append(relay.DialOptions(),
+				grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return l.DialContext(ctx) }))...)
+			if err != nil {
+				return nil, nil, err
+			}
+			return videopb.NewVideoClient(conn), conn, nil
+		},
+		PMS:          plexsession.PMS{Addr: pms.URL, HTTP: pms.Client()},
+		ThrottlePoll: 20 * time.Millisecond,
+	}
+	c := fixture(t)
+	ran := make(chan error, 1)
+	go func() {
+		ran <- r.Execute(t.Context(), &pb.ExecRequest{Args: c.Args, Env: map[string]string{"X_PLEX_TOKEN": "tok"}, Cwd: t.TempDir()}, shimSink{})
+	}()
+
+	require.Eventually(t, sloth.Load, 5*time.Second, 5*time.Millisecond, "the relay never went into sloth mode")
+	held := made.Load()
+	time.Sleep(300 * time.Millisecond)
+	assert.LessOrEqual(t, made.Load()-held, int32(2), "the pipeline ran on while the relay was held")
+	assert.Less(t, made.Load(), int32(segments))
+
+	throttled.Store(false)
+	select {
+	case err := <-ran:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pipeline did not carry on once released")
+	}
+	assert.Equal(t, int32(segments), made.Load())
+}
+
+func TestAHeldPipelineIsNoStalledInput(t *testing.T) {
+	// A pipeline held by the relay reads nothing from its streamed input,
+	// which then backs up to the manager: the input did not stall, and the
+	// watchdog must not fail the job for it.
+	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), InputStall: 100 * time.Millisecond, Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
+		in := o.Inputs(0)
+		if _, err := io.ReadFull(in, make([]byte, 1024)); err != nil {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond) // held
+		_, err := io.Copy(io.Discard, in)
+		return err
+	}})
+	s, err := open(t, c, job("A", true))
+	require.NoError(t, err)
+	go func() {
+		chunk := bytes.Repeat([]byte("live"), 16<<10)
+		for range 64 {
+			if s.Send(&videopb.Up{Kind: &videopb.Up_Input{Input: &videopb.Chunk{Input: 0, Data: chunk}}}) != nil {
+				return
+			}
+		}
+		_ = s.Send(&videopb.Up{Kind: &videopb.Up_Input{Input: &videopb.Chunk{Input: 0, Eof: true}}})
+		_ = s.CloseSend()
+	}()
+	d := last(t, s)
+	require.NotNil(t, d)
+	assert.Empty(t, d.GetError())
+}
+
+type readyPool []remoteexec.Worker
+
+func (p readyPool) ListReady(context.Context) ([]remoteexec.Worker, error) { return p, nil }
+
+// fixture is the captured library HLS job (pkg/video's testdata).
+func fixture(t *testing.T) struct{ Args []string } {
+	t.Helper()
+	b, err := os.ReadFile("../testdata/plex-video-jobs.jsonl")
+	require.NoError(t, err)
+	for _, line := range strings.Split(string(b), "\n") {
+		var c struct {
+			Shape string   `json:"shape"`
+			Args  []string `json:"args"`
+		}
+		if json.Unmarshal([]byte(line), &c) == nil && c.Shape == "library-hls" {
+			return struct{ Args []string }{c.Args}
+		}
+	}
+	t.Fatal("no library-hls fixture")
+	return struct{ Args []string }{}
 }

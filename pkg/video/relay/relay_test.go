@@ -12,8 +12,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,6 +128,23 @@ type pms struct {
 	tokens  []string
 	lists   []string
 	present [][]string
+	// throttled answers a progress PUT as PMS does while a job is its
+	// throttle buffer ahead of the client (finding P).
+	throttled atomic.Bool
+	// failing answers every progress PUT 500.
+	failing atomic.Bool
+}
+
+// Plex's answers to a progress PUT, as captured (library-hls-play).
+const (
+	plainAnswer     = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MediaContainer size=\"0\">\n</MediaContainer>\n"
+	throttledAnswer = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MediaContainer size=\"0\" canThrottle=\"1\">\n</MediaContainer>\n"
+)
+
+func (p *pms) snapshot() (calls, lists []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.calls), slices.Clone(p.lists)
 }
 
 func (p *pms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +159,20 @@ func (p *pms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/progress") {
+		if p.failing.Load() {
+			http.Error(w, "gone", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml;charset=utf-8")
+		w.WriteHeader(http.StatusPartialContent)
+		if p.throttled.Load() {
+			_, _ = io.WriteString(w, throttledAnswer)
+		} else {
+			_, _ = io.WriteString(w, plainAnswer)
+		}
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/manifest") {
@@ -442,4 +475,80 @@ func TestTheWorkerNeverSeesTheToken(t *testing.T) {
 	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
 	assert.False(t, bytes.Contains(w.job, []byte("a-real-looking-token-1234")))
 	assert.False(t, bytes.Contains(w.job, []byte("127.0.0.1:32400")), "the worker was told a Plex URL")
+}
+
+func TestPlexsThrottleAnswerHoldsTheWorker(t *testing.T) {
+	// Finding P: PMS answers a progress PUT canThrottle="1" while the job is
+	// its throttle buffer ahead of the client. Plex's transcoder then logs
+	// sloth mode and makes nothing, PUTting progress without its speed every
+	// half second, until a plain answer, when it logs getting back to work.
+	progress := &videopb.Down{Kind: &videopb.Down_Progress{Progress: &videopb.Progress{
+		Query: "progress=4.6&size=-1&remaining=3767&speed=2.4&vdec_hw_status=0",
+	}}}
+	h := setup(t, map[string]*worker{"video-0": {run: script(
+		progress, seg(0, 0, 8.008, true), seg(1, 8.008, 16.016, false), done("", ""),
+	)}})
+	h.relay.ThrottlePoll = 20 * time.Millisecond
+	h.pms.throttled.Store(true)
+	s := &sink{}
+	ran := make(chan error, 1)
+	go func() { ran <- h.relay.Execute(t.Context(), h.req, s) }()
+
+	puts := func(calls []string) (n int) {
+		for _, c := range calls {
+			if strings.HasPrefix(c, "PUT ") && strings.Contains(c, "/progress?") {
+				n++
+			}
+		}
+		return n
+	}
+	require.Eventually(t, func() bool { calls, _ := h.pms.snapshot(); return puts(calls) >= 4 }, 5*time.Second, 5*time.Millisecond)
+	calls, lists := h.pms.snapshot()
+	assert.Empty(t, lists, "no segment is listed while Plex throttles")
+	assert.NoFileExists(t, filepath.Join(h.req.Cwd, "media-00000.ts"))
+	assert.True(t, slices.ContainsFunc(calls, func(c string) bool {
+		return strings.HasPrefix(c, "POST ") && strings.HasSuffix(c, "/progress/log?level=3&message=Throttle%20-%20Going%20into%20sloth%20mode.")
+	}), "%v", calls)
+	assert.True(t, slices.ContainsFunc(calls, func(c string) bool {
+		return strings.HasSuffix(c, "/progress?progress=4.6&size=-1&remaining=2147483647&vdec_hw_status=0")
+	}), "sloth mode's PUT carries no speed and remaining=2147483647: %v", calls)
+
+	h.pms.throttled.Store(false)
+	select {
+	case err := <-ran:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relay stayed held after a plain answer")
+	}
+	calls, lists = h.pms.snapshot()
+	assert.Len(t, lists, 3, "both segments listed once released")
+	assert.True(t, slices.ContainsFunc(calls, func(c string) bool {
+		return strings.HasSuffix(c, "/progress/log?level=3&message=Throttle%20-%20Getting%20back%20to%20work.")
+	}), "%v", calls)
+	assert.EqualValues(t, 0, s.exit(), s.stderr())
+}
+
+func TestAFailedThrottleAnswerReleasesTheWorker(t *testing.T) {
+	// Plex's transcoder carries on past a failed progress PUT; a relay held
+	// on a PMS that stopped answering would wedge the job instead.
+	progress := &videopb.Down{Kind: &videopb.Down_Progress{Progress: &videopb.Progress{Query: "progress=1&size=-1&remaining=60&speed=2.0&vdec_hw_status=0"}}}
+	h := setup(t, map[string]*worker{"video-0": {run: script(progress, seg(0, 0, 8.008, false), done("", ""))}})
+	h.relay.ThrottlePoll = 20 * time.Millisecond
+	h.pms.throttled.Store(true)
+	s := &sink{}
+	ran := make(chan error, 1)
+	go func() { ran <- h.relay.Execute(t.Context(), h.req, s) }()
+	require.Eventually(t, func() bool {
+		calls, _ := h.pms.snapshot()
+		return slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "sloth") })
+	}, 5*time.Second, 5*time.Millisecond)
+	h.pms.failing.Store(true)
+	select {
+	case err := <-ran:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relay stayed held on failing answers")
+	}
+	_, lists := h.pms.snapshot()
+	assert.Len(t, lists, 1)
 }

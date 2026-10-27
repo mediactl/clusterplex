@@ -56,7 +56,14 @@ type Relay struct {
 	Logger  *slog.Logger
 	// Now is the clock. Default time.Now.
 	Now func() time.Time
+	// ThrottlePoll is how often a held conversion asks Plex whether it may
+	// go on, as Plex's transcoder PUTs progress in sloth mode. Default
+	// DefaultThrottlePoll.
+	ThrottlePoll time.Duration
 }
+
+// DefaultThrottlePoll is Plex's own sloth-mode cadence (finding P).
+const DefaultThrottlePoll = 500 * time.Millisecond
 
 func (r *Relay) log() *slog.Logger {
 	if r.Logger == nil {
@@ -316,7 +323,14 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 				continue
 			}
 			// Plex's own transcoder carries on past a failed progress PUT too.
-			_ = r.PMS.Send(ctx, http.MethodPut, job.ProgressURL, p.GetPath(), p.GetQuery(), http.NoBody, job.Token)
+			answer, err := r.PMS.Ask(ctx, http.MethodPut, job.ProgressURL, p.GetPath(), p.GetQuery(), http.NoBody, job.Token)
+			if err == nil && p.GetPath() == "" && canThrottle(answer) {
+				// Held here, the relay reads nothing more from the worker,
+				// whose bounded windows then stop its pipeline (finding P).
+				if err := r.sloth(ctx, job, p.GetQuery()); err != nil {
+					return refuse(video.ReasonCancelled, err)
+				}
+			}
 		case *videopb.Down_Done:
 			if msg := k.Done.GetError(); msg != "" {
 				reason := video.Reason(k.Done.GetReason())
@@ -351,13 +365,21 @@ func segmentTimes(s *videopb.Segment) video.SegmentTimes {
 // maxSegmentBytes bounds one Down event: a whole segment.
 const maxSegmentBytes = 256 << 20
 
-// GRPCDialer dials a pool pod over plaintext gRPC inside the cluster. The
-// stream window is bounded, so a relay that stops reading holds the
-// worker's pipeline within about a segment (pacing).
+// DialOptions are the relay's gRPC options toward a pool pod: plaintext
+// inside the cluster, and fixed windows, so a relay that stops reading
+// holds the worker's pipeline within about a segment (finding P; a fixed
+// window also turns off gRPC's growing ones).
+func DialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithInitialWindowSize(1 << 20), grpc.WithInitialConnWindowSize(1 << 22),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxSegmentBytes)),
+	}
+}
+
+// GRPCDialer dials a pool pod with DialOptions.
 func GRPCDialer(_ context.Context, addr string) (videopb.VideoClient, io.Closer, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithInitialWindowSize(1<<20), grpc.WithInitialConnWindowSize(1<<22),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxSegmentBytes)))
+	conn, err := grpc.NewClient(addr, DialOptions()...)
 	if err != nil {
 		return nil, nil, err
 	}
