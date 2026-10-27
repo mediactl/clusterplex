@@ -27,9 +27,18 @@ type videoPath struct {
 	sd        *ffgo.StreamDecoder
 	gpuDecode bool
 	tenBit    bool
-	graph     *ffgo.FilterGraph
-	enc       *ffgo.VideoStreamEncoder
-	forced    int
+	// What the source needs that Plex's argv does not ask on the Pi
+	// (findings H and D): a PQ or HLG source is tone-mapped to BT.709, an
+	// interlaced one deinterlaced.
+	toneMap, deinterlace bool
+	transfer             string // the source's, for zscale
+	// colourKnown is set once a frame's own colour has settled toneMap: a
+	// container may name only the matrix, the transfer living in the
+	// bitstream alone.
+	colourKnown bool
+	graph       *ffgo.FilterGraph
+	enc         *ffgo.VideoStreamEncoder
+	forced      int
 
 	// The grid (finding R): output frame j is at job.Start + j frames, and
 	// takes the source frame nearest it, as -fps_mode cfr does.
@@ -47,9 +56,22 @@ func newVideoPath(job video.Job, in *input, o Options, devs *devices, c *cutter)
 	}
 	v := &videoPath{
 		job: job, o: o, in: in, devs: devs, c: c, tenBit: bits == 10,
-		gpuDecode: o.onGPU() && o.Caps.DecodesOnGPU(vs.Codec, bits),
-		forced:    video.FirstForced(job.Start, job.Video.KeyframeEvery),
+		forced: video.FirstForced(job.Start, job.Video.KeyframeEvery),
 	}
+	v.colour(vs.Color.Transfer)
+	// Until a frame says, a 10-bit BT.2020 source of no stated transfer
+	// may be HDR: it is decoded where its tone map can run.
+	mayBeHDR := v.toneMap || (bits == 10 && vs.Color.Transfer == ffgo.ColorTransferUnspecified &&
+		(vs.Color.Space == ffgo.ColorSpaceBT2020NCL || vs.Color.Space == ffgo.ColorSpaceBT2020CL))
+	switch vs.FieldOrder {
+	case ffgo.FieldOrderTT, ffgo.FieldOrderBB, ffgo.FieldOrderTB, ffgo.FieldOrderBT:
+		v.deinterlace = true
+	}
+	v.deinterlace = v.deinterlace || job.Video.Deinterlace
+	// Frames decoded on the GPU stay there, so they are decoded so only
+	// where vpp_qsv does everything they need.
+	v.gpuDecode = o.onGPU() && o.Caps.DecodesOnGPU(vs.Codec, bits) &&
+		(!mayBeHDR || o.Caps.ToneMap) && (!v.deinterlace || o.Caps.Deinterlace)
 	cfg := &ffgo.StreamDecoderConfig{}
 	if v.gpuDecode {
 		cfg = &ffgo.StreamDecoderConfig{HWDevice: devs.vaapi, ExtraHWFrames: 16}
@@ -60,6 +82,19 @@ func newVideoPath(job video.Job, in *input, o Options, devs *devices, c *cutter)
 	}
 	v.sd = sd
 	return v, nil
+}
+
+// colour settles toneMap from a transfer characteristic: PQ and HLG are
+// HDR, as is whatever Plex's argv asks to tone-map.
+func (v *videoPath) colour(trc ffgo.ColorTransfer) {
+	switch trc {
+	case ffgo.ColorTransferSMPTE2084:
+		v.toneMap, v.transfer = true, "smpte2084"
+	case ffgo.ColorTransferARIB_STD_B67:
+		v.toneMap, v.transfer = true, "arib-std-b67"
+	default:
+		v.toneMap = v.job.Video.ToneMap
+	}
 }
 
 func (v *videoPath) close() {
@@ -120,6 +155,13 @@ func (v *videoPath) frame(f ffgo.Frame) error {
 		ts = f.BestEffortTimestamp()
 	}
 	t := v.in.at(ts, v.sd.TimeBase())
+	if !v.colourKnown {
+		// The first frame, before any filter or encoder is built.
+		v.colourKnown = true
+		if trc := f.ColorSpec().Transfer; trc != ffgo.ColorTransferUnspecified && trc != 0 {
+			v.colour(trc)
+		}
+	}
 	if v.have {
 		mid := v.prevT + (t-v.prevT)/2
 		for v.slotTime(v.slot) <= mid {
@@ -164,20 +206,51 @@ func (v *videoPath) graphConfig(g ffgo.Frame) ffgo.FilterGraphConfig {
 		Width: vs.Width, Height: vs.Height, PixelFmt: ffgo.PixelFormat(g.Format()),
 		TimeBase: outTB, SAR: vs.SampleAspectRatio, HWFramesCtx: g.HWFramesCtx(),
 	}
+	// On a GPU pod, vpp_qsv deinterlaces and tone-maps where the device
+	// measured it could; anything else runs on the CPU before the upload.
+	qsvDeint := v.o.onGPU() && v.deinterlace && v.o.Caps.Deinterlace
+	qsvTone := v.o.onGPU() && v.toneMap && v.o.Caps.ToneMap
+	vpp := fmt.Sprintf("vpp_qsv=w=%d:h=%d:format=nv12", out.Width, out.Height)
+	if qsvTone {
+		vpp = "vpp_qsv=tonemap=1:" + vpp[len("vpp_qsv="):]
+	}
+	if qsvDeint {
+		vpp = "vpp_qsv=deinterlace=2:" + vpp[len("vpp_qsv="):]
+	}
+	var cpu []string
+	if v.deinterlace && !qsvDeint {
+		cpu = append(cpu, "bwdif=mode=send_frame")
+	}
+	if !v.o.onGPU() {
+		cpu = append(cpu, fmt.Sprintf("scale=w=%d:h=%d", out.Width, out.Height))
+	}
+	if v.toneMap && !qsvTone {
+		cpu = append(cpu, toneMapChain(v.transfer))
+	}
 	switch {
 	case !v.o.onGPU():
-		cfg.Filters = fmt.Sprintf("scale=w=%d:h=%d,format=yuv420p", out.Width, out.Height)
+		cfg.Filters = strings.Join(append(cpu, "format=yuv420p"), ",")
 	case v.gpuDecode:
-		cfg.Filters = fmt.Sprintf("hwmap=derive_device=qsv,format=qsv,vpp_qsv=w=%d:h=%d:format=nv12", out.Width, out.Height)
+		cfg.Filters = "hwmap=derive_device=qsv,format=qsv," + vpp
 	default:
 		up := "nv12"
-		if v.tenBit {
+		if v.tenBit && (!v.toneMap || qsvTone) {
 			up = "p010le"
 		}
-		cfg.Filters = fmt.Sprintf("format=%s,hwupload=extra_hw_frames=64,vpp_qsv=w=%d:h=%d:format=nv12", up, out.Width, out.Height)
+		cfg.Filters = strings.Join(append(cpu, "format="+up, "hwupload=extra_hw_frames=64", vpp), ",")
 		cfg.HWDevice = v.devs.qsv
 	}
 	return cfg
+}
+
+// toneMapChain maps a PQ or HLG BT.2020 picture to BT.709 SDR on the CPU:
+// to linear light at 100 nits, Hable's curve, back to BT.709.
+func toneMapChain(transfer string) string {
+	if transfer == "" {
+		transfer = "smpte2084"
+	}
+	return "zscale=tin=" + transfer + ":pin=bt2020:min=bt2020nc:t=linear:npl=100,format=gbrpf32le," +
+		"zscale=p=bt709,tonemap=hable,zscale=t=bt709:m=bt709:r=tv"
 }
 
 // encode forces Plex's keyframes on the grid's times and encodes; every
@@ -228,6 +301,12 @@ func (v *videoPath) openEncoder() error {
 		cfg.PixelFormat = ffgo.PixelFormatYUV420P
 		cfg.RateControl, cfg.CRF = ffgo.RateControlCRF, out.CRF
 		cfg.CodecOptions = map[string]string{"bf": "0", "forced-idr": "1", "x264-params": "scenecut=0"}
+	}
+	if v.toneMap {
+		// The stream says what the tone map made of it.
+		cfg.CodecOptions["color_primaries"] = "bt709"
+		cfg.CodecOptions["color_trc"] = "bt709"
+		cfg.CodecOptions["colorspace"] = "bt709"
 	}
 	enc, err := ffgo.NewVideoStreamEncoder(cfg)
 	if err != nil {

@@ -58,13 +58,8 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 		return fmt.Errorf("%w: output %s", video.ErrShape, job.Output)
 	}
 	// Refused, never converted without what Plex asked for, until drawn.
-	switch {
-	case job.Burn != nil:
+	if job.Burn != nil {
 		return fmt.Errorf("%w: a burn-in", video.ErrShape)
-	case job.Video.ToneMap:
-		return fmt.Errorf("%w: tone mapping", video.ErrShape)
-	case job.Video.Deinterlace:
-		return fmt.Errorf("%w: deinterlacing", video.ErrShape)
 	}
 	in, err := openInput(ctx, job, o)
 	if err != nil {

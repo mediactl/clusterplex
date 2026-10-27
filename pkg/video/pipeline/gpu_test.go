@@ -124,3 +124,62 @@ func TestTheQSVPipelineMeetsTheStartupTarget(t *testing.T) {
 		}
 	})
 }
+
+// The GPU image carries no FFmpeg CLI, so its clips are made ahead, by
+//
+//	ffmpeg -f lavfi -i testsrc2=size=640x360:rate=24 -t 2 -pix_fmt yuv420p10le -c:v libx265 \
+//	  -x265-params keyint=48:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc \
+//	  -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc hdr10.mkv
+//	ffmpeg -f lavfi -i testsrc2=size=720x480:rate=60000/1001 -vf tinterlace=mode=interleave_top,setfield=tff \
+//	  -t 2 -c:v mpeg2video -flags +ildct+ilme -b:v 1500k -an interlaced.ts
+const (
+	hdr10Clip    = "../testdata/clips/hdr10.mkv"
+	interlacedTS = "../testdata/clips/interlaced.ts"
+)
+
+// TestTheQSVPipelineToneMapsAndDeinterlaces runs where an Intel render
+// node is expected: an HDR10 film comes out BT.709 SDR through vpp_qsv's
+// tone map, and an interlaced channel converts through its deinterlacer
+// (the CPU suite measures the weave gone; here the device runs it).
+func TestTheQSVPipelineToneMapsAndDeinterlaces(t *testing.T) {
+	if os.Getenv("CLUSTERPLEX_EXPECT_INTEL") != "1" {
+		t.Skip("no Intel render node expected")
+	}
+	const node = "/dev/dri/renderD128"
+	caps, err := gpu.Measure(t.Context(), node)
+	require.NoError(t, err)
+	require.True(t, caps.ToneMap, "the device tone-maps")
+	require.True(t, caps.Deinterlace, "the device deinterlaces")
+	o := pipeline.Options{Encoder: "h264_qsv", Caps: &caps, RenderNode: node}
+	run := func(t *testing.T, path string, w, h int, rate video.Rational) []byte {
+		job := library(t, path)
+		job.Audio = nil
+		job.Video.Width, job.Video.Height, job.Video.FrameRate = w, h, rate
+		r := &recorder{}
+		require.NoError(t, pipeline.Run(t.Context(), job, o, r))
+		var all []byte
+		for _, s := range r.segments {
+			all = append(all, s.Data...)
+		}
+		require.NotEmpty(t, all)
+		return all
+	}
+
+	t.Run("hdr10", func(t *testing.T) {
+		out := run(t, hdr10Clip, 640, 360, video.Rational{Num: 24, Den: 1})
+		d, err := ffgo.NewDecoderFromReader(bytes.NewReader(out), "mpegts")
+		require.NoError(t, err)
+		defer func() { _ = d.Close() }()
+		v := d.VideoStream()
+		require.NotNil(t, v)
+		require.Equal(t, "yuv420p", ffgo.PixelFormatName(v.PixelFmt))
+		require.Equal(t, ffgo.ColorPrimariesBT709, v.Color.Primaries)
+		require.Equal(t, ffgo.ColorTransferBT709, v.Color.Transfer)
+		require.Equal(t, ffgo.ColorSpaceBT709, v.Color.Space)
+	})
+
+	t.Run("interlaced", func(t *testing.T) {
+		times, _ := packets(t, run(t, interlacedTS, 720, 480, video.Rational{Num: 30000, Den: 1001}))
+		require.InDelta(t, 60, len(times), 2, "one frame per woven frame, at the source's rate")
+	})
+}
