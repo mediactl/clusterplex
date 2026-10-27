@@ -26,6 +26,10 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 6
+      # A finished Job, its pod and log with it, is deleted after this long,
+      # a manual `kubectl create job --from` run included; the history limits
+      # above only cap how many linger meanwhile.
+      ttlSecondsAfterFinished: {{ $.Values.maintenance.ttlSecondsAfterFinished }}
       template:
         spec:
           # Never, so a failed attempt's pod and its log stay with the Job

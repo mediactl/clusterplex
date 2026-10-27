@@ -301,6 +301,9 @@ maintenance:
   nodeSelector: {}
   affinity: {}
   tolerations: []
+  # How long a finished Job (its pod and log with it) is kept before Kubernetes
+  # deletes it, in seconds; the history limits cap how many linger meanwhile.
+  ttlSecondsAfterFinished: 86400
   # Held to k8s/base/maintenance.yaml by test/manifests. No analysis is
   # scheduled: clustarr probes the media and seeds streams and markers
   # (ADR 0006), and GenerateBIFBehavior is never, so analyze and media-index
