@@ -136,6 +136,11 @@ type pms struct {
 	throttled atomic.Bool
 	// failing answers every progress PUT 500.
 	failing atomic.Bool
+	// holdProgress answers no progress PUT before the first manifest, as
+	// Plex does a live DASH session's (talos, rev 114).
+	holdProgress atomic.Bool
+	manifested   chan struct{}
+	manifestOnce sync.Once
 }
 
 // Plex's answers to a progress PUT, as captured (library-hls-play).
@@ -151,6 +156,13 @@ func (p *pms) snapshot() (calls, lists []string) {
 }
 
 func (p *pms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.holdProgress.Load() && r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/progress") {
+		select {
+		case <-p.manifested:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	body, _ := io.ReadAll(r.Body)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -179,6 +191,7 @@ func (p *pms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/manifest") {
+		p.manifestOnce.Do(func() { close(p.manifested) })
 		p.lists = append(p.lists, string(body))
 		ents, _ := os.ReadDir(p.dir)
 		var names []string
@@ -270,7 +283,7 @@ type harness struct {
 func setup(t *testing.T, ws map[string]*worker) *harness {
 	t.Helper()
 	dir := t.TempDir()
-	p := &pms{dir: dir, serve: map[string][]byte{}}
+	p := &pms{dir: dir, serve: map[string][]byte{}, manifested: make(chan struct{})}
 	srv := httptest.NewServer(p)
 	t.Cleanup(srv.Close)
 	lister, dial := pool(t, ws)
@@ -732,4 +745,26 @@ func TestALiveSessionsPlaylistIsFollowed(t *testing.T) {
 	assert.Equal(t, "G seven G eight G nine", w.input.String())
 	assert.NotContains(t, string(w.job), "livetv/sessions", "the worker never sees where its input comes from")
 	assert.NotContains(t, string(w.job), "REDACTED")
+}
+
+func TestAProgressAnswerPlexHoldsStallsNothing(t *testing.T) {
+	// Plex answers a live DASH session's progress only once its first
+	// manifest is in (talos, rev 114: each browser tune's first report hung
+	// until Plex cancelled the job 15-20 s later, the relay waiting on it,
+	// its files and manifest queued behind). Plex's transcoder reports from
+	// a thread of its own; the relay carries on and posts the manifest.
+	h := setup(t, map[string]*worker{"video-0": {run: script(
+		&videopb.Down{Kind: &videopb.Down_Progress{Progress: &videopb.Progress{Query: "progress=0.0&size=-1&remaining=0&speed=0.0&vdec_hw_status=1"}}},
+		file("init-stream0.m4s", "i0"), file("init-stream1.m4s", "i1"),
+		file("chunk-stream0-00001.m4s", "v1"), file("chunk-stream1-00001.m4s", "a1"),
+		manifest("<MPD>1</MPD>"), done("", ""),
+	)}})
+	h.req.Args = shapeArgs(t, "dash-encode")
+	h.pms.holdProgress.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(ctx, h.req, s), s.stderr())
+	_, lists := h.pms.snapshot()
+	assert.Equal(t, []string{"<MPD>1</MPD>"}, lists)
 }

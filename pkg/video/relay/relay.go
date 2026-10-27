@@ -306,8 +306,27 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 	first := true
 	// What the log tells of a job: its first output, its first manifest or
 	// list line, the first progress report that failed.
-	output, posted, progressFailed := false, false, false
+	output, posted := false, false
 	wall := time.Now() // the log's clock, apart from r.Now's
+	rctx, stop := context.WithCancel(ctx)
+	defer stop()
+	rep := newReporter(rctx, r, job)
+	// hold is sloth mode for a throttle answer the reporter got: the relay
+	// reads nothing more from the worker meanwhile, whose bounded windows
+	// then stop its pipeline (finding P).
+	hold := func() error {
+		query, ok := rep.held()
+		if !ok {
+			return nil
+		}
+		held := time.Now()
+		r.log().Info("Plex throttles the conversion", "session", job.Session, "after", held.Sub(wall), "progress", query)
+		if err := r.sloth(ctx, job, query); err != nil {
+			return refuse(video.ReasonCancelled, err)
+		}
+		r.log().Info("Plex released the conversion", "session", job.Session, "held", time.Since(held))
+		return nil
+	}
 	for {
 		down, err := c.stream.Recv()
 		if err != nil {
@@ -315,6 +334,9 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 				err = errors.New("the worker ended the stream without Done")
 			}
 			return refuse(video.ReasonWorkerError, err)
+		}
+		if err := hold(); err != nil {
+			return err
 		}
 		dash := job.Output == video.OutputDASH
 		switch k := down.GetKind().(type) {
@@ -386,21 +408,18 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 				r.log().Warn("dropped a progress report outside Plex's", "path", p.GetPath())
 				continue
 			}
-			// Plex's own transcoder carries on past a failed progress PUT too.
-			answer, err := r.PMS.Ask(ctx, http.MethodPut, job.ProgressURL, p.GetPath(), p.GetQuery(), http.NoBody, job.Token)
-			if err != nil && !progressFailed {
-				progressFailed = true
-				r.log().Warn("a progress report failed", "session", job.Session, "path", p.GetPath(), "error", err)
-			}
-			if err == nil && p.GetPath() == "" && canThrottle(answer) {
-				// Held here, the relay reads nothing more from the worker,
-				// whose bounded windows then stop its pipeline (finding P).
-				held := time.Now()
-				r.log().Info("Plex throttles the conversion", "session", job.Session, "after", held.Sub(wall), "progress", p.GetQuery())
-				if err := r.sloth(ctx, job, p.GetQuery()); err != nil {
-					return refuse(video.ReasonCancelled, err)
+			// Reported on the reporter's goroutine; an answer that comes
+			// at once is waited for, so a throttle holds what follows.
+			if answered, idle := rep.send(p.GetPath(), p.GetQuery()); idle {
+				select {
+				case <-answered:
+				case <-time.After(progressWait):
+				case <-ctx.Done():
+					return refuse(video.ReasonCancelled, ctx.Err())
 				}
-				r.log().Info("Plex released the conversion", "session", job.Session, "held", time.Since(held))
+			}
+			if err := hold(); err != nil {
+				return err
 			}
 		case *videopb.Down_Done:
 			if msg := k.Done.GetError(); msg != "" {
