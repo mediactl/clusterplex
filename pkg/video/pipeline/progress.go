@@ -32,6 +32,20 @@ func newProgress(job video.Job, duration time.Duration, gpuDecode bool, sink Sin
 	return p
 }
 
+// start reports what Plex's transcoder reports of its input before any
+// progress (finding V; the live capture): its duration in seconds, -1 when
+// unknown (Live TV), which Plex waits for before it starts a live session
+// ("timed out waiting to find duration for live session"), then its
+// picture's size.
+func (p *progress) start(width, height int) {
+	d := -1.0
+	if p.duration > 0 {
+		d = p.duration.Seconds()
+	}
+	p.sink.Progress("", fmt.Sprintf("duration=%.6f", d))
+	p.sink.Progress("", fmt.Sprintf("width=%d&height=%d", width, height))
+}
+
 // at reports t, the latest video time encoded, at most every progressEvery.
 func (p *progress) at(t time.Duration) {
 	now := time.Now()

@@ -118,8 +118,13 @@ func TestALiveInputReportsNoProgressKnown(t *testing.T) {
 	job, o := liveJob(t, liveTS(t, 4, 0))
 	r := &recorder{}
 	require.NoError(t, pipeline.Run(t.Context(), job, o, r))
-	require.NotEmpty(t, r.progress)
-	for _, p := range r.progress {
+	require.GreaterOrEqual(t, len(r.progress), 3)
+	// First, as Plex's transcoder: the input's duration, unknown, and its
+	// picture's size. Plex holds a live session's start until it has the
+	// duration ("timed out waiting to find duration for live session").
+	assert.Equal(t, "?duration=-1.000000", r.progress[0])
+	assert.Equal(t, "?width=1280&height=720", r.progress[1])
+	for _, p := range r.progress[2:] {
 		assert.Regexp(t, `^\?progress=-1\.0&size=-1&remaining=-1&speed=\d+\.\d&vdec_hw_status=\d$`, p)
 	}
 }

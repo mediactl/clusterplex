@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,7 +55,7 @@ func (p *reporter) send(path, query string) (<-chan struct{}, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	idle := !p.busy && len(p.q) == 0
-	if n := len(p.q); n > 0 && path == "" && p.q[n-1].path == "" {
+	if n := len(p.q); n > 0 && periodic(path, query) && periodic(p.q[n-1].path, p.q[n-1].query) {
 		p.q[n-1].query = query
 		return p.q[n-1].done, false
 	}
@@ -65,6 +66,12 @@ func (p *reporter) send(path, query string) (<-chan struct{}, bool) {
 	default:
 	}
 	return rep.done, idle
+}
+
+// periodic is a progress report the next one makes stale; the input's
+// duration and size, and the stream reports, are each sent.
+func periodic(path, query string) bool {
+	return path == "" && strings.HasPrefix(query, "progress=")
 }
 
 // held reports, once, a throttle answer: the query it answered, which

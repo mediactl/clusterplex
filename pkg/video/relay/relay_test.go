@@ -768,3 +768,41 @@ func TestAProgressAnswerPlexHoldsStallsNothing(t *testing.T) {
 	_, lists := h.pms.snapshot()
 	assert.Equal(t, []string{"<MPD>1</MPD>"}, lists)
 }
+
+func TestAPeriodicReportReplacesNoOther(t *testing.T) {
+	// While Plex holds a report, a newer progress report replaces one still
+	// waiting, but never the input's duration, which Plex waits for before
+	// it starts a live session.
+	report := func(q string) *videopb.Down {
+		return &videopb.Down{Kind: &videopb.Down_Progress{Progress: &videopb.Progress{Query: q}}}
+	}
+	var h *harness
+	reported := func() bool {
+		calls, _ := h.pms.snapshot()
+		return slices.ContainsFunc(calls, func(c string) bool { return strings.HasSuffix(c, "/progress?duration=-1.000000") })
+	}
+	run := script(
+		report("progress=-1.0&size=-1&remaining=-1&speed=0.0&vdec_hw_status=1"),
+		report("duration=-1.000000"),
+		report("progress=-1.0&size=-1&remaining=-1&speed=1.0&vdec_hw_status=1"),
+		file("init-stream0.m4s", "i0"), file("init-stream1.m4s", "i1"),
+		file("chunk-stream0-00001.m4s", "v1"), file("chunk-stream1-00001.m4s", "a1"),
+		manifest("<MPD>1</MPD>"),
+	)
+	h = setup(t, map[string]*worker{"video-0": {run: func(ctx context.Context, send func(*videopb.Down) error) error {
+		if err := run(ctx, send); err != nil {
+			return err
+		}
+		// The job runs on, as a live one does, until Plex has the duration.
+		for end := time.Now().Add(5 * time.Second); !reported() && time.Now().Before(end); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return send(done("", ""))
+	}}})
+	h.req.Args = shapeArgs(t, "dash-encode")
+	h.pms.holdProgress.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, h.relay.Execute(ctx, h.req, &sink{}))
+	assert.True(t, reported(), "the duration reached Plex")
+}

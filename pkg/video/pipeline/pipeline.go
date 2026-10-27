@@ -114,6 +114,7 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 		known = 0
 	}
 	prog := newProgress(job, known, vp.gpuDecode, sink)
+	prog.start(in.video.Width, in.video.Height)
 	tl := newTimeline(in, job.Inputs[0].Streamed)
 
 	for {

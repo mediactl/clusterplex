@@ -324,6 +324,8 @@ func TestProgressNamesPlexsKeys(t *testing.T) {
 	r := &recorder{}
 	require.NoError(t, pipeline.Run(t.Context(), job, cpu, r))
 	require.NotEmpty(t, r.progress)
+	assert.Regexp(t, `^\?duration=12\.\d{6}$`, r.progress[0], "the input's duration first, as Plex's transcoder reports it")
+	assert.Equal(t, "?width=1280&height=720", r.progress[1])
 	for _, p := range r.progress {
 		path, query, _ := strings.Cut(p, "?")
 		if path != "" {
