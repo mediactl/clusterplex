@@ -59,7 +59,9 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
 | `pkg/remux/` | Plex Web's DASH streams on the remux pool: classify and parse a shimmed job, the manifest, the fMP4 splitter (`remux`), the cache (`cache`), the ffgo pipeline (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
-| `cmd/remux-worker/` | The remux pool's binary; the only one that links ffgo |
+| `cmd/remux-worker/` | The remux pool's binary; links ffgo |
+| `pkg/video/` | Plex's video conversions on the GPU pool (ADR-0010): parse and classify a shimmed job, Plex's segment cuts and lists (`video`), the Lease that counts them (`lease`), the device measure (`gpu`), the ffgo pipeline muxing in memory (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
+| `cmd/video-worker/` | The GPU pool's binary; links ffgo |
 
 ## Invariants
 
@@ -110,10 +112,16 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   reconciles TheIntroDB's markers, only in the provisioned libraries, never
   over Plex's own analysis, with every row marked (`cp:source`,
   `pv:source=theintrodb`). Configuration stays API-only.
-- **Only `cmd/remux-worker` links ffgo.** The manager, shim, proxy and
-  maintenance binaries are static and run from a scratch image; ffgo
-  (purego) would make them dynamic. `TestNoStaticBinaryLinksFFgo` holds it.
-  Browser streams reach the pool through `pkg/remux/relay` (ADR-0007).
+- **Only `cmd/remux-worker` and `cmd/video-worker` link ffgo.** The
+  manager, shim, proxy and maintenance binaries are static and run from a
+  scratch image; ffgo (purego) would make them dynamic.
+  `TestNoStaticBinaryLinksFFgo` holds it. Browser streams reach the remux
+  pool through `pkg/remux/relay` (ADR-0007).
+- **A video conversion never runs on Plex's node** (owner, 2026-10-26,
+  ADR-0010). Every job that converts video goes to the GPU pool through
+  `pkg/video/relay`. When the pool cannot take it, it is refused: there is
+  no fallback to Plex's transcoder. The pool writes nothing to disk; it
+  muxes in memory and streams back to the relay.
 - **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
   CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
   failover is a failed Job that retries and shows up in `kubectl`.

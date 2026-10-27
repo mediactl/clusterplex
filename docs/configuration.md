@@ -817,6 +817,44 @@ their gRPC port:
 With no ready remux pod, or for any job the pool refuses, Plex's transcoder
 runs the stream as before.
 
+## The GPU pool
+
+Every video conversion Plex is asked for runs on the GPU pool: an Intel GPU,
+encoding with QSV in process (ADR-0010). That covers Live TV and library
+playback from any client, downloads, Optimize and the DVR's
+convert-while-recording. There is no fallback. A conversion the pool cannot
+take is refused and never runs on Plex's node, so the player shows a
+playback error.
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--video-selector` | `app=plex-video-transcode` | Label selector of the pool's pods. Empty turns the pool off, and every video conversion is refused. The chart renders it empty when `videoTranscode.enabled` is false. |
+| `--video-port` | `50053` | The pool's gRPC port. |
+| `--video-lease-name` | `cluster-plex-video-transcodes` | The Lease, in the manager's namespace, that counts live conversions. clustarr's transcode admission admits nothing to its Intel class while the count is above zero (clustarr's `manager.videoTranscodeLease`, `<namespace>/<name>`). |
+
+The chart's values:
+
+| Value | Default | |
+| --- | --- | --- |
+| `videoTranscode.enabled` | `false` | Run the pool. |
+| `videoTranscode.image` | `ghcr.io/mediactl/cluster-plex-video` | The tag defaults to the chart's `appVersion`. |
+| `videoTranscode.replicas` | `1` | One pod per GPU. |
+| `videoTranscode.maxJobs` | `3` | Conversions per pod. A whole-file job (a download, Optimize) never takes the last free slot. |
+| `videoTranscode.encoder` | `h264_qsv` | `libx264` encodes and scales on the CPU, with no GPU needed. |
+| `videoTranscode.renderNode` | `/dev/dri/renderD128` | The GPU's render node in the pod. |
+| `videoTranscode.renderGroups` | `[]` | The group that owns the render node, as `supplementalGroups`. Leave it empty where the node is `0666`. |
+| `videoTranscode.gpu` | `{resource: gpu.intel.com/i915, count: 1}` | The device plugin's resource, added to the container's limits. |
+| `videoTranscode.affinity` | required `intel.feature.node.kubernetes.io/gpu=true` | NFD's Intel rule. `nodeSelector` and `tolerations` are also available. |
+| `videoTranscode.resources` | 2 CPU, 2Gi requested; 4Gi limit | Outputs are muxed in memory. |
+| `videoTranscode.inputs.sizeLimit` | `64Mi` | The memory-backed `emptyDir` that holds a subtitle streamed for burn-in. |
+| `videoTranscode.leaseName` | `cluster-plex-video-transcodes` | Rendered into `--video-lease-name`. |
+
+A pod is ready only once its device has passed the start-up measure (an
+h264_qsv encode through vpp_qsv, plus a VA-API decode of each format) and
+while it has a free slot. A pod whose device fails the measure stays unready
+and takes no work. With kustomize, add the component
+`k8s/components/video-transcode`.
+
 ## Applying a change
 
 The manager reads its configuration once, at startup. Editing the ConfigMap

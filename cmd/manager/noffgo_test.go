@@ -8,7 +8,7 @@ import (
 
 // The manager, shim, proxy and maintenance binaries are static and run in
 // a scratch image; ffgo (purego) would make them dynamic. Only
-// cmd/remux-worker may link it.
+// cmd/remux-worker and cmd/video-worker may link it.
 func TestNoStaticBinaryLinksFFgo(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "../manager", "../shim", "../proxy", "../maintenance").CombinedOutput()
 	if err != nil {

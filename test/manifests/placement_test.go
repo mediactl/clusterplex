@@ -1,6 +1,7 @@
 package manifests_test
 
 import (
+	"errors"
 	"io"
 	"os/exec"
 	"strings"
@@ -44,28 +45,31 @@ func (p placedPod) pod() podSpec {
 }
 
 // renderPlaced renders the chart with args and returns its maintenance
-// CronJobs and its remux and proxy Deployments.
+// CronJobs and its remux, proxy and GPU pool Deployments.
 func renderPlaced(t *testing.T, args ...string) []placedPod {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH")
 	}
-	out, err := exec.Command("helm", append([]string{"template", "cp", "../../charts/cluster-plex",
+	out, err := exec.Command("helm", append([]string{
+		"template", "cp", "../../charts/cluster-plex",
 		"--namespace", "media", "--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg",
-		"--set", "proxy.enabled=true", "--set", "remux.enabled=true"}, args...)...).CombinedOutput()
+		"--set", "proxy.enabled=true", "--set", "remux.enabled=true",
+	}, args...)...).CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	var pods []placedPod
 	dec := yaml.NewDecoder(strings.NewReader(string(out)))
 	for {
 		var p placedPod
-		if err := dec.Decode(&p); err == io.EOF {
+		if err := dec.Decode(&p); errors.Is(err, io.EOF) {
 			break
 		} else {
 			require.NoError(t, err)
 		}
 		switch {
 		case p.Kind == "CronJob",
-			p.Kind == "Deployment" && (strings.HasSuffix(p.Metadata.Name, "-remux") || strings.HasSuffix(p.Metadata.Name, "-proxy")):
+			p.Kind == "Deployment" && (strings.HasSuffix(p.Metadata.Name, "-remux") || strings.HasSuffix(p.Metadata.Name, "-proxy") ||
+				strings.HasSuffix(p.Metadata.Name, "-video-transcode")):
 			pods = append(pods, p)
 		}
 	}
@@ -75,11 +79,12 @@ func renderPlaced(t *testing.T, args ...string) []placedPod {
 // TestPlacementKeysReachEveryWorkload: clustarr's control-plane placement
 // design (2026-10-21, §5.5) puts cluster-plex's maintenance, remux and proxy
 // pods on the workers, so each takes nodeSelector, affinity and tolerations
-// the way plex does.
+// the way plex does; the GPU pool takes them too, in place of its Intel
+// default.
 func TestPlacementKeysReachEveryWorkload(t *testing.T) {
 	affinity := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"node-role.kubernetes.io/control-plane","operator":"DoesNotExist"}]}]}}}`
-	var args []string
-	for _, block := range []string{"maintenance", "remux", "proxy"} {
+	args := []string{"--set", "videoTranscode.enabled=true"}
+	for _, block := range []string{"maintenance", "remux", "proxy", "videoTranscode"} {
 		args = append(args,
 			"--set-json", block+".affinity="+affinity,
 			"--set", block+".nodeSelector.kubernetes\\.io/arch=amd64",
@@ -96,13 +101,14 @@ func TestPlacementKeysReachEveryWorkload(t *testing.T) {
 		require.Len(t, spec.Tolerations, 1, p.Metadata.Name)
 		assert.Equal(t, "dedicated", spec.Tolerations[0]["key"], p.Metadata.Name)
 	}
-	var cron, remux, proxy bool
+	var cron, remux, proxy, gpu bool
 	for k := range kinds {
 		cron = cron || strings.HasPrefix(k, "CronJob/")
 		remux = remux || strings.HasSuffix(k, "-remux")
 		proxy = proxy || strings.HasSuffix(k, "-proxy")
+		gpu = gpu || strings.HasSuffix(k, "-video-transcode")
 	}
-	assert.True(t, cron && remux && proxy, "maintenance, remux and proxy all rendered: %v", kinds)
+	assert.True(t, cron && remux && proxy && gpu, "maintenance, remux, proxy and the GPU pool all rendered: %v", kinds)
 }
 
 func TestNoPlacementByDefault(t *testing.T) {

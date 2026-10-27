@@ -8,8 +8,8 @@
 Plex may convert video again. Plex for iOS asks Live TV for a video
 transcode, and every such tune was refused with decision 4010. The remux
 pool still serves Plex Web's copied-video DASH streams; a stream that needs
-its video converted now runs as Plex's own transcode on the serving pod's
-CPU instead of being refused.
+its video converted now runs on the GPU pool (ADR-0010), and is refused,
+never run on the serving pod, when the pool cannot take it.
 
 ## Context
 

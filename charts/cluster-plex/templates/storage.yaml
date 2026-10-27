@@ -74,6 +74,15 @@ data:
     # No remux pool: every browser stream stays on Plex's transcoder.
     remux-selector: ""
     {{- end }}
+    {{- if .Values.videoTranscode.enabled }}
+    # The GPU pool takes every video conversion; the Lease counts them.
+    video-selector: "app=plex-video-transcode"
+    video-port: 50053
+    video-lease-name: {{ .Values.videoTranscode.leaseName | quote }}
+    {{- else }}
+    # No GPU pool: every video conversion is refused, never run on Plex's node.
+    video-selector: ""
+    {{- end }}
     {{- if .Values.plex.clustarr.enabled }}
     # A library scan of a provisioned section is a reconcile of clustarr's
     # projection (ADR 0008): the proxy sends it to this pod's manager.

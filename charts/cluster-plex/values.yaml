@@ -337,3 +337,44 @@ remux:
   resources:
     requests: {cpu: 250m, memory: 256Mi}
     limits: {memory: 1Gi}
+
+# The GPU pool: every video conversion Plex is asked for (Live TV and library
+# playback from any client, downloads, Optimize, the DVR's
+# convert-while-recording) runs here, decoded, scaled and encoded in process
+# with ffgo on an Intel GPU, and streamed back to the relay on Plex's pod
+# (docs/superpowers/specs/2026-10-26-gpu-video-transcode-pool-design.md).
+# Off, every video conversion is refused, never run on Plex's node; remuxes
+# and audio-only conversions are unaffected either way.
+videoTranscode:
+  enabled: false
+  image:
+    repository: ghcr.io/mediactl/cluster-plex-video
+    tag: ""
+  replicas: 1
+  # Conversions per pod; a whole-file job never takes the last free slot.
+  maxJobs: 3
+  # h264_qsv on the GPU; libx264 converts on the CPU (no GPU needed).
+  encoder: h264_qsv
+  renderNode: /dev/dri/renderD128
+  # The host group owning the render node, as supplementalGroups; none
+  # where the node is 0666 (talos).
+  renderGroups: []
+  # One share of the GPU per pod.
+  gpu: {resource: gpu.intel.com/i915, count: 1}
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - {key: intel.feature.node.kubernetes.io/gpu, operator: In, values: ["true"]}
+  tolerations: []
+  resources:
+    requests: {cpu: "2", memory: 2Gi}
+    limits: {memory: 4Gi}
+  # Where a subtitle the manager streams for burn-in is held: memory, since
+  # the pool writes nothing to disk.
+  inputs: {sizeLimit: 64Mi}
+  # The Lease the managers count the pool's conversions in, which clustarr's
+  # transcode admission yields the Intel GPU to.
+  leaseName: cluster-plex-video-transcodes

@@ -1,0 +1,46 @@
+# Managers find these pods by app=plex-video-transcode and dial :50053; a pod
+# is ready while its device has proved itself and a slot is free. The pool
+# writes nothing to disk: segments go back to the relay on Plex's pod, and
+# /run/video-inputs holds only a streamed subtitle for burn-in, in memory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-video-transcode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: plex-video-transcode}
+  template:
+    metadata:
+      labels: {app: plex-video-transcode}
+    spec:
+      # Add the render node's owning group as supplementalGroups where it is
+      # not 0666.
+      securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, runAsNonRoot: true}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: intel.feature.node.kubernetes.io/gpu, operator: In, values: ["true"]}
+      containers:
+        - name: video
+          image: ghcr.io/mediactl/cluster-plex-video:dev
+          args: ["--max-jobs=3", "--encoder=h264_qsv", "--render-node=/dev/dri/renderD128", "--inputs-dir=/run/video-inputs"]
+          ports:
+            - {name: grpc, containerPort: 50053}
+            - {name: probe, containerPort: 8080}
+          readinessProbe: {httpGet: {path: /readyz, port: probe}, periodSeconds: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: probe}}
+          resources:
+            requests: {cpu: "2", memory: 2Gi}
+            limits: {memory: 4Gi, gpu.intel.com/i915: "1"}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: inputs, mountPath: /run/video-inputs}
+            - {name: media, mountPath: /media, readOnly: true}
+      volumes:
+        - name: inputs
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}
+        - name: media
+          persistentVolumeClaim: {claimName: plex-media, readOnly: true}

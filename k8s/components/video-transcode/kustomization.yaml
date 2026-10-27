@@ -1,0 +1,11 @@
+# The GPU pool: Plex's video conversions on an Intel GPU
+# (docs/adr/0010-video-conversions-on-the-gpu-pool.md). A component, not part
+# of the base, since its pods schedule only on a node with Intel's GPU plugin
+# and NFD's Intel rules (gpu.intel.com/i915,
+# intel.feature.node.kubernetes.io/gpu); without it every video conversion is
+# refused, never run on Plex's node. The manager's default --video-selector
+# already finds these pods.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - video-transcode.yaml
