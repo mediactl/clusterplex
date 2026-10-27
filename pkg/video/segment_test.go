@@ -54,8 +54,14 @@ func times(t *testing.T, line string) (name string, start, end time.Duration, st
 }
 
 func TestSegmentListLinesArePlexs(t *testing.T) {
+	for _, shape := range []string{"library-hls", "library-hls-seek"} {
+		t.Run(shape, func(t *testing.T) { replayList(t, shape) })
+	}
+}
+
+func replayList(t *testing.T, shape string) {
 	l := video.NewSegmentList(5)
-	for i, body := range posts(t, "library-hls") {
+	for i, body := range posts(t, shape) {
 		lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
 		last := lines[len(lines)-1]
 		name, start, end, streams := times(t, last)
@@ -74,32 +80,55 @@ func TestSegmentListLinesArePlexs(t *testing.T) {
 }
 
 func TestCutsFallWhereFindingRSays(t *testing.T) {
-	// The library job's frames at 24000/1001, keyframes forced every 8 s,
-	// cut by the rule; the captured segments start where it cuts.
-	s := video.Segmenting{Duration: 8 * time.Second, TimeDelta: 62500 * time.Microsecond}
-	var cuts []time.Duration
-	forced, cut := 0, 0
-	for n := 0; n < 26*192+10; n++ {
-		pts := time.Duration(n) * time.Second * 1001 / 24000
-		if !video.KeyframeDue(pts, forced, 8*time.Second) {
-			continue
-		}
-		forced++
-		if n > 0 && video.CutDue(pts, 0, cut, s) {
-			cuts = append(cuts, pts)
-			cut++
-		}
+	// A job's output frames on the constant-rate grid anchored at its -ss
+	// (24000/1001), keyframes forced every 8 s of that grid, cut by the rule
+	// with the counter at -segment_start_number: the captured segments start
+	// where it cuts. Plex lists each time shifted by its first frame's offset
+	// from -ss (8.3 ms after the restart), within a third of a frame.
+	for _, tc := range []struct {
+		shape string
+		ss    time.Duration
+		first int
+		cuts  int
+	}{{"library-hls", 0, 0, 25}, {"library-hls-seek", 1800 * time.Second, 225, 21}} {
+		t.Run(tc.shape, func(t *testing.T) {
+			s := video.Segmenting{Duration: 8 * time.Second, TimeDelta: 62500 * time.Microsecond}
+			frame := func(n int) time.Duration { return tc.ss + time.Duration(n)*time.Second*1001/24000 }
+			forced, cut := video.FirstForced(tc.ss, 8*time.Second), tc.first
+			var cuts []time.Duration
+			for n := 0; len(cuts) < tc.cuts; n++ {
+				pts := frame(n)
+				if !video.KeyframeDue(pts, forced, 8*time.Second) {
+					continue
+				}
+				forced++
+				if n > 0 && video.CutDue(pts, 0, cut, s) {
+					cuts = append(cuts, pts)
+					cut++
+				}
+			}
+			var want []time.Duration
+			for _, body := range posts(t, tc.shape) {
+				lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
+				if last := lines[len(lines)-1]; strings.HasPrefix(last, "#") {
+					_, start, _, _ := times(t, last)
+					want = append(want, start)
+				}
+			}
+			require.GreaterOrEqual(t, len(want), tc.cuts)
+			for i := range tc.cuts {
+				require.InDelta(t, want[i].Seconds(), cuts[i].Seconds(), 0.014, "segment %d's start", tc.first+i+1)
+			}
+		})
 	}
-	var want []time.Duration
-	for _, body := range posts(t, "library-hls") {
-		lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
-		if last := lines[len(lines)-1]; strings.HasPrefix(last, "#") {
-			_, start, _, _ := times(t, last)
-			want = append(want, start)
-		}
-	}
-	require.Len(t, want, 25)
-	for i, w := range want {
-		require.InDelta(t, w.Seconds(), cuts[i].Seconds(), 0.001, "segment %d's start", i+1)
-	}
+}
+
+func TestARestartForcesKeyframesOnTheSourcesGrid(t *testing.T) {
+	const every = 8 * time.Second
+	start := 1800008344 * time.Microsecond // the restart's first frame
+	forced := video.FirstForced(start, every)
+	require.Equal(t, 225, forced)
+	require.True(t, video.KeyframeDue(start, forced, every), "its first frame is a keyframe")
+	require.False(t, video.KeyframeDue(start+41*time.Millisecond, forced+1, every), "and the next is not")
+	require.True(t, video.KeyframeDue(1808*time.Second+16*time.Millisecond, forced+1, every))
 }

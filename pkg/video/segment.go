@@ -14,6 +14,18 @@ func KeyframeDue(t time.Duration, forced int, every time.Duration) bool {
 	return t >= time.Duration(forced)*every
 }
 
+// FirstForced is the forced-keyframe count a job starting at start begins
+// with: the source's grid of every, so a restart's keyframes fall where a
+// run from the start put them. FFmpeg's expression from 0 would force every
+// frame until n_forced*every caught up with a restart's -ss; no list Plex's
+// transcoder posted after a restart shows such a burst (finding R).
+func FirstForced(start, every time.Duration) int {
+	if start <= 0 || every <= 0 {
+		return 0
+	}
+	return int(start / every)
+}
+
 // SegmentName is segment n's file name under Plex's pattern (media-%05d.ts).
 func SegmentName(pattern string, n int) string {
 	return fmt.Sprintf(pattern, n)
