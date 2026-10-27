@@ -40,9 +40,12 @@ func (p *progress) at(t time.Duration) {
 	}
 	p.last = now
 	speed := (t - p.job.Start).Seconds() / max(now.Sub(p.began).Seconds(), 0.001)
-	pct, remaining := 0.0, 0
+	// An input of no known duration (Live TV) is -1.0 done with -1 s to
+	// go, as Plex's transcoder reports one; 0.0 and 0 kept Plex from
+	// answering a browser's start.mpd for 28 s.
+	pct, remaining := -1.0, -1
 	if p.duration > 0 {
-		pct = 100 * t.Seconds() / p.duration.Seconds()
+		pct, remaining = 100*t.Seconds()/p.duration.Seconds(), 0
 		if speed > 0 {
 			remaining = int(max((p.duration-t).Seconds()/speed, 0))
 		}

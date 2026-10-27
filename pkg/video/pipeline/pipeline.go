@@ -107,7 +107,13 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	if burn != nil {
 		burn.refused.skipped = o.Skipped
 	}
-	prog := newProgress(job, in.d.Duration(), vp.gpuDecode, sink)
+	// A streamed input is Live TV, whose duration is unknown however
+	// libavformat estimates one from its bit rate.
+	known := in.d.Duration()
+	if job.Inputs[0].Streamed {
+		known = 0
+	}
+	prog := newProgress(job, known, vp.gpuDecode, sink)
 	tl := newTimeline(in, job.Inputs[0].Streamed)
 
 	for {

@@ -108,3 +108,18 @@ func TestATimestampJumpKeepsTheTimeline(t *testing.T) {
 		})
 	}
 }
+
+func TestALiveInputReportsNoProgressKnown(t *testing.T) {
+	// Plex's transcoder reports a live input's progress as -1.0 and its
+	// remaining time as -1 (the capture's trace); 0.0 and 0, a job at its
+	// start with nothing left, kept Plex from answering a browser's
+	// start.mpd for 28 s (talos, rev 116).
+	need(t)
+	job, o := liveJob(t, liveTS(t, 4, 0))
+	r := &recorder{}
+	require.NoError(t, pipeline.Run(t.Context(), job, o, r))
+	require.NotEmpty(t, r.progress)
+	for _, p := range r.progress {
+		assert.Regexp(t, `^\?progress=-1\.0&size=-1&remaining=-1&speed=\d+\.\d&vdec_hw_status=\d$`, p)
+	}
+}
