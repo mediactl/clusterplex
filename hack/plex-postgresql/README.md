@@ -1,8 +1,14 @@
 # The PostgreSQL shim
 
-The image builds the shim from source, from **our fork**,
+The image downloads the shim from a release of **our fork**,
 [`mediactl/plex-postgresql`](https://github.com/mediactl/plex-postgresql),
-pinned in the Dockerfile by tag. Upstream is `cgnl/plex-postgresql`; the last
+pinned in the Dockerfile by tag (`PLEX_PG_REF`): every tag of the fork
+publishes `plex-postgresql-<tag>-linux-{x86_64,aarch64}.tar.gz`, the
+builder stage's `/libs` (shim, libpq, libgcc_s, subreaper, noop), and the
+Dockerfile's `shim` stage fetches the one for the target architecture and
+checks it against the release's `SHA256SUMS`. Until 2026-10-27 the image
+built the shim itself: 3 minutes native, 25 under emulation, every time the
+stage's cache missed. Upstream is `cgnl/plex-postgresql`; the last
 maintainer commit was 1 April 2026 and open pull requests have gone unanswered,
 so assume we carry everything ourselves.
 
@@ -16,8 +22,15 @@ what has been established about the shim's behaviour. Read them before spending
 a day on something already ruled out.
 
 To work on the shim: clone the fork, change it, `cargo test --lib` in
-`rust/plex-pg-core`, tag, and bump `PLEX_PG_REF`. `PLEX_PG_REPO` is an
-`ARG` too, so a branch can be tried without editing the Dockerfile.
+`rust/plex-pg-core`, add the CHANGELOG section, commit `release: <tag>`,
+tag and push the tag. The tag push runs `Release Linux Artifacts`, which
+builds both architectures natively and creates the release with its assets
+in about seven minutes (a push started no workflow on the fork until its
+first manual dispatch on 2026-10-27; `scripts/publish-release.sh <tag>`
+there dispatches it by hand if a push ever goes quiet again). Then bump
+`PLEX_PG_REF`.
+`PLEX_PG_REPO` is an `ARG` too, so a fork of the fork can be tried without
+editing the Dockerfile, as long as it publishes the same bundle.
 
 ## Which upstream release to build, and why not an older one
 

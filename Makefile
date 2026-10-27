@@ -100,10 +100,12 @@ docker-build: ## Build the image; DOCKER_TARGET=debug adds busybox, which make e
 	docker build -f Dockerfile --target $(DOCKER_TARGET) -t $(IMG) .
 
 # A cluster may mix architectures (talos: arm64 control-plane nodes beside
-# amd64 workers), so the published images are built for both. The builder
-# must run every platform: natively, or arm64 under QEMU (binfmt) on an
-# amd64 host. `docker buildx ls` lists what each builder can build, and
-# BUILDER picks one other than the current.
+# amd64 workers), so the published images are built for both. The release
+# image's stages all run on the build platform (Go cross-compiles, Plex's
+# .deb and the shim bundle are downloads), so any builder cross-builds it;
+# the debug target's busybox stage and the worker images still run the
+# target platform, natively or under QEMU (binfmt). `docker buildx ls` lists
+# what each builder can build, and BUILDER picks one other than the current.
 PLATFORMS ?= linux/amd64,linux/arm64
 BUILDER ?=
 BUILDX = docker buildx build $(if $(BUILDER),--builder $(BUILDER)) --platform $(PLATFORMS) --push

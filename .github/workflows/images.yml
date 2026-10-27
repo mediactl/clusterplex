@@ -1,15 +1,17 @@
 # Builds and publishes the cluster-plex images for linux/amd64 and
 # linux/arm64 -- each platform natively on its own runner (GitHub's arm64
-# runners are free for public repositories), never under QEMU, because the
-# PostgreSQL shim is a Rust build that takes 25 minutes emulated and 3
-# native. Each platform's image is pushed by digest, then one manifest list
-# per image is assembled from the digests and tagged.
+# runners are free for public repositories), never under QEMU. Each
+# platform's image is pushed by digest, then one manifest list per image is
+# assembled from the digests and tagged.
+#
+# The PostgreSQL shim is not built here: the Dockerfile downloads the bundle
+# our fork of plex-postgresql attaches to each of its releases (PLEX_PG_REF),
+# so an image build is a Go build, a Plex .deb and a download.
 #
 # Tags: the 7-character commit sha (what the charts' image.tag carries),
 # the branch name, `latest` on main, and the semver of a `v*` tag. A pull
 # request builds both platforms and pushes nothing. The build cache lives in
-# the registry beside the image (`:buildcache-<arch>`), so a change that
-# leaves the shim stage untouched reuses its layers.
+# the registry beside the image (`:buildcache-<arch>`).
 name: images
 
 on:
@@ -28,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       plex_pg_ref:
-        description: "plex-postgresql tag to build the shim from (default: the Dockerfile's PLEX_PG_REF)"
+        description: "plex-postgresql release tag to download the shim from (default: the Dockerfile's PLEX_PG_REF)"
         required: false
         type: string
       push:

@@ -19,49 +19,49 @@ RUN go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
 RUN go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
 RUN go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
 
-# Stage 1b: Build the PostgreSQL shim.
+# Stage 1b: Fetch the PostgreSQL shim.
 #
 # This is the library that makes Plex talk to PostgreSQL instead of its own
-# SQLite file. It interposes on Plex's SQLite symbols, so it has to be built
-# against the same musl Plex bundles, which is why the base is pinned to Alpine
-# 3.15 rather than something current. Upstream publishes no Linux binaries, so
-# there is nothing to download instead.
+# SQLite file. It interposes on Plex's SQLite symbols, so it is built against
+# the same musl Plex bundles (Alpine 3.15), and it is not built here: our fork
+# publishes it per architecture on every tag, and this stage downloads that
+# bundle and checks it against the release's SHA256SUMS. Building it from
+# source took 3 minutes native and 25 under emulation, every time the stage's
+# cache missed, and a Rust target directory per architecture on the
+# workstation.
 #
-# Built for the target platform, not the build platform: it is C and Rust
-# linked against musl, and a musl cross toolchain is not set up here, so a
-# cross build runs this stage under emulation.
-FROM alpine:3.15 AS shim
+# The bundle is everything the fork's builder stage leaves in /libs: the shim,
+# libpq (the soname and its file), libgcc_s, and the static subreaper and
+# noop binaries (see the COPY lines in the rootfs stage).
+#
+# Runs on the build platform (a download needs no emulation); TARGETARCH
+# picks the bundle.
+FROM --platform=${BUILDPLATFORM} alpine:3.20 AS shim
+ARG TARGETARCH
 # Our fork, not cgnl/plex-postgresql. Upstream's shim races with itself as soon
 # as Plex uses it from more than one thread, which it does on every boot, and
 # the maintainer has not answered a pull request since April 2026. Fixes go to
 # the fork and come back here as a tag; see hack/plex-postgresql/README.md.
 ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
-ARG PLEX_PG_REF=v1.3.17-clusterplex.41
-RUN apk add --no-cache build-base sqlite-dev linux-headers curl perl git
-WORKDIR /build
-ENV CARGO_HOME=/usr/local/cargo \
-    RUSTUP_HOME=/usr/local/rustup \
-    CARGO_TARGET_DIR=/build/target \
-    PATH="/usr/local/cargo/bin:${PATH}"
-# Downloaded and run in two steps, not piped: in a pipeline the exit status is
-# the shell's, so a failed download used to install nothing and still succeed,
-# surfacing four layers later as "cargo: not found". The version check makes
-# the failure land here instead.
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
-    && sh /tmp/rustup.sh -y --default-toolchain stable --profile minimal \
-    && rm -f /tmp/rustup.sh \
-    && cargo --version
-# The build script addresses /build/rust by absolute path, so the checkout has
-# to land at /build itself rather than in a subdirectory.
-RUN git clone --quiet --depth 1 --branch ${PLEX_PG_REF} \
-    ${PLEX_PG_REPO} /src \
-    && cp -a /src/. /build/ && rm -rf /src
-# --with-noop also builds a static no-op binary. It replaces Plex's
-# CrashUploader below: a shell script would not do, because sh inherits
-# LD_PRELOAD and would load the interposer's constructor. subreaper and noop
-# are both linked statically, which is what lets them run in an image with no
-# C library of its own.
-RUN sh scripts/docker-build-shim.sh --with-noop
+ARG PLEX_PG_REF=v1.3.17-clusterplex.43
+RUN apk add --no-cache curl ca-certificates
+WORKDIR /dl
+RUN case "${TARGETARCH}" in \
+      amd64) arch=x86_64 ;; \
+      arm64) arch=aarch64 ;; \
+      *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && bundle="plex-postgresql-${PLEX_PG_REF}-linux-${arch}.tar.gz" \
+    && base="${PLEX_PG_REPO}/releases/download/${PLEX_PG_REF}" \
+    && curl -fsSL --retry 3 --retry-delay 5 -o "$bundle" "${base}/${bundle}" \
+    && curl -fsSL --retry 3 --retry-delay 5 -o SHA256SUMS "${base}/SHA256SUMS" \
+    && grep " ${bundle}\$" SHA256SUMS | sha256sum -c - \
+    && mkdir /libs \
+    && tar -xzf "$bundle" --strip-components=1 -C /libs \
+    && for f in db_interpose_pg.so libpq.so.5 libgcc_s.so.1 subreaper noop; do \
+         test -f "/libs/$f" || { echo "bundle carries no $f" >&2; exit 1; }; \
+       done \
+    && ls -la /libs
 
 # Stage 2: Assemble the root filesystem.
 #
