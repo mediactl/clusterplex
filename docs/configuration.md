@@ -850,9 +850,11 @@ The chart's values:
 | `videoTranscode.leaseName` | `cluster-plex-video-transcodes` | Rendered into `--video-lease-name`. |
 
 A pod is ready only once its device has passed the start-up measure (an
-h264_qsv encode through vpp_qsv, plus a VA-API decode of each format) and
-while it has a free slot. A pod whose device fails the measure stays unready
-and takes no work. With kustomize, add the component
+h264_qsv encode through vpp_qsv, plus a VA-API decode of each format), and
+stays ready while full: a seek restarts its session in the session's own
+slot, and a new session a full pod refuses is passed to the next pod or
+refused `full`. A pod whose device fails the measure stays unready and takes
+no work. With kustomize, add the component
 `k8s/components/video-transcode`.
 
 ## Applying a change

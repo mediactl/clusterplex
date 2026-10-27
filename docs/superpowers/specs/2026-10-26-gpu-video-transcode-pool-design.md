@@ -368,7 +368,12 @@ in a memory-backed emptyDir, because FFmpeg's `subtitles` filter reads a file.
 
 **Concurrency:**
 - Each pod runs at most `maxJobs` conversions at once (default 3). `/readyz`
-  reports not ready when full.
+  reports not ready when full. *As built (2026-10-27, final review):*
+  `/readyz` reports the device alone. A pod unready while full could not
+  take a seek, which Plex restarts within milliseconds into its session's
+  slot, and a fourth stream read as `no-pool`; a full pod answers a new
+  session `ResourceExhausted`, which the route passes over, and refuses
+  `full`.
 - The route picks a ready pod with a free slot; the hash ring is used only
   to break ties.
 - One pod with 3 slots meets the owner's capacity of 3. Replicas and

@@ -1,5 +1,6 @@
 # Managers find these pods by app=plex-video-transcode and dial :50053; a pod
-# is ready while its device has proved itself and a slot is free. The pool
+# is ready while its device has proved itself (a full one too, so a seek
+# reaches its session's slot; a new session is refused full). The pool
 # writes nothing to disk: segments go back to the relay on Plex's pod, and
 # /run/video-inputs holds only a streamed subtitle for burn-in, in memory.
 apiVersion: apps/v1

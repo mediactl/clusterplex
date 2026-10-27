@@ -51,7 +51,7 @@ func checkRuntime(version func() (uint32, uint32, uint32), shimAPI func() int, m
 }
 
 // probes serves /healthz, always, and /readyz while ready: the device
-// proved itself and a slot is free.
+// proved itself.
 func probes(ready func() bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })

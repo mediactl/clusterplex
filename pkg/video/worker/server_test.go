@@ -168,7 +168,10 @@ func TestAStalledStreamedInputReleasesItsSlot(t *testing.T) {
 	require.Eventually(t, func() bool { return slots.Free() == 1 }, 2*time.Second, 10*time.Millisecond)
 }
 
-func TestReadyFollowsTheDeviceAndTheSlots(t *testing.T) {
+func TestReadyFollowsTheDeviceAlone(t *testing.T) {
+	// A full pod stays ready: Plex restarts a session at a seek within
+	// milliseconds, and only a pod the relay lists can take the restart
+	// into its session's slot; a new session it refuses full.
 	measured := false
 	s := &worker.Server{Slots: worker.NewSlots(1), Run: blocking, Measured: func() bool { return measured }}
 	assert.False(t, s.Ready(), "an unmeasured device takes no work")
@@ -178,7 +181,12 @@ func TestReadyFollowsTheDeviceAndTheSlots(t *testing.T) {
 	first, err := open(t, c, job("A", false))
 	require.NoError(t, err)
 	defer func() { _ = first.CloseSend() }()
-	assert.False(t, s.Ready(), "a full pod is not ready")
+	assert.True(t, s.Ready(), "a full pod is still listed")
+	seek, err := open(t, c, job("A", false))
+	require.NoError(t, err, "the seek takes session A's slot")
+	defer func() { _ = seek.CloseSend() }()
+	_, err = open(t, c, job("B", false))
+	require.Equal(t, codes.ResourceExhausted, status.Code(err), "%v", err)
 }
 
 func TestTheEncodeSpeedIsObserved(t *testing.T) {

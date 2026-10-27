@@ -59,9 +59,11 @@ func (s *Server) log() *slog.Logger {
 	return s.Logger
 }
 
-// Ready is /readyz: the device measured, and a slot free.
+// Ready is /readyz: the device measured. A full pod stays ready: a seek's
+// restart takes its session's slot, and the relay passes over a pod that
+// answers a new session ResourceExhausted.
 func (s *Server) Ready() bool {
-	return (s.Measured == nil || s.Measured()) && s.Slots.Free() > 0
+	return s.Measured == nil || s.Measured()
 }
 
 // Convert runs one job: a slot, the header that accepts it, its streamed

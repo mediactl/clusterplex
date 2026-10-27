@@ -3,7 +3,8 @@
 # process with ffgo on an Intel GPU
 # (docs/superpowers/specs/2026-10-26-gpu-video-transcode-pool-design.md).
 # Managers find these pods by app=plex-video-transcode and dial :50053; a pod
-# is ready while its device has proved itself and a slot is free.
+# is ready while its device has proved itself (a full one too, so a seek
+# reaches its session's slot; a new session is refused full).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
