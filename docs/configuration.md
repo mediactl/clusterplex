@@ -609,7 +609,11 @@ order:
    address before 2026-10-27, a renamed release -- is clustarr's own at a
    stale address and is replaced: its DVRs and the device are deleted, then
    the block is registered at its URI and its DVR created
-   (`DVRDeviceReplaced`). The DVR's recording rules go with it.
+   (`DVRDeviceReplaced`). The DVR's recording rules go with it. Where PMS
+   lists a device it just registered under another form of the URI, that
+   form is kept as the device's (`DVRDeviceStoredElsewhere`, a Warning) and
+   noted on the block's Lease (`livetv.clusterplex.io/registered`), so no
+   later pass, and no later holder, replaces it again.
 3. **The DVR.**
    - **Under `epgSource: XEPG`:** it creates the DVR over the block's guide
      (`<uri>/xmltv.xml`), a subset of the provider's
@@ -667,7 +671,7 @@ A pod whose in-place restart fails is handed back to its health watch,
 which restarts Plex and, if it keeps failing, the pod.
 
 **Events:** it records `DVRProvisioned`, `DVRChannelMapSaved`,
-`DVRNeedsLineup`, `DVRBlockOwned`, `DVRDeviceIDTaken`,
+`DVRNeedsLineup`, `DVRBlockOwned`, `DVRDeviceReplaced`, `DVRDeviceStoredElsewhere`,
 `DVRWaitingForGuide`, `DVRChannelMapTooLarge`, `DVRListStale`,
 `DVRProvisionFailed`, `DVRRemoved` and `DVRPodsRestarted` as
 `events.k8s.io` Events on the provider (`kubectl describe iptv`).

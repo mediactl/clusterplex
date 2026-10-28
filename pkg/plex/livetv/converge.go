@@ -53,6 +53,7 @@ const (
 	ReasonRemoved          = "DVRRemoved"
 	ReasonBlockOwned       = "DVRBlockOwned"
 	ReasonReplaced         = "DVRDeviceReplaced"
+	ReasonStoredElsewhere  = "DVRDeviceStoredElsewhere"
 	ReasonWaitingForGuide  = "DVRWaitingForGuide"
 	ReasonChannelMapTooBig = "DVRChannelMapTooLarge"
 	ReasonPodsRestarted    = "DVRPodsRestarted"
@@ -128,6 +129,12 @@ type Lease struct {
 // saved into PMS: the DVR, and its lineup and guide hashes (savedNote).
 const AnnotationSaved = "livetv.clusterplex.io/saved"
 
+// AnnotationRegistered is the note on a block's Lease of the URI its holder
+// registered the device at and the URI PMS lists it under
+// (registeredNote): a PMS that keeps another form of the URI must not have
+// its device replaced again on every pass, deleting the DVR each time.
+const AnnotationRegistered = "livetv.clusterplex.io/registered"
+
 // LeaseName is the Lease cluster-plex holds while it registers a block.
 func LeaseName(deviceID string) string { return "livetv-" + strings.ToLower(deviceID) }
 
@@ -180,6 +187,9 @@ type Converger struct {
 	// since this converger started, so a deleted provider's devices and
 	// DVRs, still under its Service, are found and removed.
 	addresses map[string]bool
+	// registered is, by device id, the URI each block was registered at
+	// and the URI PMS lists it under, as AnnotationRegistered notes it.
+	registered map[string]registeredNote
 }
 
 // emptyGuideRetry is how soon an empty guide is reloaded again.
@@ -212,6 +222,12 @@ type savedNote struct {
 	DVR    string `json:"dvr"`
 	Lineup string `json:"lineup"`
 	Guide  string `json:"guide"`
+}
+
+// registeredNote is AnnotationRegistered's value.
+type registeredNote struct {
+	URI    string `json:"uri"`
+	Stored string `json:"stored"`
 }
 
 func (c *Converger) record(p Provider, reason, msg string, warning bool) {
@@ -277,7 +293,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	defer c.mu.Unlock()
 	if c.saved == nil {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
-		c.emptyReloaded, c.addresses = map[string]time.Time{}, map[string]bool{}
+		c.emptyReloaded, c.addresses, c.registered = map[string]time.Time{}, map[string]bool{}, map[string]registeredNote{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -430,8 +446,9 @@ func (c *Converger) keep(ctx context.Context, p Provider, b Block, ps *pass) err
 	if b.DeviceID == "" || b.URI == "" {
 		return nil
 	}
-	dev, ok := ps.devices[strings.ToUpper(b.DeviceID)]
-	if !ok || !sameURL(dev.URI, b.URI) {
+	id := strings.ToUpper(b.DeviceID)
+	dev, ok := ps.devices[id]
+	if !ok || !c.atURI(id, dev.URI, b.URI) {
 		return nil
 	}
 	_, err := c.acquire(ctx, p, b, ps)
@@ -465,8 +482,14 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		return err
 	}
 
+	if _, known := c.registered[id]; !known {
+		var n registeredNote
+		if json.Unmarshal([]byte(lease.Annotations[AnnotationRegistered]), &n) == nil && n.URI != "" {
+			c.registered[id] = n
+		}
+	}
 	dev, ok := ps.devices[id]
-	if ok && !sameURL(dev.URI, uri) {
+	if ok && !c.atURI(id, dev.URI, uri) {
 		// The block's own device at a stale address (the link-local proxies'
 		// before 2026-10-27, a renamed release): its DVRs and the device go,
 		// then the block is registered at its URI. Registering beside it is
@@ -476,6 +499,8 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 			return c.wait(p, b, "replace device "+dev.UUID+" at "+dev.URI, err)
 		}
 		c.held[id] = held
+		delete(c.registered, id)
+		c.note(ctx, p, id, "", savedHashes{}) // the old DVR's saves are no new DVR's
 		c.record(p, ReasonReplaced, fmt.Sprintf("block %s: device %s was at %s; registering it at %s", b.Start, id, dev.URI, uri), false)
 		ok = false
 	}
@@ -493,6 +518,11 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		}
 		delete(c.saved, id)
 		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: registered device %s at %s", b.Start, dev.UUID, uri), false)
+		if !sameURL(dev.URI, uri) {
+			c.recordOnce("stored/"+id, p, ReasonStoredElsewhere,
+				fmt.Sprintf("block %s: PMS lists device %s at %s, not %s as registered; it is kept as PMS stored it", b.Start, id, dev.URI, uri), true)
+		}
+		c.noteRegistered(ctx, p, id, registeredNote{URI: uri, Stored: dev.URI})
 	}
 
 	dvrs := ps.dvrsOf(dev.UUID)
@@ -668,6 +698,28 @@ func (c *Converger) note(ctx context.Context, p Provider, id string, dvr plexapi
 	}
 }
 
+// atURI is whether a device PMS lists at devURI is block id's at uri: at
+// uri itself, or where PMS stored it when this installation registered it
+// there (AnnotationRegistered).
+func (c *Converger) atURI(id, devURI, uri string) bool {
+	if sameURL(devURI, uri) {
+		return true
+	}
+	n, ok := c.registered[id]
+	return ok && n.URI == uri && sameURL(n.Stored, devURI)
+}
+
+// noteRegistered records where block id's device was registered and where
+// PMS lists it, in memory and on the block's Lease, so neither this
+// converger nor the next holder replaces it as stale.
+func (c *Converger) noteRegistered(ctx context.Context, p Provider, id string, n registeredNote) {
+	c.registered[id] = n
+	v, _ := json.Marshal(n)
+	if err := c.Leases.Annotate(ctx, p.Namespace, LeaseName(id), c.Identity, map[string]string{AnnotationRegistered: string(v)}); err != nil {
+		c.log("note the registered device on the block's Lease", "lease", LeaseName(id), "error", err)
+	}
+}
+
 // waiting records, once per step, that a guide load postponed it.
 func (c *Converger) waiting(p Provider, b Block, what string) {
 	c.recordOnce("wait/"+strings.ToUpper(b.DeviceID), p, ReasonWaitingForGuide,
@@ -714,6 +766,7 @@ func (c *Converger) remove(ctx context.Context, p Provider, dev plexapi.Device, 
 	delete(ps.devices, id)
 	delete(c.saved, id)
 	delete(c.held, id)
+	delete(c.registered, id)
 	c.log("deleted the DVRs and device of a block no provider names", "device", dev.UUID, "uri", dev.URI)
 	return nil
 }

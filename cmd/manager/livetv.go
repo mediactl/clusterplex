@@ -223,6 +223,7 @@ var liveTVActions = map[string]string{
 	plexlivetv.ReasonRemoved:          "Delete",
 	plexlivetv.ReasonBlockOwned:       "AcquireLease",
 	plexlivetv.ReasonReplaced:         "Replace",
+	plexlivetv.ReasonStoredElsewhere:  "CompareAddress",
 	plexlivetv.ReasonWaitingForGuide:  "AwaitGuideLoad",
 	plexlivetv.ReasonChannelMapTooBig: "SaveChannelMap",
 	plexlivetv.ReasonPodsRestarted:    "RestartPMS",

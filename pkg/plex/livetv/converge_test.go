@@ -259,6 +259,45 @@ func TestADeviceAtAStaleURIIsReplaced(t *testing.T) {
 	assert.Equal(t, "machine-a", r.leases.holder[ns+"/livetv-b0000000"], "the Lease is kept through the replacement")
 }
 
+// TestADeviceStoredAtAnotherURIIsNotReplacedAgain: a PMS that keeps a
+// registered device under another form of its URI (an address resolved, a
+// path rewritten) must not have it deleted and registered again on every
+// pass -- each loop would delete the DVR and its recording rules. What PMS
+// stored is noted on the block's Lease, so a restarted converger, or the
+// next lease holder, keeps it too.
+func TestADeviceStoredAtAnotherURIIsNotReplacedAgain(t *testing.T) {
+	r := newRig(t)
+	r.pms.storeAs = func(uri string) string {
+		return strings.Replace(uri, address, "10.43.157.248", 1)
+	}
+	p := provider(r.block(0))
+	r.converge(t, 4, p)
+	r.pms.takeWrites()
+	warned := 0
+	for _, e := range r.ev.all {
+		if e.Reason == livetv.ReasonStoredElsewhere && e.Warning {
+			warned++
+		}
+	}
+	assert.Equal(t, 1, warned, "said once, as a warning")
+
+	for range 3 {
+		_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		r.pms.endLoad()
+	}
+	assert.Zero(t, count(r.pms.takeWrites(), "DELETE"), "kept as PMS stored it")
+
+	restarted := &livetv.Converger{PMS: r.conv.PMS, Identity: "machine-a", Leases: r.leases, Record: r.ev.record}
+	_, err := restarted.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	r.pms.endLoad()
+	assert.Zero(t, count(r.pms.takeWrites(), "DELETE"), "a restarted converger reads the note on the Lease")
+	devs, dvrs := r.pms.state()
+	assert.Len(t, devs, 1)
+	assert.Len(t, dvrs, 1)
+}
+
 // TestABlockWithoutAURIIsSkippedAndRecorded: a provider an older clustarr
 // wrote, or one whose address is not published yet, registers nothing and
 // deletes nothing.

@@ -42,6 +42,9 @@ type fakePMS struct {
 	// loadIn starts a load once that many more /activities reads have
 	// answered idle: PMS beginning a guide refresh of its own mid-pass.
 	loadIn int
+	// storeAs, when set, is the URI PMS keeps for a device registered at
+	// uri: a PMS that normalises what it was given.
+	storeAs func(uri string) string
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
@@ -143,7 +146,11 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		d := plexapi.Device{Key: plexapi.Str(f.key()), UUID: "device://tv.plex.grabbers.hdhomerun/" + id, URI: q.Get("uri"), DeviceID: id, Model: "clustarr", State: "enabled"}
+		stored := q.Get("uri")
+		if f.storeAs != nil {
+			stored = f.storeAs(stored)
+		}
+		d := plexapi.Device{Key: plexapi.Str(f.key()), UUID: "device://tv.plex.grabbers.hdhomerun/" + id, URI: stored, DeviceID: id, Model: "clustarr", State: "enabled"}
 		f.devices = append(f.devices, d)
 		f.answer(w, "Device", []plexapi.Device{d})
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/media/grabbers/devices/"):
