@@ -282,8 +282,12 @@ records for the proxy tier, and it applies to anything put in front of Plex.
 The chart can also publish Plex on a Gateway API listener, for a browser or
 an app typing a hostname: `httpRoute.enabled`, with `httpRoute.parentRefs`
 naming the Gateway (name, namespace, and `sectionName` for one listener) and
-`httpRoute.hostnames` the names. It routes every path to the client Service's
-port 32400, so the listener's own certificate fronts Plex; name the hostname
+`httpRoute.hostnames` the names. It routes every path to port 32400 of
+`<fullname>-route`, a ClusterIP twin of the client Service the chart renders
+with the route (the client Service's `externalTrafficPolicy: Local` would give
+the Gateway an endpoint only on the Plex pod's node, and every other node's
+Envoy answered "no healthy upstream"), so the listener's own certificate
+fronts Plex; name the hostname
 in `plex.externalURL` (`https://plex.example.com:443`) so Plex advertises it.
 The `plex.direct` connection plex.tv publishes still needs the L4 path above:
 the Gateway terminates TLS with its own certificate, which that name's

@@ -1,6 +1,7 @@
 {{/*
-A Gateway API HTTPRoute to the client Service, with httpRoute.enabled: every
-hostname named, every path, to port 32400 (values.yaml, httpRoute), after
+A Gateway API HTTPRoute to Plex, with httpRoute.enabled: every hostname
+named, every path, to port 32400 of the route's own ClusterIP Service
+(values.yaml, httpRoute), after
 httpRoute.extraRules -- rules of the operator's own, verbatim, such as
 clustarr's /art on its ui, which the Gateway prefers over / as the longer
 path prefix whatever the order. Rendered
@@ -9,6 +10,28 @@ every client arrives from the Gateway's own address, and the client Service's
 ClientIP affinity would pin all of them to one pod (ADR-0005).
 */}}
 {{- if .Values.httpRoute.enabled }}
+{{- /* The route's backend is a ClusterIP twin of the client Service. The
+       client Service's externalTrafficPolicy Local leaves Cilium's Gateway
+       an endpoint only on the Plex pod's node, so every other node's Envoy
+       answered "no healthy upstream" (talos, 2026-10-28: plex.k8s 6 of 6
+       requests, plex.appkins.io 3 of 6); its ClientIP affinity buys nothing
+       here, every client arriving from the Gateway. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}-route
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "cluster-plex.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: plex
+  ports:
+    - name: pms
+      port: 32400
+      targetPort: proxy
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -31,6 +54,6 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: {{ include "cluster-plex.fullname" . }}
+        - name: {{ include "cluster-plex.fullname" . }}-route
           port: 32400
 {{- end }}

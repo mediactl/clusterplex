@@ -27,8 +27,32 @@ func TestHTTPRouteIsOptIn(t *testing.T) {
 	require.Len(t, rules, 1)
 	backends, _ := rules[0].(map[string]any)["backendRefs"].([]any)
 	require.Len(t, backends, 1)
-	assert.Equal(t, "cp", backends[0].(map[string]any)["name"], "the client Service")
+	assert.Equal(t, "cp-route", backends[0].(map[string]any)["name"], "the route's own Service")
 	assert.EqualValues(t, 32400, backends[0].(map[string]any)["port"])
+}
+
+// TestHTTPRouteHasAClusterIPBackend: the route's backend is a ClusterIP twin
+// of the client Service -- same pods, same port -- without its
+// externalTrafficPolicy Local, which left Cilium's Gateway an endpoint only
+// on the Plex pod's node: every other node's Envoy answered "no healthy
+// upstream" (talos, 2026-10-28). Nothing renders it with the route off.
+func TestHTTPRouteHasAClusterIPBackend(t *testing.T) {
+	assert.Nil(t, find(renderObjects(t), "Service", "cp-route"), "a route Service rendered with httpRoute off")
+
+	objs := renderObjects(t, "--set", "plex.replicas=1", "--set", "httpRoute.enabled=true",
+		"--set-json", `httpRoute.parentRefs=[{"name":"cilium"}]`)
+	svc := find(objs, "Service", "cp-route")
+	require.NotNil(t, svc, "no route Service rendered")
+	client := find(objs, "Service", "cp")
+	require.NotNil(t, client)
+	assert.Equal(t, "ClusterIP", svc.str("spec", "type"))
+	assert.Nil(t, svc.get("spec", "externalTrafficPolicy"))
+	assert.Nil(t, svc.get("spec", "sessionAffinity"))
+	assert.Equal(t, client.get("spec", "selector"), svc.get("spec", "selector"), "the client Service's pods")
+	ports, _ := svc.get("spec", "ports").([]any)
+	require.Len(t, ports, 1)
+	assert.EqualValues(t, 32400, ports[0].(map[string]any)["port"])
+	assert.Equal(t, "proxy", ports[0].(map[string]any)["targetPort"], "the client Service's target")
 }
 
 // TestHTTPRouteNeedsOnePlexPodAndAParent: through a Gateway every client
@@ -80,5 +104,5 @@ func TestHTTPRouteTakesExtraRules(t *testing.T) {
 	}, rules[0], "the extra rule, verbatim")
 	backends, _ := rules[1].(map[string]any)["backendRefs"].([]any)
 	require.Len(t, backends, 1)
-	assert.Equal(t, "cp", backends[0].(map[string]any)["name"], "every other path still reaches Plex")
+	assert.Equal(t, "cp-route", backends[0].(map[string]any)["name"], "every other path still reaches Plex")
 }
