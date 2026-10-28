@@ -35,14 +35,17 @@ func TestTheLeaseHolderRunsLiveTVRecordsOnTheProviderAndStopsWhenItLetsGo(t *tes
 	m := newTestManager()
 	m.plexAddr = strings.TrimPrefix(pms.URL, "http://")
 	m.Config.Clustarr.Namespace = "clustarr-system"
-	m.Config.LiveTV = LiveTVConfig{Enabled: true, Language: "eng", LocalAddress: plexlivetv.DefaultLocalAddress, RestartEvery: time.Hour}
+	m.Config.LiveTV = LiveTVConfig{Enabled: true, Language: "eng", RestartEvery: time.Hour}
 	m.Dynamic = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	m.provisionEvery = 20 * time.Millisecond
 	m.liveTV = &liveTVFeed{}
 	m.liveTV.set([]plexlivetv.Provider{{
 		Namespace: "clustarr-system", Name: "polutv", UID: "uid-1", Ready: true, Enabled: true, EPGSource: "XEPG",
-		Address: "livetv.clustarr-system.svc:80",
-		Blocks:  []plexlivetv.Block{{Start: "1000", DeviceID: "4E624E7A", FriendlyName: "polutv 1000+", GuidePath: "/xmltv.xml", Port: 47000}},
+		Address: "clustarr-livetv.clustarr-system.svc.cluster.local:80",
+		Blocks: []plexlivetv.Block{{
+			Start: "1000", DeviceID: "4E624E7A", FriendlyName: "polutv 1000+", GuidePath: "/xmltv.xml",
+			Path: "/hdhr/4E624E7A", URI: "http://clustarr-livetv.clustarr-system.svc.cluster.local:80/hdhr/4E624E7A",
+		}},
 	}})
 
 	m.takePlexTV(t.Context())

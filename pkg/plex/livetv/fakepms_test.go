@@ -19,8 +19,8 @@ import (
 )
 
 // fakePMS is PMS's Live TV API as recorded (docs/livetv-pms-calls.md), in
-// memory: a device is registered from its URI, whose port names the device
-// id it would answer in discover.json; a DVR lists its device, whose
+// memory: a device is registered from its URI, whose /hdhr/<id> path names
+// the device id clustarr's tuner would answer in discover.json; a DVR lists its device, whose
 // parentID becomes the DVR's key; creating a DVR, saving a channel map or
 // reloading a guide starts a provider.epg.load that lasts until the test
 // ends it; and a delete, save, reload or DVR creation sent during that load
@@ -33,9 +33,8 @@ type fakePMS struct {
 	devices  []plexapi.Device
 	dvrs     []plexapi.DVR
 	loading  bool
-	byPort   map[string]string // port -> device id
-	channels int               // the EPG channel map's size
-	failNext map[string]int    // "METHOD /path" -> status, once
+	channels int            // the EPG channel map's size
+	failNext map[string]int // "METHOD /path" -> status, once
 	// writes is every request that is not a GET, as "METHOD path".
 	writes []string
 	// saves counts channel-map saves per device key.
@@ -46,7 +45,7 @@ type fakePMS struct {
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
-	f := &fakePMS{t: t, next: 1, byPort: map[string]string{}, channels: 3, failNext: map[string]int{}, saves: map[string]int{}}
+	f := &fakePMS{t: t, next: 1, channels: 3, failNext: map[string]int{}, saves: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, &plexapi.Client{BaseURL: srv.URL, Token: func() string { return "tok" }}
@@ -136,8 +135,11 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		f.answer(w, "Device", f.devices)
 	case r.Method == http.MethodPost && path == "/media/grabbers/devices":
 		u, err := url.Parse(q.Get("uri"))
-		id, ok := f.byPort[u.Port()]
-		if err != nil || !ok {
+		id, ok := "", false
+		if err == nil {
+			id, ok = strings.CutPrefix(strings.TrimSuffix(u.Path, "/"), "/hdhr/")
+		}
+		if !ok || id == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

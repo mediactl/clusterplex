@@ -1,17 +1,21 @@
 // Package livetv adds each clustarr IPTVProvider to Plex as DVRs (clustarr's
-// Live TV spec 2026-10-07 §6.1). clustarr splits a provider's channels into
-// blocks of contiguous numbers, because PMS takes at most ~454 channels in
-// one device's channel map; each block is one HDHomeRun device at its own
-// port on a link-local address every Plex pod serves (proxies.go: an HTTP
-// proxy to the block's device endpoint on clustarr's livetv Service), and
-// one DVR over that block's slice of the guide. The lease holder registers each
-// block it holds the Lease for, creates its DVR, saves its channel map and
-// reloads its guide when they change. It manages only devices on the
-// link-local address or carrying a live block's device id (rule M), and
-// never deletes, saves, reloads or creates a DVR while PMS loads a guide: a
-// DVR deleted during provider.epg.load deadlocked PMS (recorded). Creating
-// a DVR, saving a map and reloading a guide each start such a load, so a
-// pass starts at most one, and it asks PMS again before every such write.
+// Live TV spec 2026-10-07 §6.1, amended by its direct-tuners design
+// 2026-10-27). clustarr splits a provider's channels into blocks of
+// contiguous numbers, because PMS takes at most ~454 channels in one
+// device's channel map; each block is one HDHomeRun device at its own path
+// on clustarr's livetv Service (status.blocks[].uri,
+// http://<service>/hdhr/<deviceID>), which PMS reaches from its pod as it
+// reaches every cluster Service, and one DVR over that block's slice of the
+// guide. Nothing in a Plex pod proxies or listens for it. The lease holder
+// registers each block it holds the Lease for, creates its DVR, saves its
+// channel map and reloads its guide when they change. It manages only
+// devices carrying a live block's device id or under a livetv Service's
+// /hdhr/ (rule M): a block's device at any other URI is clustarr's at a
+// stale address and is replaced. It never deletes, saves, reloads or creates
+// a DVR while PMS loads a guide: a DVR deleted during provider.epg.load
+// deadlocked PMS (recorded). Creating a DVR, saving a map and reloading a
+// guide each start such a load, so a pass starts at most one, and it asks
+// PMS again before every such write.
 package livetv
 
 import (
@@ -21,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"slices"
 	"strconv"
@@ -34,10 +37,6 @@ import (
 
 // deviceIDPrefix is an HDHomeRun device's identifier before its device id.
 const deviceIDPrefix = "device://tv.plex.grabbers.hdhomerun/"
-
-// DefaultLocalAddress is the link-local address every Plex pod serves the
-// blocks' ports on (plex.liveTV.localAddress).
-const DefaultLocalAddress = "169.254.47.1"
 
 // The labels on a block's Lease, which clustarr reads to show its owner.
 const (
@@ -53,7 +52,7 @@ const (
 	ReasonFailed           = "DVRProvisionFailed"
 	ReasonRemoved          = "DVRRemoved"
 	ReasonBlockOwned       = "DVRBlockOwned"
-	ReasonDeviceIDTaken    = "DVRDeviceIDTaken"
+	ReasonReplaced         = "DVRDeviceReplaced"
 	ReasonWaitingForGuide  = "DVRWaitingForGuide"
 	ReasonChannelMapTooBig = "DVRChannelMapTooLarge"
 	ReasonPodsRestarted    = "DVRPodsRestarted"
@@ -90,10 +89,10 @@ type Result struct {
 type Block struct {
 	Start, DeviceID, FriendlyName, GuidePath string
 	LineupHash, GuideHash                    string
-	// Endpoint is the block's device under its provider's Address: the path
-	// the block's proxy sends every request below.
-	Endpoint string
-	Port     int32
+	// Path is the block's device under its provider's Address,
+	// /hdhr/<deviceID>, and URI the device's address PMS registers,
+	// http://<Address><Path>. An empty URI registers nothing.
+	Path, URI string
 }
 
 // Provider is an IPTVProvider as the converger needs it.
@@ -101,7 +100,7 @@ type Provider struct {
 	Namespace, Name, UID string
 	Ready, Enabled       bool
 	EPGSource            string // "XEPG" | "PMS"
-	// Address is the livetv Service every block's proxy targets.
+	// Address is the livetv Service, host:port, every block's URI is on.
 	Address string
 	Blocks  []Block
 }
@@ -144,9 +143,6 @@ type Converger struct {
 	PMS *plexapi.Client
 	// Language is the DVR's guide language. Default "eng".
 	Language string
-	// LocalAddress is the link-local address the blocks' ports are on.
-	// Default DefaultLocalAddress.
-	LocalAddress string
 	// Identity is this installation's PMS machine identifier, the holder
 	// of the blocks' Leases: every pod of one installation shares it.
 	Identity string
@@ -180,6 +176,10 @@ type Converger struct {
 	// emptyReloaded is, by device id, when an empty guide was last
 	// reloaded: a guide its feed leaves empty is tried again only hourly.
 	emptyReloaded map[string]time.Time
+	// addresses is every livetv Service address a live provider has named
+	// since this converger started, so a deleted provider's devices and
+	// DVRs, still under its Service, are found and removed.
+	addresses map[string]bool
 }
 
 // emptyGuideRetry is how soon an empty guide is reloaded again.
@@ -236,17 +236,6 @@ func (c *Converger) recordOnce(key string, p Provider, reason, msg string, warni
 	c.record(p, reason, msg, warning)
 }
 
-func (c *Converger) localAddress() string {
-	if c.LocalAddress != "" {
-		return c.LocalAddress
-	}
-	return DefaultLocalAddress
-}
-
-func (c *Converger) blockURI(b Block) string {
-	return "http://" + net.JoinHostPort(c.localAddress(), strconv.Itoa(int(b.Port)))
-}
-
 // errWaiting is a step a guide load postponed; the pass is Pending.
 var errWaiting = errors.New("waiting for PMS to finish loading a guide")
 
@@ -288,7 +277,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	defer c.mu.Unlock()
 	if c.saved == nil {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
-		c.emptyReloaded = map[string]time.Time{}
+		c.emptyReloaded, c.addresses = map[string]time.Time{}, map[string]bool{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -317,6 +306,9 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	slices.SortFunc(live, func(a, b Provider) int { return strings.Compare(a.key(), b.key()) })
 	named := map[string]bool{} // device ids of every live block
 	for _, p := range live {
+		if p.Address != "" {
+			c.addresses[p.Address] = true
+		}
 		for _, b := range p.Blocks {
 			if b.DeviceID != "" {
 				named[strings.ToUpper(b.DeviceID)] = true
@@ -351,7 +343,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		bs := slices.Clone(p.Blocks)
 		slices.SortFunc(bs, func(a, b Block) int { return compareNumbers(a.Start, b.Start) })
 		for _, b := range bs {
-			if b.DeviceID == "" || b.Port == 0 {
+			if b.DeviceID == "" {
 				continue
 			}
 			if err := c.converge(ctx, p, b, ps); err != nil {
@@ -363,14 +355,14 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	// Managed rows no live block names: a removed block, a gone provider.
 	gone := Provider{Name: "(gone)"}
 	for id, dev := range ps.devices {
-		if named[id] || hostOf(dev.URI) != c.localAddress() {
+		if named[id] || !c.underService(dev.URI) {
 			continue
 		}
 		if err := c.remove(ctx, gone, dev, ps); err != nil {
 			fail(gone, "device "+dev.UUID, err)
 		}
 	}
-	for _, d := range ps.ghosts(c.localAddress()) {
+	for _, d := range ps.ghosts(c.underService) {
 		if err := c.idle(ctx, ps); err != nil {
 			fail(gone, "ghost DVR "+string(d.Key), err)
 			continue
@@ -416,7 +408,7 @@ func (c *Converger) acquire(ctx context.Context, p Provider, b Block, ps *pass) 
 	}
 	if holder := lease.Holder; !lease.Held {
 		delete(c.held, id)
-		if dev, ok := ps.devices[id]; ok && sameEndpoint(dev.URI, c.blockURI(b)) {
+		if dev, ok := ps.devices[id]; ok && b.URI != "" && sameURL(dev.URI, b.URI) {
 			// Its DVR is left in place: deleting it deletes its
 			// recording rules, which is for a person to decide.
 			c.recordOnce("owned/"+id, p, ReasonBlockOwned,
@@ -435,11 +427,11 @@ func (c *Converger) acquire(ctx context.Context, p Provider, b Block, ps *pass) 
 // keep renews the Lease of a block whose provider is left as it is, while
 // this PMS has the block's device.
 func (c *Converger) keep(ctx context.Context, p Provider, b Block, ps *pass) error {
-	if b.DeviceID == "" || b.Port == 0 {
+	if b.DeviceID == "" || b.URI == "" {
 		return nil
 	}
 	dev, ok := ps.devices[strings.ToUpper(b.DeviceID)]
-	if !ok || !sameEndpoint(dev.URI, c.blockURI(b)) {
+	if !ok || !sameURL(dev.URI, b.URI) {
 		return nil
 	}
 	_, err := c.acquire(ctx, p, b, ps)
@@ -464,13 +456,29 @@ func (c *Converger) renewHeld(ctx context.Context) {
 // converge brings one block's device, DVR, channel map and guide into PMS.
 func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass) error {
 	id := strings.ToUpper(b.DeviceID)
+	uri := b.URI
+	if uri == "" {
+		return fmt.Errorf("block %s has no URI yet: clustarr publishes status.blocks[].uri", b.Start)
+	}
 	lease, err := c.acquire(ctx, p, b, ps)
 	if err != nil || !lease.Held {
 		return err
 	}
 
-	uri := c.blockURI(b)
 	dev, ok := ps.devices[id]
+	if ok && !sameURL(dev.URI, uri) {
+		// The block's own device at a stale address (the link-local proxies'
+		// before 2026-10-27, a renamed release): its DVRs and the device go,
+		// then the block is registered at its URI. Registering beside it is
+		// how duplicate rows arise.
+		held := c.held[id]
+		if err := c.remove(ctx, p, dev, ps); err != nil {
+			return c.wait(p, b, "replace device "+dev.UUID+" at "+dev.URI, err)
+		}
+		c.held[id] = held
+		c.record(p, ReasonReplaced, fmt.Sprintf("block %s: device %s was at %s; registering it at %s", b.Start, id, dev.URI, uri), false)
+		ok = false
+	}
 	if !ok {
 		if err := c.PMS.AddDevice(ctx, uri); err != nil && !errors.Is(err, plexapi.ErrConflict) {
 			return fmt.Errorf("add device %s: %w", uri, err)
@@ -485,13 +493,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		}
 		delete(c.saved, id)
 		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: registered device %s at %s", b.Start, dev.UUID, uri), false)
-	} else if !sameEndpoint(dev.URI, uri) {
-		// Never register it again: that is how duplicate rows arise.
-		c.recordOnce("taken/"+id, p, ReasonDeviceIDTaken,
-			fmt.Sprintf("block %s: PMS has device %s at %s, not %s; changing nothing", b.Start, dev.UUID, dev.URI, uri), true)
-		return nil
 	}
-	delete(c.told, "taken/"+id)
 
 	dvrs := ps.dvrsOf(dev.UUID)
 	if extra := dvrs[min(1, len(dvrs)):]; len(extra) > 0 {
@@ -745,12 +747,13 @@ func (ps *pass) dvrsOf(uuid string) []plexapi.DVR {
 	return out
 }
 
-// ghosts are DVRs whose XMLTV guide is on the link-local address but which
-// list no device PMS has: a row PMS kept after its device went (recorded).
-func (ps *pass) ghosts(local string) []plexapi.DVR {
+// ghosts are DVRs whose XMLTV guide is under a livetv Service's /hdhr/ but
+// which list no device PMS has: a row PMS kept after its device went
+// (recorded).
+func (ps *pass) ghosts(managed func(uri string) bool) []plexapi.DVR {
 	var out []plexapi.DVR
 	for _, d := range ps.dvrs {
-		if lineupHost(d.Lineup) != local {
+		if !managed(lineupGuide(d.Lineup)) {
 			continue
 		}
 		onDevice := false
@@ -766,8 +769,8 @@ func (ps *pass) ghosts(local string) []plexapi.DVR {
 	return out
 }
 
-// lineupHost is the host of an XMLTV lineup id's guide URL.
-func lineupHost(lineup string) string {
+// lineupGuide is an XMLTV lineup id's guide URL; "" for any other lineup.
+func lineupGuide(lineup string) string {
 	rest, ok := strings.CutPrefix(lineup, "lineup://tv.plex.providers.epg.xmltv/")
 	if !ok {
 		return ""
@@ -776,7 +779,23 @@ func lineupHost(lineup string) string {
 		rest = dec
 	}
 	rest, _, _ = strings.Cut(rest, "#")
-	return hostOf(rest)
+	return rest
+}
+
+// underService is whether uri is a device or guide under the /hdhr/ of a
+// livetv Service a live provider has named: clustarr's, wherever the device
+// id is.
+func (c *Converger) underService(uri string) bool {
+	u, err := url.Parse(uri)
+	if err != nil || !strings.HasPrefix(u.Path, "/hdhr/") {
+		return false
+	}
+	for a := range c.addresses {
+		if sameHost(u, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // deviceID is an HDHomeRun device's id, from its identifier; "" for any
@@ -788,28 +807,38 @@ func deviceID(d plexapi.Device) string {
 	return ""
 }
 
-func hostOf(uri string) string {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return ""
-	}
-	return u.Hostname()
-}
-
-// sameEndpoint compares two device URIs by host and port, port 80 implied.
-func sameEndpoint(a, b string) bool {
+// sameURL compares two device URIs as PMS may store them: scheme, host
+// (case-insensitive), port with 80 or 443 implied by the scheme, and path
+// with a trailing slash trimmed.
+func sameURL(a, b string) bool {
 	ua, errA := url.Parse(a)
 	ub, errB := url.Parse(b)
 	if errA != nil || errB != nil {
 		return false
 	}
-	port := func(u *url.URL) string {
-		if p := u.Port(); p != "" {
-			return p
-		}
-		return "80"
+	return ua.Scheme == ub.Scheme && strings.EqualFold(ua.Hostname(), ub.Hostname()) && portOf(ua) == portOf(ub) &&
+		strings.TrimSuffix(ua.Path, "/") == strings.TrimSuffix(ub.Path, "/")
+}
+
+// sameHost is whether u is at address, a host:port as status.address names
+// it, the port implied by u's scheme when u names none.
+func sameHost(u *url.URL, address string) bool {
+	a, err := url.Parse("http://" + address)
+	if err != nil {
+		return false
 	}
-	return ua.Hostname() == ub.Hostname() && port(ua) == port(ub)
+	return strings.EqualFold(u.Hostname(), a.Hostname()) && portOf(u) == portOf(a)
+}
+
+// portOf is u's port, else its scheme's.
+func portOf(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
 }
 
 func compareKeys(a, b string) int {

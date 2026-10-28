@@ -28,8 +28,8 @@ type Watcher struct {
 	Namespace string
 	Logger    *slog.Logger
 	// OnChange is told the providers after Debounce of quiet. A deleted
-	// provider is simply absent: its blocks' devices are on the link-local
-	// address, which is how the converger finds them.
+	// provider is simply absent: its blocks' devices are under its livetv
+	// Service's /hdhr/, which is how the converger finds them.
 	OnChange func(live []Provider)
 	// Retry is how often a missing CRD is looked for again. Default 5m.
 	Retry time.Duration
@@ -137,7 +137,6 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 		if !ok {
 			continue
 		}
-		port, _, _ := unstructured.NestedInt64(m, "port")
 		p.Blocks = append(p.Blocks, Block{
 			Start:        nestedString(m, "start"),
 			DeviceID:     strings.ToUpper(nestedString(m, "deviceID")),
@@ -145,8 +144,8 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 			GuidePath:    nestedString(m, "guidePath"),
 			LineupHash:   nestedString(m, "lineupHash"),
 			GuideHash:    nestedString(m, "guideHash"),
-			Endpoint:     nestedString(m, "endpoint"),
-			Port:         int32(port),
+			Path:         nestedString(m, "path"),
+			URI:          nestedString(m, "uri"),
 		})
 	}
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")

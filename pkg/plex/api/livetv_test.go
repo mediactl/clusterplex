@@ -46,7 +46,7 @@ func TestTheLiveTVCallsDecodeWhatPMSAnswered(t *testing.T) {
 		Key: "4", UUID: probeUUID, URI: "http://10.96.55.197", DeviceID: "CAFE0001", Model: "clustarr probe", State: "enabled",
 	}}, devs)
 
-	require.NoError(t, c.AddDevice(ctx, "http://169.254.47.1:47000"))
+	require.NoError(t, c.AddDevice(ctx, "http://clustarr-livetv.clustarr-system.svc.cluster.local:80/hdhr/CAFE0001"))
 
 	dvrs, err := c.DVRs(ctx)
 	require.NoError(t, err)
@@ -94,7 +94,7 @@ func TestTheLiveTVCallsDecodeWhatPMSAnswered(t *testing.T) {
 		byKey[cl.Method+" "+cl.Path] = cl
 		assert.Equal(t, "tok", cl.Token, "%s %s carries the token", cl.Method, cl.Path)
 	}
-	assert.Equal(t, url.Values{"uri": {"http://169.254.47.1:47000"}}, q(byKey["POST /media/grabbers/devices"].Query))
+	assert.Equal(t, url.Values{"uri": {"http://clustarr-livetv.clustarr-system.svc.cluster.local:80/hdhr/CAFE0001"}}, q(byKey["POST /media/grabbers/devices"].Query))
 	assert.Equal(t, url.Values{"language": {"eng"}, "device": {probeUUID}, "lineup": {probeLineup}}, q(byKey["POST /livetv/dvrs"].Query))
 	assert.Equal(t, url.Values{"device": {probeUUID}, "lineup": {probeLineup}}, q(byKey["GET /livetv/epg/channelmap"].Query))
 	assert.Equal(t, url.Values{

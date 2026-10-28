@@ -16,6 +16,9 @@ import (
 
 const ns = "clustarr-system"
 
+// address is the livetv Service as clustarr publishes it in status.address.
+const address = "clustarr-livetv.clustarr-system.svc.cluster.local:80"
+
 type events struct {
 	mu  sync.Mutex
 	all []livetv.Event
@@ -51,23 +54,21 @@ func newRig(t *testing.T) *rig {
 	return r
 }
 
-// block is block i of a provider: start 1000+400i, port 47000+i, device id
-// B000000i, its PMS device id registered with the fake.
+// block is block i of a provider: start 1000+400i, device id B000000i, at
+// /hdhr/B000000i on the livetv Service.
 func (r *rig) block(i int) livetv.Block {
 	id := fmt.Sprintf("B000000%d", i)
-	port := int32(47000 + i)
-	r.pms.byPort[fmt.Sprint(port)] = id
 	start := fmt.Sprint(1000 + 400*i)
 	return livetv.Block{
 		Start: start, DeviceID: id, FriendlyName: "polutv " + start + "+", GuidePath: "/xmltv.xml",
-		LineupHash: "l" + start, GuideHash: "g" + start, Port: port,
+		LineupHash: "l" + start, GuideHash: "g" + start, Path: "/hdhr/" + id, URI: "http://" + address + "/hdhr/" + id,
 	}
 }
 
 func provider(blocks ...livetv.Block) livetv.Provider {
 	return livetv.Provider{
 		Namespace: ns, Name: "polutv", UID: "uid-1", Ready: true, Enabled: true, EPGSource: "XEPG",
-		Address: "livetv.clustarr-system.svc:80", Blocks: blocks,
+		Address: address, Blocks: blocks,
 	}
 }
 
@@ -101,7 +102,7 @@ func count(writes []string, prefix string) int {
 	return n
 }
 
-func TestThreeBlocksGetALeaseADeviceOnTheLinkLocalPortAndADVREach(t *testing.T) {
+func TestThreeBlocksGetALeaseADeviceAtItsURIAndADVREach(t *testing.T) {
 	r := newRig(t)
 	p := provider(r.block(0), r.block(1), r.block(2))
 
@@ -115,11 +116,11 @@ func TestThreeBlocksGetALeaseADeviceOnTheLinkLocalPortAndADVREach(t *testing.T) 
 	require.Len(t, devs, 3)
 	require.Len(t, dvrs, 3)
 	for i, d := range devs {
-		assert.Equal(t, fmt.Sprintf("http://169.254.47.1:%d", 47000+i), d.URI)
+		assert.Equal(t, p.Blocks[i].URI, d.URI, "registered at the block's URI on the livetv Service")
 	}
 	for i, d := range dvrs {
 		start := fmt.Sprint(1000 + 400*i)
-		assert.Equal(t, fmt.Sprintf("lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:%d/xmltv.xml#polutv %s+", 47000+i, start), d.Lineup)
+		assert.Equal(t, fmt.Sprintf("lineup://tv.plex.providers.epg.xmltv/http://%s/hdhr/B000000%d/xmltv.xml#polutv %s+", address, i, start), d.Lineup)
 		assert.Equal(t, "eng", d.Language)
 	}
 	assert.Equal(t, 3, count(writes, "POST /media/grabbers/devices"))
@@ -230,22 +231,69 @@ func TestABlockAnotherInstallationHoldsIsLeftAlone(t *testing.T) {
 	assert.Equal(t, "machine-a", r.leases.holder[ns+"/livetv-b0000000"])
 }
 
-func TestADeviceIDAtAnotherURIIsReportedAndNotTouched(t *testing.T) {
+// TestADeviceAtAStaleURIIsReplaced: a PMS device carrying a block's
+// DeviceID at another URI -- the link-local proxies' address before the
+// direct-tuners cutover, a renamed release -- is clustarr's own at a stale
+// address: its DVRs and the device go, then the block is registered at its
+// URI with a DVR, its map saved again (the direct-tuners design §4.2, §4.3).
+func TestADeviceAtAStaleURIIsReplaced(t *testing.T) {
 	r := newRig(t)
 	b := r.block(0)
-	r.pms.devices = append(r.pms.devices, plexapi.Device{Key: "90", UUID: "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID, URI: "http://10.0.0.9:5004", DeviceID: b.DeviceID})
+	stale := plexapi.Device{Key: "29", UUID: "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID, URI: "http://169.254.47.1:47000", DeviceID: b.DeviceID, ParentID: 30}
+	r.pms.devices = append(r.pms.devices, stale)
+	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "30", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:47000/xmltv.xml#polutv 1000+", Devices: []plexapi.Device{stale}})
+	p := provider(b)
 
-	res, err := r.conv.Run(t.Context(), []livetv.Provider{provider(b)})
-	require.NoError(t, err)
-	assert.Equal(t, livetv.Converged, res.Status)
-	assert.Empty(t, r.pms.takeWrites())
-	assert.Equal(t, []string{livetv.ReasonDeviceIDTaken}, r.ev.reasons())
+	res := r.converge(t, 6, p)
+	writes := r.pms.takeWrites()
+	assert.True(t, res.DVRChanged)
+	require.GreaterOrEqual(t, len(writes), 3)
+	assert.Equal(t, []string{"DELETE /livetv/dvrs/30", "DELETE /media/grabbers/devices/29"}, writes[:2], "the DVR first, then the device")
+	devs, dvrs := r.pms.state()
+	require.Len(t, devs, 1)
+	assert.Equal(t, b.URI, devs[0].URI)
+	require.Len(t, dvrs, 1)
+	assert.Equal(t, "lineup://tv.plex.providers.epg.xmltv/"+b.URI+"/xmltv.xml#polutv 1000+", dvrs[0].Lineup)
+	assert.Equal(t, 1, r.pms.saves[string(devs[0].Key)], "the new DVR's map is saved")
+	assert.Equal(t, 1, count(r.ev.reasons(), livetv.ReasonReplaced))
+	assert.Equal(t, "machine-a", r.leases.holder[ns+"/livetv-b0000000"], "the Lease is kept through the replacement")
 }
 
-func TestGhostsGoAndARealHDHomeRunStays(t *testing.T) {
+// TestABlockWithoutAURIIsSkippedAndRecorded: a provider an older clustarr
+// wrote, or one whose address is not published yet, registers nothing and
+// deletes nothing.
+func TestABlockWithoutAURIIsSkippedAndRecorded(t *testing.T) {
+	r := newRig(t)
+	b := r.block(0)
+	b.URI = ""
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{provider(b)})
+	require.Error(t, err)
+	assert.Equal(t, livetv.Pending, res.Status)
+	assert.Empty(t, r.pms.takeWrites(), "no device added, nothing deleted")
+	require.Equal(t, []string{livetv.ReasonFailed}, r.ev.reasons())
+	assert.Contains(t, r.ev.all[0].Message, "block 1000")
+}
+
+// TestSameURLImpliesThePortAndATrailingSlash: PMS may store a device URI
+// with :80 spelled out or a trailing slash.
+func TestSameURLImpliesThePortAndATrailingSlash(t *testing.T) {
+	assert.True(t, livetv.SameURL("http://a.svc/hdhr/X", "http://a.svc:80/hdhr/X/"))
+	assert.True(t, livetv.SameURL("http://A.svc:80/hdhr/X", "http://a.svc/hdhr/X"))
+	assert.False(t, livetv.SameURL("http://a.svc/hdhr/X", "http://a.svc/hdhr/Y"))
+	assert.False(t, livetv.SameURL("http://a.svc/hdhr/X", "https://a.svc/hdhr/X"))
+	assert.False(t, livetv.SameURL("http://a.svc/hdhr/X", "http://a.svc:8080/hdhr/X"))
+}
+
+// TestGhostsAreDVRsUnderTheServiceWithNoDevice: a DVR whose guide is under
+// the livetv Service's /hdhr/ and which lists no device PMS has is a ghost;
+// a DVR elsewhere and a real HDHomeRun stay.
+func TestGhostsAreDVRsUnderTheServiceWithNoDevice(t *testing.T) {
 	r := newRig(t)
 	realDev, realDVR := r.pms.addReal()
-	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "70", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:47009/xmltv.xml#old"})
+	r.pms.dvrs = append(r.pms.dvrs,
+		plexapi.DVR{Key: "70", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://" + address + "/hdhr/DEADBEEF/xmltv.xml#old"},
+		plexapi.DVR{Key: "71", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://10.0.0.5/xmltv.xml#someone else's"},
+	)
 	p := provider(r.block(0))
 
 	r.converge(t, 4, p)
@@ -256,14 +304,16 @@ func TestGhostsGoAndARealHDHomeRunStays(t *testing.T) {
 		keys = append(keys, string(d.Key))
 	}
 	assert.Contains(t, keys, string(realDVR.Key), "the real DVR stays")
+	assert.Contains(t, keys, "71", "a DVR whose guide is elsewhere stays")
 	assert.NotContains(t, keys, "70", "the ghost goes")
-	assert.Len(t, dvrs, 2)
+	assert.Len(t, dvrs, 3)
 
 	t.Run("a gone provider's rows go, the real ones stay", func(t *testing.T) {
+		// The Service's address was seen while the provider lived.
 		r.converge(t, 2)
 		devs, dvrs := r.pms.state()
 		assert.Equal(t, []plexapi.Device{realDev}, devs)
-		require.Len(t, dvrs, 1)
+		require.Len(t, dvrs, 2)
 		assert.Equal(t, realDVR.Key, dvrs[0].Key)
 	})
 }
@@ -416,9 +466,9 @@ func TestADeleteAnsweredNotFoundIsAlreadyGone(t *testing.T) {
 	// A PMS whose DVR list predates another pod's delete still lists the
 	// DVR, and deleting it again answers 404.
 	r := newRig(t)
-	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "70", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:47009/xmltv.xml#old"})
+	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "70", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://" + address + "/hdhr/DEADBEEF/xmltv.xml#old"})
 	r.pms.failOnce("DELETE", "/livetv/dvrs/70", 404)
-	res, err := r.conv.Run(t.Context(), nil)
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{provider()})
 	require.NoError(t, err)
 	assert.Equal(t, livetv.Converged, res.Status)
 }
@@ -430,7 +480,7 @@ func staleRig(t *testing.T) (*rig, livetv.Provider, *time.Time) {
 	started := time.Now().Add(-time.Hour)
 	r.conv.PMSStarted = func() time.Time { return started }
 	b := r.block(0)
-	r.pms.devices = append(r.pms.devices, plexapi.Device{Key: "29", UUID: "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID, URI: "http://169.254.47.1:47000", DeviceID: b.DeviceID, ParentID: 30})
+	r.pms.devices = append(r.pms.devices, plexapi.Device{Key: "29", UUID: "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID, URI: b.URI, DeviceID: b.DeviceID, ParentID: 30})
 	return r, provider(b), &started
 }
 
@@ -452,7 +502,7 @@ func TestADeviceWhoseDVRThisPMSDoesNotListGetsNoSecondDVR(t *testing.T) {
 	assert.Empty(t, r.pms.takeWrites())
 
 	*started = time.Now()
-	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "30", Lineup: "lineup://tv.plex.providers.epg.xmltv/http://169.254.47.1:47000/xmltv.xml#polutv 1000+", Devices: []plexapi.Device{r.pms.devices[0]}})
+	r.pms.dvrs = append(r.pms.dvrs, plexapi.DVR{Key: "30", Lineup: "lineup://tv.plex.providers.epg.xmltv/" + p.Blocks[0].URI + "/xmltv.xml#polutv 1000+", Devices: []plexapi.Device{r.pms.devices[0]}})
 	res = r.converge(t, 3, p)
 	assert.False(t, res.DVRChanged, "restarted, it lists DVR 30 and keeps it")
 	assert.Equal(t, 0, count(r.pms.takeWrites(), "POST /livetv/dvrs"))

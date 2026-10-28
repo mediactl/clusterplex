@@ -25,27 +25,27 @@ func TestProviderOfReadsTheAddressAndTheBlocks(t *testing.T) {
 		"metadata": map[string]any{"name": "polutv", "namespace": ns, "uid": "uid-1"},
 		"spec":     map[string]any{"enabled": false},
 		"status": map[string]any{
-			"address":    "livetv.clustarr-system.svc:80",
+			"address":    address,
 			"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
 			"blocks": []any{
 				map[string]any{
-					"start": "1000", "deviceID": "4e624e7a", "port": int64(47000), "friendlyName": "polutv 1000+",
+					"start": "1000", "deviceID": "4e624e7a", "friendlyName": "polutv 1000+",
 					"guidePath": "/xmltv.xml", "lineupHash": "l1", "guideHash": "g1", "channels": int64(300),
-					"endpoint": "/livetv/clustarr-system/polutv/devices/4E624E7A",
+					"path": "/hdhr/4E624E7A", "uri": "http://" + address + "/hdhr/4E624E7A",
 				},
-				map[string]any{"start": "1400", "deviceID": "0A1B2C3D", "port": int64(47001)},
+				map[string]any{"start": "1400", "deviceID": "0A1B2C3D", "path": "/hdhr/0A1B2C3D"},
 			},
 		},
 	}}
 	assert.Equal(t, livetv.Provider{
 		Namespace: ns, Name: "polutv", UID: "uid-1", Ready: true, Enabled: false, EPGSource: "XEPG",
-		Address: "livetv.clustarr-system.svc:80",
+		Address: address,
 		Blocks: []livetv.Block{
 			{
 				Start: "1000", DeviceID: "4E624E7A", FriendlyName: "polutv 1000+", GuidePath: "/xmltv.xml", LineupHash: "l1", GuideHash: "g1",
-				Endpoint: "/livetv/clustarr-system/polutv/devices/4E624E7A", Port: 47000,
+				Path: "/hdhr/4E624E7A", URI: "http://" + address + "/hdhr/4E624E7A",
 			},
-			{Start: "1400", DeviceID: "0A1B2C3D", Port: 47001},
+			{Start: "1400", DeviceID: "0A1B2C3D", Path: "/hdhr/0A1B2C3D"},
 		},
 	}, livetv.ProviderOf(u))
 }
@@ -70,7 +70,7 @@ func TestTheWatcherReportsTheProvidersAsTheyComeAndGo(t *testing.T) {
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "clustarr.io/v1alpha1", "kind": "IPTVProvider",
 		"metadata": map[string]any{"name": "polutv", "namespace": ns},
-		"status":   map[string]any{"address": "livetv.clustarr-system.svc:80", "blocks": []any{map[string]any{"start": "1000", "deviceID": "4E624E7A", "port": int64(47000)}}},
+		"status":   map[string]any{"address": address, "blocks": []any{map[string]any{"start": "1000", "deviceID": "4E624E7A", "uri": "http://" + address + "/hdhr/4E624E7A"}}},
 	}}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{livetv.GVR: "IPTVProviderList"}, obj)
@@ -88,7 +88,7 @@ func TestTheWatcherReportsTheProvidersAsTheyComeAndGo(t *testing.T) {
 	case live := <-got:
 		require.Len(t, live, 1)
 		assert.Equal(t, "polutv", live[0].Name)
-		assert.Equal(t, int32(47000), live[0].Blocks[0].Port)
+		assert.Equal(t, "http://"+address+"/hdhr/4E624E7A", live[0].Blocks[0].URI)
 	case <-time.After(5 * time.Second):
 		t.Fatal("no first list")
 	}

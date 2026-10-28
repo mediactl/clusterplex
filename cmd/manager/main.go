@@ -36,7 +36,6 @@ import (
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/lease"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
-	plexlivetv "github.com/mediactl/clusterplex/pkg/plex/livetv"
 	plexnet "github.com/mediactl/clusterplex/pkg/plex/net"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
@@ -113,11 +112,9 @@ type Manager struct {
 	// Dynamic reads clustarr's objects; nil unless Clustarr or LiveTV is
 	// enabled.
 	Dynamic dynamic.Interface
-	// liveTV is every pod's feed of clustarr's IPTVProviders and proxies
-	// serves their blocks' ports (startLiveTV); nil unless LiveTV is
-	// enabled.
-	liveTV  *liveTVFeed
-	proxies *plexlivetv.ProxySet
+	// liveTV is every pod's feed of clustarr's IPTVProviders
+	// (startLiveTV); nil unless LiveTV is enabled.
+	liveTV *liveTVFeed
 	// guides is what copyGuides has seen of the pod's guide files.
 	guides guideCopies
 
