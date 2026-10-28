@@ -46,6 +46,9 @@ plex:
   # Libraries to create on those providers' agents. switchAgent: true lets
   # the lease holder move an existing library of the same name onto the
   # agent (and force a refresh); off, it is only reported as drifted.
+  # preferences are the library's own settings by Plex's id, over
+  # cluster-plex's defaults (useSeasonTitles on for a show library); the
+  # analysis switches are fixed and refused.
   libraries: []
   #  - name: Movies
   #    type: movie
@@ -53,6 +56,9 @@ plex:
   #    language: en-US
   #    locations: [/media/movies]
   #    switchAgent: false
+  #    preferences:
+  #      - name: enableCinemaTrailers
+  #        value: "0"
   # Follow a clustarr install: rescan what its files change and refresh
   # what its metadata changes. Grants get/list/watch on its catalog in
   # that namespace, and the token Secret below when one is named.

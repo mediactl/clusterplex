@@ -136,8 +136,9 @@ func identifierOf(uri string) string {
 	return "tv.plex.agents.custom.clustarr." + uri[strings.LastIndex(uri, "/")+1:]
 }
 
-// newSectionPrefs are the analysis settings live PMS gives a new section of
-// each type (2026-10-01): a show has intro detection, a movie does not.
+// newSectionPrefs are the settings live PMS gives a new section of each
+// type (2026-10-01, 2026-10-28): a show has intro detection and season
+// titles, a movie neither.
 func newSectionPrefs(typ string) map[string]string {
 	p := map[string]string{
 		"enableBIFGeneration":           "true",
@@ -149,6 +150,7 @@ func newSectionPrefs(typ string) map[string]string {
 	}
 	if typ == "show" {
 		p["enableIntroMarkerGeneration"] = "true"
+		p["useSeasonTitles"] = "false"
 	}
 	return p
 }

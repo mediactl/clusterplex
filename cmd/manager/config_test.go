@@ -384,6 +384,8 @@ plex:
       language: en-US
       locations: [/media/movies]
       switchAgent: true
+      preferences:
+        - {name: useSeasonTitles, value: 0}
   clustarr:
     enabled: true
     namespace: clustarr-system
@@ -396,6 +398,8 @@ plex:
 	require.Len(t, c.Provision.Libraries, 1)
 	assert.True(t, c.Provision.Libraries[0].SwitchAgent, "camelCase keys survive viper's lowercasing")
 	assert.Equal(t, []string{"/media/movies"}, c.Provision.Libraries[0].Locations)
+	assert.Equal(t, []plexprovision.Preference{{Name: "useSeasonTitles", Value: "0"}}, c.Provision.Libraries[0].Preferences,
+		"a library preference keeps its case, and an unquoted value reads as a string")
 	assert.Equal(t, ClustarrConfig{
 		Enabled: true, Namespace: "clustarr-system",
 		PathMappings: []clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}},
@@ -414,11 +418,12 @@ func TestProvisioningIsOffWhenNothingIsDeclared(t *testing.T) {
 func TestConfigRefusesAClustarrWatchItCannotUse(t *testing.T) {
 	podIdentity(t)
 	for name, body := range map[string]string{
-		"no namespace":            "plex:\n  clustarr:\n    enabled: true\n    pathMappings: [{clustarr: /data, plex: /media}]\n",
-		"no mappings":             "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n",
-		"relative mapping":        "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: data, plex: /media}]\n",
-		"duplicate clustarr side": "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: /data, plex: /a}, {clustarr: /data/, plex: /b}]\n",
-		"library without type":    "plex:\n  libraries:\n    - {name: M, provider: p, locations: [/media]}\n",
+		"no namespace":             "plex:\n  clustarr:\n    enabled: true\n    pathMappings: [{clustarr: /data, plex: /media}]\n",
+		"no mappings":              "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n",
+		"relative mapping":         "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: data, plex: /media}]\n",
+		"duplicate clustarr side":  "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: /data, plex: /a}, {clustarr: /data/, plex: /b}]\n",
+		"library without type":     "plex:\n  libraries:\n    - {name: M, provider: p, locations: [/media]}\n",
+		"fixed library preference": "plex:\n  libraries:\n    - {name: M, type: movie, provider: p, locations: [/media], preferences: [{name: enableBIFGeneration, value: 1}]}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := loadConfig([]string{"--config", writeConfig(t, body)})

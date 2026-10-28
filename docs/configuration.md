@@ -514,6 +514,8 @@ plex:
       language: en-US
       locations: [/media/movies]
       switchAgent: false
+      preferences:            # the library's own settings, by Plex's id
+        - {name: enableCinemaTrailers, value: "0"}
   clustarr:
     enabled: true
     namespace: clustarr-system
@@ -533,6 +535,13 @@ plex:
   the manager logs it. With `switchAgent` set, the library is moved onto the
   agent and force-refreshed, since Plex otherwise applies a new agent only to
   items added afterwards.
+- **Each library's own settings are held too**, on every pass. A show library
+  defaults to `useSeasonTitles` on, since Plex ships it off and then drops
+  the season names clustarr's provider sends ("Book 1: Water"); an item takes
+  its names at its next refresh. `preferences` (by Plex's id, a list, since
+  the ids are case sensitive) overrides a default or sets any other setting
+  the library has; one it does not have is logged and skipped. The analysis
+  switches above are fixed and refused there.
 - **Following clustarr** watches its MediaFiles, Movies, Series and Episodes
   read-only (the chart grants `get`, `list` and `watch` in
   `plex.clustarr.namespace`, plus the token Secret below when one is named). A file that appears, moves or

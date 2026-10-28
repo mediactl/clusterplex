@@ -59,7 +59,7 @@ func TestAnEmptyServerGetsOneWriteOfEachAndThenNone(t *testing.T) {
 		"POST /media/providers/metadata/group", "POST /media/providers/metadata/group",
 		"POST /library/sections/all", "POST /library/sections/all",
 		"PUT /library/sections/1/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
-		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
+		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0&useSeasonTitles=1",
 	}, pms.Writes())
 
 	before := len(pms.Writes())
@@ -98,8 +98,8 @@ func TestTheLiveShapeIsAdoptedAndItsDriftOnlyReported(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{
 		"POST /library/sections/all",
-		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0",
-	}, pms.Writes(), "only TV is created and has its analysis turned off; Movies is not touched")
+		"PUT /library/sections/2/prefs?enableAdMarkerGeneration=0&enableBIFGeneration=0&enableLoudnessAnalysis=0&enableVoiceActivityGeneration=0&useSeasonTitles=1",
+	}, pms.Writes(), "only TV is created and has its settings written; Movies is not touched")
 	assert.Equal(t, map[string]bool{"Movies": true, "TV": false}, drift)
 }
 
@@ -181,6 +181,12 @@ func TestConfigValidate(t *testing.T) {
 		"no provider":           func(c *plexprovision.Config) { c.Libraries[0].Provider = "" },
 		"no locations":          func(c *plexprovision.Config) { c.Libraries[0].Locations = nil },
 		"relative location":     func(c *plexprovision.Config) { c.Libraries[0].Locations = []string{"media/m"} },
+		"unnamed preference": func(c *plexprovision.Config) {
+			c.Libraries[0].Preferences = []plexprovision.Preference{{Value: "1"}}
+		},
+		"fixed preference": func(c *plexprovision.Config) {
+			c.Libraries[0].Preferences = []plexprovision.Preference{{Name: "enableBIFGeneration", Value: "1"}}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := ok
@@ -248,6 +254,52 @@ func TestALibraryWhoseMarkerSwitchesAreOffHasThemTurnedOn(t *testing.T) {
 		"PUT /library/sections/1/prefs?enableCreditsMarkerGeneration=1",
 		"PUT /library/sections/2/prefs?enableCreditsMarkerGeneration=1&enableIntroMarkerGeneration=1",
 	}, pms.Writes()[before:])
+}
+
+// A show library uses its seasons' titles (owner, 2026-10-28): off, as Plex
+// ships it, PMS discards the season title clustarr's provider sends ("Book
+// 1: Water") on every refresh. A movie library has no such setting and is
+// not sent it.
+func TestAShowLibraryUsesSeasonTitles(t *testing.T) {
+	pms := &fakePMS{}
+	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+
+	_, err := p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "true", pms.prefs["2"]["useSeasonTitles"])
+	assert.NotContains(t, pms.prefs["1"], "useSeasonTitles")
+
+	pms.prefs["2"]["useSeasonTitles"] = "false" // switched off in the Plex UI
+	before := len(pms.Writes())
+	_, err = p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"PUT /library/sections/2/prefs?useSeasonTitles=1"}, pms.Writes()[before:])
+}
+
+// A library's own preferences override cluster-plex's defaults, by Plex's
+// case-sensitive id, and set a setting cluster-plex has no default for. One
+// the section does not have is passed over, never sent.
+func TestALibrarysPreferencesOverrideTheDefaults(t *testing.T) {
+	pms := &fakePMS{}
+	cfg := config(roots(t, nil), false)
+	cfg.Libraries[1].Preferences = []plexprovision.Preference{
+		{Name: "useSeasonTitles", Value: "false"},
+		{Name: "enableCinemaTrailers", Value: "0"},
+		{Name: "noSuchSetting", Value: "1"},
+	}
+	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: cfg}
+
+	_, err := p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "false", pms.prefs["2"]["useSeasonTitles"], "the default is not written over the library's own value")
+	assert.Equal(t, "false", pms.prefs["2"]["enableCinemaTrailers"])
+	assert.NotContains(t, pms.prefs["2"], "noSuchSetting")
+	assert.Equal(t, "true", pms.prefs["1"]["enableCinemaTrailers"], "another library keeps Plex's value")
+
+	before := len(pms.Writes())
+	_, err = p.Run(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, pms.Writes(), before, "settings already as wanted are not written again")
 }
 
 // A run reports every configured library's section key, as Plex numbers

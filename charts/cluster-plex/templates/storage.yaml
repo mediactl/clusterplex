@@ -50,6 +50,13 @@ data:
           language: {{ .language | default "en-US" | quote }}
           locations: {{ toJson .locations }}
           switchAgent: {{ .switchAgent | default false }}
+          {{- with .preferences }}
+          preferences:
+            {{- range . }}
+            - name: {{ .name | quote }}
+              value: {{ .value | quote }}
+            {{- end }}
+          {{- end }}
         {{- end }}
       clustarr:
         enabled: {{ .Values.plex.clustarr.enabled }}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"path"
@@ -30,6 +31,18 @@ type Library struct {
 	// name onto the provider's agent. Off, a library on another agent is
 	// reported as drifted and left alone.
 	SwitchAgent bool `mapstructure:"switchAgent"`
+	// Preferences are the library's own settings (its "Advanced" page,
+	// /library/sections/{key}/prefs) the operator chooses, over
+	// sectionDefaults. A list rather than a map, as plex.preferences is,
+	// because viper lowercases map keys and Plex's are case sensitive. The
+	// analysis settings are fixed and refused here.
+	Preferences []Preference `mapstructure:"preferences"`
+}
+
+// Preference is one library setting, by Plex's id for it.
+type Preference struct {
+	Name  string `mapstructure:"name"`
+	Value string `mapstructure:"value"`
 }
 
 // Config is what the provisioner reconciles.
@@ -79,6 +92,14 @@ func (c Config) Validate() error {
 		for _, loc := range l.Locations {
 			if !path.IsAbs(loc) {
 				errs = append(errs, fmt.Errorf("library %q: location %q is not absolute", l.Name, loc))
+			}
+		}
+		for _, pref := range l.Preferences {
+			switch _, fixed := analysisSettings[pref.Name]; {
+			case pref.Name == "":
+				errs = append(errs, fmt.Errorf("library %q: a preference is missing its name", l.Name))
+			case fixed:
+				errs = append(errs, fmt.Errorf("library %q: preference %q is fixed: clustarr probes and detects, so Plex analyses nothing itself", l.Name, pref.Name))
 			}
 		}
 	}
@@ -203,7 +224,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 		return Errored, err
 	}
 	var errs []error
-	var ensured []string
+	var ensured []Library
 	for _, lib := range p.Config.Libraries {
 		if _, ok := roots[lib.Provider]; !ok {
 			if pending {
@@ -216,15 +237,15 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 			errs = append(errs, err)
 			continue
 		}
-		ensured = append(ensured, lib.Name)
+		ensured = append(ensured, lib)
 	}
 	if len(ensured) > 0 {
 		// Listed again: a library created above has a key only now.
 		if sections, err = p.PMS.Sections(ctx); err != nil {
 			return Errored, err
 		}
-		for _, name := range ensured {
-			if err := p.ensureAnalysisSettings(ctx, log, name, sections); err != nil {
+		for _, lib := range ensured {
+			if err := p.ensureSectionSettings(ctx, log, lib, sections); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -342,20 +363,44 @@ var analysisSettings = map[string]string{
 	"enableLoudnessAnalysis":        "0",
 }
 
-// ensureAnalysisSettings writes the analysis settings of the named library
-// that are not as wanted yet, and nothing when all are.
-func (p *Provisioner) ensureAnalysisSettings(ctx context.Context, log *slog.Logger, name string, sections []plexapi.Section) error {
-	i := slices.IndexFunc(sections, func(s plexapi.Section) bool { return s.Title == name })
+// sectionDefaults are the library settings cluster-plex chooses where
+// Plex's default is wrong for a clustarr library, and which a library's
+// Preferences may override. A section without one of them is not sent it.
+var sectionDefaults = map[string]string{
+	// "Use season titles when available", shows only. Off, as Plex ships
+	// it, PMS discards the season title its agent gives on every refresh:
+	// clustarr's provider has sent TheTVDB's season names since 2026-10-21
+	// ("Book 1: Water") and every season on talos still read "Season N"
+	// until this was turned on (owner, 2026-10-28). An item takes its
+	// names at its next refresh.
+	"useSeasonTitles": "1",
+}
+
+// ensureSectionSettings writes the library's settings that are not as
+// wanted yet, and nothing when all are: sectionDefaults, then the
+// library's own Preferences, then analysisSettings, which nothing
+// overrides.
+func (p *Provisioner) ensureSectionSettings(ctx context.Context, log *slog.Logger, lib Library, sections []plexapi.Section) error {
+	i := slices.IndexFunc(sections, func(s plexapi.Section) bool { return s.Title == lib.Name })
 	if i < 0 {
 		return nil
 	}
 	key := sections[i].Key
 	have, err := p.PMS.SectionPrefs(ctx, key)
 	if err != nil {
-		return fmt.Errorf("library %q: read settings: %w", name, err)
+		return fmt.Errorf("library %q: read settings: %w", lib.Name, err)
 	}
+	wanted := maps.Clone(sectionDefaults)
+	for _, pref := range lib.Preferences {
+		if _, ok := have[pref.Name]; !ok {
+			log.Warn("library has no such setting", "library", lib.Name, "preference", pref.Name)
+			continue
+		}
+		wanted[pref.Name] = boolish(pref.Value)
+	}
+	maps.Copy(wanted, analysisSettings)
 	set := map[string]string{}
-	for pref, want := range analysisSettings {
+	for pref, want := range wanted {
 		if v, ok := have[pref]; ok && boolish(v) != want {
 			set[pref] = want
 		}
@@ -364,9 +409,9 @@ func (p *Provisioner) ensureAnalysisSettings(ctx context.Context, log *slog.Logg
 		return nil
 	}
 	if err := p.PMS.SetSectionPrefs(ctx, key, set); err != nil {
-		return fmt.Errorf("library %q: set analysis settings: %w", name, err)
+		return fmt.Errorf("library %q: set settings: %w", lib.Name, err)
 	}
-	log.Info("set the library's analysis settings", "library", name, "settings", set)
+	log.Info("set the library's settings", "library", lib.Name, "settings", set)
 	return nil
 }
 
