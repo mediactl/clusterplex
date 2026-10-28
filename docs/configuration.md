@@ -568,7 +568,6 @@ plex:
   liveTV:
     enabled: true
     language: eng              # the DVRs' guide language
-    localAddress: 169.254.47.1 # link-local, never 169.254.169.254
     restartEvery: 10m          # PMS restarts on the other pods, at most this often
     staleGrabAfter: 5m         # a Live TV grab no player watches is ended after this
 ```
@@ -577,16 +576,19 @@ plex:
 32 KiB of request line: about 454 channels (`docs/livetv-pms-calls.md`).
 clustarr therefore splits a provider's channels into blocks of contiguous
 numbers and publishes them in `status.blocks`. Each block is one emulated
-HDHomeRun and one Plex DVR, with its own device ID, port, lineup and slice of
-the guide. Its boundaries are sticky, so a channel rarely changes DVR and
+HDHomeRun and one Plex DVR, with its own device ID, path, lineup and slice
+of the guide. Its boundaries are sticky, so a channel rarely changes DVR and
 keeps its recording rules.
 
-**The address.** Every Plex pod adds `localAddress` to `lo` and, before PMS
-starts, listens on `localAddress:<port>` for each block, proxying to
-clustarr's one `livetv` Service (`status.address`). The tuner tells the
-blocks apart by the port in the request's `Host`. PMS registers each block
-at `http://<localAddress>:<port>`, so every pod reaches every device the
-same way, and the address is never one a person's network uses.
+**The address.** Plex registers each block at its `status.blocks[].uri`,
+`http://<release>-livetv.<ns>.svc.cluster.local:80/hdhr/<deviceID>` on
+clustarr's one `livetv` Service (`status.address`), which its network
+namespace reaches as it reaches every cluster Service (ADR-0003). The tuner
+tells the blocks apart by the path and builds every URL it hands out from
+the `Host` PMS dialled, so every pod reaches every device the same way and
+nothing in a Plex pod proxies or listens for Live TV (clustarr's
+direct-tuners design, 2026-10-27; until then each pod proxied a link-local
+port per block).
 
 **What it does,** for each provider that is Ready and enabled, each block in
 order:
@@ -600,14 +602,17 @@ order:
    `status.blocks[].owner`. It keeps renewing the Lease while this Plex has
    the block's device: while the provider is not Ready or is disabled, and
    while PMS cannot be read.
-2. **The device.** It registers the device at
-   `http://<localAddress>:<port>`, once. A device PMS already lists is never
-   registered again: registering again is how duplicate and empty DVR rows
-   arise. A listed device at another address is reported
-   (`DVRDeviceIDTaken`) and left alone.
+2. **The device.** It registers the device at the block's URI, once. A
+   device PMS already lists at that URI is never registered again:
+   registering again is how duplicate and empty DVR rows arise. A device
+   PMS lists with the block's device ID at any other URI -- the link-local
+   address before 2026-10-27, a renamed release -- is clustarr's own at a
+   stale address and is replaced: its DVRs and the device are deleted, then
+   the block is registered at its URI and its DVR created
+   (`DVRDeviceReplaced`). The DVR's recording rules go with it.
 3. **The DVR.**
    - **Under `epgSource: XEPG`:** it creates the DVR over the block's guide
-     (`http://<localAddress>:<port>/xmltv.xml`), a subset of the provider's
+     (`<uri>/xmltv.xml`), a subset of the provider's
      feeds holding only the block's channels.
    - **Under `PMS`:** it records `DVRNeedsLineup` and waits. Finish each
      block's DVR once in Plex's setup wizard, choosing your location's
@@ -637,16 +642,17 @@ for a later pass (`DVRWaitingForGuide`), 20 seconds on. Creating a DVR,
 saving a map and reloading a guide each start a load, so a pass starts at
 most one.
 
-**What it manages:** only HDHomeRun devices on `localAddress`, or carrying a
-live block's device ID. Every other tuner and DVR is left alone.
+**What it manages:** only HDHomeRun devices carrying a live block's device
+ID, or under the `/hdhr/` of a livetv Service a provider has named. Every
+other tuner and DVR is left alone.
 
 **The deletion exception:** this is the provisioner's one deletion (the
 owner's ruling, 2026-10-07). It deletes:
 - the DVR and device of a block no live provider names: a removed block, or
   a deleted provider's. That takes the DVR's recording rules with it;
 - duplicate DVR rows on a managed device;
-- ghosts: DVRs whose guide is on `localAddress` but which list no device
-  PMS has.
+- ghosts: DVRs whose guide is under a livetv Service's `/hdhr/` but which
+  list no device PMS has.
 
 `enabled: false` deletes nothing; Plex shows the devices offline.
 

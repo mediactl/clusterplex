@@ -161,6 +161,13 @@ with `PLEX_PG_SKIP_CLEAR_BINDINGS_FINALIZED=0`) can tell them apart.
 
 ## Link-local devices, two on one address (Task 1b, 2026-10-07)
 
+> **Superseded 2026-10-27** (clustarr's direct-tuners design): Plex is given
+> each block at `http://<release>-livetv.<ns>.svc.cluster.local:80/hdhr/<deviceID>`
+> on clustarr's livetv Service, and no Plex pod proxies or holds the
+> link-local address. What PMS does with a device URI carrying a path, and
+> with a known DeviceID added at a second URI, is that design's task 0, to be
+> recorded in a section of its own below.
+
 **Setup:**
 - On the lease holder and one other pod, a debug container in the pod's
   network namespace added `169.254.47.1/32` to `lo`.

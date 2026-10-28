@@ -64,7 +64,6 @@ data:
       liveTV:
         enabled: {{ .Values.plex.liveTV.enabled }}
         language: {{ .Values.plex.liveTV.language | default "eng" | quote }}
-        localAddress: {{ .Values.plex.liveTV.localAddress | default "169.254.47.1" | quote }}
         restartEvery: {{ .Values.plex.liveTV.restartEvery | default "10m" | quote }}
         staleGrabAfter: {{ .Values.plex.liveTV.staleGrabAfter | default "5m" | quote }}
     {{- if kindIs "slice" .Values.plex.codecPrefetch }}

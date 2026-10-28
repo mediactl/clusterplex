@@ -75,15 +75,14 @@ plex:
   # Live TV: add each of clustarr's IPTVProviders (in plex.clustarr.namespace)
   # to Plex as a DVR -- its HDHomeRun device, its XMLTV guide and the full
   # channel map, which carries more than the setup wizard's 480 channels.
+  # Each block is registered at clustarr's status.blocks[].uri on its livetv
+  # Service; nothing in the Plex pod proxies it.
   # Deleting a provider deletes its DVR and that DVR's recording rules.
   # Grants get, list and watch on iptvproviders.clustarr.io and create and
   # patch on events.k8s.io Events there.
   liveTV:
     enabled: false
     language: eng
-    # The link-local address every Plex pod adds to lo and serves each
-    # block's port on (169.254.0.0/16, never 169.254.169.254).
-    localAddress: 169.254.47.1
     # At most one round of PMS restarts on the other pods per this, after a
     # DVR is created or deleted (each PMS caches its DVRs from its start).
     restartEvery: 10m
