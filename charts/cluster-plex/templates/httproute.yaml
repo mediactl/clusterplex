@@ -1,6 +1,9 @@
 {{/*
 A Gateway API HTTPRoute to the client Service, with httpRoute.enabled: every
-hostname named, every path, to port 32400 (values.yaml, httpRoute). Rendered
+hostname named, every path, to port 32400 (values.yaml, httpRoute), after
+httpRoute.extraRules -- rules of the operator's own, verbatim, such as
+clustarr's /art on its ui, which the Gateway prefers over / as the longer
+path prefix whatever the order. Rendered
 only with one Plex pod, which cluster-plex.validate holds: through a Gateway
 every client arrives from the Gateway's own address, and the client Service's
 ClientIP affinity would pin all of them to one pod (ADR-0005).
@@ -20,6 +23,9 @@ spec:
   hostnames: {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
+    {{- with .Values.httpRoute.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
     - matches:
         - path:
             type: PathPrefix

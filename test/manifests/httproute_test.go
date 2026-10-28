@@ -59,3 +59,26 @@ func TestHTTPRouteNeedsOnePlexPodAndAParent(t *testing.T) {
 	objs := renderObjects(t, "--set", "plex.replicas=1", "--set", "httpRoute.enabled=true", "--set-json", `httpRoute.parentRefs=[{"name":"cilium"}]`)
 	require.NotNil(t, find(objs, "HTTPRoute", "cp"))
 }
+
+// TestHTTPRouteTakesExtraRules: httpRoute.extraRules are rendered verbatim
+// beside the rule sending every path to Plex -- clustarr's /art to its ui,
+// which the Gateway prefers over / as the longer prefix. The provider names
+// Plex's public hostname in its image URLs, and without the rule PMS's
+// downloads of them hit Plex's 404 (talos, 2026-10-28: 491 movies and 152
+// shows lost every image at their next refresh).
+func TestHTTPRouteTakesExtraRules(t *testing.T) {
+	objs := renderObjects(t, "--set", "plex.replicas=1", "--set", "httpRoute.enabled=true",
+		"--set-json", `httpRoute.parentRefs=[{"name":"cilium"}]`,
+		"--set-json", `httpRoute.extraRules=[{"matches":[{"path":{"type":"PathPrefix","value":"/art"}}],"backendRefs":[{"name":"clustarr-ui","port":8080}]}]`)
+	r := find(objs, "HTTPRoute", "cp")
+	require.NotNil(t, r, "no HTTPRoute rendered")
+	rules, _ := r.get("spec", "rules").([]any)
+	require.Len(t, rules, 2)
+	assert.Equal(t, map[string]any{
+		"matches":     []any{map[string]any{"path": map[string]any{"type": "PathPrefix", "value": "/art"}}},
+		"backendRefs": []any{map[string]any{"name": "clustarr-ui", "port": 8080}},
+	}, rules[0], "the extra rule, verbatim")
+	backends, _ := rules[1].(map[string]any)["backendRefs"].([]any)
+	require.Len(t, backends, 1)
+	assert.Equal(t, "cp", backends[0].(map[string]any)["name"], "every other path still reaches Plex")
+}

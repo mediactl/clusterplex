@@ -289,6 +289,22 @@ The `plex.direct` connection plex.tv publishes still needs the L4 path above:
 the Gateway terminates TLS with its own certificate, which that name's
 handshake refuses.
 
+`httpRoute.extraRules` adds rules of your own to the route, rendered verbatim
+beside the one to Plex; the Gateway prefers the longer path prefix whatever
+the order. clustarr's provider names the hostname in its image URLs when its
+ui's external URL is Plex's, so its `/art` must reach the ui there, or every
+refresh that downloads an item's images clears them:
+
+```yaml
+httpRoute:
+  extraRules:
+    - matches:
+        - path: {type: PathPrefix, value: /art}
+      backendRefs:
+        - name: clustarr-ui
+          port: 8080
+```
+
 The chart refuses the route with more than one Plex pod. Through a Gateway
 every client arrives from the Gateway's own address, so the client Service's
 `ClientIP` affinity below pins all of them to one pod, and a session spread

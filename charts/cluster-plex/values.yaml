@@ -226,6 +226,17 @@ httpRoute:
   #    sectionName: https
   hostnames: []
   #  - plex.example.com
+  # extraRules are HTTPRoute rules rendered verbatim beside the one sending
+  # every path to Plex; a longer path prefix wins over it, whatever the
+  # order. clustarr serves its artwork under /art on its ui, and a provider
+  # whose image URLs name Plex's own public hostname needs that path there
+  # (Plex itself has no top-level /art):
+  #  - matches:
+  #      - path: {type: PathPrefix, value: /art}
+  #    backendRefs:
+  #      - name: clustarr-ui
+  #        port: 8080
+  extraRules: []
 
 # The media proxy tier (cmd/proxy, docs/media-proxy-pattern.md): a Deployment
 # that serves direct-play bytes itself from the shared library and forwards
