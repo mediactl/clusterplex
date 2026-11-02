@@ -19,14 +19,15 @@ type Refresher interface {
 // EnsureChain walks it.Chain top down, finding each node's row within
 // section ([locate]) and inserting a missing one under its parent. An
 // inserted row carries only what the structure needs, with no hash and no
-// refreshed_at, so Plex's refresh fills the rest (the capture doc: Plex
-// writes the provider's answer only when its hash differs from the row's).
-// An existing row is left as Plex made it but for its key: it takes the
-// node's guid and edition ([keyItem]), and a trashed one is revived with
-// its id. An inserted episode asks for its season's refresh
-// ([refreshTarget]), once. It returns the leaf's row, which the media
-// hangs off, and the first node's (the movie's or the show's), which
-// carries the item's labels.
+// refreshed_at, so Plex's refresh fills the rest (the capture doc: a
+// refresh filled a row with no hash, and wrote nothing to one it had
+// filled already). An existing row is left as Plex made it but for its
+// key: it takes the node's guid and edition ([keyItem]), and a trashed one
+// is revived with its id. A row Plex filled that changes guid takes the
+// new guid's bundle hash and asks for a refresh into that bundle. An
+// inserted episode asks for its season's refresh ([refreshTarget]), once.
+// It returns the leaf's row, which the media hangs off, and the first
+// node's (the movie's or the show's), which carries the item's labels.
 func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now time.Time, refresh Refresher) (leaf, root int64, err error) {
 	var parent *int64
 	var asked int64
@@ -43,22 +44,24 @@ func EnsureChain(ctx context.Context, tx pgx.Tx, section int64, it Item, now tim
 			}
 		}
 		id := row.id
+		var fill bool
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			id, err = insertItem(ctx, tx, section, parent, n, now)
-			if err == nil && refresh != nil {
-				target := id
-				if n.Type == TypeEpisode && parent != nil {
-					target = *parent
-				}
-				if target != asked {
-					refresh.NeedsRefresh(target)
-					asked = target
-				}
-			}
+			fill = err == nil
 		case err == nil:
-			if err = keyItem(ctx, tx, row, n, now); err == nil {
+			if fill, err = keyItem(ctx, tx, row, n, now); err == nil {
 				err = placeItem(ctx, tx, id, parent, n, now)
+			}
+		}
+		if fill && err == nil && refresh != nil {
+			target := id
+			if n.Type == TypeEpisode && parent != nil {
+				target = *parent
+			}
+			if target != asked {
+				refresh.NeedsRefresh(target)
+				asked = target
 			}
 		}
 		if err != nil {
@@ -98,6 +101,7 @@ type itemRow struct {
 	id      int64
 	guid    string
 	edition string
+	hash    string // "" while Plex has not filled the row
 	trashed bool
 }
 
@@ -115,7 +119,7 @@ func locate(ctx context.Context, tx pgx.Tx, section int64, parent *int64, n Node
 	if n.PriorGUID != "" {
 		keys = append(keys, BaseGUID(n.PriorGUID))
 	}
-	const cols = `SELECT id, guid, coalesce(edition_title, ''), deleted_at IS NOT NULL FROM metadata_items`
+	const cols = `SELECT id, guid, coalesce(edition_title, ''), coalesce(hash, ''), deleted_at IS NOT NULL FROM metadata_items`
 	var row pgx.Row
 	switch {
 	case n.Type == TypeMovie:
@@ -134,15 +138,15 @@ func locate(ctx context.Context, tx pgx.Tx, section int64, parent *int64, n Node
 			section, int(n.Type), keys)
 	}
 	var r itemRow
-	err := row.Scan(&r.id, &r.guid, &r.edition, &r.trashed)
+	err := row.Scan(&r.id, &r.guid, &r.edition, &r.hash, &r.trashed)
 	return r, err
 }
 
 // liveItem reads the live row id of type t in section.
 func liveItem(ctx context.Context, tx pgx.Tx, section, id int64, t ItemType) (itemRow, error) {
 	var r itemRow
-	err := tx.QueryRow(ctx, `SELECT id, guid, coalesce(edition_title, ''), false FROM metadata_items
-		WHERE id = $1 AND library_section_id = $2 AND metadata_type = $3 AND deleted_at IS NULL`, id, section, int(t)).Scan(&r.id, &r.guid, &r.edition, &r.trashed)
+	err := tx.QueryRow(ctx, `SELECT id, guid, coalesce(edition_title, ''), coalesce(hash, ''), false FROM metadata_items
+		WHERE id = $1 AND library_section_id = $2 AND metadata_type = $3 AND deleted_at IS NULL`, id, section, int(t)).Scan(&r.id, &r.guid, &r.edition, &r.hash, &r.trashed)
 	return r, err
 }
 
@@ -151,23 +155,32 @@ func liveItem(ctx context.Context, tx pgx.Tx, section, id int64, t ItemType) (it
 // before the trash is emptied, and what keeps collections and playlists
 // keyed by the id across an upgrade whose delete landed before its add
 // (review C2). A row PMS keyed with the same edition keeps PMS's escaping
-// of it. The watched state keyed by the row's old guid moves with it.
-func keyItem(ctx context.Context, tx pgx.Tx, r itemRow, n Node, now time.Time) error {
+// of it. The watched state keyed by the row's old guid moves with it, and
+// a row Plex has filled takes the new guid's bundle hash, as PMS's own
+// re-key does: its next refresh writes the images to that bundle, and
+// Clean Bundles deletes a bundle no row's hash names, so a row keeping its
+// old hash lost them (talos, 2026-11-01: 72 movies that gained their
+// edition). It reports such a row, which needs that refresh.
+func keyItem(ctx context.Context, tx pgx.Tx, r itemRow, n Node, now time.Time) (rehashed bool, err error) {
 	guid := n.GUID
 	if r.edition == n.Edition && BaseGUID(r.guid) == BaseGUID(n.GUID) && strings.Contains(r.guid, editionMarker) == (n.Edition != "") {
 		guid = r.guid
 	}
 	if guid == r.guid && r.edition == n.Edition && !r.trashed {
-		return nil
+		return false, nil
 	}
-	if _, err := tx.Exec(ctx, `UPDATE metadata_items SET guid = $2, edition_title = NULLIF($3, ''), deleted_at = NULL, updated_at = $4 WHERE id = $1`,
-		r.id, guid, n.Edition, now.Unix()); err != nil {
-		return err
+	hash := r.hash
+	if guid != r.guid && hash != "" {
+		hash = BundleHash(guid)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE metadata_items SET guid = $2, edition_title = NULLIF($3, ''), hash = NULLIF($5, ''), deleted_at = NULL, updated_at = $4 WHERE id = $1`,
+		r.id, guid, n.Edition, now.Unix(), hash); err != nil {
+		return false, err
 	}
 	if guid == r.guid {
-		return nil
+		return false, nil
 	}
-	return moveWatchState(ctx, tx, r.guid, guid)
+	return hash != r.hash, moveWatchState(ctx, tx, r.guid, guid)
 }
 
 // moveWatchState moves the watched state keyed by from to to: Plex keys

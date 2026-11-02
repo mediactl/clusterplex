@@ -109,3 +109,42 @@ func TestAnEditionRowKeepsPMSsEscaping(t *testing.T) {
 	require.Equal(t, id, ensure(t, conn, section, editionItem("u1", "5d7768285af944001f1f708d", "Heat", "Director's Cut"), &refreshes{}))
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND guid = 'plex://movie/5d7768285af944001f1f708d/edition/Director''s%20Cut'", id))
 }
+
+// PMS keeps a movie's images in the bundle its row's hash names, the
+// sha1 of its guid (talos's 14,600 refreshed rows), and Clean Bundles
+// deletes every bundle no row's hash names. A refreshed movie that gains
+// its edition takes the hash of its new guid and is refreshed into that
+// bundle: one that kept its old hash had the refresh's images written
+// where Clean Bundles deleted them (talos, 2026-11-01: 72 edition movies,
+// The Dark Crystal's Remastered among them, with no poster or background).
+func TestAMovieGainingItsEditionTakesItsNewGUIDsBundle(t *testing.T) {
+	conn := plexDB(t)
+	section, _ := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	ctx := context.Background()
+	r := &refreshes{}
+	id := ensure(t, conn, section, movieItem("u1", "5d776837a091de001f2e8584", "The Dark Crystal"), r)
+	_, err := conn.Exec(ctx, "UPDATE metadata_items SET hash = '180e3b756c3e0f86d7b2d71af31c7d79f77a3627', refreshed_at = 1790800000 WHERE id = $1", id)
+	require.NoError(t, err)
+	r.ids = nil
+
+	require.Equal(t, id, ensure(t, conn, section, editionItem("u1", "5d776837a091de001f2e8584", "The Dark Crystal", "Remastered"), r))
+	require.Equal(t, 1, count(t, conn, `SELECT count(*) FROM metadata_items WHERE id = $1
+		AND guid = 'plex://movie/5d776837a091de001f2e8584/edition/Remastered' AND hash = '3ff564cb3156435a1c14057866598233dfe7a2a0'`, id))
+	require.Equal(t, []int64{id}, r.ids, "the movie is refreshed into its new bundle")
+
+	r.ids = nil
+	ensure(t, conn, section, editionItem("u1", "5d776837a091de001f2e8584", "The Dark Crystal", "Remastered"), r)
+	require.Empty(t, r.ids, "a row already keyed asks for nothing")
+}
+
+// A row Plex has not filled yet has no hash, and keeps none when it is
+// re-keyed: its first refresh, asked when it was inserted, writes it.
+func TestAMovieNotYetRefreshedGainsItsEditionWithNoHash(t *testing.T) {
+	conn := plexDB(t)
+	section, _ := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	r := &refreshes{}
+	id := ensure(t, conn, section, movieItem("u1", "5d7768297e9a3c0020c6b0e5", "The Virgin Suicides"), r)
+	require.Equal(t, id, ensure(t, conn, section, editionItem("u1", "5d7768297e9a3c0020c6b0e5", "The Virgin Suicides", "Remastered"), r))
+	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND hash IS NULL", id))
+	require.Equal(t, []int64{id}, r.ids, "refreshed once, when it was inserted")
+}

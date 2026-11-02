@@ -16,3 +16,10 @@ func TestGUIDPrefersPlexsOwnIDAndFallsBackToTheCustomForm(t *testing.T) {
 	require.Equal(t, "tv.plex.agents.custom.clustarr.tv://episode/e-1", GUID(TVProvider, TypeEpisode, "e-1", ""))
 	require.Equal(t, "plex://show/6855a914e4e26a2cdf94a2fd", GUID(TVProvider, TypeShow, "s-1", "6855a914e4e26a2cdf94a2fd"))
 }
+
+// A row's bundle hash is the sha1 of its guid, as PMS writes it: The Dark
+// Crystal's rows on talos, before and after it gained its edition.
+func TestABundleHashIsTheSHA1OfTheGUID(t *testing.T) {
+	require.Equal(t, "180e3b756c3e0f86d7b2d71af31c7d79f77a3627", BundleHash("plex://movie/5d776837a091de001f2e8584"))
+	require.Equal(t, "3ff564cb3156435a1c14057866598233dfe7a2a0", BundleHash("plex://movie/5d776837a091de001f2e8584/edition/Remastered"))
+}

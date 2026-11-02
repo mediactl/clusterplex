@@ -48,6 +48,11 @@ at `media_analysis_version = 0`.
   `Clustarr TV` (location 2, `/media/tv`).
 - Item rows Plex wrote carry `hash` (a 40-hex digest of the provider's
   answer), `changed_at`, `refreshed_at` and a `pv:*`-keyed `extra_data`.
+  *Corrected 2026-11-02:* `hash` is the sha1 of the row's guid. It held
+  for all of talos's 14,600 rows that Plex refreshed. The hash names the
+  bundle that holds the item's images, and Clean Bundles deletes every
+  bundle no row's hash names. A row re-keyed without its hash lost its
+  images that way (`plexproject.BundleHash`).
 - 488 of 15,411 media rows carry the seeder's `cp:source` stamp.
 
 ## Refresh of a row Plex did not insert

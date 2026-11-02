@@ -6,6 +6,8 @@
 package plexproject
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"net/url"
 	"strings"
 
@@ -69,4 +71,13 @@ func BaseGUID(guid string) string {
 		return guid[:i]
 	}
 	return guid
+}
+
+// BundleHash is the metadata_items.hash PMS writes for a row keyed guid:
+// the sha1 of the guid, in hex. It names the bundle under Metadata/ that
+// holds the item's images, and PMS's Clean Bundles deletes every bundle no
+// row's hash names (talos, 2026-11-01).
+func BundleHash(guid string) string {
+	sum := sha1.Sum([]byte(guid))
+	return hex.EncodeToString(sum[:])
 }
