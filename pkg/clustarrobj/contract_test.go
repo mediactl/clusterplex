@@ -1,4 +1,4 @@
-package clustarrwatch_test
+package clustarrobj_test
 
 import (
 	"os"
@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
-	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 )
 
 // Every path the watcher and the projection read must exist in clustarr's
@@ -20,13 +20,13 @@ import (
 func TestEveryFieldPathExistsInClustarrsCRDs(t *testing.T) {
 	dir := os.Getenv("CLUSTARR_CRD_DIR")
 	if dir == "" {
-		dir = filepath.Join("..", "..", "..", "clustarr-unify", "config", "crd", "bases")
+		dir = filepath.Join("..", "..", "..", "clustarr", "config", "crd", "bases")
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Skipf("no clustarr CRDs at %s (set CLUSTARR_CRD_DIR)", dir)
 	}
-	for _, gvr := range []schema.GroupVersionResource{clustarrwatch.MediaFiles, clustarrwatch.Movies, clustarrwatch.Series, clustarrwatch.Episodes} {
-		paths := clustarrwatch.FieldPaths(gvr)
+	for _, gvr := range []schema.GroupVersionResource{clustarrobj.MediaFiles, clustarrobj.Movies, clustarrobj.Series, clustarrobj.Episodes} {
+		paths := clustarrobj.FieldPaths(gvr)
 		require.NotEmpty(t, paths, gvr.Resource)
 		schema := crdSchema(t, filepath.Join(dir, gvr.Group+"_"+gvr.Resource+".yaml"))
 		for _, p := range paths {

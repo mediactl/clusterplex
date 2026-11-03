@@ -8,8 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plexproject"
 )
@@ -85,16 +84,13 @@ func (w *Watcher) sectionLock(key string) *sync.Mutex {
 }
 
 // enqueueRemoval queues a deleted MediaFile's removal.
-func (w *Watcher) enqueueRemoval(u *unstructured.Unstructured) {
-	p, _, _ := unstructured.NestedString(u.Object, pathField...)
-	name, _, _ := unstructured.NestedString(u.Object, mediaRefNameField...)
-	keys, _, _ := unstructured.NestedStringSlice(u.Object, mediaRefKeysField...)
+func (w *Watcher) enqueueRemoval(o *clustarrobj.Object) {
 	w.projMu.Lock()
 	defer w.projMu.Unlock()
 	if w.removals == nil {
 		w.removals = map[string]removal{}
 	}
-	w.removals[u.GetName()] = removal{uids: plexproject.CoveredUIDs(string(u.GetUID()), name, keys), path: p}
+	w.removals[o.Name] = removal{uids: plexproject.CoveredUIDs(string(o.UID), o.MediaName, o.MediaKeys), path: o.Path}
 }
 
 // flushRemovals removes every queued deletion from its section.
@@ -141,9 +137,8 @@ var (
 )
 
 // projectOne applies one MediaFile to its section's rows.
-func (w *Watcher) projectOne(ctx context.Context, u *unstructured.Unstructured) error {
-	p, _, _ := unstructured.NestedString(u.Object, pathField...)
-	mapped, ok := w.Mapper.Map(p)
+func (w *Watcher) projectOne(ctx context.Context, o *clustarrobj.Object) error {
+	mapped, ok := w.Mapper.Map(o.Path)
 	if !ok {
 		inc(w.Counters.Unmappable)
 		return nil
@@ -163,7 +158,7 @@ func (w *Watcher) projectOne(ctx context.Context, u *unstructured.Unstructured) 
 		}
 		return nil // not the projection's: the folder-refresh path has it
 	}
-	changes, ok := w.changesOf(u, mapped)
+	changes, ok := w.changesOf(o, mapped)
 	if len(changes) == 0 {
 		return errUnresolved
 	}
@@ -214,16 +209,16 @@ func (w *Watcher) providerSection(s plexapi.Section) bool {
 // then each other episode a multi-episode file holds. A Change whose item
 // is not in the caches yet is Unresolved, and ok is false while any is.
 // A file without a path yields none.
-func (w *Watcher) changesOf(u *unstructured.Unstructured, mapped string) ([]plexproject.Change, bool) {
-	in, ok := SeedInputOf(u)
+func (w *Watcher) changesOf(o *clustarrobj.Object, mapped string) ([]plexproject.Change, bool) {
+	in, ok := o.SeedInput()
 	if !ok {
 		return nil, false
 	}
 	in.Path = mapped
-	uid, key := string(u.GetUID()), SeedKey(u)
+	uid, key := string(o.UID), o.SeedKey
 	all := true
 	var out []plexproject.Change
-	for _, cv := range plexproject.ResolveCovered(u, w.item) {
+	for _, cv := range plexproject.ResolveCovered(o, w.item) {
 		c := plexproject.Change{UID: cv.UID(uid), PlexPath: mapped, SeedKey: key, Unresolved: !cv.OK}
 		if cv.OK {
 			c.Item = cv.Item
@@ -305,12 +300,11 @@ func (w *Watcher) changesUnder(ctx context.Context, key string) ([]plexproject.C
 	}
 	var out []plexproject.Change
 	for _, obj := range w.files.List() {
-		u, ok := obj.(*unstructured.Unstructured)
+		o, ok := clustarrobj.AsObject(obj)
 		if !ok {
 			continue
 		}
-		p, _, _ := unstructured.NestedString(u.Object, pathField...)
-		mapped, ok := w.Mapper.Map(p)
+		mapped, ok := w.Mapper.Map(o.Path)
 		if !ok {
 			continue
 		}
@@ -318,9 +312,9 @@ func (w *Watcher) changesUnder(ctx context.Context, key string) ([]plexproject.C
 		if !ok || s.Key != key {
 			continue
 		}
-		changes, _ := w.changesOf(u, mapped)
+		changes, _ := w.changesOf(o, mapped)
 		if len(changes) == 0 {
-			changes = []plexproject.Change{{UID: string(u.GetUID()), PlexPath: mapped, SeedKey: SeedKey(u), Unresolved: true}}
+			changes = []plexproject.Change{{UID: string(o.UID), PlexPath: mapped, SeedKey: o.SeedKey, Unresolved: true}}
 		}
 		for _, c := range changes {
 			if ids, ok := w.provisioned(key); ok {
@@ -360,48 +354,34 @@ func (w *Watcher) NeedsRefresh(id int64) {
 // filesOfItem lists the cached MediaFiles an item's chain reads: a
 // movie's or an episode's by mediaRef -- an episode's also by the keys of a
 // multi-episode file that holds it -- a show's by the files' seriesRef.
-func (w *Watcher) filesOfItem(plexType, name string) []*unstructured.Unstructured {
+func (w *Watcher) filesOfItem(plexType, name string) []*clustarrobj.Object {
 	if w.files == nil {
 		return nil
 	}
-	var out []*unstructured.Unstructured
+	var out []*clustarrobj.Object
 	for _, obj := range w.files.List() {
-		u, ok := obj.(*unstructured.Unstructured)
+		o, ok := clustarrobj.AsObject(obj)
 		if !ok {
 			continue
 		}
-		k, _, _ := unstructured.NestedString(u.Object, kindField...)
-		n, _, _ := unstructured.NestedString(u.Object, mediaRefNameField...)
 		var match bool
 		if plexType == "show" {
 			// A show's files are its episodes' files: the file names the
 			// episode, the episode names the series.
-			if ep, ok := w.item(Episodes, u.GetNamespace(), n); ok && strings.EqualFold(k, "episode") {
-				series, _, _ := unstructured.NestedString(ep.Object, seriesRefField...)
-				match = series == name
+			if ep, ok := w.item(Episodes, o.Namespace, o.MediaName); ok && strings.EqualFold(o.MediaKind, "episode") {
+				match = ep.SeriesRef == name
 			}
 		} else {
-			match = strings.EqualFold(k, plexType) && n == name
-			if !match && plexType == "episode" && strings.EqualFold(k, "episode") {
-				keys, _, _ := unstructured.NestedStringSlice(u.Object, mediaRefKeysField...)
-				match = slices.Contains(keys, name)
+			match = strings.EqualFold(o.MediaKind, plexType) && o.MediaName == name
+			if !match && plexType == "episode" && strings.EqualFold(o.MediaKind, "episode") {
+				match = slices.Contains(o.MediaKeys, name)
 			}
 		}
 		if match {
-			out = append(out, u)
+			out = append(out, o)
 		}
 	}
 	return out
-}
-
-// plexIDOf is the Plex id an item carries: a movie's or series'
-// status.metadata.externalIDs.plex, an episode's status.plexID.
-func plexIDOf(u *unstructured.Unstructured) string {
-	if id, _, _ := unstructured.NestedString(u.Object, plexIDField...); id != "" {
-		return id
-	}
-	id, _, _ := unstructured.NestedString(u.Object, "status", "metadata", "externalIDs", "plex")
-	return id
 }
 
 // itemGUID is the guid Plex stores for an item today: its Plex id's form
@@ -409,17 +389,16 @@ func plexIDOf(u *unstructured.Unstructured) string {
 // episode's Plex id only inside a season Plex knows too, as the projection
 // keys it (plexproject.EpisodePlexID). A movie's edition is its file's,
 // which the refresh's lookup matches past (the manager's plexItemID).
-func (w *Watcher) itemGUID(provider, plexType string, u *unstructured.Unstructured) string {
+func (w *Watcher) itemGUID(provider, plexType string, o *clustarrobj.Object) string {
 	t := map[string]plexproject.ItemType{"movie": plexproject.TypeMovie, "show": plexproject.TypeShow, "episode": plexproject.TypeEpisode}[plexType]
-	plexID := plexIDOf(u)
+	plexID := o.PlexID
 	if t == plexproject.TypeEpisode {
-		series, _, _ := unstructured.NestedString(u.Object, seriesRefField...)
-		s, ok := w.item(Series, u.GetNamespace(), series)
+		s, ok := w.item(Series, o.Namespace, o.SeriesRef)
 		if !ok {
 			plexID = ""
 		} else {
-			plexID = plexproject.EpisodePlexID(u, s)
+			plexID = plexproject.EpisodePlexID(o, s)
 		}
 	}
-	return plexproject.GUID(provider, t, string(u.GetUID()), plexID)
+	return plexproject.GUID(provider, t, string(o.UID), plexID)
 }

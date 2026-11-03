@@ -120,6 +120,13 @@ plex:
       memory: 1Gi
     limits:
       memory: 4Gi
+  # GOMEMLIMIT for the manager, the pod's main process (its clustarr informer
+  # caches are most of what the pod holds): the Go runtime keeps its heap
+  # under it, collecting harder as it nears, and gives memory back sooner.
+  # Set it below resources.limits.memory, leaving Plex Media Server, its
+  # plug-in hosts and the tuner service their share; empty sets none, and Go
+  # then holds up to twice its live heap.
+  goMemLimit: ""
   # One pod per node where the cluster has the nodes (ScheduleAnyway, so a
   # smaller cluster still schedules). Every pod serves, so this is what makes
   # a node going away cost one third rather than everything.

@@ -86,6 +86,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- with .Values.plex.goMemLimit }}
+            # The Go runtime keeps the manager's heap under it; see values.yaml.
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             # The manager defaults these three to k8s/base's names
             # (cluster-plex-plextv, plex-workers, plex-main); the chart names
             # its objects after the release, so it says which. The Lease is

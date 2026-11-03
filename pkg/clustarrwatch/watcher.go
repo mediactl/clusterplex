@@ -2,7 +2,6 @@ package clustarrwatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,12 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
@@ -126,7 +125,7 @@ type Watcher struct {
 	held    map[string]bool
 
 	seedMu    sync.Mutex
-	seedQueue map[string]*unstructured.Unstructured
+	seedQueue map[string]*clustarrobj.Object
 	seedOrder []string
 	// seedRetry holds files waiting out a backoff step; seedAttempts, the
 	// steps a queued file has taken. A change to the file starts it over.
@@ -138,7 +137,7 @@ type Watcher struct {
 }
 
 type seedRetry struct {
-	u        *unstructured.Unstructured
+	u        *clustarrobj.Object
 	at       time.Time
 	attempts int
 }
@@ -157,11 +156,17 @@ func (w *Watcher) Run(ctx context.Context) error {
 		Scan: w.scan, Refresh: w.refresh, RefreshID: w.refreshID,
 		ScanDelay: w.ScanDelay, RefreshDelay: w.RefreshDelay, Logger: w.log(),
 	}
-	f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
-	var synced []cache.InformerSynced
+	// One kind at a time: the next kind is listed once this one is in its
+	// cache. The caches cost the same in the end, and a WatchList (client-go
+	// 0.37 against a 1.37 apiserver) trims each object as it streams, but a
+	// list the reflector falls back to -- a WatchList the apiserver refuses,
+	// as it does until its cache is ready after a restart -- decodes the
+	// whole collection before trimming it: four at once peaked at 2.3 GB on
+	// talos (2026-11-03), one at a time the largest alone.
 	add := func(gvr schema.GroupVersionResource, hs ...cache.ResourceEventHandler) (cache.SharedIndexInformer, error) {
+		f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
 		inf := f.ForResource(gvr).Informer()
-		if err := inf.SetTransform(Trim); err != nil {
+		if err := inf.SetTransform(clustarrobj.Transform); err != nil {
 			return nil, err
 		}
 		for _, h := range hs {
@@ -169,7 +174,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 				return nil, err
 			}
 		}
-		synced = append(synced, inf.HasSynced)
+		f.Start(ctx.Done())
+		if !w.waitForSync(ctx, gvr.Resource, inf.HasSynced) {
+			return nil, ctx.Err()
+		}
 		return inf, nil
 	}
 	fileHandlers := []cache.ResourceEventHandler{w.fileHandler()}
@@ -206,10 +214,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 		}
 		w.items[it.gvr] = inf.GetStore()
 	}
-	f.Start(ctx.Done())
-	if !w.waitForSync(ctx, synced) {
-		return ctx.Err()
-	}
+	w.log().Info("the clustarr watch has synced", "namespace", w.Namespace)
+	report(w.Counters.Synced, true)
 	w.synced.Store(true)
 	if w.Projection != nil && w.PMS != nil {
 		go w.followRefreshes(ctx)
@@ -259,8 +265,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 			case w.Seed != nil:
 				if now := time.Now(); !now.Before(nextResync) {
 					for _, obj := range files.GetStore().List() {
-						if u, ok := obj.(*unstructured.Unstructured); ok {
-							w.enqueueSeed(u)
+						if o, ok := clustarrobj.AsObject(obj); ok {
+							w.enqueueSeed(o)
 						}
 					}
 					nextResync = now.Add(resync)
@@ -272,31 +278,29 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-// waitForSync waits for the informers, reporting through Counters.Synced
-// and the log when they have not synced within SyncTimeout: clustarr's
-// CRDs missing, the wrong namespace or no RBAC all look like this, and
-// otherwise say nothing. It keeps waiting afterwards; false means ctx ended.
-func (w *Watcher) waitForSync(ctx context.Context, synced []cache.InformerSynced) bool {
+// waitForSync waits for a kind's informer, reporting through Counters.Synced
+// and the log when it has not synced within SyncTimeout: clustarr's CRDs
+// missing, the wrong namespace or no RBAC all look like this, and otherwise
+// say nothing. It keeps waiting afterwards; false means ctx ended.
+func (w *Watcher) waitForSync(ctx context.Context, resource string, synced cache.InformerSynced) bool {
 	timeout := w.SyncTimeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
-	ok := cache.WaitForCacheSync(tctx.Done(), synced...)
+	ok := cache.WaitForCacheSync(tctx.Done(), synced)
 	cancel()
 	if !ok {
 		if ctx.Err() != nil {
 			return false
 		}
 		w.log().Error("the clustarr watch has not synced; check that the catalog.clustarr.io CRDs exist "+
-			"and that this pod may list them in the namespace", "namespace", w.Namespace, "after", timeout)
+			"and that this pod may list them in the namespace", "namespace", w.Namespace, "resource", resource, "after", timeout)
 		report(w.Counters.Synced, false)
-		if !cache.WaitForCacheSync(ctx.Done(), synced...) {
+		if !cache.WaitForCacheSync(ctx.Done(), synced) {
 			return false
 		}
 	}
-	w.log().Info("the clustarr watch has synced", "namespace", w.Namespace)
-	report(w.Counters.Synced, true)
 	return true
 }
 
@@ -373,24 +377,24 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 			if initial || w.Projection == nil {
 				return
 			}
-			if n, ok := obj.(*unstructured.Unstructured); ok {
-				for _, u := range w.filesOfItem(plexType, n.GetName()) {
-					w.enqueueSeed(u)
+			if n, ok := clustarrobj.AsObject(obj); ok {
+				for _, f := range w.filesOfItem(plexType, n.Name) {
+					w.enqueueSeed(f)
 				}
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			o, ok1 := oldObj.(*unstructured.Unstructured)
-			n, ok2 := newObj.(*unstructured.Unstructured)
-			if !ok1 || !ok2 || (MetadataHash(o) == MetadataHash(n) && chainKey(o) == chainKey(n)) {
+			o, ok1 := clustarrobj.AsObject(oldObj)
+			n, ok2 := clustarrobj.AsObject(newObj)
+			if !ok1 || !ok2 || (o.MetadataHash == n.MetadataHash && o.ChainKey == n.ChainKey) {
 				return
 			}
-			if w.Projection != nil && chainKey(o) != chainKey(n) {
+			if w.Projection != nil && o.ChainKey != n.ChainKey {
 				// The chain's guids changed -- the Plex id arriving, the
 				// series' season ids -- so every file of the item is
 				// applied again, which re-keys the rows (review C1).
-				for _, u := range w.filesOfItem(plexType, n.GetName()) {
-					w.enqueueSeed(u)
+				for _, f := range w.filesOfItem(plexType, n.Name) {
+					w.enqueueSeed(f)
 				}
 			}
 			w.sched.EnqueueRefresh(w.itemGUID(provider, plexType, n))
@@ -398,26 +402,16 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 	}
 }
 
-// chainKey is what of an item the projection's chain reads: its Plex id,
-// for a series its seasons' ids, and its keywords, which the projection
-// writes as the item's labels.
-func chainKey(u *unstructured.Unstructured) string {
-	seasons, _, _ := unstructured.NestedSlice(u.Object, "status", "metadata", "plexSeasons")
-	b, _ := json.Marshal(seasons)
-	keywords, _, _ := unstructured.NestedStringSlice(u.Object, "status", "metadata", "keywords")
-	k, _ := json.Marshal(keywords)
-	return plexIDOf(u) + "|" + string(b) + "|" + string(k)
-}
-
-func fileOf(obj any) (File, bool) {
+// fileOf reads the file a handler was given, a tombstone's included.
+func fileOf(obj any) (clustarrobj.File, bool) {
 	if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = t.Obj
 	}
-	u, ok := obj.(*unstructured.Unstructured)
+	o, ok := clustarrobj.AsObject(obj)
 	if !ok {
-		return File{}, false
+		return clustarrobj.File{}, false
 	}
-	return FileOf(u)
+	return o.File()
 }
 
 func (w *Watcher) enqueueFile(p string) {
@@ -607,16 +601,16 @@ func inc(f func()) {
 func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 	return cache.ResourceEventHandlerDetailedFuncs{
 		AddFunc: func(obj any, initial bool) {
-			if u, ok := obj.(*unstructured.Unstructured); ok && !initial {
-				w.enqueueSeed(u)
+			if o, ok := clustarrobj.AsObject(obj); ok && !initial {
+				w.enqueueSeed(o)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			o, ok1 := oldObj.(*unstructured.Unstructured)
-			n, ok2 := newObj.(*unstructured.Unstructured)
+			o, ok1 := clustarrobj.AsObject(oldObj)
+			n, ok2 := clustarrobj.AsObject(newObj)
 			// A file's edition is its Plex item's (plexproject.Resolve), so
 			// a corrected one is applied as a seed change is.
-			if ok1 && ok2 && (SeedKey(o) != SeedKey(n) || editionOf(o) != editionOf(n)) {
+			if ok1 && ok2 && (o.SeedKey != n.SeedKey || o.Edition != n.Edition) {
 				w.enqueueSeed(n)
 			}
 		},
@@ -627,9 +621,9 @@ func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 			if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 				obj = t.Obj
 			}
-			if u, ok := obj.(*unstructured.Unstructured); ok {
-				w.forgetSeed(u.GetName()) // a pending apply would resurrect it (review I13)
-				w.enqueueRemoval(u)
+			if o, ok := clustarrobj.AsObject(obj); ok {
+				w.forgetSeed(o.Name) // a pending apply would resurrect it (review I13)
+				w.enqueueRemoval(o)
 			}
 		},
 	}
@@ -647,22 +641,22 @@ func (w *Watcher) forgetSeed(name string) {
 	}
 }
 
-func (w *Watcher) enqueueSeed(u *unstructured.Unstructured) {
+func (w *Watcher) enqueueSeed(o *clustarrobj.Object) {
 	w.seedMu.Lock()
 	defer w.seedMu.Unlock()
-	delete(w.seedRetry, u.GetName())
-	delete(w.seedAttempts, u.GetName())
-	w.queueSeedLocked(u)
+	delete(w.seedRetry, o.Name)
+	delete(w.seedAttempts, o.Name)
+	w.queueSeedLocked(o)
 }
 
-func (w *Watcher) queueSeedLocked(u *unstructured.Unstructured) {
+func (w *Watcher) queueSeedLocked(o *clustarrobj.Object) {
 	if w.seedQueue == nil {
-		w.seedQueue = map[string]*unstructured.Unstructured{}
+		w.seedQueue = map[string]*clustarrobj.Object{}
 	}
-	if _, queued := w.seedQueue[u.GetName()]; !queued {
-		w.seedOrder = append(w.seedOrder, u.GetName())
+	if _, queued := w.seedQueue[o.Name]; !queued {
+		w.seedOrder = append(w.seedOrder, o.Name)
 	}
-	w.seedQueue[u.GetName()] = u
+	w.seedQueue[o.Name] = o
 }
 
 // promoteSeedRetries queues every file whose backoff step has passed.
@@ -687,7 +681,7 @@ func (w *Watcher) promoteSeedRetries(now time.Time) {
 
 // retrySeed schedules u's next backoff step, or leaves it to the resync
 // after the last.
-func (w *Watcher) retrySeed(u *unstructured.Unstructured, attempts int) {
+func (w *Watcher) retrySeed(o *clustarrobj.Object, attempts int) {
 	steps := w.SeedRetry
 	if steps == nil {
 		steps = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute}
@@ -697,17 +691,17 @@ func (w *Watcher) retrySeed(u *unstructured.Unstructured, attempts int) {
 	}
 	w.seedMu.Lock()
 	defer w.seedMu.Unlock()
-	if _, queued := w.seedQueue[u.GetName()]; queued {
+	if _, queued := w.seedQueue[o.Name]; queued {
 		return // changed while it was seeding: the new version is already queued
 	}
 	if w.seedRetry == nil {
 		w.seedRetry = map[string]seedRetry{}
 	}
-	w.seedRetry[u.GetName()] = seedRetry{u: u, at: time.Now().Add(steps[attempts]), attempts: attempts + 1}
+	w.seedRetry[o.Name] = seedRetry{u: o, at: time.Now().Add(steps[attempts]), attempts: attempts + 1}
 }
 
 // item is the cached clustarr object gvr names, if the watcher reads gvr.
-func (w *Watcher) item(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool) {
+func (w *Watcher) item(gvr schema.GroupVersionResource, namespace, name string) (*clustarrobj.Object, bool) {
 	st := w.items[gvr]
 	if st == nil {
 		return nil, false
@@ -716,8 +710,7 @@ func (w *Watcher) item(gvr schema.GroupVersionResource, namespace, name string) 
 	if err != nil || !ok {
 		return nil, false
 	}
-	u, ok := obj.(*unstructured.Unstructured)
-	return u, ok
+	return clustarrobj.AsObject(obj)
 }
 
 // flushSeeds seeds up to SeedBatch queued files. A file Plex has no part
@@ -735,7 +728,7 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 	n := min(batch, len(w.seedOrder))
 	names := append([]string(nil), w.seedOrder[:n]...)
 	w.seedOrder = w.seedOrder[n:]
-	objs := make([]*unstructured.Unstructured, 0, n)
+	objs := make([]*clustarrobj.Object, 0, n)
 	attempts := make([]int, 0, n)
 	for _, name := range names {
 		objs = append(objs, w.seedQueue[name])
@@ -745,10 +738,10 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 	}
 	w.seedMu.Unlock()
 
-	for i, u := range objs {
+	for i, o := range objs {
 		if w.Projection != nil {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
-			err := w.projectOne(sctx, u)
+			err := w.projectOne(sctx, o)
 			cancel()
 			switch {
 			case err == nil:
@@ -758,18 +751,18 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 				inc(w.Counters.SeedUnmatched)
 			default:
 				inc(w.Counters.SeedErrors)
-				w.log().Warn("projection: apply", "file", u.GetName(), "error", err)
+				w.log().Warn("projection: apply", "file", o.Name, "error", err)
 			}
 			if ctx.Err() == nil {
-				w.retrySeed(u, attempts[i])
+				w.retrySeed(o, attempts[i])
 			}
 			continue
 		}
-		in, ok := SeedInputOf(u)
+		in, ok := o.SeedInput()
 		if !ok {
 			continue
 		}
-		in.OriginalLanguage = OriginalLanguageOf(u, w.item)
+		in.OriginalLanguage = clustarrobj.OriginalLanguageOf(o, w.item)
 		mapped, ok := w.Mapper.Map(in.Path)
 		if !ok {
 			continue
@@ -788,7 +781,7 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 			w.log().Warn("seed Plex", "path", mapped, "error", err)
 		}
 		if ctx.Err() == nil {
-			w.retrySeed(u, attempts[i])
+			w.retrySeed(o, attempts[i])
 		}
 	}
 }

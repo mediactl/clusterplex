@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/plexproject"
 )
@@ -106,13 +107,10 @@ func TestALaterEpisodeOfAMultiEpisodeFileIsAppliedAndWanted(t *testing.T) {
 	require.ElementsMatch(t, []string{"uid-a", plexproject.CoveredUID("uid-a", "e18")}, uids)
 }
 
-// Trim keeps the keys a multi-episode file lists.
-func TestTrimKeepsAMultiEpisodeFilesKeys(t *testing.T) {
-	out, err := clustarrwatch.Trim(multiEpisodeFile("a", "/data/media/tv/x.mkv", "e1", "e2"))
-	require.NoError(t, err)
-	keys, ok, _ := unstructured.NestedStringSlice(out.(*unstructured.Unstructured).Object, "spec", "mediaRef", "keys")
-	require.True(t, ok)
-	require.Equal(t, []string{"e1", "e2"}, keys)
+// The cache keeps the keys a multi-episode file lists.
+func TestTheCacheKeepsAMultiEpisodeFilesKeys(t *testing.T) {
+	o := clustarrobj.Of(multiEpisodeFile("a", "/data/media/tv/x.mkv", "e1", "e2"))
+	require.Equal(t, []string{"e1", "e2"}, o.MediaKeys)
 }
 
 // A scan's reconcile also takes gone files off the folder's items, and the

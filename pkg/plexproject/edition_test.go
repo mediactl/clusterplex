@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 )
 
 func editionItem(uid, plexID, title, edition string) Item {
@@ -32,7 +34,7 @@ func TestAnEditionsGUIDIsTheMoviesWithItsEscapedTitle(t *testing.T) {
 func TestAMovieFilesEditionKeysItsNode(t *testing.T) {
 	file, movie := fixture(t, "mediafile.yaml"), fixture(t, "movie.yaml")
 	require.NoError(t, unstructured.SetNestedField(file.Object, "Director's Cut", "spec", "edition"))
-	it, ok := Resolve(file, lookupOf(movie))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(movie))
 	require.True(t, ok)
 	n := it.Chain[0]
 	require.Equal(t, "Director's Cut", n.Edition)

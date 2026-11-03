@@ -8,6 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
+
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 )
 
 func fixture(t *testing.T, name string) *unstructured.Unstructured {
@@ -21,11 +23,11 @@ func fixture(t *testing.T, name string) *unstructured.Unstructured {
 
 // lookupOf serves the given objects by their own kind, namespace and name.
 func lookupOf(objs ...*unstructured.Unstructured) Lookup {
-	byKey := map[string]*unstructured.Unstructured{}
+	byKey := map[string]*clustarrobj.Object{}
 	for _, o := range objs {
-		byKey[o.GetKind()+"/"+o.GetNamespace()+"/"+o.GetName()] = o
+		byKey[o.GetKind()+"/"+o.GetNamespace()+"/"+o.GetName()] = clustarrobj.Of(o)
 	}
-	return func(gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, bool) {
+	return func(gvr schema.GroupVersionResource, namespace, name string) (*clustarrobj.Object, bool) {
 		kind := map[string]string{"movies": "Movie", "series": "Series", "episodes": "Episode"}[gvr.Resource]
 		u, ok := byKey[kind+"/"+namespace+"/"+name]
 		return u, ok
@@ -36,7 +38,7 @@ func lookupOf(objs ...*unstructured.Unstructured) Lookup {
 // the custom guid since this movie has no Plex id.
 func TestAMovieFileResolvesToAOneNodeChain(t *testing.T) {
 	file, movie := fixture(t, "mediafile.yaml"), fixture(t, "movie.yaml")
-	it, ok := Resolve(file, lookupOf(movie))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(movie))
 	require.True(t, ok)
 	require.Len(t, it.Chain, 1)
 	n := it.Chain[0]
@@ -57,7 +59,7 @@ func TestAMovieFileResolvesToAOneNodeChain(t *testing.T) {
 // fixture carries no plexID.
 func TestAnEpisodeFileResolvesShowSeasonEpisode(t *testing.T) {
 	file, ep, series := fixture(t, "mediafile-episode.yaml"), fixture(t, "episode.yaml"), fixture(t, "series.yaml")
-	it, ok := Resolve(file, lookupOf(ep, series))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(ep, series))
 	require.True(t, ok)
 	require.Equal(t, TVProvider, it.Provider)
 	require.Len(t, it.Chain, 3)
@@ -81,7 +83,7 @@ func TestAnEpisodeFileResolvesShowSeasonEpisode(t *testing.T) {
 func TestASeasonWithoutAPlexIDUsesTheCustomSeasonKey(t *testing.T) {
 	file, ep, series := fixture(t, "mediafile-episode.yaml"), fixture(t, "episode.yaml"), fixture(t, "series.yaml")
 	require.NoError(t, unstructured.SetNestedField(ep.Object, int64(2), "spec", "seasonNumber"))
-	it, ok := Resolve(file, lookupOf(ep, series))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(ep, series))
 	require.True(t, ok)
 	require.Equal(t, GUID(TVProvider, TypeSeason, string(series.GetUID())+"-s02", ""), it.Chain[1].GUID)
 	require.Equal(t, "Season 2", it.Chain[1].Title)
@@ -89,10 +91,10 @@ func TestASeasonWithoutAPlexIDUsesTheCustomSeasonKey(t *testing.T) {
 
 // No item in the caches yet: nothing is guessed, the caller retries later.
 func TestAFileWhoseItemIsNotCachedYetDoesNotResolve(t *testing.T) {
-	_, ok := Resolve(fixture(t, "mediafile.yaml"), lookupOf())
+	_, ok := Resolve(clustarrobj.Of(fixture(t, "mediafile.yaml")), lookupOf())
 	require.False(t, ok)
 	ep := fixture(t, "episode.yaml")
-	_, ok = Resolve(fixture(t, "mediafile-episode.yaml"), lookupOf(ep))
+	_, ok = Resolve(clustarrobj.Of(fixture(t, "mediafile-episode.yaml")), lookupOf(ep))
 	require.False(t, ok, "an episode without its series does not resolve either")
 }
 
@@ -103,13 +105,13 @@ func TestAFileWhoseItemIsNotCachedYetDoesNotResolve(t *testing.T) {
 func TestAnEpisodeIsKeyedByItsPlexIDOnlyInsideASeasonPlexKnows(t *testing.T) {
 	file, ep, series := fixture(t, "mediafile-episode.yaml"), fixture(t, "episode.yaml"), fixture(t, "series.yaml")
 	require.NoError(t, unstructured.SetNestedField(ep.Object, "68063da0818203abfa0cc498", "status", "plexID"))
-	it, ok := Resolve(file, lookupOf(ep, series))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(ep, series))
 	require.True(t, ok)
 	require.Equal(t, "plex://episode/68063da0818203abfa0cc498", it.Chain[2].GUID, "season 1 is in plexSeasons")
 	require.Equal(t, string(ep.GetUID()), it.Chain[2].UID)
 
 	require.NoError(t, unstructured.SetNestedField(ep.Object, int64(2), "spec", "seasonNumber"))
-	it, ok = Resolve(file, lookupOf(ep, series))
+	it, ok = Resolve(clustarrobj.Of(file), lookupOf(ep, series))
 	require.True(t, ok)
 	require.Equal(t, GUID(TVProvider, TypeSeason, string(series.GetUID())+"-s02", ""), it.Chain[1].GUID, "season 2 has no Plex id")
 	require.Equal(t, GUID(TVProvider, TypeEpisode, string(ep.GetUID()), ""), it.Chain[2].GUID, "nor, then, its episode")
@@ -121,7 +123,7 @@ func TestAnEpisodeIsKeyedByItsPlexIDOnlyInsideASeasonPlexKnows(t *testing.T) {
 // a change is applied; a chain without any keeps the key it had.
 func TestAnItemsKeywordsAreItsLabelsAndMoveTheKey(t *testing.T) {
 	file, movie := fixture(t, "mediafile.yaml"), fixture(t, "movie.yaml")
-	it, ok := Resolve(file, lookupOf(movie))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(movie))
 	require.True(t, ok)
 	require.Equal(t, []string{"september 11 2001", "new york city", "terrorism"}, it.Chain[0].Labels)
 	withLabels := it.Key()
