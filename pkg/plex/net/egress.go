@@ -114,13 +114,19 @@ func (g *EgressGuard) wanted(ctx context.Context, holdsLease bool) ([]netip.Addr
 	}
 
 	var addrs []netip.Addr
-	var failures []string
 	for _, host := range hosts {
 		found, err := resolve(ctx, host)
-		if err != nil {
+		var dnsErr *net.DNSError
+		switch {
+		case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+			// A name with no address is nothing to block, not a failure:
+			// metrics.plex.tv has no IPv4 record (2026-11-03), and every
+			// apply warned about it.
+			g.log().Debug("a host to block has no address", "host", host)
+			continue
+		case err != nil:
 			// Blocking what did resolve beats blocking nothing, so one name
 			// failing is not fatal on its own.
-			failures = append(failures, host)
 			g.log().Warn("cannot resolve a host to block", "host", host, "error", err)
 			continue
 		}
@@ -129,7 +135,7 @@ func (g *EgressGuard) wanted(ctx context.Context, holdsLease bool) ([]netip.Addr
 
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("resolved none of %s, refusing to report egress as filtered",
-			strings.Join(failures, ", "))
+			strings.Join(hosts, ", "))
 	}
 
 	slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })

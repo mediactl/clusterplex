@@ -1,8 +1,11 @@
 package net
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
@@ -169,4 +172,31 @@ func TestEgressGuardBlocksTheLeaderTooWhenNobodyMayReachPlexTV(t *testing.T) {
 	require.NoError(t, g.Apply(context.Background(), true))
 
 	assert.NotEmpty(t, spy.current, "the lease holder must be blocked as well")
+}
+
+// A name DNS knows no address for (metrics.plex.tv has no IPv4 record) is
+// nothing to block: it is no failure and warns nothing, while a name that
+// fails to resolve still warns.
+func TestAHostWithNoAddressIsNoFailure(t *testing.T) {
+	var logs bytes.Buffer
+	list := &fakeBlocklist{}
+	g := guard(list, "plex.tv", "metrics.plex.tv", "does-not-exist.invalid")
+	known := g.Resolve
+	g.Resolve = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		if host == "metrics.plex.tv" {
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		}
+		return known(ctx, host)
+	}
+	g.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	require.NoError(t, g.Apply(t.Context(), false))
+
+	assert.Contains(t, list.blocked(), netip.MustParseAddr("1.2.3.4"))
+	assert.NotContains(t, logs.String(), "metrics.plex.tv")
+	assert.Contains(t, logs.String(), "does-not-exist.invalid", "a lookup that fails still warns")
+
+	only := guard(&fakeBlocklist{}, "metrics.plex.tv")
+	only.Resolve = g.Resolve
+	require.Error(t, only.Apply(t.Context(), false), "nothing resolved is still nothing filtered")
 }
