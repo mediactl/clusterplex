@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 
+	"github.com/mediactl/clusterplex/pkg/plex/activity"
 	"github.com/mediactl/clusterplex/pkg/plexscan"
 	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/remoteexec"
@@ -156,18 +158,28 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 				Logger: m.Logger.With("component", "video-lease"),
 			}
 		}
+		placements := &videorelay.Placements{}
 		dispatcher.Video = &videorelay.Relay{
 			Workers: &remoteexec.PodWorkerLister{
 				Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,
 				Selector: cfg.VideoSelector, Port: cfg.VideoPort,
 			},
-			Dial:    videorelay.GRPCDialer,
-			PMS:     m.relayPMS(),
-			Live:    m.plexLive,
-			Count:   m.videoCount,
-			Refused: func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
-			Startup: func(d time.Duration) { m.Metrics.VideoStartup.Observe(d.Seconds()) },
-			Logger:  m.Logger.With("component", "video"),
+			Dial:       videorelay.GRPCDialer,
+			PMS:        m.relayPMS(),
+			Live:       m.plexLive,
+			Count:      m.videoCount,
+			Refused:    func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
+			Startup:    func(d time.Duration) { m.Metrics.VideoStartup.Observe(d.Seconds()) },
+			Placements: placements,
+			Logger:     m.Logger.With("component", "video"),
+		}
+		// Plex reports every conversion as its own software transcode on
+		// this node; the activity monitor labels it with where it ran.
+		if m.Metrics.Activity != nil {
+			m.Metrics.Activity.SetPlacement(func(session string) (activity.Placement, bool) {
+				p, ok := placements.Get(session)
+				return placementOf(p), ok
+			})
 		}
 	}
 	active := func(delta int) { m.Metrics.ActiveJobs.Add(float64(delta)) }
@@ -184,4 +196,21 @@ func (m *Manager) relayPMS() plexsession.PMS {
 		return m.plexLive
 	}
 	return plexsession.PMS{Addr: "http://" + m.plexAddr}
+}
+
+// placementOf is a pool conversion's placement as Plex names hardware: the
+// API its encoder and decoder use ("qsv", "vaapi"), empty for software.
+func placementOf(p videorelay.Placement) activity.Placement {
+	return activity.Placement{Node: p.Node, Reported: p.Encoder != "", HWDecode: p.Decoder, HWEncode: encoderAPI(p.Encoder)}
+}
+
+// encoderAPI is the hardware API an FFmpeg encoder runs on, as Plex's
+// transcodeHwEncoding names it, or "" for a software one (libx264).
+func encoderAPI(encoder string) string {
+	for _, api := range []string{"qsv", "vaapi", "nvenc"} {
+		if strings.HasSuffix(encoder, "_"+api) {
+			return api
+		}
+	}
+	return ""
 }

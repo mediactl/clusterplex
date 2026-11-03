@@ -81,6 +81,11 @@ type Stream struct {
 	SubtitleDecision string
 	HWDecode         string // the decoder's API (vaapi, nvdec, ...), or ""
 	HWEncode         string
+	// TranscodeSession is Plex's id for the transcode, as cluster-plex's
+	// video relay knows it; TranscodeNode the node the transcode ran on
+	// (Monitor's placement), "" when unknown.
+	TranscodeSession string
+	TranscodeNode    string
 	Throttled        bool
 	Complete         bool
 	// Speed is the transcode's speed relative to real time.
@@ -200,6 +205,7 @@ type sessionItem struct {
 		Location  string  `json:"location"`
 	} `json:"Session"`
 	TranscodeSession *struct {
+		Key                 string    `json:"key"`
 		VideoDecision       string    `json:"videoDecision"`
 		AudioDecision       string    `json:"audioDecision"`
 		SubtitleDecision    string    `json:"subtitleDecision"`
@@ -275,6 +281,7 @@ func (m sessionItem) stream() Stream {
 		s.Speed = float64(ts.Speed)
 		s.HWDecode = ts.TranscodeHwDecoding
 		s.HWEncode = ts.TranscodeHwEncoding
+		s.TranscodeSession = strings.TrimPrefix(ts.Key, "/transcode/sessions/")
 	}
 	return s
 }

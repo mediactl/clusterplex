@@ -187,6 +187,14 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// Plex's own transcodes run on this pod's node, which the activity
+	// monitor labels them with; a pool conversion takes its pod's.
+	if pod, err := k8sClient.CoreV1().Pods(cfg.Namespace).Get(ctx, cfg.PodName, metav1.GetOptions{}); err != nil {
+		logger.Warn("read this pod's node", "error", err)
+	} else {
+		metrics.Activity.SetNode(pod.Spec.NodeName)
+	}
+
 	pool, err := plexdb.Open(ctx, cfg.Postgres)
 	if err != nil {
 		logger.Error("connect to the library database", "database", cfg.Postgres.String(), "error", err)

@@ -336,3 +336,23 @@ func TestProgressNamesPlexsKeys(t *testing.T) {
 		}
 	}
 }
+
+// Started names the encoder and decode device once, before any output: the
+// manager labels the session's metrics with them, since Plex reports every
+// conversion as its own, run in software.
+func TestStartedNamesTheEncoderAndDecoderBeforeAnyOutput(t *testing.T) {
+	need(t)
+	job := library(t, clip(t, 10, "mkv"))
+	r := &recorder{}
+	var calls [][2]string
+	segmentsAtStart := -1
+	o := cpu
+	o.Started = func(encoder, decoder string) {
+		calls = append(calls, [2]string{encoder, decoder})
+		segmentsAtStart = len(r.segments)
+	}
+	require.NoError(t, pipeline.Run(t.Context(), job, o, r))
+	assert.Equal(t, [][2]string{{"libx264", ""}}, calls, "a CPU pod decodes on the CPU")
+	assert.Zero(t, segmentsAtStart, "told before the first segment")
+	assert.NotEmpty(t, r.segments)
+}

@@ -166,6 +166,10 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 		}
 	}
 	out := &sink{stream: stream}
+	o.Started = func(encoder, decoder string) {
+		log.Info("conversion running", "encoder", encoder, "decoder", decoderName(decoder))
+		out.started(encoder, decoder)
+	}
 	began := time.Now()
 	err = s.run(ctx, job, o, out)
 	if errors.Is(err, errAbandoned) {
@@ -421,6 +425,21 @@ func (s *sink) Segment(seg pipeline.Segment) error {
 		p.NextStartUs = &n
 	}
 	return s.send(&videopb.Down{Kind: &videopb.Down_Segment{Segment: p}})
+}
+
+// started tells the relay how the job runs (videopb.Started). It is sent
+// from the pipeline's goroutine before any output, so it never races a
+// segment; a failed send surfaces on the next one.
+func (s *sink) started(encoder, decoder string) {
+	_ = s.send(&videopb.Down{Kind: &videopb.Down_Started{Started: &videopb.Started{Encoder: encoder, Decoder: decoder}}})
+}
+
+// decoderName is a decode device as logged: the CPU's is "".
+func decoderName(d string) string {
+	if d == "" {
+		return "cpu"
+	}
+	return d
 }
 
 func (s *sink) File(name string, data []byte) error {

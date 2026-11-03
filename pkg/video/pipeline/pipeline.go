@@ -30,6 +30,10 @@ type Options struct {
 	// Skipped is told each packet or frame a decoder refused and the job
 	// carried on past; nil tells nothing.
 	Skipped func(err error)
+	// Started is told, once the video path is open and before any output,
+	// the encoder the job runs on and the device its video decodes on
+	// ("vaapi", or "" for the CPU); nil tells nothing.
+	Started func(encoder, decoder string)
 }
 
 func (o Options) onGPU() bool { return o.Caps != nil }
@@ -94,6 +98,13 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	}
 	defer vp.close()
 	vp.refused.skipped = o.Skipped
+	if o.Started != nil {
+		decoder := ""
+		if vp.gpuDecode {
+			decoder = "vaapi"
+		}
+		o.Started(o.Encoder, decoder)
+	}
 	var ap *audioPath
 	if job.Audio != nil {
 		if ap, err = newAudioPath(job, in, c); err != nil {

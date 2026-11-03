@@ -495,3 +495,24 @@ func TestATakenOverConversionStopsReading(t *testing.T) {
 	assert.Equal(t, string(video.ReasonCancelled), d.GetReason())
 	assert.Zero(t, s.Abandoned())
 }
+
+// The pipeline's Started reaches the relay as the stream's first message,
+// ahead of the output, so the manager can label the session with where and
+// how it ran.
+func TestStartedReachesTheRelayBeforeTheOutput(t *testing.T) {
+	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, o pipeline.Options, sink pipeline.Sink) error {
+		o.Started("h264_qsv", "vaapi")
+		return sink.Segment(pipeline.Segment{Data: []byte("ts")})
+	}})
+	s, err := open(t, c, job("A", false))
+	require.NoError(t, err)
+	require.NoError(t, s.CloseSend())
+	m, err := s.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, m.GetStarted(), "the first message")
+	assert.Equal(t, "h264_qsv", m.GetStarted().GetEncoder())
+	assert.Equal(t, "vaapi", m.GetStarted().GetDecoder())
+	m, err = s.Recv()
+	require.NoError(t, err)
+	assert.NotNil(t, m.GetSegment())
+}

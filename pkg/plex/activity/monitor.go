@@ -3,6 +3,7 @@ package activity
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -55,6 +56,8 @@ type Monitor struct {
 	Now func() time.Time
 
 	mu       sync.Mutex
+	placed   func(session string) (Placement, bool)
+	node     string
 	streams  []Stream
 	readAt   time.Time
 	plays    map[string]*play
@@ -84,8 +87,8 @@ var (
 		"Bandwidth Plex budgets for the playbacks it is serving, by user and location (lan, wan)",
 		[]string{"user", "location"}, nil)
 	transcodesDesc = prometheus.NewDesc("clusterplex_plex_transcodes",
-		"Transcode sessions by video, audio and subtitle decision and by hardware decoder and encoder (none for software)",
-		[]string{"video", "audio", "subtitle", "hw_decode", "hw_encode"}, nil)
+		"Transcode sessions by video, audio and subtitle decision, by hardware decoder and encoder (none for software), and by the node the transcode ran on: a GPU pool pod's for a conversion the manager sent there, which Plex reports as its own software transcode",
+		[]string{"video", "audio", "subtitle", "hw_decode", "hw_encode", "transcode_node"}, nil)
 	throttledDesc = prometheus.NewDesc("clusterplex_plex_transcodes_throttled",
 		"Transcodes Plex has throttled because they are far enough ahead of the player", nil, nil)
 	laggingDesc = prometheus.NewDesc("clusterplex_plex_transcodes_lagging",
@@ -116,9 +119,62 @@ func NewMonitor() *Monitor {
 	}
 }
 
+// Placement is where a transcode Plex reports as its own ran: the node, and
+// whether the worker reported its hardware, the decoder's and encoder's
+// APIs ("vaapi", "qsv"), empty for software.
+type Placement struct {
+	Node               string
+	Reported           bool
+	HWDecode, HWEncode string
+}
+
+// SetPlacement takes where the manager ran each transcode it routed away
+// from Plex's node, by Plex's transcode session; ok is false for one it did
+// not. Plex reports every transcode as its own, run in software here.
+func (m *Monitor) SetPlacement(placed func(session string) (Placement, bool)) {
+	m.mu.Lock()
+	m.placed = placed
+	m.mu.Unlock()
+}
+
+// SetNode records the node this pod, and so Plex's own transcoder, runs on.
+func (m *Monitor) SetNode(node string) {
+	m.mu.Lock()
+	m.node = node
+	m.mu.Unlock()
+}
+
+// place labels each transcode with where it ran: a GPU pool pod's node and
+// hardware for one the manager routed there, else this pod's node.
+func place(streams []Stream, placed func(string) (Placement, bool), node string) {
+	for i := range streams {
+		s := &streams[i]
+		if !s.Transcoding {
+			continue
+		}
+		s.TranscodeNode = node
+		if placed == nil || s.TranscodeSession == "" {
+			continue
+		}
+		p, ok := placed(s.TranscodeSession)
+		if !ok {
+			continue
+		}
+		s.TranscodeNode = p.Node
+		if p.Reported {
+			s.HWDecode, s.HWEncode = p.HWDecode, p.HWEncode
+		}
+	}
+}
+
 // Observe takes one successful read of /status/sessions.
 func (m *Monitor) Observe(ctx context.Context, streams []Stream) {
 	now := m.now()
+	m.mu.Lock()
+	placed, node := m.placed, m.node
+	m.mu.Unlock()
+	streams = slices.Clone(streams)
+	place(streams, placed, node)
 	m.mu.Lock()
 	gap := time.Duration(0)
 	if !m.readAt.IsZero() {
@@ -201,6 +257,7 @@ func (m *Monitor) end(ctx context.Context, p *play) {
 			attribute.String("plex.transcode.subtitle", s.SubtitleDecision),
 			attribute.String("plex.transcode.hw_decode", s.HWDecode),
 			attribute.String("plex.transcode.hw_encode", s.HWEncode),
+			attribute.String("plex.transcode.node", s.TranscodeNode),
 		)
 	}
 	if p.first.Decision() != s.Decision() {
@@ -279,7 +336,7 @@ func (m *Monitor) Collect(ch chan<- prometheus.Metric) {
 func collectStreams(ch chan<- prometheus.Metric, streams []Stream) {
 	type streamKey struct{ user, typ, decision, location, player, platform, state, resolution string }
 	type bwKey struct{ user, location string }
-	type tcKey struct{ video, audio, subtitle, hwDecode, hwEncode string }
+	type tcKey struct{ video, audio, subtitle, hwDecode, hwEncode, node string }
 	counts := map[streamKey]int{}
 	bandwidth := map[bwKey]int64{}
 	transcodes := map[tcKey]int{}
@@ -291,7 +348,7 @@ func collectStreams(ch chan<- prometheus.Metric, streams []Stream) {
 		if !s.Transcoding {
 			continue
 		}
-		transcodes[tcKey{none(s.VideoDecision), none(s.AudioDecision), none(s.SubtitleDecision), none(s.HWDecode), none(s.HWEncode)}]++
+		transcodes[tcKey{none(s.VideoDecision), none(s.AudioDecision), none(s.SubtitleDecision), none(s.HWDecode), none(s.HWEncode), label(s.TranscodeNode)}]++
 		if s.Throttled {
 			throttled++
 		}
@@ -309,7 +366,7 @@ func collectStreams(ch chan<- prometheus.Metric, streams []Stream) {
 	}
 	for k, n := range transcodes {
 		ch <- prometheus.MustNewConstMetric(transcodesDesc, prometheus.GaugeValue, float64(n),
-			k.video, k.audio, k.subtitle, k.hwDecode, k.hwEncode)
+			k.video, k.audio, k.subtitle, k.hwDecode, k.hwEncode, k.node)
 	}
 	ch <- prometheus.MustNewConstMetric(throttledDesc, prometheus.GaugeValue, float64(throttled))
 	ch <- prometheus.MustNewConstMetric(laggingDesc, prometheus.GaugeValue, float64(lagging))

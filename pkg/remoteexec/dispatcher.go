@@ -35,6 +35,7 @@ type ScanRoute interface {
 type Worker struct {
 	Name string
 	Addr string // host:port of its manager's gRPC listener
+	Node string // the node it runs on
 }
 
 // WorkerLister finds workers that are ready to take a job.

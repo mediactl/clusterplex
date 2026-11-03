@@ -44,7 +44,7 @@ func (l *PodWorkerLister) ListReady(ctx context.Context) ([]Worker, error) {
 		if p.Name == l.Self || p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" || !podReady(p) {
 			continue
 		}
-		out = append(out, Worker{Name: p.Name, Addr: net.JoinHostPort(p.Status.PodIP, strconv.Itoa(l.Port))})
+		out = append(out, Worker{Name: p.Name, Addr: net.JoinHostPort(p.Status.PodIP, strconv.Itoa(l.Port)), Node: p.Spec.NodeName})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

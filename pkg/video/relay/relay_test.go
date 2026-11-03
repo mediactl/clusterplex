@@ -103,7 +103,7 @@ func pool(t *testing.T, ws map[string]*worker) (remoteexec.WorkerLister, func(co
 		go func() { _ = srv.Serve(l) }()
 		t.Cleanup(srv.Stop)
 		lis[name] = l
-		ready = append(ready, remoteexec.Worker{Name: name, Addr: name})
+		ready = append(ready, remoteexec.Worker{Name: name, Addr: name, Node: "node-of-" + name})
 	}
 	dial := func(_ context.Context, addr string) (videopb.VideoClient, io.Closer, error) {
 		l := lis[addr]
@@ -805,4 +805,41 @@ func TestAPeriodicReportReplacesNoOther(t *testing.T) {
 	defer cancel()
 	require.NoError(t, h.relay.Execute(ctx, h.req, &sink{}))
 	assert.True(t, reported(), "the duration reached Plex")
+}
+
+// A running conversion's placement is its pod and node, and the encoder and
+// decoder the worker reports, by Plex's transcode session; it is gone once
+// the conversion ends. Plex reports the session as its own software
+// transcode, and the activity monitor labels it with this instead.
+func TestARunningConversionIsPlacedOnItsWorker(t *testing.T) {
+	job, err := video.Parse(libraryArgs(t), map[string]string{"X_PLEX_TOKEN": "tok"})
+	require.NoError(t, err)
+	placements := &relay.Placements{}
+	var during relay.Placement
+	var placed bool
+	h := setup(t, map[string]*worker{"video-0": {run: func(ctx context.Context, send func(*videopb.Down) error) error {
+		started := &videopb.Down{Kind: &videopb.Down_Started{Started: &videopb.Started{Encoder: "h264_qsv", Decoder: "vaapi"}}}
+		if err := send(started); err != nil {
+			return err
+		}
+		if err := send(seg(0, 0, 8.008, false)); err != nil {
+			return err
+		}
+		for range 200 {
+			if during, placed = placements.Get(job.Session); placed && during.Encoder != "" {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return send(done("", ""))
+	}}})
+	h.relay.Placements = placements
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, s))
+	require.EqualValues(t, 0, s.exit(), s.stderr())
+
+	require.True(t, placed, "placed while it ran")
+	assert.Equal(t, relay.Placement{Worker: "video-0", Node: "node-of-video-0", Encoder: "h264_qsv", Decoder: "vaapi"}, during)
+	_, still := placements.Get(job.Session)
+	assert.False(t, still, "gone once it ended")
 }

@@ -56,9 +56,9 @@ clusterplex_plex_streams{decision="transcode",location="wan",media_type="episode
 clusterplex_plex_stream_bandwidth_bytes_per_second{location="lan",user="alice"} 176375
 clusterplex_plex_stream_bandwidth_bytes_per_second{location="lan",user="bob"} 1.5e+06
 clusterplex_plex_stream_bandwidth_bytes_per_second{location="wan",user="alice"} 2.725e+06
-# HELP clusterplex_plex_transcodes Transcode sessions by video, audio and subtitle decision and by hardware decoder and encoder (none for software)
+# HELP clusterplex_plex_transcodes Transcode sessions by video, audio and subtitle decision, by hardware decoder and encoder (none for software), and by the node the transcode ran on: a GPU pool pod's for a conversion the manager sent there, which Plex reports as its own software transcode
 # TYPE clusterplex_plex_transcodes gauge
-clusterplex_plex_transcodes{audio="copy",hw_decode="vaapi",hw_encode="vaapi",subtitle="burn",video="transcode"} 1
+clusterplex_plex_transcodes{audio="copy",hw_decode="vaapi",hw_encode="vaapi",subtitle="burn",transcode_node="unknown",video="transcode"} 1
 # HELP clusterplex_plex_transcodes_throttled Transcodes Plex has throttled because they are far enough ahead of the player
 # TYPE clusterplex_plex_transcodes_throttled gauge
 clusterplex_plex_transcodes_throttled 0
@@ -214,4 +214,39 @@ func attr(s sdktrace.ReadOnlySpan, key string) attribute.Value {
 		}
 	}
 	return attribute.Value{}
+}
+
+// A transcode the manager sent to the GPU pool is labelled with the pool
+// pod's node and the hardware its worker reported, where Plex reports it as
+// its own software transcode; one Plex ran itself is labelled with this
+// pod's node. A pool conversion whose worker named no hardware keeps
+// Plex's.
+func TestATranscodeIsLabelledWithWhereItRan(t *testing.T) {
+	m, _, _ := newTestMonitor(t)
+	m.SetNode("talos-pi")
+	m.SetPlacement(func(session string) (Placement, bool) {
+		switch session {
+		case "gpu":
+			return Placement{Node: "talos-nuc", Reported: true, HWDecode: "vaapi", HWEncode: "qsv"}, true
+		case "old-worker":
+			return Placement{Node: "talos-nuc"}, true
+		}
+		return Placement{}, false
+	})
+	conv := func(key, session string) Stream {
+		return Stream{
+			Key: key, User: "u", MediaType: "live", Transcoding: true, VideoDecision: "transcode",
+			AudioDecision: "copy", TranscodeSession: session,
+		}
+	}
+	m.Observe(t.Context(), []Stream{conv("a", "gpu"), conv("b", "old-worker"), conv("c", "local")})
+
+	err := testutil.CollectAndCompare(m, strings.NewReader(`
+# HELP clusterplex_plex_transcodes Transcode sessions by video, audio and subtitle decision, by hardware decoder and encoder (none for software), and by the node the transcode ran on: a GPU pool pod's for a conversion the manager sent there, which Plex reports as its own software transcode
+# TYPE clusterplex_plex_transcodes gauge
+clusterplex_plex_transcodes{audio="copy",hw_decode="none",hw_encode="none",subtitle="none",transcode_node="talos-nuc",video="transcode"} 1
+clusterplex_plex_transcodes{audio="copy",hw_decode="none",hw_encode="none",subtitle="none",transcode_node="talos-pi",video="transcode"} 1
+clusterplex_plex_transcodes{audio="copy",hw_decode="vaapi",hw_encode="qsv",subtitle="none",transcode_node="talos-nuc",video="transcode"} 1
+`), "clusterplex_plex_transcodes")
+	require.NoError(t, err)
 }

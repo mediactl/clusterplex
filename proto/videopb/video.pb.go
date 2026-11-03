@@ -772,6 +772,7 @@ type Down struct {
 	//	*Down_Progress
 	//	*Down_Write
 	//	*Down_Done
+	//	*Down_Started
 	Kind          isDown_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -868,6 +869,15 @@ func (x *Down) GetDone() *Done {
 	return nil
 }
 
+func (x *Down) GetStarted() *Started {
+	if x != nil {
+		if x, ok := x.Kind.(*Down_Started); ok {
+			return x.Started
+		}
+	}
+	return nil
+}
+
 type isDown_Kind interface {
 	isDown_Kind()
 }
@@ -896,6 +906,10 @@ type Down_Done struct {
 	Done *Done `protobuf:"bytes,6,opt,name=done,proto3,oneof"`
 }
 
+type Down_Started struct {
+	Started *Started `protobuf:"bytes,7,opt,name=started,proto3,oneof"`
+}
+
 func (*Down_Segment) isDown_Kind() {}
 
 func (*Down_File) isDown_Kind() {}
@@ -907,6 +921,65 @@ func (*Down_Progress) isDown_Kind() {}
 func (*Down_Write) isDown_Kind() {}
 
 func (*Down_Done) isDown_Kind() {}
+
+func (*Down_Started) isDown_Kind() {}
+
+// Started is how the worker runs the job, sent once its video path is open
+// and before any output: the FFmpeg encoder ("h264_qsv", or "libx264" on a
+// pod with no GPU) and the device the video decodes on ("vaapi"), empty for
+// the CPU. Plex reports every conversion as its own, run in software on its
+// node, so the manager labels the session's metrics with this.
+type Started struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Encoder       string                 `protobuf:"bytes,1,opt,name=encoder,proto3" json:"encoder,omitempty"`
+	Decoder       string                 `protobuf:"bytes,2,opt,name=decoder,proto3" json:"decoder,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Started) Reset() {
+	*x = Started{}
+	mi := &file_video_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Started) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Started) ProtoMessage() {}
+
+func (x *Started) ProtoReflect() protoreflect.Message {
+	mi := &file_video_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Started.ProtoReflect.Descriptor instead.
+func (*Started) Descriptor() ([]byte, []int) {
+	return file_video_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Started) GetEncoder() string {
+	if x != nil {
+		return x.Encoder
+	}
+	return ""
+}
+
+func (x *Started) GetDecoder() string {
+	if x != nil {
+		return x.Decoder
+	}
+	return ""
+}
 
 // Segment is one whole HLS segment and the times its list line reports.
 // next_start_us is where the next segment, now being written, starts: Plex
@@ -925,7 +998,7 @@ type Segment struct {
 
 func (x *Segment) Reset() {
 	*x = Segment{}
-	mi := &file_video_proto_msgTypes[10]
+	mi := &file_video_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -937,7 +1010,7 @@ func (x *Segment) String() string {
 func (*Segment) ProtoMessage() {}
 
 func (x *Segment) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[10]
+	mi := &file_video_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -950,7 +1023,7 @@ func (x *Segment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Segment.ProtoReflect.Descriptor instead.
 func (*Segment) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{10}
+	return file_video_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Segment) GetName() string {
@@ -1006,7 +1079,7 @@ type Span struct {
 
 func (x *Span) Reset() {
 	*x = Span{}
-	mi := &file_video_proto_msgTypes[11]
+	mi := &file_video_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1018,7 +1091,7 @@ func (x *Span) String() string {
 func (*Span) ProtoMessage() {}
 
 func (x *Span) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[11]
+	mi := &file_video_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1031,7 +1104,7 @@ func (x *Span) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Span.ProtoReflect.Descriptor instead.
 func (*Span) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{11}
+	return file_video_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Span) GetStream() int32 {
@@ -1065,7 +1138,7 @@ type File struct {
 
 func (x *File) Reset() {
 	*x = File{}
-	mi := &file_video_proto_msgTypes[12]
+	mi := &file_video_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1077,7 +1150,7 @@ func (x *File) String() string {
 func (*File) ProtoMessage() {}
 
 func (x *File) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[12]
+	mi := &file_video_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1090,7 +1163,7 @@ func (x *File) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use File.ProtoReflect.Descriptor instead.
 func (*File) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{12}
+	return file_video_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *File) GetName() string {
@@ -1116,7 +1189,7 @@ type Manifest struct {
 
 func (x *Manifest) Reset() {
 	*x = Manifest{}
-	mi := &file_video_proto_msgTypes[13]
+	mi := &file_video_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1128,7 +1201,7 @@ func (x *Manifest) String() string {
 func (*Manifest) ProtoMessage() {}
 
 func (x *Manifest) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[13]
+	mi := &file_video_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1141,7 +1214,7 @@ func (x *Manifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Manifest.ProtoReflect.Descriptor instead.
 func (*Manifest) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{13}
+	return file_video_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Manifest) GetMpd() []byte {
@@ -1161,7 +1234,7 @@ type Progress struct {
 
 func (x *Progress) Reset() {
 	*x = Progress{}
-	mi := &file_video_proto_msgTypes[14]
+	mi := &file_video_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1173,7 +1246,7 @@ func (x *Progress) String() string {
 func (*Progress) ProtoMessage() {}
 
 func (x *Progress) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[14]
+	mi := &file_video_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1186,7 +1259,7 @@ func (x *Progress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Progress.ProtoReflect.Descriptor instead.
 func (*Progress) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{14}
+	return file_video_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Progress) GetPath() string {
@@ -1213,7 +1286,7 @@ type Write struct {
 
 func (x *Write) Reset() {
 	*x = Write{}
-	mi := &file_video_proto_msgTypes[15]
+	mi := &file_video_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1225,7 +1298,7 @@ func (x *Write) String() string {
 func (*Write) ProtoMessage() {}
 
 func (x *Write) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[15]
+	mi := &file_video_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1238,7 +1311,7 @@ func (x *Write) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Write.ProtoReflect.Descriptor instead.
 func (*Write) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{15}
+	return file_video_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Write) GetOffset() int64 {
@@ -1265,7 +1338,7 @@ type Done struct {
 
 func (x *Done) Reset() {
 	*x = Done{}
-	mi := &file_video_proto_msgTypes[16]
+	mi := &file_video_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1277,7 +1350,7 @@ func (x *Done) String() string {
 func (*Done) ProtoMessage() {}
 
 func (x *Done) ProtoReflect() protoreflect.Message {
-	mi := &file_video_proto_msgTypes[16]
+	mi := &file_video_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1290,7 +1363,7 @@ func (x *Done) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Done.ProtoReflect.Descriptor instead.
 func (*Done) Descriptor() ([]byte, []int) {
-	return file_video_proto_rawDescGZIP(), []int{16}
+	return file_video_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Done) GetError() string {
@@ -1377,15 +1450,19 @@ const file_video_proto_rawDesc = "" +
 	"\rmuxer_options\x18\x02 \x03(\v2 .video.FileOut.MuxerOptionsEntryR\fmuxerOptions\x1a?\n" +
 	"\x11MuxerOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x84\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb0\x02\n" +
 	"\x04Down\x12*\n" +
 	"\asegment\x18\x01 \x01(\v2\x0e.video.SegmentH\x00R\asegment\x12!\n" +
 	"\x04file\x18\x02 \x01(\v2\v.video.FileH\x00R\x04file\x12-\n" +
 	"\bmanifest\x18\x03 \x01(\v2\x0f.video.ManifestH\x00R\bmanifest\x12-\n" +
 	"\bprogress\x18\x04 \x01(\v2\x0f.video.ProgressH\x00R\bprogress\x12$\n" +
 	"\x05write\x18\x05 \x01(\v2\f.video.WriteH\x00R\x05write\x12!\n" +
-	"\x04done\x18\x06 \x01(\v2\v.video.DoneH\x00R\x04doneB\x06\n" +
-	"\x04kind\"\xc5\x01\n" +
+	"\x04done\x18\x06 \x01(\v2\v.video.DoneH\x00R\x04done\x12*\n" +
+	"\astarted\x18\a \x01(\v2\x0e.video.StartedH\x00R\astartedB\x06\n" +
+	"\x04kind\"=\n" +
+	"\aStarted\x12\x18\n" +
+	"\aencoder\x18\x01 \x01(\tR\aencoder\x12\x18\n" +
+	"\adecoder\x18\x02 \x01(\tR\adecoder\"\xc5\x01\n" +
 	"\aSegment\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x19\n" +
@@ -1427,7 +1504,7 @@ func file_video_proto_rawDescGZIP() []byte {
 	return file_video_proto_rawDescData
 }
 
-var file_video_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_video_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_video_proto_goTypes = []any{
 	(*Up)(nil),         // 0: video.Up
 	(*Chunk)(nil),      // 1: video.Chunk
@@ -1439,14 +1516,15 @@ var file_video_proto_goTypes = []any{
 	(*Segmenting)(nil), // 7: video.Segmenting
 	(*FileOut)(nil),    // 8: video.FileOut
 	(*Down)(nil),       // 9: video.Down
-	(*Segment)(nil),    // 10: video.Segment
-	(*Span)(nil),       // 11: video.Span
-	(*File)(nil),       // 12: video.File
-	(*Manifest)(nil),   // 13: video.Manifest
-	(*Progress)(nil),   // 14: video.Progress
-	(*Write)(nil),      // 15: video.Write
-	(*Done)(nil),       // 16: video.Done
-	nil,                // 17: video.FileOut.MuxerOptionsEntry
+	(*Started)(nil),    // 10: video.Started
+	(*Segment)(nil),    // 11: video.Segment
+	(*Span)(nil),       // 12: video.Span
+	(*File)(nil),       // 13: video.File
+	(*Manifest)(nil),   // 14: video.Manifest
+	(*Progress)(nil),   // 15: video.Progress
+	(*Write)(nil),      // 16: video.Write
+	(*Done)(nil),       // 17: video.Done
+	nil,                // 18: video.FileOut.MuxerOptionsEntry
 }
 var file_video_proto_depIdxs = []int32{
 	2,  // 0: video.Up.job:type_name -> video.Job
@@ -1457,21 +1535,22 @@ var file_video_proto_depIdxs = []int32{
 	6,  // 5: video.Job.burn:type_name -> video.BurnIn
 	7,  // 6: video.Job.segments:type_name -> video.Segmenting
 	8,  // 7: video.Job.file:type_name -> video.FileOut
-	17, // 8: video.FileOut.muxer_options:type_name -> video.FileOut.MuxerOptionsEntry
-	10, // 9: video.Down.segment:type_name -> video.Segment
-	12, // 10: video.Down.file:type_name -> video.File
-	13, // 11: video.Down.manifest:type_name -> video.Manifest
-	14, // 12: video.Down.progress:type_name -> video.Progress
-	15, // 13: video.Down.write:type_name -> video.Write
-	16, // 14: video.Down.done:type_name -> video.Done
-	11, // 15: video.Segment.streams:type_name -> video.Span
-	0,  // 16: video.Video.Convert:input_type -> video.Up
-	9,  // 17: video.Video.Convert:output_type -> video.Down
-	17, // [17:18] is the sub-list for method output_type
-	16, // [16:17] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	18, // 8: video.FileOut.muxer_options:type_name -> video.FileOut.MuxerOptionsEntry
+	11, // 9: video.Down.segment:type_name -> video.Segment
+	13, // 10: video.Down.file:type_name -> video.File
+	14, // 11: video.Down.manifest:type_name -> video.Manifest
+	15, // 12: video.Down.progress:type_name -> video.Progress
+	16, // 13: video.Down.write:type_name -> video.Write
+	17, // 14: video.Down.done:type_name -> video.Done
+	10, // 15: video.Down.started:type_name -> video.Started
+	12, // 16: video.Segment.streams:type_name -> video.Span
+	0,  // 17: video.Video.Convert:input_type -> video.Up
+	9,  // 18: video.Video.Convert:output_type -> video.Down
+	18, // [18:19] is the sub-list for method output_type
+	17, // [17:18] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_video_proto_init() }
@@ -1490,15 +1569,16 @@ func file_video_proto_init() {
 		(*Down_Progress)(nil),
 		(*Down_Write)(nil),
 		(*Down_Done)(nil),
+		(*Down_Started)(nil),
 	}
-	file_video_proto_msgTypes[10].OneofWrappers = []any{}
+	file_video_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_video_proto_rawDesc), len(file_video_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

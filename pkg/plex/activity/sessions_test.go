@@ -73,7 +73,7 @@ func TestReadSessionsReadsTautullisFields(t *testing.T) {
 		ViewOffset: 600000, Duration: 3300000,
 		Resolution: "4k", VideoCodec: "hevc", AudioCodec: "eac3",
 		Transcoding: true, VideoDecision: "transcode", AudioDecision: "copy", SubtitleDecision: "burn",
-		HWDecode: "vaapi", HWEncode: "vaapi", Speed: 0.8,
+		HWDecode: "vaapi", HWEncode: "vaapi", TranscodeSession: "abc", Speed: 0.8,
 	}, ep)
 	assert.Equal(t, Transcode, ep.Decision())
 	assert.True(t, ep.Lagging())

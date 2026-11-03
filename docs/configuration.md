@@ -381,7 +381,7 @@ apart (`pkg/plex/activity`), so a dashboard can show what Tautulli would:
 | --- | --- |
 | `clusterplex_plex_streams{user,media_type,decision,location,player,platform,state,resolution}` | Playbacks being served. `decision` is Tautulli's: `transcode` when the video or audio is transcoded, `direct_stream` when either is copied into a new container, else `direct_play`. `media_type` is Plex's, or `live` for Live TV; `resolution` is the source's |
 | `clusterplex_plex_stream_bandwidth_bytes_per_second{user,location}` | What Plex budgets for those playbacks, LAN and WAN |
-| `clusterplex_plex_transcodes{video,audio,subtitle,hw_decode,hw_encode}` | Transcode sessions by decision and by hardware decoder and encoder (`none` is software) |
+| `clusterplex_plex_transcodes{video,audio,subtitle,hw_decode,hw_encode,transcode_node}` | Transcode sessions by decision, by hardware decoder and encoder (`none` is software), and by the node the transcode ran on. Plex reports every conversion as its own software transcode on its node; one the manager sent to the GPU pool takes the pool pod's node and the encoder and decoder its worker reported (`qsv`, `vaapi`) |
 | `clusterplex_plex_transcodes_throttled` | Transcodes far enough ahead of their player that Plex throttled them |
 | `clusterplex_plex_transcodes_lagging` | Transcodes slower than real time and not finished: a player waiting on them |
 | `clusterplex_plex_plays_total{user,media_type,decision,player}` | Finished plays. A video play under two minutes is not counted (Tautulli's ignore interval); a track always is |

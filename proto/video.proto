@@ -100,7 +100,18 @@ message Down {
     Progress progress = 4;
     Write write = 5;
     Done done = 6;
+    Started started = 7;
   }
+}
+
+// Started is how the worker runs the job, sent once its video path is open
+// and before any output: the FFmpeg encoder ("h264_qsv", or "libx264" on a
+// pod with no GPU) and the device the video decodes on ("vaapi"), empty for
+// the CPU. Plex reports every conversion as its own, run in software on its
+// node, so the manager labels the session's metrics with this.
+message Started {
+  string encoder = 1;
+  string decoder = 2;
 }
 
 // Segment is one whole HLS segment and the times its list line reports.

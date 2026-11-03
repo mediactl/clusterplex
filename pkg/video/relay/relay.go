@@ -64,7 +64,10 @@ type Relay struct {
 	// overhead: its first segment's arrival less the input time it covers.
 	Refused func(video.Reason)
 	Startup func(time.Duration)
-	Logger  *slog.Logger
+	// Placements, when set, records where each running conversion is
+	// (Placement), for the activity monitor.
+	Placements *Placements
+	Logger     *slog.Logger
 	// Now is the clock. Default time.Now.
 	Now func() time.Time
 	// ThrottlePoll is how often a held conversion asks Plex whether it may
@@ -147,6 +150,8 @@ func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.T
 	if r.Count != nil {
 		defer r.Count.Begin(ctx)()
 	}
+	r.Placements.set(job.Session, Placement{Worker: c.worker, Node: c.node})
+	defer r.Placements.remove(job.Session)
 	log := r.log().With("worker", c.worker, "session", job.Session)
 	log.Info("video conversion started", "output", job.Output, "width", job.Video.Width, "height", job.Video.Height)
 	go c.pump(ctx, r, job)
@@ -160,6 +165,7 @@ func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.T
 // conversion is one accepted job's stream to its worker.
 type conversion struct {
 	worker string
+	node   string
 	stream videopb.Video_ConvertClient
 	cancel context.CancelFunc
 	closer io.Closer
@@ -211,7 +217,7 @@ func (r *Relay) open(ctx context.Context, ws []remoteexec.Worker, job video.Job)
 			continue
 		}
 		cctx, cancel := context.WithCancel(ctx)
-		c := &conversion{worker: w.Name, cancel: cancel, closer: closer}
+		c := &conversion{worker: w.Name, node: w.Node, cancel: cancel, closer: closer}
 		c.stream, err = client.Convert(cctx)
 		if err == nil {
 			err = c.send(&videopb.Up{Kind: &videopb.Up_Job{Job: job.Proto()}})
@@ -421,6 +427,10 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			if err := hold(); err != nil {
 				return err
 			}
+		case *videopb.Down_Started:
+			r.Placements.started(job.Session, k.Started.GetEncoder(), k.Started.GetDecoder())
+			r.log().Info("video conversion running", "session", job.Session, "worker", c.worker,
+				"encoder", k.Started.GetEncoder(), "decoder", k.Started.GetDecoder())
 		case *videopb.Down_Done:
 			if msg := k.Done.GetError(); msg != "" {
 				reason := video.Reason(k.Done.GetReason())
