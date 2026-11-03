@@ -66,6 +66,25 @@ func TestMediaRowsDescribeTheFileAsPlexsAnalysisWould(t *testing.T) {
 	assert.Equal(t, "cs", streams[5].Language, "a bibliographic code too")
 }
 
+// simpsons is clustarr's probe of The Simpsons S29E10 on talos
+// (2026-11-03): a hevc_qsv transcode whose header claims 5,200,517 kbps of
+// video in a 116 MB, 21.7-minute file (717 kbps).
+var simpsons = plexseed.Probe{
+	Container: "mp4", VideoCodec: "hevc", Width: 720, Height: 400, VideoBitrateKbps: 5200517, RuntimeMillis: 1299672,
+	Audio: []plexseed.Audio{{Index: 1, Codec: "aac", Language: "eng", Channels: 2, BitrateKbps: 162, Default: true}},
+}
+
+// Plex's bitrate columns are int4 bits per second, so a probe's kbps past
+// 2,147,483 is no stream's bitrate: the stream's is unknown, the file's is
+// left for the seeder to take from its size, and nothing wraps around.
+func TestABitratePastPlexsColumnIsUnknown(t *testing.T) {
+	m, streams := plexseed.MediaRows(simpsons, "", "")
+	assert.Zero(t, m.Bitrate, "the streams' sum is no file's bitrate")
+	require.Len(t, streams, 2)
+	assert.Zero(t, streams[0].Bitrate, "written NULL, never wrapped into int32")
+	assert.EqualValues(t, 162000, streams[1].Bitrate, "the audio's own is kept")
+}
+
 // An audio track with no language, or "und", is the item's original
 // language, as clustarr reads it for subtitles: Plex showed every Mister
 // Rogers' Neighborhood episode's audio as "Unknown" (2026-10-06). A tagged

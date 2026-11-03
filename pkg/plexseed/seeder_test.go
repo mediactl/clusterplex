@@ -140,6 +140,25 @@ func TestAnUnanalysedFileIsSeededOnce(t *testing.T) {
 	assert.Equal(t, 6, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1", l.media), "idempotent")
 }
 
+// A probe whose bitrate does not fit Plex's int4 column is seeded, its
+// file's bitrate taken from its size and runtime: the column's encode error
+// had failed The Simpsons S29E10's seed at every reconcile (talos,
+// 2026-11-03).
+func TestAFileWithAnImpossibleBitrateIsSeededFromItsSize(t *testing.T) {
+	conn := plexDB(t)
+	l := insertFile(t, conn, "Clustarr TV")
+	in := plexseed.Input{Path: "/data/media/x.mp4", SizeBytes: 116522753, ProbeHash: "h", Probe: &simpsons}
+
+	res, err := seeder(conn).Seed(context.Background(), l.path, in)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.MediaSeeded)
+	var bitrate int64
+	require.NoError(t, conn.QueryRow(context.Background(),
+		"SELECT bitrate FROM media_items WHERE id = $1", l.media).Scan(&bitrate))
+	assert.EqualValues(t, 116522753*8*1000/1299672, bitrate, "717 kbps, from the size")
+	assert.Equal(t, 1, count(t, conn, "SELECT count(*) FROM media_streams WHERE media_item_id = $1 AND stream_type_id = 1 AND bitrate IS NULL", l.media))
+}
+
 // A stream with no language is stored with an empty one, as Plex's own
 // scanner stores it: PMS reads an episode's audio and subtitle languages
 // for a show's preferences without a NULL indicator, so one NULL made the

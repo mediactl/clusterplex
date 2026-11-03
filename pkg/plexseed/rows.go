@@ -3,6 +3,7 @@ package plexseed
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +68,28 @@ func colorTRC(hdr string) string {
 	}
 }
 
+// streamBps is a probe's kbps as media_streams.bitrate's bits per second, 0
+// (unknown, written NULL) when it does not fit the int4 column: no stream
+// runs at 2.1 Gbps, so such a probe read a bad header (The Simpsons S29E10
+// on talos, 2026-11-03: 5,200,517 kbps of video in a 717 kbps file, which
+// failed the seed at every reconcile).
+func streamBps(kbps int32) int32 {
+	if kbps <= 0 || int64(kbps)*1000 > math.MaxInt32 {
+		return 0
+	}
+	return kbps * 1000
+}
+
+// fileBitrate is a file's bits per second from its size and runtime, 0 when
+// either is unknown, as the container's overall bitrate Plex's analysis
+// records.
+func fileBitrate(sizeBytes, runtimeMillis int64) int64 {
+	if sizeBytes <= 0 || runtimeMillis <= 0 {
+		return 0
+	}
+	return min(sizeBytes*8*1000/runtimeMillis, math.MaxInt32)
+}
+
 // StreamRow is one media_streams row.
 type StreamRow struct {
 	Type, Index, Channels, Bitrate int32
@@ -97,7 +120,12 @@ func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamR
 	for _, a := range p.Audio {
 		bitrate += int64(a.BitrateKbps)
 	}
-	m.Bitrate = bitrate * 1000
+	// media_items.bitrate is int4, in bits per second: a sum past it is no
+	// file's bitrate, so it stays 0 for the seeder to take from the file's
+	// size (fileBitrate).
+	if bps := bitrate * 1000; bps <= math.MaxInt32 {
+		m.Bitrate = bps
+	}
 	item := map[string]string{SourceKey: SourceValue}
 	if probeHash != "" {
 		item[ProbeHashKey] = probeHash
@@ -134,7 +162,7 @@ func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamR
 		}
 		streams = append(streams, StreamRow{
 			Type: streamVideo, Index: 0, Codec: PlexCodec(p.VideoCodec),
-			Bitrate: p.VideoBitrateKbps * 1000, Default: true, Extra: ExtraData(v),
+			Bitrate: streamBps(p.VideoBitrateKbps), Default: true, Extra: ExtraData(v),
 		})
 	}
 	for _, a := range p.Audio {
@@ -153,7 +181,7 @@ func MediaRows(p Probe, probeHash, originalLanguage string) (MediaRow, []StreamR
 		}
 		streams = append(streams, StreamRow{
 			Type: streamAudio, Index: a.Index, Codec: PlexCodec(a.Codec), Language: AudioLanguage(a, originalLanguage),
-			Channels: a.Channels, Bitrate: a.BitrateKbps * 1000, Default: a.Default, Extra: ExtraData(x),
+			Channels: a.Channels, Bitrate: streamBps(a.BitrateKbps), Default: a.Default, Extra: ExtraData(x),
 		})
 	}
 	for _, s := range p.Subtitles {

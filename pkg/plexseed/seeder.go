@@ -185,6 +185,9 @@ SELECT (SELECT count(*) FROM media_streams WHERE media_item_id = $1),
 		return false, nil
 	}
 	m, rows := MediaRows(*in.Probe, in.ProbeHash, in.OriginalLanguage)
+	if m.Bitrate == 0 {
+		m.Bitrate = fileBitrate(in.SizeBytes, m.Duration)
+	}
 	if in.FastStart != nil {
 		v := int32(0)
 		if *in.FastStart {
