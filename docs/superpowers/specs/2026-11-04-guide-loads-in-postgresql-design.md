@@ -541,7 +541,59 @@ shim logs its savepoint statements only when PostgreSQL refuses one, so
 whether they ran is read from the rig's PostgreSQL with `log_statement =
 'all'` on the next run, not from the shim's trace.
 
-**Not yet:** the rest of the rig runs, on `.50`; talos with the value on. The `.48`
+**Runs on `.50` (images `8f6b79f`, then `5b7779a` with the inode
+recovery), 2026-11-04 20:21-20:40Z:**
+
+- Run 1, the staged load end to end: the stage answered in milliseconds
+  (`cloned: false`, the schema made ahead), PMS loaded into `_next`
+  through the shim, the four section renumberings each raised the
+  sequence, PMS renamed, the shim asked `swap`, the manager renamed the
+  schemas in 666 ms (229 ms the second time) and cloned the next `_next`
+  ahead; PMS wrote the DVR's `refreshedAt`, the grid answered from
+  `epg_<uuid>` at the reopen, PostgreSQL logged no error, and the guide
+  file on disk is the staged shadow (its mtime the stage's). PMS's
+  "Running migrations. (EPG 1)" line is the phase's name: the shadow's
+  `schema_migrations` is synced, so none ran.
+- The oracle: `hack/guidediff` of the staged load (20:35Z) against a
+  copy-path load four minutes later (20:39Z) is empty on `metadata_items`,
+  `media_items`, `tags` and `taggings` (64, 1,400, 111, 2,212 each way).
+  Only non-guide counts differ, from the clone's source: `schema_migrations`
+  449 (the library's) against the template's 443, `preferences` 1 against
+  2, the FTS node table. A first comparison 40 minutes apart differed by
+  the first two-hour slot of every channel: PMS's own horizon drops an
+  airing that ended more than about 18 h ago, so the two loads of an
+  oracle must run minutes apart.
+- Time: PMS's "database" time for the 100-channel, 1,400-airing guide was
+  22.5 s (3.6 s on a fresh pod) through SQLite and 73.3 s staged, with
+  the shim at INFO; 598 s with the shim at DEBUG, whose trace (3.3 GB in
+  ten minutes) had the kind node's etcd timing out and the manager
+  withdrawing the pod -- never run a load at DEBUG. PostgreSQL's own time
+  for the staged load was under a second: the 73 s are round trips. The
+  statement log (`log_statement = all`) shows why there are so many: the
+  loader rewrites a show's taggings on every airing of the show (37,810
+  tagging inserts and 671 deletes for 2,212 final rows), and every
+  statement is a round trip through the shim, a write's three with its
+  savepoint and a read's two with the `SET statement_timeout` before it,
+  some 200,000 in all. So a staged load costs about 50 ms an airing on the
+  rig over SQLite's, which for talos's 60,000-airing cloud load is 50
+  minutes on top of the 21 the load takes today (whose "database"
+  1,651 s are PMS's own per-programme fetches). plex-postgresql `.51`
+  (next) drops the per-read `SET` on a guide's or a load's own connection,
+  set to no timeout at its connect; the savepoints' cost is measured
+  below, and they buy nothing, since the loader never continues past a
+  refused statement.
+- The savepoints ran: 6,740 `SAVEPOINT plex_pg_stmt` in PostgreSQL's log
+  for the INFO run (the shim logs only a refused one).
+- The recovery rule changed to the guide file's inode (above), after the
+  rig showed a failed from-scratch load leaves the DVR's `refreshedAt`
+  alone and talos that a cancelled incremental refresh moves it.
+
+**Not yet:** savepoints off (timing), fds across two swaps, PMS killed
+mid-load, 100 probes during a load, the late hook (covered by the
+recovery test; no knob on the rig), the refused statement (the loader
+fails the load; the map guard needs a cloud block, not on the rig), the
+cloud lineup (needs a claimed server: the rig stays unclaimed, see the
+identity note); talos with the value on. The `.48`
 deploy (talos rev 221, 2026-11-04) carries both halves inert, except the
 map guard, which runs whatever the value: checked against talos's live DVR
 32 before that deploy (PMS stores the map byte for byte as the tuner sends
