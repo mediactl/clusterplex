@@ -859,8 +859,11 @@ func mapDifference(want, have []plexapi.ChannelMapping) (missing, changed, extra
 // waits for the next pass and is recorded once. A whole load follows, as a
 // saved map's does (about 30 min for 233 channels), and the ask is
 // remembered for emptyGuideRetry, since the horizon moves only when the
-// load ends. PMS leaves the DVR's refreshedAt alone after an incremental
-// refresh, which is why the horizon, not that, is the measure.
+// load ends. PMS moves the DVR's refreshedAt at the end of any refresh, a
+// cancelled or failed one too (2026-11-04: a cancel mid-chunk left 165
+// channels without two days of airings and refreshedAt moved anyway), so
+// it says a refresh ended, not that the guide is whole; the horizon is
+// the measure.
 func (c *Converger) refreshCloudGuide(ctx context.Context, p Provider, b Block, id string, dvr plexapi.DVR, ps *pass) error {
 	now := c.now().UTC()
 	if c.GuideHorizon == nil || dvr.UUID == "" || !inWindow(now.Hour(), c.CloudRefresh) {

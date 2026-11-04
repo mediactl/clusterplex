@@ -301,5 +301,5 @@ until the next restart. plex-postgresql `v1.3.17-clusterplex.46` runs a
 guide's connection with no timeout; `prefs.GuideRefresh` keeps the task on
 with Live TV; and `Converger.refreshCloudGuide` became the fallback it
 should have been, reloading whole only a guide whose latest airing ends
-within seven days (`GuideHorizon`), since PMS leaves `refreshedAt` alone
-after an incremental refresh.
+within seven days (`GuideHorizon`), since `refreshedAt` moves at the end of
+a cancelled or failed refresh as well as a complete one (2026-11-04).

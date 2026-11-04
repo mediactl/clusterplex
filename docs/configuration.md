@@ -824,8 +824,9 @@ reloaded whole (`POST /livetv/dvrs/<key>/reloadGuide`), never while PMS
 loads a guide, nor while a recording or Live TV session runs (a
 `grabber.grab` activity), which is recorded once as
 `DVRGuideRefreshWaiting` and tried again on the next pass. The guide's
-reach is read from its schema, since PMS leaves the DVR's `refreshedAt`
-alone after an incremental refresh. `none` turns the fallback off.
+reach is read from its schema: PMS moves the DVR's `refreshedAt` at the
+end of any refresh, a cancelled or failed one too, so it says a refresh
+ended, not that the guide is whole. `none` turns the fallback off.
 
 ### Guide loads in PostgreSQL
 

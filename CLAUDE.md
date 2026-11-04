@@ -321,7 +321,8 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   size. The lease
   holder now reloads each cloud block's guide once a day
   (`Converger.refreshCloudGuide`: within `plex.liveTV.guideRefreshWindow`,
-  UTC hours, default 8-11, once the DVR's `refreshedAt` is 20 h old; never
+  UTC hours, default 8-11, when the guide's horizon is under seven days
+  away (`GuideHorizon`, the schema's latest airing); never
   during a load, a recording or a Live TV session, `DVRGuideRefreshWaiting`).
   See "The cloud guide's daily reload" in `docs/configuration.md`.
 - **PMS's incremental guide refresh streams the whole guide it holds
@@ -344,10 +345,24 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   in the pod's UTC), the refresh is incremental (`DvrIncrementalEpgLoader`,
   a default: two-day chunks, ~10 min for 248 channels, "Step 2/7: skipping
   chunk for incremental loading"), it cannot be run by hand (`POST
-  /butler/RefreshEpgGuides` does nothing outside its schedule) and it leaves
-  the DVR's `refreshedAt` alone, so `Converger.refreshCloudGuide` is the
+  /butler/RefreshEpgGuides` does nothing outside its schedule) and it moves
+  the DVR's `refreshedAt` whether it completed or was cancelled, so
+  `Converger.refreshCloudGuide` is the
   fallback: a cloud guide whose latest airing ends within seven days
   (`GuideHorizon`, read from its schema) is reloaded whole in the window.
+  Shim .47-.49 (Dockerfile `PLEX_PG_REF=v1.3.17-clusterplex.49`) then
+  fixed three statements of the refresh's own the translator missed (an
+  ICU `COLLATE` after an `IN` list, an escaped `''` in a literal, backticks
+  under a collation). **A refresh is not atomic:** PMS empties a two-day
+  chunk's window for every channel before it refills it channel by
+  channel, so a cancel (the owner's `DELETE /livetv/dvrs/32/reloadGuide`
+  from Plex Web, 2026-11-04 19:34Z, 83 of 248 channels in) or a failure
+  mid-chunk leaves the unfetched channels with no airings for those two
+  days, and PMS writes the provider row as refreshed to the horizon
+  anyway, so nothing re-runs it until the next night; the repair is to
+  stale the row and restart PMS. That is the case for the manager writing
+  the guide itself (`docs/superpowers/specs/2026-11-04-cloud-guide-loader-design.md`,
+  parked).
 - **Live TV's "Could not tune channel" can be a missing audio decoder,
   not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
   decoders, among others. PMS downloads each into `Codecs/<transcoder
