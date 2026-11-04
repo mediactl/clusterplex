@@ -161,6 +161,21 @@ func TestOperatorPreferencesCannotOverrideTheForcedOnes(t *testing.T) {
 	assert.Equal(t, "0", prefs["ButlerTaskAnalyzeMedia"])
 }
 
+func TestTheDefaultsAreWrittenUnderTheOperatorsPreferences(t *testing.T) {
+	// cluster-plex's own choices reach Preferences.xml on every start, and
+	// a declared value of one of them wins.
+	podIdentity(t)
+	c, err := loadConfig([]string{"--postgres-host", "postgres"})
+	require.NoError(t, err)
+	prefs := c.EnforcedPreferences("")
+	assert.Equal(t, "0", prefs["sendCrashReports"])
+	assert.Equal(t, "1", prefs["DvrIncrementalEpgLoader"])
+
+	c, err = loadConfig([]string{"--postgres-host", "postgres", "--plex-preference", "sendCrashReports=1"})
+	require.NoError(t, err)
+	assert.Equal(t, "1", c.EnforcedPreferences("")["sendCrashReports"])
+}
+
 func TestConfigKeepsWorkingWithTheExistingEnvironmentVariableNames(t *testing.T) {
 	podIdentity(t)
 	t.Setenv("CLUSTERPLEX_WORKER_PORT", "1234")

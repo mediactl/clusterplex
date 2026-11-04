@@ -90,6 +90,9 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   schedulers, `PublishServerOnPlexOnlineKey`, `ManualPortMappingMode` and
   `customConnections` are written on every start and *refused* as configuration.
   See `pkg/plex/prefs/required.go` and the table in `docs/configuration.md`.
+  Two settings are cluster-plex's *defaults* instead (`prefs.Defaults`, owner
+  2026-11-04: `sendCrashReports` off, `DvrIncrementalEpgLoader` on): written
+  under the declared preferences on every start, and declarable.
 - **Plex's configuration is provisioned through its API, never its
   database.** Providers, agents and libraries are created (never deleted)
   by the Lease holder from `plex.metadataProviders`/`plex.libraries`; a
@@ -289,8 +292,10 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   Mobile on talos) had its 14-day window move only when its channel map was
   saved: six whole loads that day, none a refresh. Every load is the whole
   guide (PMS 1.43.5: all mapped channels, 14 days in two 7-day steps, about
-  30 min for 233 channels; its hidden `DvrIncrementalEpgLoader` pref is false
-  and untested), so a map change costs a load whatever its size. The lease
+  30 min for 233 channels; its hidden `DvrIncrementalEpgLoader` pref, off in
+  PMS, is on here since 2026-11-04 as a `prefs.Defaults` entry and untested
+  until the first load under it), so a map change costs a load whatever its
+  size. The lease
   holder now reloads each cloud block's guide once a day
   (`Converger.refreshCloudGuide`: within `plex.liveTV.guideRefreshWindow`,
   UTC hours, default 8-11, once the DVR's `refreshedAt` is 20 h old; never

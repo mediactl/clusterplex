@@ -202,6 +202,27 @@ Remote-access publishing being off does not stop remote clients connecting.
 plex.tv still hands out `customConnections`; what stops is Plex probing its own
 public address and trying to map a port for it.
 
+### Settings cluster-plex chooses
+
+Two settings are cluster-plex's defaults rather than the architecture's
+requirements: written on every start under the preferences you declare, so a
+value set by hand in the Plex web interface does not linger past a restart,
+but yours to declare otherwise (`pkg/plex/prefs/required.go`, `Defaults`).
+
+| Setting | Value | Why cluster-plex chooses it |
+| --- | --- | --- |
+| `sendCrashReports` | `0` | "Send crash reports to Plex", on by default in PMS. A crash here is in a server whose SQLite is a shim over PostgreSQL and whose helper binaries are wrappers, so a report would describe cluster-plex's bugs to Plex. The uploader is a no-op binary in this image and the bootstrap empties `Crash Reports` before every start, so the switch only decides whether PMS spawns it. |
+| `DvrIncrementalEpgLoader` | `1` | PMS's incremental guide loader: hidden, off by default, documented nowhere by Plex. Without it PMS 1.43.5 loads every mapped channel's 14 days whole at each load, a saved channel map's and the daily cloud-guide reload alike (about 30 minutes for 233 channels, each copied into PostgreSQL at the load's rename), so a refresh costs a whole load whatever moved. Turned on 2026-11-04; what it does to that path is read off the first load under it. |
+
+To keep the other value, declare it like any preference:
+
+```yaml
+plex:
+  preferences:
+    - name: sendCrashReports
+      value: "1"
+```
+
 ### Setting the friendly name
 
 Worth calling out, because it is specific to running Plex this way. With no
@@ -789,9 +810,9 @@ while a recording or a Live TV session runs (a `grabber.grab` activity),
 which is recorded once as `DVRGuideRefreshWaiting` and tried again on the
 next pass. The reload is a whole load, like a saved map's: about 30
 minutes for 233 channels on PMS 1.43.5, which loads 14 days in two 7-day
-steps and has no incremental mode by default (its hidden preference
-`DvrIncrementalEpgLoader` is false and untested). `none` turns the daily
-reload off.
+steps. cluster-plex turns its hidden `DvrIncrementalEpgLoader` preference
+on ("Settings cluster-plex chooses", above; off in PMS by default, and
+untested until the first load under it). `none` turns the daily reload off.
 
 ### Grabs no player watches
 

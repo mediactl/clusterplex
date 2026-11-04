@@ -166,3 +166,26 @@ func TestRequiredLeavesTheFilesToClustarr(t *testing.T) {
 func TestRequiredTurnsTheRelayOff(t *testing.T) {
 	assert.Equal(t, "0", Required()["RelayEnabled"])
 }
+
+func TestCrashReportsAreOffAndTheIncrementalGuideLoaderOnByDefault(t *testing.T) {
+	// The uploader is a no-op binary here and the bootstrap empties the
+	// Crash Reports directory, so sending reports could only spawn it;
+	// and a whole guide load is 30 minutes for 233 channels.
+	d := Defaults()
+	assert.Equal(t, "0", d["sendCrashReports"])
+	assert.Equal(t, "1", d["DvrIncrementalEpgLoader"])
+}
+
+func TestADefaultMayStillBeDeclared(t *testing.T) {
+	// A default is cluster-plex's choice, not the architecture's: an
+	// operator who wants the other value declares it and is not refused.
+	for name := range Defaults() {
+		assert.NoError(t, Validate(map[string]string{name: "1"}), name)
+		assert.Empty(t, forcedBy(name), "%s is fixed, so it cannot be a default", name)
+	}
+}
+
+func TestCallersCannotMutateTheDefaults(t *testing.T) {
+	Defaults()["sendCrashReports"] = "1"
+	assert.Equal(t, "0", Defaults()["sendCrashReports"])
+}

@@ -477,16 +477,18 @@ func validateExternalURL(raw string) error {
 }
 
 // EnforcedPreferences is everything written into Preferences.xml on every
-// start: what the operator declared, with the settings this architecture fixes
-// applied over the top. The order matters — the forced ones win — though
-// declaring one is refused at load, so it should never come to that.
+// start: what cluster-plex chooses by default, what the operator declared
+// over it, and the settings this architecture fixes applied over the top. The
+// order matters — a declared value beats a default, and the forced ones win —
+// though declaring a forced one is refused at load, so it should never come
+// to that.
 //
 // externalURL is passed in rather than read from the config because it is not
 // always configuration: with plex-external-url empty it is the Service's
 // address, which only the cluster knows and which can change. An empty one
 // leaves whatever Plex already advertises alone.
 func (c Config) EnforcedPreferences(externalURL string) map[string]string {
-	prefs := make(map[string]string, len(c.Preferences))
+	prefs := plexprefs.Defaults()
 	maps.Copy(prefs, c.Preferences)
 	maps.Copy(prefs, plexprefs.Enforced(externalURL, c.TranscodeDir))
 	return prefs

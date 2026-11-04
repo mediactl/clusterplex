@@ -137,6 +137,36 @@ var refused = map[string]string{
 		"so this would drop authentication for all clients or for none; restrict access at the proxy instead",
 }
 
+// defaults are the settings cluster-plex chooses for every install and an
+// operator may still declare otherwise. They are written on every start
+// under the declared preferences, so a value set by hand in the Plex web
+// interface does not linger past a restart, and refused nowhere, since each
+// has a defensible other value on some install -- which is what separates
+// them from required.
+var defaults = map[string]string{
+	// Crash reports to Plex, off (owner, 2026-11-04; PMS defaults it on). A
+	// crash here is in a server whose SQLite is a shim over PostgreSQL and
+	// whose helper binaries are wrappers, so a report would describe
+	// cluster-plex's bugs to Plex. The uploader is a no-op binary in this
+	// image and the bootstrap empties Crash Reports before every start
+	// (pkg/plex/bootstrap), so the switch only decides whether PMS spawns
+	// it; off, it does not.
+	"sendCrashReports": "0",
+	// PMS's incremental guide loader, on (owner, 2026-11-04). Hidden, off by
+	// default and documented nowhere by Plex. Without it PMS 1.43.5 loads
+	// every mapped channel's 14 days whole at each load -- a saved channel
+	// map's and the lease holder's daily reload of a cloud guide alike,
+	// about 30 min for 233 channels, each copied into PostgreSQL at the
+	// load's rename -- so a guide refresh costs a whole load whatever moved.
+	// What the incremental loader does to that path is read off the first
+	// load under it; until then it was false and untested.
+	"DvrIncrementalEpgLoader": "1",
+}
+
+// Defaults returns the settings cluster-plex chooses but an operator may
+// declare otherwise.
+func Defaults() map[string]string { return maps.Clone(defaults) }
+
 // Required returns the settings the architecture fixes, independent of any
 // address the proxy is reachable on.
 func Required() map[string]string {
