@@ -2,6 +2,7 @@ package livetv_test
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -257,6 +258,37 @@ func TestADeviceAtAStaleURIIsReplaced(t *testing.T) {
 	assert.Equal(t, 1, r.pms.saves[string(devs[0].Key)], "the new DVR's map is saved")
 	assert.Equal(t, 1, count(r.ev.reasons(), livetv.ReasonReplaced))
 	assert.Equal(t, "machine-a", r.leases.holder[ns+"/livetv-b0000000"], "the Lease is kept through the replacement")
+}
+
+// TestAnOldDeviceStaysWhilePMSCannotReachTheNewOne: a block that moved to
+// a new device (argon-tv onto Plex's own guide, 2026-11-04) is named in the
+// status before the tuner serves the device, and PMS answers not found to
+// its registration. The old device and its DVR stay until the new one is
+// in, rather than leaving Plex without Live TV in between.
+func TestAnOldDeviceStaysWhilePMSCannotReachTheNewOne(t *testing.T) {
+	r := newRig(t)
+	old := r.block(0)
+	r.converge(t, 4, provider(old))
+	r.pms.takeWrites()
+
+	moved := r.block(1)
+	moved.Start, moved.FriendlyName = old.Start, old.FriendlyName
+	r.pms.failOnce("POST", "/media/grabbers/devices", http.StatusNotFound)
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{provider(moved)})
+	require.Error(t, err, "the block's add failed")
+	r.pms.endLoad()
+	assert.Equal(t, livetv.Pending, res.Status)
+	assert.Zero(t, count(r.pms.takeWrites(), "DELETE"), "the old device and its DVR stay while the new one cannot be added")
+	devs, dvrs := r.pms.state()
+	require.Len(t, devs, 1)
+	assert.Equal(t, old.URI, devs[0].URI)
+	require.Len(t, dvrs, 1)
+
+	r.converge(t, 6, provider(moved))
+	devs, dvrs = r.pms.state()
+	require.Len(t, devs, 1)
+	assert.Equal(t, moved.URI, devs[0].URI, "once the new device is in, the old one goes")
+	require.Len(t, dvrs, 1)
 }
 
 // TestADeviceStoredAtAnotherURIIsNotReplacedAgain: a PMS that keeps a

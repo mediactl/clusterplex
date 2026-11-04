@@ -183,6 +183,9 @@ type Converger struct {
 	saved map[string]savedHashes
 	// told dedupes the messages a pass would otherwise repeat every time.
 	told map[string]string
+	// removalsHeld is whether the last pass kept the devices no block
+	// names because a block failed to converge, so the hold is logged once.
+	removalsHeld bool
 	// held is, by device id, the Leases this converger holds, renewed even
 	// on a pass that cannot reach PMS: the device is still in PMS, and a
 	// lapse would let another installation register the block beside it.
@@ -378,13 +381,27 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	}
 
 	// Managed rows no live block names: a removed block, a gone provider.
+	// Not on a pass a block failed on: a block that moved to a new device
+	// (argon-tv onto Plex's own guide, 2026-11-04) named it before the
+	// tuner served it, PMS could not fetch it ("POST /media/grabbers/devices:
+	// plex: not found"), and the old device's DVR was deleted at once, so
+	// Plex had no Live TV until the add succeeded 90 s later. The old device
+	// and its DVR stay until every block is in.
 	gone := Provider{Name: "(gone)"}
-	for id, dev := range ps.devices {
-		if named[id] || !c.underService(dev.URI) {
-			continue
+	if pending {
+		if !c.removalsHeld {
+			c.log("a block did not converge; the devices no block names stay until it does")
 		}
-		if err := c.remove(ctx, gone, dev, ps); err != nil {
-			fail(gone, "device "+dev.UUID, err)
+		c.removalsHeld = true
+	} else {
+		c.removalsHeld = false
+		for id, dev := range ps.devices {
+			if named[id] || !c.underService(dev.URI) {
+				continue
+			}
+			if err := c.remove(ctx, gone, dev, ps); err != nil {
+				fail(gone, "device "+dev.UUID, err)
+			}
 		}
 	}
 	for _, d := range ps.ghosts(c.underService) {
