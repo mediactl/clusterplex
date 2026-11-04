@@ -457,7 +457,8 @@ chart and `docs/configuration.md`):
   schemas.
 
 **plex-postgresql** (`a20a76e`, on top of `.47`; to be released as
-`v1.3.17-clusterplex.48`): `guide_load.rs` holds the flags, the stage
+`v1.3.17-clusterplex.49`, since a peer session cut `.48` the same
+afternoon for a second translator fix found on the incremental refresh): `guide_load.rs` holds the flags, the stage
 request at the open (`db_interpose_open.rs`, before the real open, 60 s),
 the result-cache key (none for a load) and the statement savepoints
 (`write_exec.rs`, `cached_write.rs`, `SAVEPOINT plex_pg_stmt`, on unless
@@ -466,8 +467,17 @@ the result-cache key (none for a load) and the statement savepoints
 guide; `should_redirect_with` redirects a load only under the flag; 869 lib
 tests pass and the cdylib links. The gating sits in `pg_config.rs` and
 `guide_load.rs`, not `pg_route.rs`, which a peer session was changing for
-`.47` (an IN list's ICU collation, the one loader-statement miss found on
-the incremental refresh so far).
+`.47` (an IN list's ICU collation) and `.48` (a doubled quote inside a
+literal, `title='America''s Funniest Home Videos'`, read as the literal's
+end, so the ORDER BY's `collate icu_root` reached the parser unrewritten).
+Both were found on PMS's incremental refresh, which already sends the
+loader's statements through the translator: the title lookup is `select
+<every column> from metadata_items left join media_items ... where
+library_section_id=? and metadata_type=2 and title='<title>' order by
+absolute_index, "index", title_sort collate icu_root, id, media_items.width
+desc, originally_available_at`, the title inlined as a literal. The loader
+inlines values, so the rig's XMLTV guide should carry titles with
+apostrophes, doubled quotes, backslashes and non-ASCII.
 
 **Not yet:** the shim release and cluster-plex's `PLEX_PG_REF` bump; the
 rig runs, which need the kind cluster-plex rig (manager, PMS, PostgreSQL)

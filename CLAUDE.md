@@ -286,7 +286,7 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   `docs/configuration.md`. **Since 2026-11-04 the load itself can be
   PostgreSQL's** (`plex.liveTV.guideLoadsInPostgres`, off by default;
   `docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md`):
-  the shim (`PLEX_PG_GUIDE_LOADS`, plex-postgresql .48) asks the manager
+  the shim (`PLEX_PG_GUIDE_LOADS`, plex-postgresql .49) asks the manager
   over the guide socket to `stage <load file>` at its open, the manager
   marks the guide's staging schema loading and writes a marked shadow
   (`plexbootstrap.ShadowMark`, SQLite's `application_id`) over PMS's
