@@ -532,11 +532,9 @@ map). Fixed in plex-postgresql `v1.3.17-clusterplex.50`
 `id`, or INSERT that names it, is followed by one `setval` to the greater
 of `max(id)` and the sequence's last value, proven on the rig's staging
 schema (an empty table leaves 2 at 2; an explicit 7 makes the next 8). The
-rig's trace at `PLEX_PG_LOG_LEVEL=DEBUG` also showed no `SAVEPOINT
-plex_pg_stmt` at all during the load (the loader's writes ran on the
-handle's own connection, with BEGIN/COMMIT pairs on it), which is moot for
-correctness after the finding above and is to be read before the savepoints
-are relied on for anything.
+shim logs its savepoint statements only when PostgreSQL refuses one, so
+whether they ran is read from the rig's PostgreSQL with `log_statement =
+'all'` on the next run, not from the shim's trace.
 
 **Not yet:** the rest of the rig runs, on `.50`; talos with the value on. The `.48`
 deploy (talos rev 221, 2026-11-04) carries both halves inert, except the
