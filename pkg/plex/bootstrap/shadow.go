@@ -3,8 +3,10 @@ package bootstrap
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -82,6 +84,9 @@ func BuildShadow(ctx context.Context, log *slog.Logger, pg *pgx.Conn, dbFile, sc
 
 	if err := syncMigrations(ctx, log, pg, db, schema); err != nil {
 		log.Warn("sync schema_migrations into the shadow", "db", name, "error", err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id = %d", ShadowMark)); err != nil {
+		return fmt.Errorf("mark the shadow %s: %w", name, err)
 	}
 	if name != LibraryDB {
 		return nil
@@ -361,4 +366,101 @@ func pgColumns(ctx context.Context, pg *pgx.Conn, schema, table string) (map[str
 
 func quoteSQLite(ident string) string {
 	return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
+}
+
+// ShadowMark is the SQLite application_id every shadow the manager builds
+// carries ("CLPX"): what tells a file the manager wrote from one PMS wrote,
+// such as the template PMS copies into place for a guide load
+// (docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md).
+// PMS's own files carry 0, SQLite's default.
+const ShadowMark uint32 = 0x434C5058
+
+// sqliteHeader is the magic every SQLite database file starts with; the
+// application_id sits at byte 68 of the 100-byte header, big-endian.
+const (
+	sqliteHeader        = "SQLite format 3\x00"
+	sqliteHeaderLen     = 100
+	sqliteAppIDOffset   = 68
+	shadowTemplateDir   = ".clusterplex"
+	shadowTemplateName  = "guide-shadow.db"
+	shadowWriteTempName = ".clusterplex-tmp"
+)
+
+// IsShadow reports whether file is a shadow the manager built (ShadowMark
+// in its header). A file that is no SQLite database, or too short to carry
+// a header, is not one; a file that does not exist is an error.
+func IsShadow(file string) (bool, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	var header [sqliteHeaderLen]byte
+	n, err := io.ReadFull(f, header[:])
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	if n < sqliteHeaderLen || string(header[:len(sqliteHeader)]) != sqliteHeader {
+		return false, nil
+	}
+	return binary.BigEndian.Uint32(header[sqliteAppIDOffset:sqliteAppIDOffset+4]) == ShadowMark, nil
+}
+
+// ShadowTemplate is the path of the guide-shadow template under the
+// Databases directory dir: one shadow, built at start, copied over every
+// guide load PMS begins.
+func ShadowTemplate(dir string) string {
+	return filepath.Join(dir, shadowTemplateDir, shadowTemplateName)
+}
+
+// BuildShadowTemplate builds the guide-shadow template under dir from the
+// SQLite schema file and schema's migrations, as BuildShadow builds a
+// guide's shadow.
+func BuildShadowTemplate(ctx context.Context, log *slog.Logger, pg *pgx.Conn, dir, schemaFile, schema string) error {
+	file := ShadowTemplate(dir)
+	if err := mkdirAll(filepath.Dir(file)); err != nil {
+		return err
+	}
+	return BuildShadow(ctx, log, pg, file, schemaFile, schema, nil)
+}
+
+// WriteShadowFrom puts a copy of the shadow template at dst in one rename,
+// removing any write-ahead log or journal beside dst first: what a guide
+// load's file becomes once the load is staged in PostgreSQL, so PMS opens
+// a shadow where it copied its template.
+func WriteShadowFrom(template, dst string) error {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := os.Remove(dst + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s%s: %w", filepath.Base(dst), suffix, err)
+		}
+	}
+	src, err := os.Open(template)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	tmp := dst + shadowWriteTempName
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("copy the shadow template to %s: %w", filepath.Base(dst), err)
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("put the shadow at %s: %w", filepath.Base(dst), err)
+	}
+	return nil
 }

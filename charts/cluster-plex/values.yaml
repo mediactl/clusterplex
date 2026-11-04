@@ -108,6 +108,12 @@ plex:
     # hours, "start-end", when no guide load, recording or Live TV session
     # runs; "none" turns that fallback off.
     guideRefreshWindow: "8-11"
+    # The PostgreSQL shim stages every guide load PMS makes in PostgreSQL
+    # as PMS opens it, and PMS's rename swaps the schemas in; off, a load
+    # is made in a SQLite file and copied into its schema at the rename
+    # (docs/configuration.md, "Guide loads in PostgreSQL"). Off until a
+    # release has run it on the rig.
+    guideLoadsInPostgres: false
   # Audio codecs whose decoders the lease holder has Plex download once it
   # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex
   # downloads a decoder only for a transcode of a file it has analysed,

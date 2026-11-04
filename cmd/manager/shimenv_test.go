@@ -184,3 +184,12 @@ func TestShimEnvNamesTheGuideSocket(t *testing.T) {
 	cfg.GuideSocket = ""
 	assert.NotContains(t, strings.Join(shimEnv(nil, cfg), "\n"), "PLEX_PG_GUIDE_SOCKET", "no socket, and the poll copies every load")
 }
+
+func TestShimEnvTurnsGuideLoadsInPostgresOnOnlyWithTheSocket(t *testing.T) {
+	cfg := Config{ShimLibrary: "/usr/local/lib/plex-postgresql/db_interpose_pg.so", GuideSocket: GuideSocket, Postgres: plexdb.Config{Schema: "plex"}}
+	assert.NotContains(t, strings.Join(shimEnv(nil, cfg), "\n"), "PLEX_PG_GUIDE_LOADS", "off by default")
+	cfg.LiveTV.GuideLoadsInPostgres = true
+	assert.Contains(t, shimEnv(nil, cfg), "PLEX_PG_GUIDE_LOADS=1")
+	cfg.GuideSocket = ""
+	assert.NotContains(t, strings.Join(shimEnv(nil, cfg), "\n"), "PLEX_PG_GUIDE_LOADS", "a load can only be staged over the socket")
+}

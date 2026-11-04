@@ -50,6 +50,11 @@ type fakePMS struct {
 	// storeAs, when set, is the URI PMS keeps for a device registered at
 	// uri: a PMS that normalises what it was given.
 	storeAs func(uri string) string
+	// mapOverride is, by device key, a map PMS holds in place of the one
+	// saved: PMS's own pairing after a load that failed.
+	mapOverride map[string][]plexapi.ChannelMapping
+	// deviceReads counts GET /media/grabbers/devices/<key>.
+	deviceReads int
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
@@ -112,6 +117,25 @@ func (f *fakePMS) failOnce(method, path string, status int) {
 	f.mu.Lock()
 	f.failNext[method+" "+path] = status
 	f.mu.Unlock()
+}
+
+// replaceMap has PMS hold m as device key's map, as PMS pairs the channels
+// itself after a load that failed, and moves the DVR's refreshedAt as a
+// load's end does.
+func (f *fakePMS) replaceMap(key string, m []plexapi.ChannelMapping, refreshedAt int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mapOverride == nil {
+		f.mapOverride = map[string][]plexapi.ChannelMapping{}
+	}
+	f.mapOverride[key] = m
+	for i := range f.dvrs {
+		for _, d := range f.dvrs[i].Devices {
+			if string(d.Key) == key {
+				f.dvrs[i].RefreshedAt = refreshedAt
+			}
+		}
+	}
 }
 
 func (f *fakePMS) takeWrites() []string {
@@ -181,6 +205,30 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			w.WriteHeader(http.StatusNotFound)
 		}
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/media/grabbers/devices/"):
+		k := strings.TrimPrefix(path, "/media/grabbers/devices/")
+		f.deviceReads++
+		for _, d := range f.devices {
+			if string(d.Key) != k {
+				continue
+			}
+			if m, ok := f.mapOverride[k]; ok {
+				d.ChannelMappings = m
+			} else if q, ok := f.saved[k]; ok {
+				for id := range strings.SplitSeq(q.Get("channelsEnabled"), ",") {
+					if id == "" {
+						continue
+					}
+					d.ChannelMappings = append(d.ChannelMappings, plexapi.ChannelMapping{
+						ChannelKey: q.Get("channelMappingByKey[" + id + "]"), DeviceIdentifier: id,
+						LineupIdentifier: q.Get("channelMapping[" + id + "]"), Enabled: "1",
+					})
+				}
+			}
+			f.answer(w, "Device", []plexapi.Device{d})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/media/grabbers/devices/"):
 		k := strings.TrimPrefix(path, "/media/grabbers/devices/")
 		n := len(f.devices)
@@ -192,6 +240,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		k := strings.TrimSuffix(strings.TrimPrefix(path, "/media/grabbers/devices/"), "/channelmap")
 		f.saves[k]++
 		f.saved[k] = q
+		delete(f.mapOverride, k)
 		f.loading = true // a save rebuilds the guide (recorded)
 	case r.Method == http.MethodGet && path == "/livetv/dvrs":
 		f.answer(w, "Dvr", f.dvrs)

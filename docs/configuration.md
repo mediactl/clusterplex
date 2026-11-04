@@ -635,6 +635,7 @@ plex:
     restartEvery: 10m          # PMS restarts on the other pods, at most this often
     staleGrabAfter: 5m         # a Live TV grab no player watches is ended after this
     guideRefreshWindow: "8-11" # the whole reload of a Plex cloud guide that runs short, in UTC hours; "none" turns it off
+    guideLoadsInPostgres: false # the shim stages each guide load in PostgreSQL as PMS makes it ("Guide loads in PostgreSQL")
 ```
 
 **Blocks.** PMS takes one device's channel map in one request, capped at
@@ -825,6 +826,34 @@ loads a guide, nor while a recording or Live TV session runs (a
 `DVRGuideRefreshWaiting` and tried again on the next pass. The guide's
 reach is read from its schema, since PMS leaves the DVR's `refreshedAt`
 alone after an incremental refresh. `none` turns the fallback off.
+
+### Guide loads in PostgreSQL
+
+PMS builds every guide load in `<guide>-loading.db`, a copy of its bundled
+template, and renames it onto the guide when the load ends. With
+`guideLoadsInPostgres` the shim (`PLEX_PG_GUIDE_LOADS`) asks the manager
+over the guide socket to stage the load as PMS opens that file: the
+manager marks the guide's staging schema `epg_<uuid>_next` as loading,
+clones it from the library's schema first if none was made ahead (about
+3 s), and writes a shadow over the template PMS copied, so PMS loads into
+PostgreSQL through the shim, runs none of its migrations (the clone
+records every one) and keeps nothing of the guide in SQLite. At PMS's
+rename the shim's hook asks for the swap, and the manager analyzes the
+staging schema and renames it into place (milliseconds, where copying a
+cloud guide's load took 35 s); PMS's rename then moves the shadow onto the
+guide. A stage the manager cannot answer within 45 s, or refuses, leaves
+that load in SQLite, copied at its rename as before. A rename the manager
+never answered leaves the finished load in the staging schema, which the
+poll swaps in once PMS has refreshed the DVR (`refreshedAt`); a load that
+failed is reset by the next load's stage. Every shadow the manager builds
+carries the SQLite `application_id` `CLPX`, which is how a staged load's
+file is told from PMS's template
+(`docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md`).
+
+Off, a load is made in the SQLite file and copied into its schema at the
+rename (`docs/superpowers/specs/2026-10-21-guide-loads-copied-at-rename-design.md`).
+The setting is off by default until a release has run a load on the
+standalone rig.
 
 ### Grabs no player watches
 

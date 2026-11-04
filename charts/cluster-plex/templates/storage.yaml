@@ -74,6 +74,7 @@ data:
         restartEvery: {{ .Values.plex.liveTV.restartEvery | default "10m" | quote }}
         staleGrabAfter: {{ .Values.plex.liveTV.staleGrabAfter | default "5m" | quote }}
         guideRefreshWindow: {{ .Values.plex.liveTV.guideRefreshWindow | default "8-11" | quote }}
+        guideLoadsInPostgres: {{ .Values.plex.liveTV.guideLoadsInPostgres | default false }}
     {{- if kindIs "slice" .Values.plex.codecPrefetch }}
     plex-codec-prefetch: {{ join "," .Values.plex.codecPrefetch | default "none" | quote }}
     {{- end }}

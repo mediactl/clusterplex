@@ -187,6 +187,8 @@ func loadedGuide(t *testing.T, conn *pgx.Conn, file string, airings int, extra .
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 	stmts := []string{
+		// A load PMS made carries no mark of the manager's.
+		`PRAGMA application_id = 0`,
 		`INSERT INTO metadata_items (id, title, metadata_type, "index", added_at) VALUES (1, 'ABC News Live', 4, 3, 1792540000.7)`,
 		`INSERT INTO tags (id, tag, tag_type) VALUES (1, 'ABC (WGNO New Orleans)', 310)`,
 		`INSERT INTO media_provider_resources (id, identifier, data) VALUES (1, 'tv.plex.providers.epg.xmltv', X'00FF10')`,
@@ -445,7 +447,232 @@ func TestTheSweepDropsWhatNoGuideNeeds(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, testGuide.LoadFile()), []byte("loading"), 0o644))
 
 	require.NoError(t, SweepGuides(ctx, quiet, conn, []Guide{testGuide, other}, dir))
-	assert.ElementsMatch(t, []string{testGuide.Schema(), testGuide.Staging(), other.Schema(), "epg_notaguide"}, schemasLike(t, conn, "epg_"),
-		"kept: the listed guides, a staging schema with its load under way, and a name that is no guide's; "+
-			"dropped: a staging schema with no load, a replaced guide, and an unlisted DVR's guide")
+	assert.ElementsMatch(t, []string{testGuide.Schema(), other.Schema(), "epg_notaguide"}, schemasLike(t, conn, "epg_"),
+		"kept: the listed guides and a name that is no guide's; "+
+			"dropped: every staging schema (no load runs at a start, a load file beside one or not), a replaced guide, and an unlisted DVR's guide")
+}
+
+// pmsTemplate writes file as PMS leaves it when a load begins: its bundled
+// template copied into place, a SQLite database with no mark of ours.
+func pmsTemplate(t *testing.T, file string) {
+	t.Helper()
+	db, err := openSQLite(file)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = db.Exec("CREATE TABLE schema_migrations (version text)")
+	require.NoError(t, err)
+}
+
+func guideDir(t *testing.T, conn *pgx.Conn) (dir, template string) {
+	t.Helper()
+	dir = t.TempDir()
+	require.NoError(t, BuildShadowTemplate(context.Background(), quiet, conn, dir, filepath.Join(schemaDir, SQLiteSchemaFile), "plex"))
+	return dir, ShadowTemplate(dir)
+}
+
+// The shim routes a load to the guide's staging schema once the manager
+// has staged it: the schema marked loading, and a shadow where PMS copied
+// its template, so the open finds both.
+func TestALoadIsStagedInPostgreSQLOverPMSsTemplate(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	dir, template := guideDir(t, conn)
+	shadow, err := IsShadow(template)
+	require.NoError(t, err)
+	require.True(t, shadow, "the template is a shadow")
+	file := filepath.Join(dir, testGuide.LoadFile())
+	pmsTemplate(t, file)
+	require.NoError(t, os.WriteFile(file+"-wal", []byte("pms"), 0o644))
+
+	staged, err := StageLoad(ctx, quiet, conn, "plex", testGuide, file, template)
+	require.NoError(t, err)
+	assert.Equal(t, Staged{Fresh: true, Cloned: true}, staged, "no clone was made ahead")
+	state, err := StagingStateOf(ctx, conn, testGuide)
+	require.NoError(t, err)
+	assert.Equal(t, StagingLoading, state)
+	shadow, err = IsShadow(file)
+	require.NoError(t, err)
+	assert.True(t, shadow, "PMS's template was replaced by the shadow")
+	_, err = os.Stat(file + "-wal")
+	assert.True(t, os.IsNotExist(err), "nothing of PMS's copy stays beside it")
+	assert.Equal(t, one[int](t, conn, "SELECT count(*) FROM plex.schema_migrations"),
+		one[int](t, conn, "SELECT count(*) FROM "+testGuide.Staging()+".schema_migrations"),
+		"PMS reads every migration as done")
+
+	// Another of PMS's handles on the same load: nothing changes.
+	before, err := os.Stat(file)
+	require.NoError(t, err)
+	staged, err = StageLoad(ctx, quiet, conn, "plex", testGuide, file, template)
+	require.NoError(t, err)
+	assert.Equal(t, Staged{}, staged)
+	after, err := os.Stat(file)
+	require.NoError(t, err)
+	assert.Equal(t, before.ModTime(), after.ModTime(), "the shadow PMS has open is left alone")
+
+	// PMS copies a fresh template over an abandoned load: the staging
+	// schema's rows go with it.
+	_, err = conn.Exec(ctx, "INSERT INTO "+testGuide.Staging()+".media_items (metadata_item_id) VALUES (1)")
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(file))
+	pmsTemplate(t, file)
+	staged, err = StageLoad(ctx, quiet, conn, "plex", testGuide, file, template)
+	require.NoError(t, err)
+	assert.Equal(t, Staged{Fresh: true, Cloned: true, Recloned: true}, staged)
+	assert.Zero(t, one[int](t, conn, "SELECT count(*) FROM "+testGuide.Staging()+".media_items"))
+	shadow, err = IsShadow(file)
+	require.NoError(t, err)
+	assert.True(t, shadow)
+
+	// A clone made ahead (the fsnotify pre-clone) is what the load takes.
+	require.NoError(t, dropSchema(ctx, conn, testGuide.Staging()))
+	made, err := PrepareStaging(ctx, conn, "plex", testGuide)
+	require.NoError(t, err)
+	require.True(t, made)
+	state, err = StagingStateOf(ctx, conn, testGuide)
+	require.NoError(t, err)
+	assert.Equal(t, StagingClean, state)
+	require.NoError(t, os.Remove(file))
+	pmsTemplate(t, file)
+	staged, err = StageLoad(ctx, quiet, conn, "plex", testGuide, file, template)
+	require.NoError(t, err)
+	assert.Equal(t, Staged{Fresh: true}, staged, "nothing to clone")
+
+	// No load file: nothing to stage.
+	_, err = StageLoad(ctx, quiet, conn, "plex", testGuide, filepath.Join(dir, "none.db"), template)
+	assert.ErrorContains(t, err, "read the load file")
+}
+
+// At PMS's rename a load made in PostgreSQL is swapped in by renaming the
+// schemas, analyzed, with nothing copied; the shadow PMS renames onto the
+// guide holds no airings, so the poll never copies it.
+func TestALoadMadeInPostgreSQLIsSwappedInAtTheRename(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	dir, template := guideDir(t, conn)
+	file := filepath.Join(dir, testGuide.LoadFile())
+	pmsTemplate(t, file)
+	_, err := StageLoad(ctx, quiet, conn, "plex", testGuide, file, template)
+	require.NoError(t, err)
+	// The previous guide, with the rows PMS wrote into it.
+	made, err := EnsureGuideSchema(ctx, conn, "plex", testGuide)
+	require.NoError(t, err)
+	require.True(t, made)
+	_, err = conn.Exec(ctx, "INSERT INTO "+testGuide.Schema()+".media_items (metadata_item_id) VALUES (9), (9)")
+	require.NoError(t, err)
+	// What PMS loads.
+	for i := 1; i <= 3; i++ {
+		_, err = conn.Exec(ctx, "INSERT INTO "+testGuide.Staging()+".media_items (metadata_item_id) VALUES (1)")
+		require.NoError(t, err)
+	}
+
+	swapped, err := SwapLoaded(ctx, quiet, conn, testGuide)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	assert.Equal(t, 3, one[int](t, conn, "SELECT count(*) FROM "+testGuide.Schema()+".media_items"))
+	assert.Equal(t, []string{testGuide.Schema()}, schemasLike(t, conn, testGuide.Schema()), "the replaced guide is dropped, no staging schema left")
+	assertAnalyzed(t, conn, testGuide.Schema())
+	at, err := guideLoadedAt(ctx, conn, testGuide.Schema())
+	require.NoError(t, err)
+	assert.Positive(t, at, "the swap time orders later copies")
+
+	swapped, err = SwapLoaded(ctx, quiet, conn, testGuide)
+	require.NoError(t, err)
+	assert.False(t, swapped, "nothing loading")
+
+	// PMS renames the shadow onto the guide; the poll finds no airings in it.
+	guide := filepath.Join(dir, testGuide.File())
+	require.NoError(t, os.Rename(file, guide))
+	imported, err := ImportGuide(ctx, quiet, conn, "plex", testGuide, guide)
+	require.NoError(t, err)
+	assert.False(t, imported)
+	assert.Equal(t, 3, one[int](t, conn, "SELECT count(*) FROM "+testGuide.Schema()+".media_items"))
+
+	// Another pod's older SQLite load, copied at its start, does not undo it.
+	old := filepath.Join(t.TempDir(), testGuide.File())
+	loadedGuide(t, conn, old, 5)
+	touch(t, old, time.Unix(at/int64(time.Second)-3600, 0))
+	imported, err = ImportGuide(ctx, quiet, conn, "plex", testGuide, old)
+	require.NoError(t, err)
+	assert.False(t, imported)
+	assert.Equal(t, 3, one[int](t, conn, "SELECT count(*) FROM "+testGuide.Schema()+".media_items"))
+}
+
+// A rename the manager did not answer leaves a finished load in the
+// staging schema: the poll swaps it in once PMS has refreshed the DVR,
+// and leaves a load that failed (no refresh) for the next stage to reset.
+func TestAnUnansweredRenameIsRecoveredOnceTheDVRRefreshed(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	_, err := conn.Exec(ctx, `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
+		(2, NULL, 1, 'tv.plex.harvesters.dvr', 'adfe4a6f-79d0-4135-93d5-edf0235ec02b'),
+		(3, 2, 3, 'tv.plex.providers.epg.cloud', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`)
+	require.NoError(t, err)
+	dir, template := guideDir(t, conn)
+	cloud := Guide{Provider: "tv.plex.providers.epg.cloud", DVR: testGuide.DVR}
+	file := filepath.Join(dir, cloud.LoadFile())
+	pmsTemplate(t, file)
+	_, err = StageLoad(ctx, quiet, conn, "plex", cloud, file, template)
+	require.NoError(t, err)
+	_, since, err := stagingState(ctx, conn, cloud)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, "INSERT INTO "+cloud.Staging()+".media_items (metadata_item_id) VALUES (1)")
+	require.NoError(t, err)
+
+	refreshed := int64(0)
+	at := func(g Guide) (int64, bool) {
+		assert.Equal(t, cloud.DVR, g.DVR)
+		return refreshed, refreshed != 0
+	}
+	swapped, err := RecoverLoads(ctx, quiet, conn, "plex", dir, at)
+	require.NoError(t, err)
+	assert.Empty(t, swapped, "the load file is still there: the load runs")
+
+	require.NoError(t, os.Rename(file, filepath.Join(dir, cloud.File())))
+	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir, at)
+	require.NoError(t, err)
+	assert.Empty(t, swapped, "no refresh: a load that failed")
+	refreshed = since/int64(time.Second) - 60
+	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir, at)
+	require.NoError(t, err)
+	assert.Empty(t, swapped, "refreshed before the load began")
+
+	refreshed = since/int64(time.Second) + 60
+	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir, at)
+	require.NoError(t, err)
+	assert.Equal(t, []Guide{cloud}, swapped, "the provider is read from the library")
+	assert.Equal(t, 1, one[int](t, conn, "SELECT count(*) FROM "+cloud.Schema()+".media_items"))
+	assert.Equal(t, []string{cloud.Schema()}, schemasLike(t, conn, cloud.Schema()))
+}
+
+// At a start no load runs: a load file and a staging schema are what PMS
+// or the manager left behind, and the guide-shadow template is built.
+func TestAStartClearsEveryLoadAndBuildsTheShadowTemplate(t *testing.T) {
+	ctx := context.Background()
+	connect, conn := libraryDB(t)
+	_, err := conn.Exec(ctx, `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
+		(2, NULL, 1, 'tv.plex.harvesters.dvr', 'adfe4a6f-79d0-4135-93d5-edf0235ec02b'),
+		(3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`)
+	require.NoError(t, err)
+	plexDir := t.TempDir()
+	dir := filepath.Join(plexDir, "Plug-in Support", "Databases")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	load := filepath.Join(dir, testGuide.LoadFile())
+	pmsTemplate(t, load)
+	require.NoError(t, os.WriteFile(load+"-wal", []byte("x"), 0o644))
+	made, err := PrepareStaging(ctx, conn, "plex", testGuide)
+	require.NoError(t, err)
+	require.True(t, made)
+
+	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir))
+	_, err = os.Stat(load)
+	assert.True(t, os.IsNotExist(err), "the load file is gone")
+	_, err = os.Stat(load + "-wal")
+	assert.True(t, os.IsNotExist(err))
+	assert.Equal(t, []string{testGuide.Schema()}, schemasLike(t, conn, "epg_"), "the staging schema is gone, the guide's schema made")
+	shadow, err := IsShadow(ShadowTemplate(dir))
+	require.NoError(t, err)
+	assert.True(t, shadow, "the template is built, and marked")
+	shadow, err = IsShadow(filepath.Join(dir, testGuide.File()))
+	require.NoError(t, err)
+	assert.True(t, shadow, "the guide's shadow is marked too")
 }

@@ -48,6 +48,10 @@ type Device struct {
 	// of it failed, which PMS never retries on its own.
 	Status   string `json:"status"`
 	ParentID int    `json:"parentID"`
+	// ChannelMappings is the device's saved channel map, each entry
+	// enabled "1": answered by GET /media/grabbers/devices/<key> (Device),
+	// not by the listing.
+	ChannelMappings []ChannelMapping `json:"ChannelMapping"`
 }
 
 // DVR is a PMS DVR (GET /livetv/dvrs): a lineup over one or more devices.
@@ -190,6 +194,22 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 	}
 	err := c.doLimit(ctx, http.MethodGet, "/media/grabbers/devices", nil, &out, maxLiveTVBody)
 	return out.MediaContainer.Device, err
+}
+
+// Device reads one device with its saved channel map (ChannelMappings).
+func (c *Client) Device(ctx context.Context, key string) (Device, error) {
+	var out struct {
+		MediaContainer struct {
+			Device []Device `json:"Device"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.doLimit(ctx, http.MethodGet, "/media/grabbers/devices/"+url.PathEscape(key), nil, &out, maxLiveTVBody); err != nil {
+		return Device{}, err
+	}
+	if len(out.MediaContainer.Device) == 0 {
+		return Device{}, ErrNotFound
+	}
+	return out.MediaContainer.Device[0], nil
 }
 
 // AddDevice registers the device at uri.

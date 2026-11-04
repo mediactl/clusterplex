@@ -23,9 +23,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
+	"github.com/mediactl/clusterplex/pkg/plex/livetv"
 )
 
 const (
@@ -99,4 +103,58 @@ func TestAPlexBlocksMapIsSavedAgainWhenItsLineupHashMoves(t *testing.T) {
 	b.LineupHash = "l-moved"
 	r.converge(t, 4, provider(b))
 	assert.Equal(t, before+1, r.pms.saves[string(devices[0].Key)])
+}
+
+// PMS replaces a Plex block's channel map with a pairing of its own at
+// the end of a load that failed (2026-11-04): the map is read back once
+// the DVR's refreshedAt moves, saved again when it differs, and not again
+// within the hour however often PMS replaces it.
+func TestAChannelMapPMSReplacedIsSavedAgainOnceAnHour(t *testing.T) {
+	r := newRig(t)
+	r.conv.HTTP = plexBlock(r)
+	now := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	r.conv.Now = func() time.Time { return now }
+	b := r.block(0)
+	b.Lineup, b.GuidePath, b.GuideHash = cloudLineup, "", ""
+	r.converge(t, 6, provider(b))
+	devices, _ := r.pms.state()
+	key := string(devices[0].Key)
+	r.pms.takeWrites()
+	reads := r.pms.deviceReads
+
+	// The load ends with the map as saved: nothing to do.
+	r.pms.replaceMap(key, nil, now.Unix())
+	delete(r.pms.mapOverride, key)
+	r.converge(t, 2, provider(b))
+	assert.Greater(t, r.pms.deviceReads, reads, "read back once the DVR refreshed")
+	assert.Zero(t, count(r.pms.takeWrites(), "PUT "))
+	reads = r.pms.deviceReads
+	r.converge(t, 2, provider(b))
+	assert.Equal(t, reads, r.pms.deviceReads, "not read again until the DVR refreshes or ten minutes pass")
+
+	// PMS pairs 1070 with another lineup channel and adds one of its own.
+	r.pms.replaceMap(key, []plexapi.ChannelMapping{
+		{ChannelKey: cloudKey, DeviceIdentifier: "1070", LineupIdentifier: "355", Enabled: "1"},
+		{ChannelKey: cloudKey, DeviceIdentifier: "1071", LineupIdentifier: "356", Enabled: "1"},
+	}, now.Add(time.Minute).Unix())
+	r.converge(t, 4, provider(b))
+	writes := r.pms.takeWrites()
+	assert.Equal(t, 1, count(writes, "PUT "), "%v", writes)
+	assert.Equal(t, "265", r.pms.saved[key].Get("channelMapping[1070]"), "the tuner's pairing again")
+	assert.Contains(t, r.ev.reasons(), livetv.ReasonChannelMapRestored)
+
+	// PMS replaces it again at that load's end: told once, not saved again
+	// within the hour.
+	r.pms.replaceMap(key, []plexapi.ChannelMapping{
+		{ChannelKey: cloudKey, DeviceIdentifier: "1070", LineupIdentifier: "355", Enabled: "1"},
+	}, now.Add(2*time.Minute).Unix())
+	before := len(r.ev.reasons())
+	r.converge(t, 4, provider(b))
+	r.converge(t, 4, provider(b))
+	assert.Zero(t, count(r.pms.takeWrites(), "PUT "))
+	assert.Equal(t, before+1, len(r.ev.reasons()), "recorded once")
+
+	now = now.Add(2 * time.Hour)
+	r.converge(t, 4, provider(b))
+	assert.Equal(t, 1, count(r.pms.takeWrites(), "PUT "), "saved again after the hour")
 }

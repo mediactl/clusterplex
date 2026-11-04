@@ -20,9 +20,13 @@ import (
 
 // Each Live TV guide is served from a schema of its own
 // (docs/superpowers/specs/2026-10-20-epg-in-postgresql-design.md), but PMS
-// loads a guide into a SQLite file it then renames onto the guide's. The
-// manager copies each load into the schema (plexbootstrap.ImportGuide), at
-// the rename when the shim asks it to over the guide socket
+// loads a guide into a SQLite file it then renames onto the guide's. With
+// PLEX_PG_GUIDE_LOADS the shim asks the manager over the guide socket to
+// stage each load in PostgreSQL as PMS opens it, and the swap at PMS's
+// rename renames the schemas
+// (docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md);
+// a load left in SQLite is copied into the schema
+// (plexbootstrap.ImportGuide), at the rename when the shim asks
 // (docs/superpowers/specs/2026-10-21-guide-loads-copied-at-rename-design.md),
 // else on a poll.
 
@@ -150,6 +154,9 @@ func (m *Manager) copyGuides(ctx context.Context, dvrUUID string) {
 		}
 		delete(m.guides.failed, file)
 	}
+	if dvrUUID == "" && connect() {
+		m.recoverLoads(ctx, conn)
+	}
 }
 
 func (m *Manager) guideDir() string {
@@ -271,12 +278,18 @@ func (m *Manager) serveGuideSocket(ctx context.Context, ln net.Listener) {
 // reads the manager's reason rather than its own timeout.
 const guideSwapDeadline = 230 * time.Second
 
-// handleGuideRequest answers one request line: "swap <load file>" copies
-// the load PMS finished into its guide's schema before PMS renames it, and
-// answers "ok", "skip <why>" or "fail <why>".
+// handleGuideRequest answers one request line, "ok", "skip <why>" or
+// "fail <why>":
+//
+//   - "stage <load file>" stages the load PMS just began in PostgreSQL
+//     (plexbootstrap.StageLoad), asked by the shim at its open of the file
+//     (docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md);
+//   - "swap <load file>" makes the load PMS finished the guide before PMS
+//     renames it: a load made in PostgreSQL (the file is a shadow) by
+//     renaming the schemas, a SQLite load by copying the file.
 func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 	verb, arg, _ := strings.Cut(line, " ")
-	if verb != "swap" || arg == "" {
+	if (verb != "swap" && verb != "stage") || arg == "" {
 		return "fail unknown request"
 	}
 	path := filepath.Clean(arg)
@@ -287,10 +300,53 @@ func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 	if !ok {
 		return "fail not a guide load"
 	}
+	if verb == "stage" {
+		return m.stageLoad(ctx, g, path)
+	}
+	return m.swapLoad(ctx, g, path)
+}
+
+// guideStageDeadline bounds a stage request: a clone takes about 3 s when
+// none was made ahead, and the shadow's copy milliseconds. The shim waits
+// longer (60 s), so the manager's answer, never the shim's timeout, ends a
+// slow one, and the manager never writes the file after the shim has
+// stopped waiting and opened PMS's template as SQLite.
+const guideStageDeadline = 45 * time.Second
+
+// stageLoad answers "stage <path>": the load's staging schema marked
+// loading and the shadow written over PMS's template, under guides.mu.
+func (m *Manager) stageLoad(ctx context.Context, g plexbootstrap.Guide, path string) string {
 	log := m.Logger.With("component", "livetv-guides")
-	// Only the shim's rename hook asks: the line proves the hook ran where
-	// the poll's copy logs the same "copied" line (2026-11-04).
-	log.Info("Live TV: the shim asks for a guide load's copy before its rename", "guide", g.File())
+	ctx, cancel := context.WithTimeout(ctx, guideStageDeadline)
+	defer cancel()
+	m.guides.mu.Lock()
+	defer m.guides.mu.Unlock()
+	m.guides.init()
+	template := plexbootstrap.ShadowTemplate(m.guideDir())
+	if _, err := os.Stat(template); err != nil {
+		return "fail no guide-shadow template: " + err.Error()
+	}
+	conn, err := m.connectGuides(ctx)
+	if err != nil {
+		log.Warn("Live TV: connect to stage a guide load", "error", err)
+		return "fail " + err.Error()
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	staged, err := plexbootstrap.StageLoad(ctx, log, conn, m.Config.Postgres.Schema, g, path, template)
+	if err != nil {
+		log.Warn("Live TV: stage a guide load in PostgreSQL", "guide", g.File(), "error", err)
+		return "fail " + err.Error()
+	}
+	if staged.Fresh {
+		log.Info("Live TV: the shim stages a guide load in PostgreSQL", "guide", g.File(), "schema", g.Staging(),
+			"cloned", staged.Cloned, "recloned", staged.Recloned)
+	}
+	return "ok"
+}
+
+// swapLoad answers "swap <path>".
+func (m *Manager) swapLoad(ctx context.Context, g plexbootstrap.Guide, path string) string {
+	log := m.Logger.With("component", "livetv-guides")
 	m.guides.mu.Lock()
 	defer m.guides.mu.Unlock()
 	m.guides.init()
@@ -298,25 +354,95 @@ func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 	if err != nil {
 		return "fail " + err.Error()
 	}
+	shadow, err := plexbootstrap.IsShadow(path)
+	if err != nil {
+		return "fail " + err.Error()
+	}
 	conn, err := m.connectGuides(ctx)
 	if err != nil {
-		log.Warn("Live TV: connect to copy a guide at its rename", "error", err)
+		log.Warn("Live TV: connect to swap a guide at its rename", "error", err)
 		return "fail " + err.Error()
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
+	// The file is about to carry the guide's name with this same state.
+	guide := filepath.Join(filepath.Dir(path), g.File())
+	if shadow {
+		log.Info("Live TV: the shim asks for a guide load's swap before its rename", "guide", g.File())
+		swapped, err := plexbootstrap.SwapLoaded(ctx, log, conn, g)
+		if err != nil {
+			log.Warn("Live TV: swap in a guide loaded in PostgreSQL", "guide", g.File(), "error", err)
+			return "fail " + err.Error()
+		}
+		m.guides.hooked[guide] = state
+		delete(m.guides.failed, guide)
+		if !swapped {
+			return "skip no load in the staging schema"
+		}
+		// The next load finds its staging schema made, so its open waits
+		// for nothing but the shadow's copy.
+		go m.stageAhead(ctx, g)
+		return "ok"
+	}
+	// Only the shim's rename hook asks: the line proves the hook ran where
+	// the poll's copy logs the same "copied" line (2026-11-04).
+	log.Info("Live TV: the shim asks for a guide load's copy before its rename", "guide", g.File())
 	copied, err := plexbootstrap.ImportGuide(ctx, log, conn, m.Config.Postgres.Schema, g, path)
 	if err != nil {
 		log.Warn("Live TV: copy a guide at its rename", "guide", g.File(), "error", err)
 		return "fail " + err.Error()
 	}
-	// The file is about to carry the guide's name with this same state.
-	guide := filepath.Join(filepath.Dir(path), g.File())
 	m.guides.hooked[guide] = state
 	delete(m.guides.failed, guide)
 	if !copied {
 		return "skip no newer load with airings"
 	}
 	return "ok"
+}
+
+// stageAhead clones g's staging schema for its next load, after a swap.
+func (m *Manager) stageAhead(ctx context.Context, g plexbootstrap.Guide) {
+	m.guides.mu.Lock()
+	defer m.guides.mu.Unlock()
+	conn, err := m.connectGuides(ctx)
+	if err != nil {
+		m.Logger.Warn("Live TV: connect to stage a guide ahead", "error", err)
+		return
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	m.stageGuide(ctx, conn, g)
+}
+
+// recoverLoads swaps in a load made in PostgreSQL whose rename the manager
+// did not answer, once PMS has refreshed its DVR (plexbootstrap.RecoverLoads).
+// Under guides.mu, with conn.
+func (m *Manager) recoverLoads(ctx context.Context, conn *pgx.Conn) {
+	log := m.Logger.With("component", "livetv-guides")
+	refreshedAt := func(g plexbootstrap.Guide) (int64, bool) {
+		at, err := m.dvrRefreshedAt(ctx, conn, g.DVR)
+		if err != nil {
+			log.Warn("Live TV: read when a DVR's guide was refreshed", "dvr", g.DVR, "error", err)
+			return 0, false
+		}
+		return at, at != 0
+	}
+	if _, err := plexbootstrap.RecoverLoads(ctx, log, conn, m.Config.Postgres.Schema, m.guideDir(), refreshedAt); err != nil {
+		log.Warn("Live TV: recover a guide load whose rename went unanswered", "error", err)
+	}
+}
+
+// dvrRefreshedAt is when PMS last finished loading the DVR's guide, in Unix
+// seconds, read from the library: the DVR's row and its providers' are
+// updated at a load's end, which /livetv/dvrs reports as refreshedAt. 0 for
+// a DVR the library does not list, or never loaded.
+func (m *Manager) dvrRefreshedAt(ctx context.Context, conn *pgx.Conn, dvr string) (int64, error) {
+	mpr := pgx.Identifier{m.Config.Postgres.Schema, "media_provider_resources"}.Sanitize()
+	var at *int64
+	err := conn.QueryRow(ctx, `SELECT max(updated_at)::bigint FROM `+mpr+` WHERE lower(uuid) = lower($1)
+		OR parent_id IN (SELECT id FROM `+mpr+` WHERE type = 1 AND lower(uuid) = lower($1))`, dvr).Scan(&at)
+	if err != nil || at == nil {
+		return 0, err
+	}
+	return *at, nil
 }
 
 func (m *Manager) connectGuides(ctx context.Context) (*pgx.Conn, error) {

@@ -48,20 +48,21 @@ const (
 
 // The Event reasons recorded on an IPTVProvider.
 const (
-	ReasonProvisioned      = "DVRProvisioned"
-	ReasonChannelMapSaved  = "DVRChannelMapSaved"
-	ReasonFailed           = "DVRProvisionFailed"
-	ReasonRemoved          = "DVRRemoved"
-	ReasonBlockOwned       = "DVRBlockOwned"
-	ReasonReplaced         = "DVRDeviceReplaced"
-	ReasonStoredElsewhere  = "DVRDeviceStoredElsewhere"
-	ReasonWaitingForGuide  = "DVRWaitingForGuide"
-	ReasonChannelMapTooBig = "DVRChannelMapTooLarge"
-	ReasonPodsRestarted    = "DVRPodsRestarted"
-	ReasonDVRListStale     = "DVRListStale"
-	ReasonRevived          = "DVRDeviceRevived"
-	ReasonGuideRefreshed   = "DVRGuideRefreshed"
-	ReasonRefreshWaiting   = "DVRGuideRefreshWaiting"
+	ReasonProvisioned        = "DVRProvisioned"
+	ReasonChannelMapSaved    = "DVRChannelMapSaved"
+	ReasonFailed             = "DVRProvisionFailed"
+	ReasonRemoved            = "DVRRemoved"
+	ReasonBlockOwned         = "DVRBlockOwned"
+	ReasonReplaced           = "DVRDeviceReplaced"
+	ReasonStoredElsewhere    = "DVRDeviceStoredElsewhere"
+	ReasonWaitingForGuide    = "DVRWaitingForGuide"
+	ReasonChannelMapTooBig   = "DVRChannelMapTooLarge"
+	ReasonPodsRestarted      = "DVRPodsRestarted"
+	ReasonDVRListStale       = "DVRListStale"
+	ReasonRevived            = "DVRDeviceRevived"
+	ReasonGuideRefreshed     = "DVRGuideRefreshed"
+	ReasonRefreshWaiting     = "DVRGuideRefreshWaiting"
+	ReasonChannelMapRestored = "DVRChannelMapRestored"
 )
 
 // Status is how far a pass got.
@@ -222,7 +223,29 @@ type Converger struct {
 	// registered is, by device id, the URI each block was registered at
 	// and the URI PMS lists it under, as AnnotationRegistered notes it.
 	registered map[string]registeredNote
+	// mapChecked is, by device id, when a Plex block's saved map was last
+	// read back from PMS and the DVR's refreshedAt then; mapRestored when
+	// a map PMS had replaced was last saved again (restoreMap).
+	mapChecked  map[string]mapCheck
+	mapRestored map[string]time.Time
 }
+
+// mapCheck is one look at a device's saved channel map.
+type mapCheck struct {
+	at          time.Time
+	refreshedAt int64
+}
+
+// mapCheckEvery is how often a Plex block's saved map is read back from
+// PMS between guide loads; a load's end (the DVR's refreshedAt moving)
+// reads it at once, since a load that fails is when PMS replaces it.
+const mapCheckEvery = 10 * time.Minute
+
+// mapRestoreEvery bounds how often a replaced map is saved again: every
+// save starts a whole guide load (about 30 min for 233 channels), so a PMS
+// that replaces the map at every load's end is told once an hour, not
+// kept loading.
+const mapRestoreEvery = time.Hour
 
 // emptyGuideRetry is how soon an empty guide is reloaded again.
 const emptyGuideRetry = time.Hour
@@ -334,6 +357,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
 		c.emptyReloaded, c.addresses, c.registered = map[string]time.Time{}, map[string]bool{}, map[string]registeredNote{}
 		c.revived, c.cloudReloaded = map[string]time.Time{}, map[string]time.Time{}
+		c.mapChecked, c.mapRestored = map[string]mapCheck{}, map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -697,7 +721,8 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		c.note(ctx, p, id, dvr.Key, s)
 		c.record(p, ReasonChannelMapSaved, fmt.Sprintf("block %s: saved the channel map: %d channels", b.Start, len(m)), false)
 	}
-	if b.Lineup != "" {
+	switch {
+	case b.Lineup != "":
 		// Plex's own guide: nothing of clustarr's to reload. PMS's nightly
 		// refresh (the RefreshEpgGuides butler task, which cluster-plex keeps
 		// on for Live TV; incremental since the shim stopped timing its
@@ -706,7 +731,10 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		if err := c.refreshCloudGuide(ctx, p, b, id, dvr, ps); err != nil {
 			return err
 		}
-	} else if b.GuideHash != "" && s.guide != b.GuideHash {
+		if err := c.restoreMap(ctx, p, b, id, dev, dvr, uri, ps); err != nil {
+			return err
+		}
+	case b.GuideHash != "" && s.guide != b.GuideHash:
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "reload the guide", err)
 		}
@@ -717,7 +745,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		s.guide = b.GuideHash
 		c.saved[id] = s
 		c.note(ctx, p, id, dvr.Key, s)
-	} else if c.emptyGuide(ctx, id, dvr) {
+	case c.emptyGuide(ctx, id, dvr):
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "reload the empty guide", err)
 		}
@@ -730,6 +758,97 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 	}
 	delete(c.told, "wait/"+id)
 	return nil
+}
+
+// restoreMap saves a Plex block's channel map again when PMS has replaced
+// it with a pairing of its own, which it does at the end of a guide load
+// that failed (2026-11-04: every cloud load failed on the shim's FTS
+// block, and PMS put NBC on CNBC 355). The map is read back from the
+// device (plexapi.Client.Device) when the DVR's refreshedAt has moved since
+// the last look, else every mapCheckEvery, never while PMS loads a guide;
+// a channel the tuner pairs that PMS maps elsewhere, or not at all, or a
+// channel PMS enabled that the tuner does not pair, is a replaced map. A
+// save starts a whole load, so one is made at most every mapRestoreEvery
+// per device, and a map still replaced within that is recorded once.
+func (c *Converger) restoreMap(ctx context.Context, p Provider, b Block, id string, dev plexapi.Device, dvr plexapi.DVR, uri string, ps *pass) error {
+	if ps.guideBusy || dvr.Key == "" {
+		return nil
+	}
+	last, seen := c.mapChecked[id]
+	if seen && last.refreshedAt == dvr.RefreshedAt && c.now().Sub(last.at) < mapCheckEvery {
+		return nil
+	}
+	if err := c.idle(ctx, ps); err != nil {
+		if errors.Is(err, errWaiting) {
+			return nil // read back once the load ends
+		}
+		return err
+	}
+	have, err := c.PMS.Device(ctx, string(dev.Key))
+	if err != nil {
+		return fmt.Errorf("read device %s's channel map: %w", dev.UUID, err)
+	}
+	want, err := c.plexMap(ctx, uri)
+	if err != nil {
+		return fmt.Errorf("read the tuner's channel map: %w", err)
+	}
+	c.mapChecked[id] = mapCheck{at: c.now(), refreshedAt: dvr.RefreshedAt}
+	missing, changed, extra := mapDifference(want, have.ChannelMappings)
+	if missing+changed+extra == 0 {
+		delete(c.told, "restore/"+id)
+		return nil
+	}
+	what := fmt.Sprintf("block %s: PMS's map of device %s differs from the tuner's pairing: %d channels paired elsewhere, %d missing, %d PMS added",
+		b.Start, dev.UUID, changed, missing, extra)
+	if at, ok := c.mapRestored[id]; ok && c.now().Sub(at) < mapRestoreEvery {
+		c.recordOnce("restore/"+id, p, ReasonChannelMapRestored, what+"; saved again within the hour, so not again yet", true)
+		return nil
+	}
+	if n := plexapi.MapBytes(want); n > plexapi.MaxChannelMapBytes {
+		return nil // reported by the save path
+	}
+	if err := c.PMS.SaveChannelMap(ctx, string(dev.Key), want); err != nil {
+		if errors.Is(err, plexapi.ErrEmptyChannelMap) {
+			return nil
+		}
+		return fmt.Errorf("save the channel map again (%d channels): %w", len(want), err)
+	}
+	ps.guideBusy = true // the save rebuilds the guide
+	c.mapRestored[id] = c.now()
+	delete(c.told, "restore/"+id)
+	c.record(p, ReasonChannelMapRestored, what+"; saved the tuner's map again", true)
+	return nil
+}
+
+// mapDifference compares the tuner's pairing want with the map PMS holds,
+// have: channels want pairs that have lacks (missing) or pairs with another
+// lineup channel (changed), and channels have enables that want does not
+// pair (extra). A disabled entry of have is no pairing.
+func mapDifference(want, have []plexapi.ChannelMapping) (missing, changed, extra int) {
+	got := make(map[string]string, len(have))
+	for _, m := range have {
+		if m.Enabled != "" && m.Enabled != "1" {
+			continue
+		}
+		got[m.DeviceIdentifier] = m.LineupIdentifier
+	}
+	wanted := make(map[string]bool, len(want))
+	for _, m := range want {
+		wanted[m.DeviceIdentifier] = true
+		lineup, ok := got[m.DeviceIdentifier]
+		switch {
+		case !ok:
+			missing++
+		case lineup != m.LineupIdentifier:
+			changed++
+		}
+	}
+	for device := range got {
+		if !wanted[device] {
+			extra++
+		}
+	}
+	return missing, changed, extra
 }
 
 // refreshCloudGuide reloads a Plex cloud lineup's guide whole once it runs

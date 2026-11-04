@@ -77,6 +77,11 @@ func shimEnv(base []string, cfg Config) []string {
 	// renames the load onto the guide (listenGuideSocket).
 	if cfg.GuideSocket != "" {
 		env = append(env, "PLEX_PG_GUIDE_SOCKET="+cfg.GuideSocket)
+		// The shim stages each guide load in PostgreSQL through the
+		// socket, instead of loading it into the file and copying.
+		if cfg.LiveTV.GuideLoadsInPostgres {
+			env = append(env, "PLEX_PG_GUIDE_LOADS=1")
+		}
 	}
 	return append(env, pgEnv(cfg)...)
 }

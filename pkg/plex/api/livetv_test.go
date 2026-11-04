@@ -152,3 +152,18 @@ func TestIdentityWithoutAMachineIdentifierIsAnError(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "machineIdentifier"))
 }
+
+// A device read on its own carries its saved channel map, which the
+// listing does not (docs/livetv-pms-calls.md, step 9).
+func TestADeviceReadCarriesItsSavedChannelMap(t *testing.T) {
+	c, _ := recorder(t, map[string]string{
+		"GET /media/grabbers/devices/4": fixture(t, "09-device.json"),
+	}, nil)
+	d, err := c.Device(t.Context(), "4")
+	require.NoError(t, err)
+	assert.Equal(t, "CAFE0001", d.DeviceID)
+	require.Len(t, d.ChannelMappings, 100)
+	assert.Equal(t, plexapi.ChannelMapping{ChannelKey: "1000", DeviceIdentifier: "1000", LineupIdentifier: "1000", Enabled: "1"}, d.ChannelMappings[0])
+	_, err = c.Device(t.Context(), "5")
+	assert.Error(t, err, "a device PMS does not list")
+}

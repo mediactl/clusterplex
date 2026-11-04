@@ -184,3 +184,53 @@ func TestChownTreeGivesUpOnAVolumeThatRefusesIt(t *testing.T) {
 		t.Fatalf("kept trying: %d failures, want at most %d", failed, chownGiveUpAfter)
 	}
 }
+
+// Every shadow the manager builds carries ShadowMark, which tells it from
+// a database PMS wrote: the template PMS copies into place for a guide
+// load carries SQLite's 0.
+func TestAShadowCarriesTheMarkAndAFileOfPMSsDoesNot(t *testing.T) {
+	dir := t.TempDir()
+	pms := filepath.Join(dir, "pms.db")
+	db, err := openSQLite(pms)
+	require.NoError(t, err)
+	_, err = db.Exec("CREATE TABLE t (id int)")
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	shadow, err := IsShadow(pms)
+	require.NoError(t, err)
+	assert.False(t, shadow)
+
+	marked := filepath.Join(dir, "marked.db")
+	db, err = openSQLite(marked)
+	require.NoError(t, err)
+	_, err = db.Exec(fmt.Sprintf("PRAGMA application_id = %d", ShadowMark))
+	require.NoError(t, err)
+	_, err = db.Exec("CREATE TABLE t (id int)")
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	shadow, err = IsShadow(marked)
+	require.NoError(t, err)
+	assert.True(t, shadow)
+
+	text := filepath.Join(dir, "text.db")
+	require.NoError(t, os.WriteFile(text, []byte("PMS's own guide"), 0o644))
+	shadow, err = IsShadow(text)
+	require.NoError(t, err)
+	assert.False(t, shadow, "not a database")
+	_, err = IsShadow(filepath.Join(dir, "none.db"))
+	assert.True(t, os.IsNotExist(err))
+
+	// A copy of the template lands in one rename, with nothing beside it.
+	dst := filepath.Join(dir, "load.db")
+	require.NoError(t, os.WriteFile(dst, []byte("template"), 0o644))
+	require.NoError(t, os.WriteFile(dst+"-wal", []byte("wal"), 0o644))
+	require.NoError(t, WriteShadowFrom(marked, dst))
+	shadow, err = IsShadow(dst)
+	require.NoError(t, err)
+	assert.True(t, shadow)
+	_, err = os.Stat(dst + "-wal")
+	assert.True(t, os.IsNotExist(err))
+	_, err = os.Stat(dst + shadowWriteTempName)
+	assert.True(t, os.IsNotExist(err))
+	assert.ErrorIs(t, WriteShadowFrom(filepath.Join(dir, "none.db"), dst), os.ErrNotExist)
+}

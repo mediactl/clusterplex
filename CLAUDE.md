@@ -283,7 +283,30 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   The manager copies each load in (`plexbootstrap.ImportGuide`,
   `cmd/manager/guides.go`): a staging schema, swapped in by renaming, so PMS
   never waits on the swap. See "The guide, in PostgreSQL" in
-  `docs/configuration.md`.
+  `docs/configuration.md`. **Since 2026-11-04 the load itself can be
+  PostgreSQL's** (`plex.liveTV.guideLoadsInPostgres`, off by default;
+  `docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md`):
+  the shim (`PLEX_PG_GUIDE_LOADS`, plex-postgresql .48) asks the manager
+  over the guide socket to `stage <load file>` at its open, the manager
+  marks the guide's staging schema loading and writes a marked shadow
+  (`plexbootstrap.ShadowMark`, SQLite's `application_id`) over PMS's
+  template copy, PMS loads into `epg_<uuid>_next` through the shim, and the
+  `swap` at PMS's rename renames the schemas (`plexbootstrap.SwapLoaded`)
+  instead of copying. The mark is how the swap tells a staged load from a
+  SQLite one; every shadow the manager builds carries it, so a test's "load
+  PMS made" must clear it (`PRAGMA application_id = 0`). A rename the manager
+  never answered is recovered by the poll once the DVR's `refreshedAt`
+  moves (`plexbootstrap.RecoverLoads`); a start drops every staging schema
+  and load file. `hack/guidediff` diffs two guide schemas table by table,
+  the oracle a load made both ways must pass.
+- **PMS replaces a Plex block's channel map with its own pairing at the end
+  of a load that fails** (2026-11-04: every cloud load failed on the shim's
+  FTS block, and NBC landed on CNBC 355). The converger saves a map only when
+  the lineup hash moves, so `Converger.restoreMap` reads the device's saved
+  map back (`plexapi.Client.Device`) when the DVR's `refreshedAt` moves or
+  every 10 min, and saves the tuner's pairing again when it differs, at most
+  once an hour per device (`DVRChannelMapRestored`), since every save is a
+  whole load.
 - **Nothing refreshes a Plex cloud guide but the converger's daily reload
   (2026-11-04).** PMS refreshes guide data through the butler task
   `ButlerTaskRefreshEpgGuides` (about 2 am), and every butler task is off

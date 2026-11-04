@@ -405,11 +405,21 @@ func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, libra
 		return err
 	}
 	var errs []error
+	// The shadow every guide load opens once it is staged in PostgreSQL
+	// (StageLoad). Without it a load stays SQLite, copied at its rename.
+	if err := BuildShadowTemplate(ctx, log, conn, dir, filepath.Join(schemaDir, SQLiteSchemaFile), library); err != nil {
+		errs = append(errs, fmt.Errorf("build the guide-shadow template: %w", err))
+	}
 	for _, g := range guides {
 		file := filepath.Join(dir, g.File())
 		if _, err := ImportGuide(ctx, log, conn, library, g, file); err != nil {
 			// The shadow replaces a file the copy could not read all the
 			// same: the guide's next load fills the schema.
+			errs = append(errs, err)
+		}
+		// A load file at a start is a load PMS never finished (PMS is the
+		// manager's child); PMS copies its template afresh for the next.
+		if err := removeLoadFile(filepath.Join(dir, g.LoadFile())); err != nil {
 			errs = append(errs, err)
 		}
 		made, err := EnsureGuideSchema(ctx, conn, library, g)
@@ -503,13 +513,9 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 	if err := dropSchema(ctx, conn, old); err != nil {
 		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
 	}
-	var comment *string
-	if err := conn.QueryRow(ctx, "SELECT obj_description(oid, 'pg_namespace') FROM pg_namespace WHERE nspname = $1", schema).Scan(&comment); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	copiedFrom, err := guideLoadedAt(ctx, conn, schema)
+	if err != nil {
 		return false, err
-	}
-	var copiedFrom int64
-	if comment != nil {
-		_, _ = fmt.Sscanf(*comment, importedComment, &copiedFrom)
 	}
 	if modified <= copiedFrom {
 		return false, nil
@@ -536,7 +542,7 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 			// autovacuum gathers them later.
 			log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
 		}
-		err = swapGuide(ctx, conn, schema, staging, old, modified)
+		err = swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(importedComment, modified))
 	}
 	if err != nil {
 		if dropErr := dropSchema(context.Background(), conn, staging); dropErr != nil {
@@ -570,10 +576,18 @@ func PrepareStaging(ctx context.Context, conn *pgx.Conn, library string, g Guide
 	if err != nil || exists {
 		return false, err
 	}
-	if err := CloneSchema(ctx, conn, library, g.Staging()); err != nil {
-		return false, fmt.Errorf("make %s from %s: %w", g.Staging(), library, err)
+	if err := cloneStaging(ctx, conn, library, g); err != nil {
+		return false, err
 	}
 	return true, nil
+}
+
+// cloneStaging makes g's staging schema from the library's, marked clean.
+func cloneStaging(ctx context.Context, conn *pgx.Conn, library string, g Guide) error {
+	if err := CloneSchema(ctx, conn, library, g.Staging()); err != nil {
+		return fmt.Errorf("make %s from %s: %w", g.Staging(), library, err)
+	}
+	return commentSchema(ctx, conn, g.Staging(), stagingCleanComment)
 }
 
 func schemaExists(ctx context.Context, conn *pgx.Conn, schema string) (bool, error) {
@@ -582,10 +596,10 @@ func schemaExists(ctx context.Context, conn *pgx.Conn, schema string) (bool, err
 	return exists, err
 }
 
-// SweepGuides drops the guide schemas nothing needs: a staging schema with
-// no load file beside it in dir (an abandoned load, or one the next start
-// clones again), every replaced schema, and the live schema of a DVR the
-// library no longer lists (guides). A DVR's row is written when it is
+// SweepGuides drops the guide schemas nothing needs at a start: every
+// staging schema (no load runs at a start, and a new load clones its own),
+// every replaced schema, and the live schema of a DVR the library no longer
+// lists (guides). A DVR's row is written when it is
 // created, before its first load, so a new DVR's schema is never swept.
 // Each drop waits at most guideLockTimeout for the schema's readers; one
 // still read is left for the next sweep.
@@ -609,11 +623,10 @@ func SweepGuides(ctx context.Context, log *slog.Logger, conn *pgx.Conn, guides [
 		case strings.HasSuffix(schema, "_old"):
 			why = "a replaced guide"
 		case strings.HasSuffix(schema, "_next"):
-			loads, _ := filepath.Glob(filepath.Join(dir, "tv.plex.providers.epg.*-"+dvrOfSchema(strings.TrimSuffix(schema, "_next"))+LoadSuffix+".db"))
-			if len(loads) > 0 {
-				continue
-			}
-			why = "a staging schema with no load beside it"
+			// PMS is the manager's child, so at a start no load runs: a
+			// staging schema holds a clean clone a new load clones again,
+			// or an abandoned load's rows.
+			why = "a staging schema at a start, when no load runs"
 		case !listed[schema]:
 			if dvrOfSchema(schema) == "" {
 				continue // not a guide's name
@@ -863,7 +876,7 @@ func sqliteIdent(name string) string { return `"` + strings.ReplaceAll(name, `"`
 // as old, recording the file's modification time. Renaming a schema waits
 // on no reader of its tables; a reader holding the old guide finishes
 // reading it.
-func swapGuide(ctx context.Context, conn *pgx.Conn, schema, staging, old string, modified int64) error {
+func swapGuide(ctx context.Context, conn *pgx.Conn, schema, staging, old, comment string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -879,7 +892,7 @@ func swapGuide(ctx context.Context, conn *pgx.Conn, schema, staging, old string,
 	}
 	stmts = append(stmts,
 		"ALTER SCHEMA "+pgx.Identifier{staging}.Sanitize()+" RENAME TO "+pgx.Identifier{schema}.Sanitize(),
-		"COMMENT ON SCHEMA "+pgx.Identifier{schema}.Sanitize()+" IS '"+fmt.Sprintf(importedComment, modified)+"'")
+		"COMMENT ON SCHEMA "+pgx.Identifier{schema}.Sanitize()+" IS "+quoteLiteral(comment))
 	for _, s := range stmts {
 		if _, err := tx.Exec(ctx, s); err != nil {
 			return fmt.Errorf("%s: %w", firstLine(s), err)
@@ -956,6 +969,302 @@ func resetSequences(ctx context.Context, tx pgx.Tx, schema string) error {
 		if _, err := tx.Exec(ctx, fmt.Sprintf("SELECT setval('%s', COALESCE((SELECT max(%s) FROM %s), 0) + 1, false)",
 			strings.ReplaceAll(seq, "'", "''"), pgx.Identifier{o.column}.Sanitize(), pgx.Identifier{schema, o.table}.Sanitize())); err != nil {
 			return fmt.Errorf("reset %s: %w", seq, err)
+		}
+	}
+	return nil
+}
+
+// A guide load in PostgreSQL
+// (docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md):
+// the shim routes PMS's <guide>-loading.db to the guide's staging schema
+// once the manager has staged it (StageLoad: the staging schema marked
+// loading, and a shadow written over the template PMS copied), and the
+// swap at PMS's rename renames the schemas (SwapLoaded) instead of copying
+// the file. The staging schema's state is its comment.
+
+// StagingState is what a guide's staging schema holds.
+type StagingState int
+
+const (
+	// StagingAbsent: there is no staging schema.
+	StagingAbsent StagingState = iota
+	// StagingClean: a clone of the library's schema nothing has written.
+	StagingClean
+	// StagingLoading: PMS is loading into it, or was and never finished.
+	StagingLoading
+)
+
+const (
+	stagingCleanComment   = "clusterplex: staging, clean"
+	stagingLoadingComment = "clusterplex: staging, loading since %d (Unix ns)"
+	// loadedComment marks a guide PMS loaded in PostgreSQL, by its swap
+	// time: a load file older than it (another pod's, copied at its start)
+	// does not undo it, as importedComment's time orders the copies.
+	loadedComment = "clusterplex: loaded by PMS, swapped at %d (Unix ns)"
+)
+
+func (s StagingState) String() string {
+	switch s {
+	case StagingClean:
+		return "clean"
+	case StagingLoading:
+		return "loading"
+	default:
+		return "absent"
+	}
+}
+
+// Staged is what StageLoad did.
+type Staged struct {
+	// Fresh is whether the load was staged by this call: its staging
+	// schema marked loading and the shadow written. False for a request
+	// on a load already staged, which another of PMS's handles makes.
+	Fresh bool
+	// Recloned is whether an abandoned load's staging schema was dropped
+	// and cloned again first.
+	Recloned bool
+	// Cloned is whether the staging schema had to be cloned now, which is
+	// what a load waits for (about 3 s) without a clone made ahead.
+	Cloned bool
+}
+
+// StageLoad stages PMS's load of g, whose load file is file, in
+// PostgreSQL: the staging schema (cloned if there is none, dropped and
+// cloned again if an abandoned load left rows in it) is marked loading, and
+// the shadow template is written over the template PMS copied to file, so
+// the shim's open finds a shadow and a schema. A request on a load already
+// staged (file is a shadow and the schema is loading) changes nothing: PMS
+// opens a load on several handles, and the shim asks at each.
+func StageLoad(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library string, g Guide, file, template string) (Staged, error) {
+	if !g.Valid() {
+		return Staged{}, fmt.Errorf("not a guide the shim reads: %+v", g)
+	}
+	shadow, err := IsShadow(file)
+	if err != nil {
+		return Staged{}, fmt.Errorf("read the load file: %w", err)
+	}
+	schema := g.Schema()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", "clusterplex-guide-"+schema); err != nil {
+		return Staged{}, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "clusterplex-guide-"+schema)
+	}()
+	state, _, err := stagingState(ctx, conn, g)
+	if err != nil {
+		return Staged{}, err
+	}
+	if shadow && state == StagingLoading {
+		return Staged{}, nil
+	}
+	var out Staged
+	if state == StagingLoading {
+		// PMS copied a fresh template: the load the schema holds was
+		// abandoned (PMS killed, or a load that failed).
+		if err := dropSchema(ctx, conn, g.Staging()); err != nil {
+			return Staged{}, fmt.Errorf("drop the abandoned load's %s: %w", g.Staging(), err)
+		}
+		state, out.Recloned = StagingAbsent, true
+	}
+	if state == StagingAbsent {
+		if err := cloneStaging(ctx, conn, library, g); err != nil {
+			return Staged{}, err
+		}
+		out.Cloned = true
+	}
+	if err := commentSchema(ctx, conn, g.Staging(), fmt.Sprintf(stagingLoadingComment, time.Now().UnixNano())); err != nil {
+		return Staged{}, err
+	}
+	if err := WriteShadowFrom(template, file); err != nil {
+		// Nothing stays loading with PMS's template still at the path:
+		// the next request clones again, and the shim loads into SQLite
+		// meanwhile.
+		_ = commentSchema(context.Background(), conn, g.Staging(), stagingCleanComment)
+		return Staged{}, err
+	}
+	out.Fresh = true
+	log.Info("staged a Live TV guide load in PostgreSQL", "guide", g.File(), "schema", g.Staging(),
+		"cloned", out.Cloned, "recloned", out.Recloned)
+	return out, nil
+}
+
+// SwapLoaded makes the load PMS finished in g's staging schema the guide:
+// the schema is analyzed and renamed into place (swapGuide), the replaced
+// guide dropped. It reports false, and does nothing, when the staging
+// schema holds no load (not marked loading).
+func SwapLoaded(ctx context.Context, log *slog.Logger, conn *pgx.Conn, g Guide) (bool, error) {
+	if !g.Valid() {
+		return false, fmt.Errorf("not a guide the shim reads: %+v", g)
+	}
+	schema, staging, old := g.Schema(), g.Staging(), g.Replaced()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", "clusterplex-guide-"+schema); err != nil {
+		return false, err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "clusterplex-guide-"+schema)
+	}()
+	state, _, err := stagingState(ctx, conn, g)
+	if err != nil {
+		return false, err
+	}
+	if state != StagingLoading {
+		return false, nil
+	}
+	start := time.Now()
+	if err := dropSchema(ctx, conn, old); err != nil {
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+	}
+	if err := analyzeSchema(ctx, conn, staging); err != nil {
+		// Statistics are not the guide: swap it in without them, and
+		// autovacuum gathers them later.
+		log.Warn("analyze a guide's staging schema", "schema", staging, "error", err)
+	}
+	if err := swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(loadedComment, time.Now().UnixNano())); err != nil {
+		return false, fmt.Errorf("swap %s in as %s: %w", staging, schema, err)
+	}
+	if err := dropSchema(ctx, conn, old); err != nil {
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+	}
+	log.Info("swapped in a Live TV guide PMS loaded in PostgreSQL", "guide", g.File(), "schema", schema,
+		"took", time.Since(start).Round(time.Millisecond))
+	return true, nil
+}
+
+// RecoverLoads swaps in each load PMS finished whose rename the manager
+// did not answer: a staging schema marked loading, with no load file
+// beside it in dir (PMS renamed it away), whose DVR PMS has refreshed
+// since the load began (refreshedAt, in Unix seconds, the DVR's
+// refreshedAt; false for a DVR it cannot tell). One with no file and no
+// refresh is a load that failed, which the next StageLoad resets. It
+// returns the guides it swapped.
+func RecoverLoads(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library, dir string, refreshedAt func(g Guide) (int64, bool)) ([]Guide, error) {
+	rows, err := conn.Query(ctx, `SELECT nspname::text, obj_description(oid, 'pg_namespace') FROM pg_namespace WHERE nspname LIKE 'epg\_%\_next' ORDER BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	type staging struct {
+		schema  string
+		comment *string
+	}
+	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (staging, error) {
+		var s staging
+		err := r.Scan(&s.schema, &s.comment)
+		return s, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	var swapped []Guide
+	var errs []error
+	for _, s := range all {
+		dvr := dvrOfSchema(strings.TrimSuffix(s.schema, "_next"))
+		if dvr == "" || s.comment == nil {
+			continue
+		}
+		var since int64
+		if _, err := fmt.Sscanf(*s.comment, stagingLoadingComment, &since); err != nil {
+			continue
+		}
+		loads, _ := filepath.Glob(filepath.Join(dir, "tv.plex.providers.epg.*-"+dvr+LoadSuffix+".db"))
+		if len(loads) > 0 {
+			continue // the load runs
+		}
+		g := Guide{DVR: dvr}
+		at, ok := refreshedAt(g)
+		if !ok || at*int64(time.Second) <= since {
+			continue
+		}
+		g.Provider, _ = guideProviderOf(ctx, conn, library, dvr)
+		if g.Provider == "" {
+			g.Provider = "tv.plex.providers.epg.xmltv"
+		}
+		done, err := SwapLoaded(ctx, log, conn, g)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("recover the load of %s: %w", g.File(), err))
+			continue
+		}
+		if done {
+			log.Info("recovered a Live TV guide load whose rename went unanswered", "guide", g.File(), "schema", g.Schema())
+			swapped = append(swapped, g)
+		}
+	}
+	return swapped, errors.Join(errs...)
+}
+
+// guideProviderOf is the guide provider of the DVR dvr, from the library.
+func guideProviderOf(ctx context.Context, conn *pgx.Conn, library, dvr string) (string, error) {
+	var provider string
+	mpr := pgx.Identifier{library, "media_provider_resources"}.Sanitize()
+	err := conn.QueryRow(ctx, `SELECT p.identifier FROM `+mpr+` d
+		JOIN `+mpr+` p ON p.parent_id = d.id
+		WHERE d.type = 1 AND lower(d.uuid) = lower($1) AND p.type = 3 AND p.identifier LIKE 'tv.plex.providers.epg.%'
+		ORDER BY p.id LIMIT 1`, dvr).Scan(&provider)
+	return provider, err
+}
+
+// stagingState reads g's staging schema's state and, for one loading,
+// when the load began.
+func stagingState(ctx context.Context, conn *pgx.Conn, g Guide) (StagingState, int64, error) {
+	var comment *string
+	err := conn.QueryRow(ctx, "SELECT obj_description(oid, 'pg_namespace') FROM pg_namespace WHERE nspname = $1", g.Staging()).Scan(&comment)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StagingAbsent, 0, nil
+	}
+	if err != nil {
+		return StagingAbsent, 0, err
+	}
+	if comment == nil {
+		return StagingClean, 0, nil
+	}
+	var since int64
+	if _, err := fmt.Sscanf(*comment, stagingLoadingComment, &since); err == nil {
+		return StagingLoading, since, nil
+	}
+	return StagingClean, 0, nil
+}
+
+// StagingStateOf is g's staging schema's state: for tests and the
+// manager's log.
+func StagingStateOf(ctx context.Context, conn *pgx.Conn, g Guide) (StagingState, error) {
+	s, _, err := stagingState(ctx, conn, g)
+	return s, err
+}
+
+// guideLoadedAt is when the guide in schema was last loaded, as its comment
+// records it: the copied file's modification time (importedComment) or
+// the swap time of a load PMS made in PostgreSQL (loadedComment); 0 for a
+// schema without one.
+func guideLoadedAt(ctx context.Context, conn *pgx.Conn, schema string) (int64, error) {
+	var comment *string
+	if err := conn.QueryRow(ctx, "SELECT obj_description(oid, 'pg_namespace') FROM pg_namespace WHERE nspname = $1", schema).Scan(&comment); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	if comment == nil {
+		return 0, nil
+	}
+	var at int64
+	for _, format := range []string{importedComment, loadedComment} {
+		if _, err := fmt.Sscanf(*comment, format, &at); err == nil {
+			return at, nil
+		}
+	}
+	return 0, nil
+}
+
+func commentSchema(ctx context.Context, conn *pgx.Conn, schema, comment string) error {
+	_, err := conn.Exec(ctx, "COMMENT ON SCHEMA "+pgx.Identifier{schema}.Sanitize()+" IS "+quoteLiteral(comment))
+	return err
+}
+
+// quoteLiteral is s as a SQL string literal.
+func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// removeLoadFile removes a guide load's file and what SQLite keeps beside
+// it.
+func removeLoadFile(file string) error {
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Remove(file + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s%s: %w", filepath.Base(file), suffix, err)
 		}
 	}
 	return nil

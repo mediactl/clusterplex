@@ -117,6 +117,9 @@ func writeGuideLoad(t *testing.T, db plexdb.Config, file string, airings int, at
 	lite, err := sql.Open("sqlite", file)
 	require.NoError(t, err)
 	defer func() { _ = lite.Close() }()
+	// A load PMS made carries no mark of the manager's.
+	_, err = lite.Exec(`PRAGMA application_id = 0`)
+	require.NoError(t, err)
 	_, err = lite.Exec(`INSERT INTO metadata_items (id, title, metadata_type) VALUES (1, 'ABC News Live', 4)`)
 	require.NoError(t, err)
 	for i := 1; i <= airings; i++ {
@@ -253,4 +256,121 @@ func TestALoadBeginningIsWatchedForItsStagingSchema(t *testing.T) {
 		var staged bool
 		return pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", guide.Staging()).Scan(&staged) == nil && staged
 	}, 30*time.Second, 100*time.Millisecond)
+}
+
+// pmsTemplateFile writes file as PMS leaves it when a load begins: its
+// bundled template copied into place, a SQLite database with no mark.
+func pmsTemplateFile(t *testing.T, file string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Remove(file + suffix); err != nil && !os.IsNotExist(err) {
+			require.NoError(t, err)
+		}
+	}
+	lite, err := sql.Open("sqlite", file)
+	require.NoError(t, err)
+	defer func() { _ = lite.Close() }()
+	_, err = lite.Exec("CREATE TABLE schema_migrations (version text)")
+	require.NoError(t, err)
+}
+
+// With PLEX_PG_GUIDE_LOADS the shim asks for a load's staging at its open
+// and for its swap at PMS's rename: the load is made in PostgreSQL, the
+// rename renames schemas, and a rename the manager never answered is
+// recovered by the poll once PMS has refreshed the DVR.
+func TestALoadIsStagedAtTheShimsOpenAndSwappedAtItsRename(t *testing.T) {
+	db := libraryDatabase(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pool, err := plexdb.Open(ctx, db)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	m := newTestManager()
+	m.pool = pool
+	m.Config.Postgres = db
+	m.Config.PlexDir = t.TempDir()
+	m.Config.GuideSocket = filepath.Join(t.TempDir(), "g.sock")
+	guide := plexbootstrap.Guide{Provider: "tv.plex.providers.epg.cloud", DVR: "adfe4a6f-79d0-4135-93d5-edf0235ec02b"}
+	dir := m.guideDir()
+	load := filepath.Join(dir, guide.LoadFile())
+	pmsTemplateFile(t, load)
+	ln, err := m.listenGuideSocket()
+	require.NoError(t, err)
+	go m.serveGuideSocket(ctx, ln)
+	ask := func(line string) string {
+		c, err := net.Dial("unix", m.Config.GuideSocket)
+		require.NoError(t, err)
+		defer func() { _ = c.Close() }()
+		_, err = fmt.Fprintln(c, line)
+		require.NoError(t, err)
+		answer, err := bufio.NewReader(c).ReadString('\n')
+		require.NoError(t, err)
+		return strings.TrimSpace(answer)
+	}
+	count := func(schema string) int {
+		var n int
+		require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM "+schema+".media_items").Scan(&n))
+		return n
+	}
+	exists := func(schema string) bool {
+		var ok bool
+		require.NoError(t, pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", schema).Scan(&ok))
+		return ok
+	}
+
+	assert.Equal(t, "fail not a guide load", ask("stage "+filepath.Join(dir, guide.File())))
+	assert.True(t, strings.HasPrefix(ask("stage "+load), "fail no guide-shadow template"), "no template: the load stays SQLite")
+	shadow, err := plexbootstrap.IsShadow(load)
+	require.NoError(t, err)
+	assert.False(t, shadow, "PMS's template is left alone")
+
+	conn, err := m.connectGuides(ctx)
+	require.NoError(t, err)
+	require.NoError(t, plexbootstrap.BuildShadowTemplate(ctx, m.Logger, conn, dir, filepath.Join(testSchemaDir, plexbootstrap.SQLiteSchemaFile), "plex"))
+	require.NoError(t, conn.Close(ctx))
+	assert.Equal(t, "ok", ask("stage "+load))
+	shadow, err = plexbootstrap.IsShadow(load)
+	require.NoError(t, err)
+	assert.True(t, shadow, "the shim opens a shadow")
+	assert.True(t, exists(guide.Staging()))
+	assert.Equal(t, "ok", ask("stage "+load), "PMS's other handles")
+
+	// PMS loads, through the shim, into the staging schema.
+	require.NoError(t, pool.Exec(ctx, "INSERT INTO "+guide.Staging()+".media_items (metadata_item_id) VALUES (1), (1), (1)"))
+	assert.Equal(t, "ok", ask("swap "+load))
+	assert.Equal(t, 3, count(guide.Schema()))
+	require.NoError(t, os.Rename(load, filepath.Join(dir, guide.File())))
+	m.copyGuides(ctx, "")
+	assert.Equal(t, 3, count(guide.Schema()), "the poll finds nothing to copy in a shadow")
+	assert.Eventually(t, func() bool {
+		if !exists(guide.Staging()) {
+			return false
+		}
+		c, err := m.connectGuides(ctx)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = c.Close(ctx) }()
+		state, err := plexbootstrap.StagingStateOf(ctx, c, guide)
+		return err == nil && state == plexbootstrap.StagingClean
+	}, 10*time.Second, 100*time.Millisecond, "the next load's staging schema is cloned ahead")
+	// A shadow at the load path with nothing loading (a stage whose load
+	// never wrote): the rename passes with no swap.
+	require.NoError(t, plexbootstrap.WriteShadowFrom(plexbootstrap.ShadowTemplate(dir), load))
+	assert.Equal(t, "skip no load in the staging schema", ask("swap "+load), "nothing loading")
+
+	// The next load's rename goes unanswered: the poll swaps it in once
+	// PMS has refreshed the DVR, which the library records.
+	pmsTemplateFile(t, load)
+	assert.Equal(t, "ok", ask("stage "+load))
+	require.NoError(t, pool.Exec(ctx, "INSERT INTO "+guide.Staging()+".media_items (metadata_item_id) VALUES (1)"))
+	require.NoError(t, os.Rename(load, filepath.Join(dir, guide.File())))
+	m.copyGuides(ctx, "")
+	assert.Equal(t, 3, count(guide.Schema()), "no refresh yet: the load may have failed")
+	require.NoError(t, pool.Exec(ctx, `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid, updated_at) VALUES
+		(2, NULL, 1, 'tv.plex.harvesters.dvr', 'adfe4a6f-79d0-4135-93d5-edf0235ec02b', 1),
+		(3, 2, 3, 'tv.plex.providers.epg.cloud', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e', $1)`, time.Now().Add(time.Hour).Unix()))
+	m.copyGuides(ctx, "")
+	assert.Equal(t, 1, count(guide.Schema()), "recovered")
 }

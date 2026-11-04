@@ -109,6 +109,10 @@ type LiveTVConfig struct {
 	// (pkg/plex/livetv.Converger.CloudRefresh); "none" turns it off.
 	// Default "8-11": 02:00-05:00 US Central standard time.
 	GuideRefreshWindow string `mapstructure:"guideRefreshWindow"`
+	// GuideLoadsInPostgres has the shim stage every guide load PMS makes
+	// in PostgreSQL (PLEX_PG_GUIDE_LOADS), where the load is otherwise
+	// made in a SQLite file and copied at PMS's rename. Default false.
+	GuideLoadsInPostgres bool `mapstructure:"guideLoadsInPostgres"`
 }
 
 // defaultGuideRefreshWindow is plex.liveTV.guideRefreshWindow's default.
