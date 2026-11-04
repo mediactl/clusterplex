@@ -613,6 +613,7 @@ plex:
     language: eng              # the DVRs' guide language
     restartEvery: 10m          # PMS restarts on the other pods, at most this often
     staleGrabAfter: 5m         # a Live TV grab no player watches is ended after this
+    guideRefreshWindow: "8-11" # a Plex cloud guide's daily reload, in UTC hours; "none" turns it off
 ```
 
 **Blocks.** PMS takes one device's channel map in one request, capped at
@@ -766,6 +767,31 @@ guide was a SQLite file on its emptyDir. On talos, 2026-10-20, plex-0 read
 - **A DVR created while PMS runs** gets a SQLite guide, because the shim
   finds no schema for it. Its first load is copied into a new schema, and
   this PMS keeps reading the file until it reopens the guide.
+
+### The cloud guide's daily reload
+
+A block on one of Plex's own lineups (an IPTVProvider's `spec.plexGuide`)
+has a guide nothing refreshes by itself. PMS refreshes guide data through
+its butler task "Refresh program guide data" (`ButlerTaskRefreshEpgGuides`,
+about 2 am), and cluster-plex turns every butler task off on each start,
+since each pod runs its own scheduler. With clustarr's XMLTV guide that
+never mattered: the lease holder reloaded the guide whenever clustarr's
+guide hash moved, four times a day. A cloud guide has no hash to move, so
+until 2026-11-04 its 14-day window moved only when the channel map was
+saved, which rebuilds the whole guide.
+
+So the lease holder reloads each cloud block's guide once a day
+(`POST /livetv/dvrs/<key>/reloadGuide`), within `guideRefreshWindow`, UTC
+hours `start-end` (default `8-11`, 02:00-05:00 US Central standard time;
+the pods run in UTC), once the DVR's `refreshedAt`, which PMS moves when a
+load ends, is 20 hours old. It never reloads while PMS loads a guide, nor
+while a recording or a Live TV session runs (a `grabber.grab` activity),
+which is recorded once as `DVRGuideRefreshWaiting` and tried again on the
+next pass. The reload is a whole load, like a saved map's: about 30
+minutes for 233 channels on PMS 1.43.5, which loads 14 days in two 7-day
+steps and has no incremental mode by default (its hidden preference
+`DvrIncrementalEpgLoader` is false and untested). `none` turns the daily
+reload off.
 
 ### Grabs no player watches
 

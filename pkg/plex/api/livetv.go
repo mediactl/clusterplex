@@ -53,13 +53,17 @@ type Device struct {
 // DVR is a PMS DVR (GET /livetv/dvrs): a lineup over one or more devices.
 // It has no title; LineupTitle is the lineup's.
 type DVR struct {
-	Key           Str      `json:"key"`
-	UUID          string   `json:"uuid"`
-	Language      string   `json:"language"`
-	Lineup        string   `json:"lineup"`
-	LineupTitle   string   `json:"lineupTitle"`
-	EPGIdentifier string   `json:"epgIdentifier"`
-	Devices       []Device `json:"Device"`
+	Key           Str    `json:"key"`
+	UUID          string `json:"uuid"`
+	Language      string `json:"language"`
+	Lineup        string `json:"lineup"`
+	LineupTitle   string `json:"lineupTitle"`
+	EPGIdentifier string `json:"epgIdentifier"`
+	// RefreshedAt is when the DVR's guide was last loaded, in seconds since
+	// the epoch: the end of the last load (DVR 32 read 13:28:08Z after the
+	// copy of 13:28:07Z, 2026-11-04). Zero for a DVR never loaded.
+	RefreshedAt int64    `json:"refreshedAt"`
+	Devices     []Device `json:"Device"`
 	// Lineups is the same lineup as a list, which PMS sends as "Lineup"
 	// beside "lineup". It must have a field of its own: encoding/json
 	// matches keys case-insensitively, and without one the list was decoded

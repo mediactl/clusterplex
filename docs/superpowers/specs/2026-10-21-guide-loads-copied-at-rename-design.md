@@ -261,3 +261,24 @@ own `rename` is the only one hooked (`renameat` is not imported, as §"What
 was found" recorded). The hook logs its answer at INFO ("GUIDE_SWAP: the
 manager answered ...") and a failure at ERROR; the poll stays as the
 fallback.
+
+## As built, the cloud guide's daily reload (2026-11-04)
+
+A load copied at its rename answered only the question of where a load
+goes; who starts one was the XMLTV guide's answer, clustarr's guide hash,
+which a Plex cloud lineup (clustarr's `spec.plexGuide`, 2026-11-03) has
+none of. PMS's own nightly refresh is the butler task
+`ButlerTaskRefreshEpgGuides`, which `prefs.DisabledButlerTasks` turns off
+with every other, so a cloud guide's 14-day window moved only when its
+channel map was saved: six whole loads on 2026-11-04, none a refresh, and
+a window that would have run dry on the 18th. `Converger.refreshCloudGuide`
+now reloads each cloud block's guide once a day (`POST
+/livetv/dvrs/<key>/reloadGuide`), in `plex.liveTV.guideRefreshWindow` (UTC
+hours, default 8-11), once the DVR's `refreshedAt`, which PMS moves at a
+load's end, is 20 h old (under a day, so the reload stays at the window's
+start instead of drifting later by a load's length each day), never while
+PMS loads a guide, nor while a recording or Live TV session runs, which is
+recorded once (`DVRGuideRefreshWaiting`). The reload is a whole load like a
+saved map's: PMS 1.43.5 loads every mapped channel's 14 days each time
+(about 30 min for 233 channels); its hidden `DvrIncrementalEpgLoader`
+preference is false and untested.

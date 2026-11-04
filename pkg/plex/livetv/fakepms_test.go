@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plex/livetv"
@@ -33,6 +34,7 @@ type fakePMS struct {
 	devices  []plexapi.Device
 	dvrs     []plexapi.DVR
 	loading  bool
+	grabbing bool           // a recording or Live TV session in progress
 	channels int            // the EPG channel map's size
 	failNext map[string]int // "METHOD /path" -> status, once
 	// writes is every request that is not a GET, as "METHOD path".
@@ -79,6 +81,27 @@ func (f *fakePMS) addReal() (plexapi.Device, plexapi.DVR) {
 func (f *fakePMS) endLoad() {
 	f.mu.Lock()
 	f.loading = false
+	f.mu.Unlock()
+}
+
+// setRefreshedAt marks every DVR's guide as last loaded at the given time.
+func (f *fakePMS) setRefreshedAt(at time.Time) {
+	f.mu.Lock()
+	for i := range f.dvrs {
+		f.dvrs[i].RefreshedAt = at.Unix()
+	}
+	f.mu.Unlock()
+}
+
+func (f *fakePMS) startGrab() {
+	f.mu.Lock()
+	f.grabbing = true
+	f.mu.Unlock()
+}
+
+func (f *fakePMS) endGrab() {
+	f.mu.Lock()
+	f.grabbing = false
 	f.mu.Unlock()
 }
 
@@ -217,6 +240,9 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		f.answer(w, "ChannelMapping", m)
 	case r.Method == http.MethodGet && path == "/activities":
 		var acts []plexapi.Activity
+		if f.grabbing {
+			acts = append(acts, plexapi.Activity{UUID: "g1", Type: plexapi.ActivityGrab, Title: "Recording", Subtitle: "Live TV - Session"})
+		}
 		if f.loading {
 			acts = append(acts, plexapi.Activity{UUID: "a1", Type: plexapi.ActivityGuideLoad, Title: "Refreshing EPG"})
 		} else if f.loadIn > 0 {

@@ -36,9 +36,13 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	if every <= 0 {
 		every = defaultProvisionEvery
 	}
+	// Validated by loadLiveTV.
+	window, _ := parseWindow(m.Config.LiveTV.GuideRefreshWindow)
 	conv := &plexlivetv.Converger{
 		PMS:      &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: liveTVTimeout}},
 		Language: m.Config.LiveTV.Language,
+		// A Plex cloud guide's daily reload (nothing else refreshes it).
+		CloudRefresh: window,
 		// A pass renews the Leases; three periods ride out a slow PMS.
 		Leases: &plexlivetv.Leases{Client: m.K8sClient, Duration: max(plexlivetv.DefaultLeaseDuration, 3*every)},
 		PMSStarted: func() time.Time {

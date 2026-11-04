@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -102,6 +104,39 @@ type LiveTVConfig struct {
 	// StaleGrabAfter is how long a Live TV grab may go unwatched before
 	// its pod ends it (pkg/plex/livetv.StaleGrabs). Default 5m.
 	StaleGrabAfter time.Duration `mapstructure:"staleGrabAfter"`
+	// GuideRefreshWindow is the UTC hours, "start-end", within which a
+	// Plex cloud lineup's guide is reloaded once a day
+	// (pkg/plex/livetv.Converger.CloudRefresh); "none" turns it off.
+	// Default "8-11": 02:00-05:00 US Central standard time.
+	GuideRefreshWindow string `mapstructure:"guideRefreshWindow"`
+}
+
+// defaultGuideRefreshWindow is plex.liveTV.guideRefreshWindow's default.
+const defaultGuideRefreshWindow = "8-11"
+
+// parseWindow reads an "HH-HH" window of UTC hours, "none" or "" as the
+// empty window, into the hours [start, end), each 0-23.
+func parseWindow(s string) ([2]int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "none") || strings.EqualFold(s, "off") {
+		return [2]int{}, nil
+	}
+	a, b, ok := strings.Cut(s, "-")
+	if !ok {
+		return [2]int{}, fmt.Errorf("%q: want \"start-end\" in UTC hours, e.g. 8-11", s)
+	}
+	var w [2]int
+	for i, part := range []string{a, b} {
+		h, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || h < 0 || h > 23 {
+			return [2]int{}, fmt.Errorf("%q: hour %q is not 0-23", s, part)
+		}
+		w[i] = h
+	}
+	if w[0] == w[1] {
+		return [2]int{}, fmt.Errorf("%q: an empty window; use \"none\" to turn the refresh off", s)
+	}
+	return w, nil
 }
 
 // defaultRestartEvery is plex.liveTV.restartEvery's default.
@@ -121,6 +156,12 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	}
 	if lt.StaleGrabAfter <= 0 {
 		lt.StaleGrabAfter = plexlivetv.DefaultStaleGrabAfter
+	}
+	if lt.GuideRefreshWindow == "" {
+		lt.GuideRefreshWindow = defaultGuideRefreshWindow
+	}
+	if _, err := parseWindow(lt.GuideRefreshWindow); err != nil {
+		return lt, fmt.Errorf("%s.guideRefreshWindow: %w", liveTVKey, err)
 	}
 	if lt.Enabled && cl.Namespace == "" {
 		return lt, fmt.Errorf("%s.enabled: needs %s.namespace, where clustarr's IPTVProviders live", liveTVKey, clustarrKey)

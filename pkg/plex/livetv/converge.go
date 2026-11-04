@@ -60,6 +60,8 @@ const (
 	ReasonPodsRestarted    = "DVRPodsRestarted"
 	ReasonDVRListStale     = "DVRListStale"
 	ReasonRevived          = "DVRDeviceRevived"
+	ReasonGuideRefreshed   = "DVRGuideRefreshed"
+	ReasonRefreshWaiting   = "DVRGuideRefreshWaiting"
 )
 
 // Status is how far a pass got.
@@ -174,6 +176,11 @@ type Converger struct {
 	GuideEmpty func(ctx context.Context, dvrUUID string) (bool, error)
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// CloudRefresh is the UTC hours [start, end) within which a Plex cloud
+	// lineup's guide is reloaded once a day (refreshCloudGuide); the zero
+	// window never reloads one. The pods run in UTC: 8-11 is 02:00-05:00
+	// US Central standard time.
+	CloudRefresh [2]int
 	// HTTP fetches a Plex block's channel map from the tuner; nil is a
 	// client with a 10 s timeout.
 	HTTP *http.Client
@@ -200,6 +207,10 @@ type Converger struct {
 	// emptyReloaded is, by device id, when an empty guide was last
 	// reloaded: a guide its feed leaves empty is tried again only hourly.
 	emptyReloaded map[string]time.Time
+	// cloudReloaded is, by device id, when a cloud guide's daily reload
+	// was last asked for: PMS moves the DVR's refreshedAt only when the
+	// load ends, half an hour later, so the ask is not repeated meanwhile.
+	cloudReloaded map[string]time.Time
 	// addresses is every livetv Service address a live provider has named
 	// since this converger started, so a deleted provider's devices and
 	// DVRs, still under its Service, are found and removed.
@@ -211,6 +222,13 @@ type Converger struct {
 
 // emptyGuideRetry is how soon an empty guide is reloaded again.
 const emptyGuideRetry = time.Hour
+
+// cloudRefreshAfter is how old a cloud guide's last load must be before
+// the daily reload: under a day, so a load that ended at 08:35 one day is
+// due again at the window's start the next, not at 08:35, where each day's
+// load would start later than the one before until it fell out of the
+// window.
+const cloudRefreshAfter = 20 * time.Hour
 
 func (c *Converger) now() time.Time {
 	if c.Now == nil {
@@ -311,7 +329,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	if c.saved == nil {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
 		c.emptyReloaded, c.addresses, c.registered = map[string]time.Time{}, map[string]bool{}, map[string]registeredNote{}
-		c.revived = map[string]time.Time{}
+		c.revived, c.cloudReloaded = map[string]time.Time{}, map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -676,7 +694,15 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		c.record(p, ReasonChannelMapSaved, fmt.Sprintf("block %s: saved the channel map: %d channels", b.Start, len(m)), false)
 	}
 	if b.Lineup != "" {
-		// Plex's own guide: nothing of clustarr's to reload.
+		// Plex's own guide: nothing of clustarr's to reload, but nothing of
+		// PMS's refreshes it either. PMS refreshes guide data through the
+		// butler task ButlerTaskRefreshEpgGuides, and every butler task is
+		// off (prefs.DisabledButlerTasks), so a cloud guide's 14-day window
+		// moved only when its map was saved (six whole loads on 2026-11-04,
+		// none of them a refresh). The daily reload is the lease holder's.
+		if err := c.refreshCloudGuide(ctx, p, b, id, dvr, ps); err != nil {
+			return err
+		}
 	} else if b.GuideHash != "" && s.guide != b.GuideHash {
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "reload the guide", err)
@@ -701,6 +727,77 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 	}
 	delete(c.told, "wait/"+id)
 	return nil
+}
+
+// refreshCloudGuide reloads a Plex cloud lineup's guide once a day, in the
+// CloudRefresh window, once its last load (the DVR's refreshedAt) is
+// cloudRefreshAfter old: never while PMS loads a guide, nor while a
+// recording or a Live TV session runs (an ActivityGrab), which waits for
+// the next pass and is recorded once. A whole load follows, as a saved
+// map's does (about 30 min for 233 channels), and PMS moves refreshedAt
+// when it ends, so the ask is remembered for emptyGuideRetry meanwhile.
+func (c *Converger) refreshCloudGuide(ctx context.Context, p Provider, b Block, id string, dvr plexapi.DVR, ps *pass) error {
+	now := c.now().UTC()
+	if !inWindow(now.Hour(), c.CloudRefresh) || dvr.RefreshedAt == 0 {
+		return nil
+	}
+	age := now.Sub(time.Unix(dvr.RefreshedAt, 0))
+	if age < cloudRefreshAfter {
+		return nil
+	}
+	if at, ok := c.cloudReloaded[id]; ok && now.Sub(at) < emptyGuideRetry {
+		return nil
+	}
+	if err := c.idle(ctx, ps); err != nil {
+		return c.wait(p, b, "refresh the guide", err)
+	}
+	grabbing, err := c.grabbing(ctx)
+	if err != nil {
+		return err
+	}
+	if grabbing {
+		c.recordOnce("refresh/"+id, p, ReasonRefreshWaiting,
+			fmt.Sprintf("block %s: the daily guide refresh waits for a recording or Live TV session to end", b.Start), false)
+		return nil
+	}
+	if err := c.PMS.ReloadGuide(ctx, string(dvr.Key)); err != nil {
+		return fmt.Errorf("refresh the guide: %w", err)
+	}
+	ps.guideBusy = true
+	c.cloudReloaded[id] = now
+	delete(c.told, "refresh/"+id)
+	c.record(p, ReasonGuideRefreshed,
+		fmt.Sprintf("block %s: reloading the guide of DVR %s, last loaded %s ago", b.Start, dvr.Key, age.Round(time.Minute)), false)
+	return nil
+}
+
+// inWindow is whether hour h (0-23) lies in the window [start, end) of
+// w, which may wrap midnight (23-2 is 23, 0 and 1); an empty window
+// (start == end) holds no hour.
+func inWindow(h int, w [2]int) bool {
+	start, end := w[0], w[1]
+	switch {
+	case start == end:
+		return false
+	case start < end:
+		return h >= start && h < end
+	default:
+		return h >= start || h < end
+	}
+}
+
+// grabbing is whether PMS is recording or serving a Live TV session.
+func (c *Converger) grabbing(ctx context.Context) (bool, error) {
+	acts, err := c.PMS.Activities(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list activities: %w", err)
+	}
+	for _, a := range acts {
+		if a.Type == plexapi.ActivityGrab {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // maxPlexMapBytes caps the tuner's plexmap.json: a block's map is under

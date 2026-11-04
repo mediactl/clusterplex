@@ -281,6 +281,21 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   `cmd/manager/guides.go`): a staging schema, swapped in by renaming, so PMS
   never waits on the swap. See "The guide, in PostgreSQL" in
   `docs/configuration.md`.
+- **Nothing refreshes a Plex cloud guide but the converger's daily reload
+  (2026-11-04).** PMS refreshes guide data through the butler task
+  `ButlerTaskRefreshEpgGuides` (about 2 am), and every butler task is off
+  (`prefs.DisabledButlerTasks`, each pod running its own scheduler), so an
+  IPTVProvider block on one of Plex's own lineups (`spec.plexGuide`, DIRECTV
+  Mobile on talos) had its 14-day window move only when its channel map was
+  saved: six whole loads that day, none a refresh. Every load is the whole
+  guide (PMS 1.43.5: all mapped channels, 14 days in two 7-day steps, about
+  30 min for 233 channels; its hidden `DvrIncrementalEpgLoader` pref is false
+  and untested), so a map change costs a load whatever its size. The lease
+  holder now reloads each cloud block's guide once a day
+  (`Converger.refreshCloudGuide`: within `plex.liveTV.guideRefreshWindow`,
+  UTC hours, default 8-11, once the DVR's `refreshedAt` is 20 h old; never
+  during a load, a recording or a Live TV session, `DVRGuideRefreshWaiting`).
+  See "The cloud guide's daily reload" in `docs/configuration.md`.
 - **Live TV's "Could not tune channel" can be a missing audio decoder,
   not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
   decoders, among others. PMS downloads each into `Codecs/<transcoder
