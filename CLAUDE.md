@@ -301,6 +301,23 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   UTC hours, default 8-11, once the DVR's `refreshedAt` is 20 h old; never
   during a load, a recording or a Live TV session, `DVRGuideRefreshWaiting`).
   See "The cloud guide's daily reload" in `docs/configuration.md`.
+- **PMS's incremental guide refresh streams the whole guide it holds
+  through one statement, and the shim's five-minute statement timeout
+  killed it (2026-11-04).** The nightly `RefreshEpgGuides` butler task,
+  and the refresh PMS starts at boot when the DVR's provider row
+  (`media_provider_resources`, `pv:lastChunkEndedAt`,
+  `pv:timeOfLastRefresh`) reads stale, begin with one SELECT of every
+  item with its airings, parts, settings, parent and grandparent (98,180
+  rows for 248 channels, 657 ms on the server) and work each row as it
+  streams, past five minutes; PostgreSQL cancelled it, the loader died
+  with an uncaught exception, the "Refreshing guide data, Initializing
+  0%" activity stayed as a ghost until the next restart (DELETE
+  /activities answers 200 and changes nothing), and PMS retried every
+  five minutes. plex-postgresql `v1.3.17-clusterplex.46` runs a guide's
+  connection with no statement timeout. The butler task itself is off with
+  every other (`prefs.DisabledButlerTasks`), so no nightly refresh ever
+  ran here; `Converger.refreshCloudGuide` reloads a cloud guide whole once
+  a day meanwhile.
 - **Live TV's "Could not tune channel" can be a missing audio decoder,
   not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
   decoders, among others. PMS downloads each into `Codecs/<transcoder
