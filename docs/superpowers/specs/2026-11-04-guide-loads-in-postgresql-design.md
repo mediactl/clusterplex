@@ -504,9 +504,41 @@ desc, originally_available_at`, the title inlined as a literal. The loader
 inlines values, so the rig's XMLTV guide should carry titles with
 apostrophes, doubled quotes, backslashes and non-ASCII.
 
-**Not yet:** the rig runs, which need the kind cluster-plex rig (manager,
-PMS, PostgreSQL) rather than the shim's standalone compose, since the
-`stage` verb lives in the manager; talos with the value on. The `.48`
+**The rig (kind-cluster-plex, namespace `media`, 2026-11-04 19:38Z on):**
+the kind overlay at image `8459523` (one replica, its own machine identifier
+-- the overlay's pinned one hashes to the owner's production identity, so a
+rig Plex is never claimed), `hack/kind-postgres.yaml`, and `hack/hdhrprobe`
+with a richer guide (100 channels, 24 two-hour programmes each on a fixed
+UTC day, titles with apostrophes, doubled and double quotes, backslashes,
+non-ASCII and XML specials, shows recurring across channels), its XMLTV DVR
+made by hand through the PMS API as `hack/record-livetv.sh` makes one; an
+unclaimed PMS 1.43.5 creates the DVR and loads the guide. Run 4 first (the
+switch off): PMS loaded in 23 s, the manager copied 5,844 rows in 4.9 s
+through the staging schema made ahead, 64 metadata items, 1,500 airings;
+that guide is kept aside as `epg_off` for the oracle. Run 1 (the switch on)
+staged in milliseconds (`cloned: false`) and then found the first defect:
+PMS's loader makes each EPG section with an INSERT (id 1 from the
+sequence) and renumbers it in place, `update library_sections set id=2
+where id=1`; SQLite's next rowid is max+1, PostgreSQL's sequence handed out
+2 again, the next section's INSERT was refused
+(`library_sections_pkey`), and PMS ended the load at once: `Exception
+inside transaction (inside=1)` at `MediaProviderEpgXmlTv.cpp:687`, `Failed
+to load EPG`, the activity at 100%, the load file left for the start rule.
+So the loader never continues past a refused statement, whatever the
+savepoints leave usable (the open question above is settled: one refused
+statement is one failed load, and on talos the map guard then restores the
+map). Fixed in plex-postgresql `v1.3.17-clusterplex.50`
+(`guide_load::id_assignment`, `resync_sequence`): a load's UPDATE that sets
+`id`, or INSERT that names it, is followed by one `setval` to the greater
+of `max(id)` and the sequence's last value, proven on the rig's staging
+schema (an empty table leaves 2 at 2; an explicit 7 makes the next 8). The
+rig's trace at `PLEX_PG_LOG_LEVEL=DEBUG` also showed no `SAVEPOINT
+plex_pg_stmt` at all during the load (the loader's writes ran on the
+handle's own connection, with BEGIN/COMMIT pairs on it), which is moot for
+correctness after the finding above and is to be read before the savepoints
+are relied on for anything.
+
+**Not yet:** the rest of the rig runs, on `.50`; talos with the value on. The `.48`
 deploy (talos rev 221, 2026-11-04) carries both halves inert, except the
 map guard, which runs whatever the value: checked against talos's live DVR
 32 before that deploy (PMS stores the map byte for byte as the tuner sends
