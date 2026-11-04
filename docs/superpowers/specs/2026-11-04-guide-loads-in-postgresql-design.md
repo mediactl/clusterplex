@@ -611,12 +611,30 @@ recovery), 2026-11-04 20:21-20:40Z:**
   load runs"), built the template, and the next load staged fresh and
   swapped in 93 s later.
 
+- `.51` (image `93bc8dd`): the per-read `SET` is gone (1 against 91,229;
+  the loader connection ran 175,774 statements, no savepoints), the load
+  swapped as before, and PMS's "database" time was 103.8 s -- 73, 96 and
+  104 s over three runs, so a third fewer round trips moved nothing
+  measurable. With PostgreSQL's own time at 25 s and the round trips at
+  most 20 s, the rest is client work per statement, most likely the
+  shim's translation at each prepare: PMS's loader prepares every
+  statement anew for every airing (the trace's `pg_stmt_free` after each
+  step), and the shim parses and rewrites each one (the PostgreSQL-side
+  statement cache keys only the prepared name by SQL hash). A translation
+  cache keyed by the SQL text is the next lever, not measured here.
+- The boot refresh of an XMLTV provider, provoked with a stale provider
+  row (`pv:timeOfLastRefresh` two days back, `pv:lastChunkEndedAt` six
+  days short), is a full load from scratch, not the cloud provider's
+  chunked merge: a new load file, "Step 1/1", 93 s, the rename, and PMS
+  rewrote the row. The cloud merge's statement order (where the unmatched
+  delete falls) is to be read on talos, or on the rig once it holds a
+  cloud DVR, which needs a claimed server.
+
 **Not yet:** the late hook (covered by the recovery test; no knob on the
 rig), the refused statement (the loader fails the load; the map guard
 needs a cloud block, not on the rig), the cloud lineup (needs a claimed
-server: the rig stays unclaimed, see the identity note); a timing run on
-`.51`; talos with the value on, which is the owner's call on the load's
-length: a from-scratch cloud load there is some 60,000 airings, so at the
+server: the rig stays unclaimed, see the identity note); talos with the
+value on, which is the owner's call on the load's length: a from-scratch cloud load there is some 60,000 airings, so at the
 rig's 50-70 ms an airing over SQLite's it runs an hour or more against
 today's 21 minutes plus the 35 s copy, in the background while the old
 guide serves, as today's does. The `.48`
