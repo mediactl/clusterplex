@@ -288,6 +288,9 @@ func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 		return "fail not a guide load"
 	}
 	log := m.Logger.With("component", "livetv-guides")
+	// Only the shim's rename hook asks: the line proves the hook ran where
+	// the poll's copy logs the same "copied" line (2026-11-04).
+	log.Info("Live TV: the shim asks for a guide load's copy before its rename", "guide", g.File())
 	m.guides.mu.Lock()
 	defer m.guides.mu.Unlock()
 	m.guides.init()
