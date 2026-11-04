@@ -295,9 +295,11 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   instead of copying. The mark is how the swap tells a staged load from a
   SQLite one; every shadow the manager builds carries it, so a test's "load
   PMS made" must clear it (`PRAGMA application_id = 0`). A rename the manager
-  never answered is recovered by the poll once the DVR's `refreshedAt`
-  moves (`plexbootstrap.RecoverLoads`); a start drops every staging schema
-  and load file. `hack/guidediff` diffs two guide schemas table by table,
+  never answered is recovered by the poll once the guide file carries the
+  load file's inode, which the stage records (`plexbootstrap.RecoverLoads`;
+  the DVR's `refreshedAt` is no evidence: a cancelled refresh moves it, a
+  failed load does not), and a failed load's staging schema is cloned clean
+  again; a start drops every staging schema and load file. `hack/guidediff` diffs two guide schemas table by table,
   the oracle a load made both ways must pass.
 - **PMS replaces a Plex block's channel map with its own pairing at the end
   of a load that fails** (2026-11-04: every cloud load failed on the shim's

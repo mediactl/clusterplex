@@ -412,37 +412,13 @@ func (m *Manager) stageAhead(ctx context.Context, g plexbootstrap.Guide) {
 	m.stageGuide(ctx, conn, g)
 }
 
-// recoverLoads swaps in a load made in PostgreSQL whose rename the manager
-// did not answer, once PMS has refreshed its DVR (plexbootstrap.RecoverLoads).
-// Under guides.mu, with conn.
+// recoverLoads settles a staged load whose rename the manager did not
+// answer, by the guide file's inode (plexbootstrap.RecoverLoads).
 func (m *Manager) recoverLoads(ctx context.Context, conn *pgx.Conn) {
 	log := m.Logger.With("component", "livetv-guides")
-	refreshedAt := func(g plexbootstrap.Guide) (int64, bool) {
-		at, err := m.dvrRefreshedAt(ctx, conn, g.DVR)
-		if err != nil {
-			log.Warn("Live TV: read when a DVR's guide was refreshed", "dvr", g.DVR, "error", err)
-			return 0, false
-		}
-		return at, at != 0
-	}
-	if _, err := plexbootstrap.RecoverLoads(ctx, log, conn, m.Config.Postgres.Schema, m.guideDir(), refreshedAt); err != nil {
+	if _, err := plexbootstrap.RecoverLoads(ctx, log, conn, m.Config.Postgres.Schema, m.guideDir()); err != nil {
 		log.Warn("Live TV: recover a guide load whose rename went unanswered", "error", err)
 	}
-}
-
-// dvrRefreshedAt is when PMS last finished loading the DVR's guide, in Unix
-// seconds, read from the library: the DVR's row and its providers' are
-// updated at a load's end, which /livetv/dvrs reports as refreshedAt. 0 for
-// a DVR the library does not list, or never loaded.
-func (m *Manager) dvrRefreshedAt(ctx context.Context, conn *pgx.Conn, dvr string) (int64, error) {
-	mpr := pgx.Identifier{m.Config.Postgres.Schema, "media_provider_resources"}.Sanitize()
-	var at *int64
-	err := conn.QueryRow(ctx, `SELECT max(updated_at)::bigint FROM `+mpr+` WHERE lower(uuid) = lower($1)
-		OR parent_id IN (SELECT id FROM `+mpr+` WHERE type = 1 AND lower(uuid) = lower($1))`, dvr).Scan(&at)
-	if err != nil || at == nil {
-		return 0, err
-	}
-	return *at, nil
 }
 
 func (m *Manager) connectGuides(ctx context.Context) (*pgx.Conn, error) {

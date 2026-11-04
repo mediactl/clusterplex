@@ -236,15 +236,19 @@ rebuilds it.
 
 - **A rename the manager did not answer** (deadline, a socket error): the
   rename passes, PMS serves the old guide from `epg_<uuid>`, and `_next`
-  holds a complete load marked `loading`. On its next pass, `copyGuideLoads`
-  swaps a `_next` marked `loading` whose load file is gone from the
-  directory and whose DVR's `refreshedAt` (the provider row's
-  `updated_at`, which PMS moves at a load's end) is later than the
-  `loading since` time. One marked `loading` whose file is gone and whose
-  DVR did not refresh is a failed load, dropped at the next `stage`.
+  holds a complete load marked `loading`. The `stage` records the load
+  file's inode in the mark, and a rename carries the inode with the file,
+  so on its next pass the poll swaps a `_next` marked `loading` whose load
+  file is gone from the directory and whose guide file now has that inode.
+  (The first cut keyed this on the DVR's `refreshedAt`, the provider row's
+  `updated_at`; the rig showed a failed from-scratch load leaves it alone,
+  and talos that a cancelled incremental refresh moves it, 2026-11-04 --
+  so a failed load's leftover `_next` would have been swapped in at the
+  next refresh.)
 - **A failed load** (PMS logs `Failed to load EPG`, removes the file, and
-  re-pairs the channels): `_next` stays `loading` until the next `stage`
-  resets it, and the converger restores the map (next).
+  re-pairs the channels): the poll finds `_next` marked `loading`, no load
+  file and the guide file's own inode, drops the schema and clones it clean
+  again; and the converger restores the map (next).
 - **The map PMS replaced.** After any load ends on a cloud block (the
   DVR's `refreshedAt` moved, or a `stage` was answered and no `swap`
   followed within the load's usual time), the converger reads the DVR's
@@ -337,9 +341,10 @@ room for it.
 - The start rule: stale `_next` schemas and load files are removed, the
   shadow template is built with the mark, the per-guide `_next` is cloned
   in the background.
-- Recovery: a `loading` `_next` with no file and a moved `refreshedAt` is
-  swapped by the poll; one with no file and no refresh is left for the
-  next `stage`.
+- Recovery: a `loading` `_next` with no file is swapped by the poll when
+  the guide file carries the load file's inode; with another inode it is
+  dropped and cloned clean; a mark without an inode is left for the next
+  `stage`.
 - The map guard: a map PMS replaced is saved again once, and an unchanged
   map is not.
 - `BuildShadow` sets the mark; `readShadowMark` reads it.
@@ -449,8 +454,8 @@ chart and `docs/configuration.md`):
   comment, `loaded by PMS, swapped at <ns>` for a PostgreSQL load, which
   `guideLoadedAt` reads beside the copied-file comment so an older SQLite
   copy never undoes a swap. `RecoverLoads` is §"Recovery", keyed on the
-  DVR's `refreshedAt` read from the library (the DVR row's and its
-  providers' `updated_at`). `PrepareGuides` drops every staging schema and
+  load file's inode the stage records in the mark (`fileInode`,
+  `parseLoading`), which the guide file carries after PMS's rename. `PrepareGuides` drops every staging schema and
   load file at a start and builds the template; `SweepGuides` drops every
   `_next`, since no load runs at a start.
 - The guide socket's `stage` verb (`stageLoad`, 45 s deadline) and the

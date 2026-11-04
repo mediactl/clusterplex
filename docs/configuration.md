@@ -845,8 +845,9 @@ cloud guide's load took 35 s); PMS's rename then moves the shadow onto the
 guide. A stage the manager cannot answer within 45 s, or refuses, leaves
 that load in SQLite, copied at its rename as before. A rename the manager
 never answered leaves the finished load in the staging schema, which the
-poll swaps in once PMS has refreshed the DVR (`refreshedAt`); a load that
-failed is reset by the next load's stage. Every shadow the manager builds
+poll swaps in once the guide file carries the load file's inode (PMS's
+rename moves the file, inode and all); a load that failed, its file
+removed by PMS, has its staging schema cloned clean again by the poll. Every shadow the manager builds
 carries the SQLite `application_id` `CLPX`, which is how a staged load's
 file is told from PMS's template
 (`docs/superpowers/specs/2026-11-04-guide-loads-in-postgresql-design.md`).

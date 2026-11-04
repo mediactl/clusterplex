@@ -600,7 +600,7 @@ func TestALoadMadeInPostgreSQLIsSwappedInAtTheRename(t *testing.T) {
 // A rename the manager did not answer leaves a finished load in the
 // staging schema: the poll swaps it in once PMS has refreshed the DVR,
 // and leaves a load that failed (no refresh) for the next stage to reset.
-func TestAnUnansweredRenameIsRecoveredOnceTheDVRRefreshed(t *testing.T) {
+func TestAnUnansweredRenameIsRecoveredByTheGuideFilesInode(t *testing.T) {
 	ctx := context.Background()
 	_, conn := libraryDB(t)
 	_, err := conn.Exec(ctx, `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
@@ -610,38 +610,41 @@ func TestAnUnansweredRenameIsRecoveredOnceTheDVRRefreshed(t *testing.T) {
 	dir, template := guideDir(t, conn)
 	cloud := Guide{Provider: "tv.plex.providers.epg.cloud", DVR: testGuide.DVR}
 	file := filepath.Join(dir, cloud.LoadFile())
+	guide := filepath.Join(dir, cloud.File())
+	require.NoError(t, WriteShadowFrom(template, guide), "the guide's shadow, as a start builds it")
 	pmsTemplate(t, file)
 	_, err = StageLoad(ctx, quiet, conn, "plex", cloud, file, template)
-	require.NoError(t, err)
-	_, since, err := stagingState(ctx, conn, cloud)
 	require.NoError(t, err)
 	_, err = conn.Exec(ctx, "INSERT INTO "+cloud.Staging()+".media_items (metadata_item_id) VALUES (1)")
 	require.NoError(t, err)
 
-	refreshed := int64(0)
-	at := func(g Guide) (int64, bool) {
-		assert.Equal(t, cloud.DVR, g.DVR)
-		return refreshed, refreshed != 0
-	}
-	swapped, err := RecoverLoads(ctx, quiet, conn, "plex", dir, at)
+	swapped, err := RecoverLoads(ctx, quiet, conn, "plex", dir)
 	require.NoError(t, err)
 	assert.Empty(t, swapped, "the load file is still there: the load runs")
 
-	require.NoError(t, os.Rename(file, filepath.Join(dir, cloud.File())))
-	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir, at)
-	require.NoError(t, err)
-	assert.Empty(t, swapped, "no refresh: a load that failed")
-	refreshed = since/int64(time.Second) - 60
-	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir, at)
-	require.NoError(t, err)
-	assert.Empty(t, swapped, "refreshed before the load began")
-
-	refreshed = since/int64(time.Second) + 60
-	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir, at)
+	// PMS renamed the load onto the guide and the manager never heard.
+	require.NoError(t, os.Rename(file, guide))
+	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir)
 	require.NoError(t, err)
 	assert.Equal(t, []Guide{cloud}, swapped, "the provider is read from the library")
 	assert.Equal(t, 1, one[int](t, conn, "SELECT count(*) FROM "+cloud.Schema()+".media_items"))
 	assert.Equal(t, []string{cloud.Schema()}, schemasLike(t, conn, cloud.Schema()))
+
+	// A load that failed: PMS removed its file, and the guide file stands.
+	pmsTemplate(t, file)
+	_, err = StageLoad(ctx, quiet, conn, "plex", cloud, file, template)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, "INSERT INTO "+cloud.Staging()+".media_items (metadata_item_id) VALUES (2)")
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(file))
+	swapped, err = RecoverLoads(ctx, quiet, conn, "plex", dir)
+	require.NoError(t, err)
+	assert.Empty(t, swapped, "a failed load is never swapped in")
+	state, err := StagingStateOf(ctx, conn, cloud)
+	require.NoError(t, err)
+	assert.Equal(t, StagingClean, state, "its staging schema is cloned clean again")
+	assert.Equal(t, 0, one[int](t, conn, "SELECT count(*) FROM "+cloud.Staging()+".media_items"))
+	assert.Equal(t, 1, one[int](t, conn, "SELECT count(*) FROM "+cloud.Schema()+".media_items"), "the guide stands")
 }
 
 // At a start no load runs: a load file and a staging schema are what PMS

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -996,7 +997,10 @@ const (
 
 const (
 	stagingCleanComment   = "clusterplex: staging, clean"
-	stagingLoadingComment = "clusterplex: staging, loading since %d (Unix ns)"
+	stagingLoadingComment = "clusterplex: staging, loading since %d (Unix ns), file inode %d"
+	// stagingLoadingOldComment is the form before the inode (read, never
+	// written): a load so marked carries no evidence of its rename.
+	stagingLoadingOldComment = "clusterplex: staging, loading since %d (Unix ns)"
 	// loadedComment marks a guide PMS loaded in PostgreSQL, by its swap
 	// time: a load file older than it (another pod's, copied at its start)
 	// does not undo it, as importedComment's time orders the copies.
@@ -1072,7 +1076,8 @@ func StageLoad(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library st
 		}
 		out.Cloned = true
 	}
-	if err := commentSchema(ctx, conn, g.Staging(), fmt.Sprintf(stagingLoadingComment, time.Now().UnixNano())); err != nil {
+	since := time.Now().UnixNano()
+	if err := commentSchema(ctx, conn, g.Staging(), fmt.Sprintf(stagingLoadingComment, since, 0)); err != nil {
 		return Staged{}, err
 	}
 	if err := WriteShadowFrom(template, file); err != nil {
@@ -1080,6 +1085,14 @@ func StageLoad(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library st
 		// the next request clones again, and the shim loads into SQLite
 		// meanwhile.
 		_ = commentSchema(context.Background(), conn, g.Staging(), stagingCleanComment)
+		return Staged{}, err
+	}
+	// The load file's inode is the rename's evidence (RecoverLoads).
+	inode, err := fileInode(file)
+	if err != nil {
+		return Staged{}, fmt.Errorf("read the load file's inode: %w", err)
+	}
+	if err := commentSchema(ctx, conn, g.Staging(), fmt.Sprintf(stagingLoadingComment, since, inode)); err != nil {
 		return Staged{}, err
 	}
 	out.Fresh = true
@@ -1130,14 +1143,15 @@ func SwapLoaded(ctx context.Context, log *slog.Logger, conn *pgx.Conn, g Guide) 
 	return true, nil
 }
 
-// RecoverLoads swaps in each load PMS finished whose rename the manager
-// did not answer: a staging schema marked loading, with no load file
-// beside it in dir (PMS renamed it away), whose DVR PMS has refreshed
-// since the load began (refreshedAt, in Unix seconds, the DVR's
-// refreshedAt; false for a DVR it cannot tell). One with no file and no
-// refresh is a load that failed, which the next StageLoad resets. It
-// returns the guides it swapped.
-func RecoverLoads(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library, dir string, refreshedAt func(g Guide) (int64, bool)) ([]Guide, error) {
+// RecoverLoads settles each staging schema marked loading whose load file
+// is gone from dir, on the poll: PMS either renamed the load onto the guide
+// (the guide file now has the load file's inode, recorded at the stage)
+// and the manager never answered the rename, so the load is swapped in
+// (SwapLoaded); or the load failed and PMS removed its file, so the schema
+// is dropped and cloned clean again. A schema marked before the inode was
+// recorded carries no evidence and is left for the next stage. It returns
+// the guides swapped in.
+func RecoverLoads(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library, dir string) ([]Guide, error) {
 	rows, err := conn.Query(ctx, `SELECT nspname::text, obj_description(oid, 'pg_namespace') FROM pg_namespace WHERE nspname LIKE 'epg\_%\_next' ORDER BY 1`)
 	if err != nil {
 		return nil, err
@@ -1161,8 +1175,8 @@ func RecoverLoads(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library
 		if dvr == "" || s.comment == nil {
 			continue
 		}
-		var since int64
-		if _, err := fmt.Sscanf(*s.comment, stagingLoadingComment, &since); err != nil {
+		_, inode, ok := parseLoading(*s.comment)
+		if !ok || inode == 0 {
 			continue
 		}
 		loads, _ := filepath.Glob(filepath.Join(dir, "tv.plex.providers.epg.*-"+dvr+LoadSuffix+".db"))
@@ -1170,13 +1184,26 @@ func RecoverLoads(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library
 			continue // the load runs
 		}
 		g := Guide{DVR: dvr}
-		at, ok := refreshedAt(g)
-		if !ok || at*int64(time.Second) <= since {
-			continue
-		}
 		g.Provider, _ = guideProviderOf(ctx, conn, library, dvr)
 		if g.Provider == "" {
 			g.Provider = "tv.plex.providers.epg.xmltv"
+		}
+		guideInode, err := fileInode(filepath.Join(dir, g.File()))
+		if err != nil {
+			continue // no guide file to read the rename from
+		}
+		if guideInode != inode {
+			// PMS removed a failed load's file; the guide file stands.
+			if err := dropSchema(ctx, conn, g.Staging()); err != nil {
+				errs = append(errs, fmt.Errorf("drop the failed load's %s: %w", g.Staging(), err))
+				continue
+			}
+			if err := cloneStaging(ctx, conn, library, g); err != nil {
+				errs = append(errs, fmt.Errorf("clone %s again after a failed load: %w", g.Staging(), err))
+				continue
+			}
+			log.Warn("a staged Live TV guide load failed before its rename; its staging schema is cloned again", "guide", g.File(), "schema", g.Staging())
+			continue
 		}
 		done, err := SwapLoaded(ctx, log, conn, g)
 		if err != nil {
@@ -1216,11 +1243,38 @@ func stagingState(ctx context.Context, conn *pgx.Conn, g Guide) (StagingState, i
 	if comment == nil {
 		return StagingClean, 0, nil
 	}
-	var since int64
-	if _, err := fmt.Sscanf(*comment, stagingLoadingComment, &since); err == nil {
+	if since, _, ok := parseLoading(*comment); ok {
 		return StagingLoading, since, nil
 	}
 	return StagingClean, 0, nil
+}
+
+// parseLoading reads a staging schema's loading comment: when the load
+// began and the load file's inode (0 for a comment written before the
+// inode was recorded).
+func parseLoading(comment string) (since int64, inode uint64, ok bool) {
+	if _, err := fmt.Sscanf(comment, stagingLoadingComment, &since, &inode); err == nil {
+		return since, inode, true
+	}
+	if _, err := fmt.Sscanf(comment, stagingLoadingOldComment, &since); err == nil {
+		return since, 0, true
+	}
+	return 0, 0, false
+}
+
+// fileInode is the inode of the file at path, which a rename carries with
+// the file: PMS's rename of its load onto the guide gives the guide file
+// the load file's inode.
+func fileInode(path string) (uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("%s: no inode from the file system", path)
+	}
+	return uint64(st.Ino), nil //nolint:unconvert // Ino is uint64 on linux and darwin; the conversion keeps other ports building
 }
 
 // StagingStateOf is g's staging schema's state: for tests and the
