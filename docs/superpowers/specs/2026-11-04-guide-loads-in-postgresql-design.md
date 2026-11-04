@@ -588,12 +588,38 @@ recovery), 2026-11-04 20:21-20:40Z:**
   rig showed a failed from-scratch load leaves the DVR's `refreshedAt`
   alone and talos that a cancelled incremental refresh moves it.
 
-**Not yet:** savepoints off (timing), fds across two swaps, PMS killed
-mid-load, 100 probes during a load, the late hook (covered by the
-recovery test; no knob on the rig), the refused statement (the loader
-fails the load; the map guard needs a cloud block, not on the rig), the
-cloud lineup (needs a claimed server: the rig stays unclaimed, see the
-identity note); talos with the value on. The `.48`
+- Savepoints off (`PLEX_PG_GUIDE_LOAD_SAVEPOINTS=0`): 96.3 s against the
+  73.3 s with them on, so they cost nothing measurable on this node, whose
+  spread between runs (SQLite's own 3.6 s then 22.5 s) is wider than
+  their share. PostgreSQL's statement log of that run settles where the
+  time is: one loader connection ran 267,006 statements in 96.6 s, 24.7 s
+  of them PostgreSQL's, the rest about 0.16 ms of client and round trip
+  each; 91,229 were the `SET statement_timeout = 0` before every read,
+  91,240 reads, 76,597 inserts (73,612 of them taggings), 5,230 updates,
+  2,213 deletes, 227 transactions. The other four sessions ran a few
+  hundred statements between them. plex-postgresql `.51` drops the
+  per-read `SET` on a guide's or a load's own connection (a third of the
+  statements) and turns the savepoints off by default.
+- Run 8: 120 `GET /library/sections` at two a second through a staged
+  load all answered 200.
+- Run 3: after a swap PMS holds its ten handles on the guide file, ten on
+  its WAL and one on the shm, the file the rename brought (its inode the
+  load file's, marked `CLPX`), and none on a deleted file.
+- Run 5: PMS killed (the pod deleted) 25 s into a staged load with 1,339
+  airings in `_next` (its mark `loading since ..., file inode 53490497`):
+  the start rule dropped the schema ("a staging schema at a start, when no
+  load runs"), built the template, and the next load staged fresh and
+  swapped in 93 s later.
+
+**Not yet:** the late hook (covered by the recovery test; no knob on the
+rig), the refused statement (the loader fails the load; the map guard
+needs a cloud block, not on the rig), the cloud lineup (needs a claimed
+server: the rig stays unclaimed, see the identity note); a timing run on
+`.51`; talos with the value on, which is the owner's call on the load's
+length: a from-scratch cloud load there is some 60,000 airings, so at the
+rig's 50-70 ms an airing over SQLite's it runs an hour or more against
+today's 21 minutes plus the 35 s copy, in the background while the old
+guide serves, as today's does. The `.48`
 deploy (talos rev 221, 2026-11-04) carries both halves inert, except the
 map guard, which runs whatever the value: checked against talos's live DVR
 32 before that deploy (PMS stores the map byte for byte as the tuner sends
