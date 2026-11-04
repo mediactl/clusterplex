@@ -37,8 +37,12 @@ type fakePMS struct {
 	failNext map[string]int // "METHOD /path" -> status, once
 	// writes is every request that is not a GET, as "METHOD path".
 	writes []string
-	// saves counts channel-map saves per device key.
+	// saves counts channel-map saves per device key; saved is each
+	// device's last saved map query.
 	saves map[string]int
+	saved map[string]url.Values
+	// epgMapReads counts GET /livetv/epg/channelmap.
+	epgMapReads int
 	// loadIn starts a load once that many more /activities reads have
 	// answered idle: PMS beginning a guide refresh of its own mid-pass.
 	loadIn int
@@ -48,7 +52,7 @@ type fakePMS struct {
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
-	f := &fakePMS{t: t, next: 1, channels: 3, failNext: map[string]int{}, saves: map[string]int{}}
+	f := &fakePMS{t: t, next: 1, channels: 3, failNext: map[string]int{}, saves: map[string]int{}, saved: map[string]url.Values{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	return f, &plexapi.Client{BaseURL: srv.URL, Token: func() string { return "tok" }}
@@ -163,6 +167,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && strings.HasSuffix(path, "/channelmap"):
 		k := strings.TrimSuffix(strings.TrimPrefix(path, "/media/grabbers/devices/"), "/channelmap")
 		f.saves[k]++
+		f.saved[k] = q
 		f.loading = true // a save rebuilds the guide (recorded)
 	case r.Method == http.MethodGet && path == "/livetv/dvrs":
 		f.answer(w, "Dvr", f.dvrs)
@@ -192,6 +197,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/reloadGuide"):
 		f.loading = true
 	case r.Method == http.MethodGet && path == "/livetv/epg/channelmap":
+		f.epgMapReads++
 		m := make([]plexapi.ChannelMapping, f.channels)
 		for i := range m {
 			id := strconv.Itoa(1000 + i)
