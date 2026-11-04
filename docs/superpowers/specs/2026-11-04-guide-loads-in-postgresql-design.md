@@ -278,13 +278,15 @@ room for it.
   lineup. The kill switch stays off on talos until the rig has run the
   XMLTV and the cloud load end to end. The pattern of the misses so far
   (`.47`, `.48`, `.49`, every one found on PMS's incremental refresh,
-  which runs the loader's lookups against the live guide) is stable:
-  each was in the collation preprocessing (`preprocess.rs`'s
-  `rewrite_sqlite_collations`, which rewrites `collate icu_root` before
-  the AST translator sees the statement), never in the translator, and
-  each showed only on data that reached that statement -- an IN list, a
-  title with an apostrophe, a show whose episodes PMS ordered by
-  `parents.\`title_sort\``. A load from scratch sends the same lookups
+  which runs the loader's lookups against the live guide) is stable in
+  one way: each is a collation case -- two in the collation preprocessing
+  (`preprocess.rs`'s `rewrite_sqlite_collations`: an IN list's collation,
+  a doubled quote in a literal) and one in the AST quotes pass
+  (`quotes.rs`'s `fix_expr` had no arm for `Expr::Collate`, so a
+  backtick-quoted identifier under a kept collation never became
+  double-quoted) -- and each showed only on data that reached that
+  statement: an IN list, a title with an apostrophe, a show whose
+  episodes PMS ordered by `parents.\`title_sort\``. A load from scratch sends the same lookups
   (its step 2 asks `/library/metadata/<id>` per programme), so the rig
   runs on `.49` or later, and the XMLTV guide's titles are chosen to
   reach the ORDER BY paths (below).
@@ -482,13 +484,16 @@ tests pass and the cdylib links. The gating sits in `pg_config.rs` and
 `.47` (an IN list's ICU collation), `.48` (a doubled quote inside a
 literal, `title='America''s Funniest Home Videos'`, read as the literal's
 end, so the ORDER BY's `collate icu_root` reached the parser unrewritten)
-and `.49` (the rewrite parenthesised a backtick-quoted identifier before
-its collation, so PostgreSQL received ``(parents.`title_sort`) COLLATE
-plex.icu_root`` in the show-level episode lookup, `SELECT grandparents.*,
+and `.49` (the preprocess parenthesised a backtick-quoted identifier
+before its collation correctly, but the AST quotes pass, `quotes.rs`'s
+`fix_expr`, had no arm for `Expr::Collate`, so the backticks stood and
+PostgreSQL received ``(parents.`title_sort`) COLLATE plex.icu_root`` in
+the show-level episode lookup, `SELECT grandparents.*,
 parents.*, metadata_items.* ... WHERE grandparents.id = ? ORDER BY
 media_items.begins_at DESC, parents.`index`, parents.`title_sort` collate
 icu_root, ...`; the refresh under `.48` got through all seven chunks and
-died on that last lookup). The guide-loads shim's next release, should it
+died on that last lookup; the fix adds `Collate`, `Tuple` and `IS [NOT]
+DISTINCT FROM` arms). The guide-loads shim's next release, should it
 need one, is `.50`; the peer session owns `.49`. All three were found on
 PMS's incremental refresh, which already sends the
 loader's statements through the translator: the title lookup is `select
