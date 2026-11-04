@@ -43,7 +43,7 @@ ARG TARGETARCH
 # the maintainer has not answered a pull request since April 2026. Fixes go to
 # the fork and come back here as a tag; see hack/plex-postgresql/README.md.
 ARG PLEX_PG_REPO=https://github.com/mediactl/plex-postgresql
-ARG PLEX_PG_REF=v1.3.17-clusterplex.50
+ARG PLEX_PG_REF=v1.3.17-clusterplex.51
 RUN apk add --no-cache curl ca-certificates
 WORKDIR /dl
 RUN case "${TARGETARCH}" in \
