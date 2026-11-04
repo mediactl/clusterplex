@@ -282,3 +282,24 @@ recorded once (`DVRGuideRefreshWaiting`). The reload is a whole load like a
 saved map's: PMS 1.43.5 loads every mapped channel's 14 days each time
 (about 30 min for 233 channels); its hidden `DvrIncrementalEpgLoader`
 preference is false and untested.
+
+## As built, the refresh that was never running (2026-11-04, later)
+
+The daily reload above was built on a wrong premise, that nothing of PMS's
+refreshes a cloud guide. PMS has an incremental refresh, the nightly
+`RefreshEpgGuides` butler task (and the same code at boot when the DVR's
+`pv:lastChunkEndedAt`/`pv:timeOfLastRefresh` read stale), which reads the
+whole guide it holds through one SELECT and then fetches only the two-day
+chunks it lacks ("Step 2/7: skipping chunk for incremental loading";
+548 airings and 21 metadata calls in 9.5 min for 248 channels, against
+84,000 airings and thousands of calls in 37 min for a rebuild). It never
+completed here because the task was off with every other, and because
+that first SELECT, streamed and worked row by row, outlived the shim's
+five-minute statement timeout: PostgreSQL cancelled it, the loader died
+with an uncaught exception, and its activity sat at "Initializing 0%"
+until the next restart. plex-postgresql `v1.3.17-clusterplex.46` runs a
+guide's connection with no timeout; `prefs.GuideRefresh` keeps the task on
+with Live TV; and `Converger.refreshCloudGuide` became the fallback it
+should have been, reloading whole only a guide whose latest airing ends
+within seven days (`GuideHorizon`), since PMS leaves `refreshedAt` alone
+after an incremental refresh.

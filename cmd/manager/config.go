@@ -490,7 +490,7 @@ func validateExternalURL(raw string) error {
 func (c Config) EnforcedPreferences(externalURL string) map[string]string {
 	prefs := plexprefs.Defaults()
 	maps.Copy(prefs, c.Preferences)
-	maps.Copy(prefs, plexprefs.Enforced(externalURL, c.TranscodeDir))
+	maps.Copy(prefs, plexprefs.Enforced(externalURL, c.TranscodeDir, c.LiveTV.Enabled))
 	return prefs
 }
 

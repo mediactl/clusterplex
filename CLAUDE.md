@@ -316,8 +316,15 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   five minutes. plex-postgresql `v1.3.17-clusterplex.46` runs a guide's
   connection with no statement timeout. The butler task itself is off with
   every other (`prefs.DisabledButlerTasks`), so no nightly refresh ever
-  ran here; `Converger.refreshCloudGuide` reloads a cloud guide whole once
-  a day meanwhile.
+  ran here; since the same day `prefs.GuideRefresh` keeps that one task on
+  with Live TV (the window, `ButlerStartHour`/`EndHour`, is the operator's,
+  in the pod's UTC), the refresh is incremental (`DvrIncrementalEpgLoader`,
+  a default: two-day chunks, ~10 min for 248 channels, "Step 2/7: skipping
+  chunk for incremental loading"), it cannot be run by hand (`POST
+  /butler/RefreshEpgGuides` does nothing outside its schedule) and it leaves
+  the DVR's `refreshedAt` alone, so `Converger.refreshCloudGuide` is the
+  fallback: a cloud guide whose latest airing ends within seven days
+  (`GuideHorizon`, read from its schema) is reloaded whole in the window.
 - **Live TV's "Could not tune channel" can be a missing audio decoder,
   not the tuner.** Plex's transcoder ships without AAC, MP2 and MP3
   decoders, among others. PMS downloads each into `Codecs/<transcoder

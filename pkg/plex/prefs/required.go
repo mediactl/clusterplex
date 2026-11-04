@@ -177,15 +177,32 @@ func Required() map[string]string {
 	return prefs
 }
 
+// GuideRefresh is the one butler task Live TV needs on: RefreshEpgGuides,
+// PMS's nightly guide refresh, which extends each DVR's guide
+// incrementally (two-day chunks of a 14-day window, about ten minutes
+// for 248 channels once the shim stopped timing its whole-guide read out,
+// 2026-11-04). Nothing else refreshes a guide: a channel-map save or
+// reloadGuide rebuilds it whole, half an hour at a core, and the task
+// cannot be run by hand (POST /butler/RefreshEpgGuides answers and does
+// nothing outside its schedule). It runs in the ButlerStartHour-EndHour
+// window, in the pod's time, UTC; the operator sets those. With one Plex
+// pod per installation, as the chart's HTTPRoute requires, no two pods
+// refresh the one shared guide at once.
+func GuideRefresh() map[string]string { return map[string]string{"ButlerTaskRefreshEpgGuides": "1"} }
+
 // Enforced returns everything the manager writes into Preferences.xml itself.
+// liveTV keeps the guide refresh task on (GuideRefresh).
 // externalURL is the address clients reach the proxy on, or several
 // comma-separated in the order clients should prefer them, written as Plex
 // reads them; an empty one leaves whatever Plex already advertises in place,
 // because clearing it is worse than not setting it. transcodeDir is the
 // per-pod directory for transcode chunks, and is treated the same way.
-func Enforced(externalURL, transcodeDir string) map[string]string {
+func Enforced(externalURL, transcodeDir string, liveTV bool) map[string]string {
 	prefs := Required()
 	maps.Copy(prefs, DisabledButlerTasks())
+	if liveTV {
+		maps.Copy(prefs, GuideRefresh())
+	}
 	if externalURL != "" {
 		prefs[customConnections] = externalURL
 	}

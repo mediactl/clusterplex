@@ -55,7 +55,7 @@ func TestASettingTheArchitectureDoesNotClaimIsStillAllowed(t *testing.T) {
 }
 
 func TestTheExternalURLBecomesTheAdvertisedConnection(t *testing.T) {
-	prefs := Enforced("https://plex.example.com:443", "/transcode")
+	prefs := Enforced("https://plex.example.com:443", "/transcode", false)
 	assert.Equal(t, "https://plex.example.com:443", prefs["customConnections"])
 	assert.Equal(t, "0", prefs["PublishServerOnPlexOnlineKey"])
 }
@@ -63,7 +63,7 @@ func TestTheExternalURLBecomesTheAdvertisedConnection(t *testing.T) {
 func TestNoExternalURLLeavesTheAdvertisedConnectionAlone(t *testing.T) {
 	// Writing an empty customConnections would clear whatever Plex already
 	// advertises, which is worse than not setting it.
-	prefs := Enforced("", "")
+	prefs := Enforced("", "", false)
 	_, ok := prefs["customConnections"]
 	assert.False(t, ok)
 	assert.Equal(t, "1", prefs["ManualPortMappingMode"])
@@ -102,7 +102,7 @@ func TestARefusedSettingIsNotWrittenToTheFile(t *testing.T) {
 	// Refusing it is not the same as having an opinion about its value.
 	// Writing an empty allowedNetworks would change Plex's behaviour in a way
 	// nobody asked for.
-	_, ok := Enforced("https://plex.example.com", "/transcode")["allowedNetworks"]
+	_, ok := Enforced("https://plex.example.com", "/transcode", false)["allowedNetworks"]
 	assert.False(t, ok)
 }
 
@@ -188,4 +188,19 @@ func TestADefaultMayStillBeDeclared(t *testing.T) {
 func TestCallersCannotMutateTheDefaults(t *testing.T) {
 	Defaults()["sendCrashReports"] = "1"
 	assert.Equal(t, "0", Defaults()["sendCrashReports"])
+}
+
+func TestLiveTVKeepsTheGuideRefreshTaskOnAndNothingElse(t *testing.T) {
+	// PMS's nightly guide refresh is the one butler task Live TV needs:
+	// nothing else extends a DVR's guide, and the task cannot be run by
+	// hand. Every other task stays off, and without Live TV so does this.
+	with := Enforced("", "", true)
+	assert.Equal(t, "1", with["ButlerTaskRefreshEpgGuides"])
+	for _, task := range ButlerTasks {
+		if task != "ButlerTaskRefreshEpgGuides" {
+			assert.Equal(t, "0", with[task], task)
+		}
+	}
+	assert.Equal(t, "0", Enforced("", "", false)["ButlerTaskRefreshEpgGuides"])
+	assert.Equal(t, "1", Defaults()["DvrIncrementalEpgLoader"], "the refresh is incremental unless the operator says otherwise")
 }

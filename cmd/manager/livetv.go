@@ -41,8 +41,10 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	conv := &plexlivetv.Converger{
 		PMS:      &plexapi.Client{BaseURL: "http://" + m.plexAddr, Token: m.plexToken, HTTP: &http.Client{Timeout: liveTVTimeout}},
 		Language: m.Config.LiveTV.Language,
-		// A Plex cloud guide's daily reload (nothing else refreshes it).
+		// A Plex cloud guide that runs short is reloaded whole in this
+		// window; PMS's own nightly refresh normally keeps it two weeks out.
 		CloudRefresh: window,
+		GuideHorizon: m.guideHorizon,
 		// A pass renews the Leases; three periods ride out a slow PMS.
 		Leases: &plexlivetv.Leases{Client: m.K8sClient, Duration: max(plexlivetv.DefaultLeaseDuration, 3*every)},
 		PMSStarted: func() time.Time {

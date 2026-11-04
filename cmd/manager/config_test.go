@@ -83,6 +83,16 @@ func TestPlexNeverRunsItsOwnScheduler(t *testing.T) {
 	}
 }
 
+func TestLiveTVKeepsPlexsGuideRefreshOn(t *testing.T) {
+	// The one scheduler task Live TV depends on: nothing else refreshes a
+	// DVR's guide, and PMS's refresh is incremental (two-day chunks) where
+	// a reload is the whole guide.
+	c := Config{LiveTV: LiveTVConfig{Enabled: true}}
+	assert.Equal(t, "1", c.EnforcedPreferences("")["ButlerTaskRefreshEpgGuides"])
+	c.LiveTV.Enabled = false
+	assert.Equal(t, "0", c.EnforcedPreferences("")["ButlerTaskRefreshEpgGuides"])
+}
+
 func TestTheExternalURLIsWhatPlexAdvertises(t *testing.T) {
 	podIdentity(t)
 	c, err := loadConfig([]string{

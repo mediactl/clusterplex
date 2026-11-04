@@ -634,7 +634,7 @@ plex:
     language: eng              # the DVRs' guide language
     restartEvery: 10m          # PMS restarts on the other pods, at most this often
     staleGrabAfter: 5m         # a Live TV grab no player watches is ended after this
-    guideRefreshWindow: "8-11" # a Plex cloud guide's daily reload, in UTC hours; "none" turns it off
+    guideRefreshWindow: "8-11" # the whole reload of a Plex cloud guide that runs short, in UTC hours; "none" turns it off
 ```
 
 **Blocks.** PMS takes one device's channel map in one request, capped at
@@ -789,30 +789,42 @@ guide was a SQLite file on its emptyDir. On talos, 2026-10-20, plex-0 read
   finds no schema for it. Its first load is copied into a new schema, and
   this PMS keeps reading the file until it reopens the guide.
 
-### The cloud guide's daily reload
+### The cloud guide's refresh, and the reload that backs it up
 
 A block on one of Plex's own lineups (an IPTVProvider's `spec.plexGuide`)
-has a guide nothing refreshes by itself. PMS refreshes guide data through
-its butler task "Refresh program guide data" (`ButlerTaskRefreshEpgGuides`,
-about 2 am), and cluster-plex turns every butler task off on each start,
-since each pod runs its own scheduler. With clustarr's XMLTV guide that
-never mattered: the lease holder reloaded the guide whenever clustarr's
-guide hash moved, four times a day. A cloud guide has no hash to move, so
-until 2026-11-04 its 14-day window moved only when the channel map was
-saved, which rebuilds the whole guide.
+has a guide only PMS's nightly refresh extends: the `RefreshEpgGuides`
+butler task, which cluster-plex keeps on when `plex.liveTV.enabled` is set
+(every other butler task stays off, since each pod runs its own copy of
+the scheduler; with one Plex pod per installation, as the HTTPRoute
+requires, no two pods refresh the one shared guide at once). The refresh is
+incremental (`DvrIncrementalEpgLoader`, a cluster-plex default): it reads
+the guide it holds, skips the two-day chunks it has and fetches the rest,
+about ten minutes for 248 channels, where a channel-map save or a
+`reloadGuide` rebuilds the whole guide in half an hour at a core. It runs
+in PMS's maintenance window, `ButlerStartHour` to `ButlerEndHour` in the
+pod's time, which is UTC; declare both under `plex.preferences` for the
+small hours of your own zone (8 and 11 for US Central standard time).
+The task cannot be run by hand: `POST /butler/RefreshEpgGuides` answers
+200 and does nothing outside its schedule.
 
-So the lease holder reloads each cloud block's guide once a day
-(`POST /livetv/dvrs/<key>/reloadGuide`), within `guideRefreshWindow`, UTC
-hours `start-end` (default `8-11`, 02:00-05:00 US Central standard time;
-the pods run in UTC), once the DVR's `refreshedAt`, which PMS moves when a
-load ends, is 20 hours old. It never reloads while PMS loads a guide, nor
-while a recording or a Live TV session runs (a `grabber.grab` activity),
-which is recorded once as `DVRGuideRefreshWaiting` and tried again on the
-next pass. The reload is a whole load, like a saved map's: about 30
-minutes for 233 channels on PMS 1.43.5, which loads 14 days in two 7-day
-steps. cluster-plex turns its hidden `DvrIncrementalEpgLoader` preference
-on ("Settings cluster-plex chooses", above; off in PMS by default, and
-untested until the first load under it). `none` turns the daily reload off.
+Until 2026-11-04 no such refresh ever completed here. The task was off,
+and when a refresh did run (PMS starts one at boot when the DVR's chunk
+state is stale) its first step, one SELECT streaming every item of the
+guide with its airings, parts, parent and grandparent, outlived the shim's
+five-minute statement timeout; PostgreSQL cancelled it, the loader died
+with an uncaught exception, and the "Refreshing guide data, Initializing
+0%" activity sat until the next restart. plex-postgresql
+`v1.3.17-clusterplex.46` runs a guide's connection with no timeout.
+
+The lease holder backs the refresh up: in `guideRefreshWindow`, UTC hours
+`start-end` (default `8-11`), a cloud guide whose latest airing ends
+within seven days, so a week of refreshes has not extended it, is
+reloaded whole (`POST /livetv/dvrs/<key>/reloadGuide`), never while PMS
+loads a guide, nor while a recording or Live TV session runs (a
+`grabber.grab` activity), which is recorded once as
+`DVRGuideRefreshWaiting` and tried again on the next pass. The guide's
+reach is read from its schema, since PMS leaves the DVR's `refreshedAt`
+alone after an incremental refresh. `none` turns the fallback off.
 
 ### Grabs no player watches
 

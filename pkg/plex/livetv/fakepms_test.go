@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plex/livetv"
@@ -81,15 +80,6 @@ func (f *fakePMS) addReal() (plexapi.Device, plexapi.DVR) {
 func (f *fakePMS) endLoad() {
 	f.mu.Lock()
 	f.loading = false
-	f.mu.Unlock()
-}
-
-// setRefreshedAt marks every DVR's guide as last loaded at the given time.
-func (f *fakePMS) setRefreshedAt(at time.Time) {
-	f.mu.Lock()
-	for i := range f.dvrs {
-		f.dvrs[i].RefreshedAt = at.Unix()
-	}
 	f.mu.Unlock()
 }
 

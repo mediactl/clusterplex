@@ -101,10 +101,12 @@ plex:
     # abandoned holds a tuner until PMS restarts.
     staleGrabAfter: 5m
     # A Plex cloud lineup's guide (an IPTVProvider's spec.plexGuide) is
-    # reloaded once a day within these UTC hours, "start-end", when no
-    # guide load, recording or Live TV session runs; "none" turns it off.
-    # Nothing else refreshes it: PMS's own nightly refresh is a butler task
-    # and every butler task is off. 8-11 is 02:00-05:00 US Central.
+    # extended by PMS's nightly refresh, the one butler task Live TV keeps
+    # on, in PMS's ButlerStartHour-ButlerEndHour window (pod time, UTC:
+    # declare 8 and 11 under preferences for US Central). A guide that
+    # still runs out within seven days is reloaded whole within these UTC
+    # hours, "start-end", when no guide load, recording or Live TV session
+    # runs; "none" turns that fallback off.
     guideRefreshWindow: "8-11"
   # Audio codecs whose decoders the lease holder has Plex download once it
   # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex

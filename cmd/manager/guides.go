@@ -361,3 +361,24 @@ func (m *Manager) guideEmpty(ctx context.Context, dvrUUID string) (bool, error) 
 	err := m.pool.QueryRow(ctx, "SELECT NOT EXISTS (SELECT 1 FROM "+table+")").Scan(&empty)
 	return empty, err
 }
+
+// guideHorizon is when the DVR's guide ends: its latest airing's end, read
+// from its schema; the zero time for a guide with no airings, or none yet.
+func (m *Manager) guideHorizon(ctx context.Context, dvrUUID string) (time.Time, error) {
+	if m.pool == nil || !plexbootstrap.ValidDVR(dvrUUID) {
+		return time.Time{}, nil
+	}
+	table := pgx.Identifier{plexbootstrap.Guide{DVR: dvrUUID}.Schema(), "media_items"}.Sanitize()
+	var exists bool
+	if err := m.pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil || !exists {
+		return time.Time{}, err
+	}
+	var ends *int64
+	if err := m.pool.QueryRow(ctx, "SELECT max(ends_at) FROM "+table).Scan(&ends); err != nil {
+		return time.Time{}, err
+	}
+	if ends == nil {
+		return time.Time{}, nil
+	}
+	return time.Unix(*ends, 0).UTC(), nil
+}
