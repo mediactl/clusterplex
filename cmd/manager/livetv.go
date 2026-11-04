@@ -218,7 +218,6 @@ func offer(ch chan []plexlivetv.Provider, live []plexlivetv.Provider) {
 var liveTVActions = map[string]string{
 	plexlivetv.ReasonProvisioned:      "Provision",
 	plexlivetv.ReasonChannelMapSaved:  "SaveChannelMap",
-	plexlivetv.ReasonNeedsLineup:      "AwaitWizard",
 	plexlivetv.ReasonFailed:           "Provision",
 	plexlivetv.ReasonRemoved:          "Delete",
 	plexlivetv.ReasonBlockOwned:       "AcquireLease",

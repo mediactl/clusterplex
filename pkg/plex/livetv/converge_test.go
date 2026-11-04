@@ -67,7 +67,7 @@ func (r *rig) block(i int) livetv.Block {
 
 func provider(blocks ...livetv.Block) livetv.Provider {
 	return livetv.Provider{
-		Namespace: ns, Name: "polutv", UID: "uid-1", Ready: true, Enabled: true, EPGSource: "XEPG",
+		Namespace: ns, Name: "polutv", UID: "uid-1", Ready: true, Enabled: true,
 		Address: address, Blocks: blocks,
 	}
 }

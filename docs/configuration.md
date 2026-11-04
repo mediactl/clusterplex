@@ -644,12 +644,14 @@ order:
    noted on the block's Lease (`livetv.clusterplex.io/registered`), so no
    later pass, and no later holder, replaces it again.
 3. **The DVR.**
-   - **Under `epgSource: XEPG`:** it creates the DVR over the block's guide
-     (`<uri>/xmltv.xml`), a subset of the provider's
-     feeds holding only the block's channels.
-   - **Under `PMS`:** it records `DVRNeedsLineup` and waits. Finish each
-     block's DVR once in Plex's setup wizard, choosing your location's
-     lineup.
+   - **A block on clustarr's XMLTV guide:** it creates the DVR over the
+     block's guide (`<uri>/xmltv.xml`), a subset of the provider's feeds
+     holding only the block's channels.
+   - **A block on Plex's own guide** (`status.blocks[].lineup` set, a
+     provider with `spec.plexGuide.enabled`): it creates the DVR with that
+     Plex cloud (Gracenote) lineup, so Plex shows its own listings and the
+     lineup's channel numbers. The block lists only the channels clustarr
+     paired with the lineup's stations.
    - **A device whose DVR this Plex does not list,** though the database
      ties it to one (its `parentID`), gets no second DVR: the lease
      holder's Plex read its DVRs before another pod made that one. It
@@ -657,10 +659,14 @@ order:
      unlisted after that restart is gone, and a new one is created.
 4. **The channel map.** It saves the block's whole channel map whenever its
    `lineupHash` changes, in one request: Plex replaces the whole map on each
-   save. A map over 30,000 bytes is refused (`DVRChannelMapTooLarge`);
-   clustarr's blocks keep under it.
-5. **The guide.** It reloads the block's guide whenever its `guideHash`
-   changes. A map save rebuilds the guide, so no reload follows one.
+   save. An XMLTV block's map is Plex's own pairing
+   (`/livetv/epg/channelmap`), each number with its guide channel; a Plex
+   block's is clustarr's, read from the tuner at `<uri>/plexmap.json`. A
+   map over 30,000 bytes is refused (`DVRChannelMapTooLarge`); clustarr's
+   blocks keep under it.
+5. **The guide.** It reloads an XMLTV block's guide whenever its
+   `guideHash` changes. A map save rebuilds the guide, so no reload follows
+   one. A Plex block's guide is Plex's own and is never reloaded.
 
 What it saved is noted on the block's Lease (annotation
 `livetv.clusterplex.io/saved`: the DVR and both hashes), so the next lease

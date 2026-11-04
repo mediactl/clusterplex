@@ -38,7 +38,7 @@ func TestProviderOfReadsTheAddressAndTheBlocks(t *testing.T) {
 		},
 	}}
 	assert.Equal(t, livetv.Provider{
-		Namespace: ns, Name: "polutv", UID: "uid-1", Ready: true, Enabled: false, EPGSource: "XEPG",
+		Namespace: ns, Name: "polutv", UID: "uid-1", Ready: true, Enabled: false,
 		Address: address,
 		Blocks: []livetv.Block{
 			{

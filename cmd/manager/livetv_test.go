@@ -40,7 +40,7 @@ func TestTheLeaseHolderRunsLiveTVRecordsOnTheProviderAndStopsWhenItLetsGo(t *tes
 	m.provisionEvery = 20 * time.Millisecond
 	m.liveTV = &liveTVFeed{}
 	m.liveTV.set([]plexlivetv.Provider{{
-		Namespace: "clustarr-system", Name: "polutv", UID: "uid-1", Ready: true, Enabled: true, EPGSource: "XEPG",
+		Namespace: "clustarr-system", Name: "polutv", UID: "uid-1", Ready: true, Enabled: true,
 		Address: "clustarr-livetv.clustarr-system.svc.cluster.local:80",
 		Blocks: []plexlivetv.Block{{
 			Start: "1000", DeviceID: "4E624E7A", FriendlyName: "polutv 1000+", GuidePath: "/xmltv.xml",

@@ -121,15 +121,11 @@ func (w *Watcher) installed() bool {
 func ProviderOf(u *unstructured.Unstructured) Provider {
 	p := Provider{
 		Namespace: u.GetNamespace(), Name: u.GetName(), UID: string(u.GetUID()),
-		Address:   nestedString(u.Object, "status", "address"),
-		EPGSource: nestedString(u.Object, "spec", "epgSource"),
-		Enabled:   true,
+		Address: nestedString(u.Object, "status", "address"),
+		Enabled: true,
 	}
 	if v, found, _ := unstructured.NestedBool(u.Object, "spec", "enabled"); found {
 		p.Enabled = v
-	}
-	if p.EPGSource == "" {
-		p.EPGSource = "XEPG"
 	}
 	blocks, _, _ := unstructured.NestedSlice(u.Object, "status", "blocks")
 	for _, o := range blocks {
@@ -144,6 +140,7 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 			GuidePath:    nestedString(m, "guidePath"),
 			LineupHash:   nestedString(m, "lineupHash"),
 			GuideHash:    nestedString(m, "guideHash"),
+			Lineup:       nestedString(m, "lineup"),
 			Path:         nestedString(m, "path"),
 			URI:          nestedString(m, "uri"),
 		})

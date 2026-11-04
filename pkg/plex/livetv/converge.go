@@ -24,7 +24,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -48,7 +50,6 @@ const (
 const (
 	ReasonProvisioned      = "DVRProvisioned"
 	ReasonChannelMapSaved  = "DVRChannelMapSaved"
-	ReasonNeedsLineup      = "DVRNeedsLineup"
 	ReasonFailed           = "DVRProvisionFailed"
 	ReasonRemoved          = "DVRRemoved"
 	ReasonBlockOwned       = "DVRBlockOwned"
@@ -90,6 +91,12 @@ type Result struct {
 type Block struct {
 	Start, DeviceID, FriendlyName, GuidePath string
 	LineupHash, GuideHash                    string
+	// Lineup is a Plex block's cloud lineup
+	// (lineup://tv.plex.providers.epg.cloud/<id>#<title>): its DVR is
+	// created with it, its channel map is the tuner's <uri>/plexmap.json,
+	// and its guide is Plex's own, never reloaded. Empty for a block on
+	// clustarr's XMLTV guide.
+	Lineup string
 	// Path is the block's device under its provider's Address,
 	// /hdhr/<deviceID>, and URI the device's address PMS registers,
 	// http://<Address><Path>. An empty URI registers nothing.
@@ -100,7 +107,6 @@ type Block struct {
 type Provider struct {
 	Namespace, Name, UID string
 	Ready, Enabled       bool
-	EPGSource            string // "XEPG" | "PMS"
 	// Address is the livetv Service, host:port, every block's URI is on.
 	Address string
 	Blocks  []Block
@@ -167,6 +173,9 @@ type Converger struct {
 	GuideEmpty func(ctx context.Context, dvrUUID string) (bool, error)
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// HTTP fetches a Plex block's channel map from the tuner; nil is a
+	// client with a 10 s timeout.
+	HTTP *http.Client
 
 	mu sync.Mutex
 	// saved is, by device id, the lineup and guide hashes last sent to PMS.
@@ -548,11 +557,6 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 				return err
 			}
 		}
-		if p.EPGSource == "PMS" {
-			c.recordOnce("lineup/"+id, p, ReasonNeedsLineup,
-				fmt.Sprintf("block %s: epgSource is PMS: finish device %s's DVR once in Plex's setup wizard, choosing your location's lineup; the channel map is then kept for you", b.Start, id), false)
-			return nil
-		}
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "create the DVR", err)
 		}
@@ -560,7 +564,11 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		if lang == "" {
 			lang = "eng"
 		}
-		created, err := c.PMS.CreateDVR(ctx, lang, dev.UUID, plexapi.XMLTVLineup(uri+b.GuidePath, b.FriendlyName))
+		lineup := b.Lineup
+		if lineup == "" {
+			lineup = plexapi.XMLTVLineup(uri+b.GuidePath, b.FriendlyName)
+		}
+		created, err := c.PMS.CreateDVR(ctx, lang, dev.UUID, lineup)
 		if err != nil {
 			return fmt.Errorf("create DVR: %w", err)
 		}
@@ -582,7 +590,6 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		delete(c.saved, id)
 		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: created DVR %s", b.Start, dvr.Key), false)
 	}
-	delete(c.told, "lineup/"+id)
 
 	s, ok := c.saved[id]
 	if n := (savedNote{}); !ok && json.Unmarshal([]byte(lease.Annotations[AnnotationSaved]), &n) == nil && n.DVR == string(dvr.Key) {
@@ -594,7 +601,14 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "save the channel map", err)
 		}
-		m, err := c.PMS.EPGChannelMap(ctx, dev.UUID, dvr.Lineup)
+		// A Plex block's map is the tuner's pairing (plexmap.json); an XMLTV
+		// block's PMS pairs itself, each number with its own guide channel.
+		var m []plexapi.ChannelMapping
+		if b.Lineup != "" {
+			m, err = c.plexMap(ctx, uri)
+		} else {
+			m, err = c.PMS.EPGChannelMap(ctx, dev.UUID, dvr.Lineup)
+		}
 		if err != nil {
 			return fmt.Errorf("read the EPG channel map: %w", err)
 		}
@@ -619,7 +633,9 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		c.note(ctx, p, id, dvr.Key, s)
 		c.record(p, ReasonChannelMapSaved, fmt.Sprintf("block %s: saved the channel map: %d channels", b.Start, len(m)), false)
 	}
-	if b.GuideHash != "" && s.guide != b.GuideHash {
+	if b.Lineup != "" {
+		// Plex's own guide: nothing of clustarr's to reload.
+	} else if b.GuideHash != "" && s.guide != b.GuideHash {
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "reload the guide", err)
 		}
@@ -643,6 +659,35 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 	}
 	delete(c.told, "wait/"+id)
 	return nil
+}
+
+// maxPlexMapBytes caps the tuner's plexmap.json: a block's map is under
+// 32 KiB of query, its JSON a few times that.
+const maxPlexMapBytes = 1 << 20
+
+// plexMap reads a Plex block's channel map from the tuner, at its URI.
+func (c *Converger) plexMap(ctx context.Context, uri string) ([]plexapi.ChannelMapping, error) {
+	hc := c.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 10 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri+"/plexmap.json", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s/plexmap.json: %w", uri, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s/plexmap.json: status %d", uri, resp.StatusCode)
+	}
+	var m []plexapi.ChannelMapping
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxPlexMapBytes)).Decode(&m); err != nil {
+		return nil, fmt.Errorf("decode %s/plexmap.json: %w", uri, err)
+	}
+	return m, nil
 }
 
 // emptyGuide is whether a DVR's guide holds no airings and was not reloaded
