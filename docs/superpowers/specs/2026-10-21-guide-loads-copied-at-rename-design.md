@@ -244,3 +244,20 @@ pre-clone exists for it, so this one swap waits the full 3.3 s.
   PMS's. A request only ever copies a load file PMS wrote, under the
   Databases-directory check, so the worst a stray request does is an extra
   copy.
+
+## As built, the shim half (2026-11-04)
+
+The shim's `rename()` hook shipped in plex-postgresql `v1.3.17-clusterplex.45`
+(`rust/plex-pg-core/src/guide_swap.rs`), two weeks after the manager half
+(f53ebc6, talos rev 78): until then every load reached PostgreSQL through the
+poll, after PMS had reopened the renamed file, so a new DVR's first guide was
+served from the SQLite file until PMS next reopened it, and each later load
+was served stale for the minute the poll took. The hook is as §"The shim"
+says, with two measurements that moved its numbers: a Plex cloud guide
+(DIRECTV Mobile, 167 channels, 14 days, 354,116 rows) copies in 35 s, so the
+manager's `guideSwapDeadline` is 230 s and the shim waits 240 s, a little
+longer, to read the manager's reason rather than its own timeout; and PMS's
+own `rename` is the only one hooked (`renameat` is not imported, as §"What
+was found" recorded). The hook logs its answer at INFO ("GUIDE_SWAP: the
+manager answered ...") and a failure at ERROR; the poll stays as the
+fallback.

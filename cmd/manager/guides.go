@@ -264,9 +264,12 @@ func (m *Manager) serveGuideSocket(ctx context.Context, ln net.Listener) {
 	}
 }
 
-// guideSwapDeadline bounds a request, read to answer: a copy takes about
-// half a second with its staging schema made, three and a half without.
-const guideSwapDeadline = 60 * time.Second
+// guideSwapDeadline bounds a request, read to answer: an XMLTV load copies
+// in about half a second with its staging schema made, three and a half
+// without, and a Plex cloud guide's (167 channels, 14 days, 354,116 rows)
+// in 35 s (2026-11-04). The shim waits a little longer than this, so it
+// reads the manager's reason rather than its own timeout.
+const guideSwapDeadline = 230 * time.Second
 
 // handleGuideRequest answers one request line: "swap <load file>" copies
 // the load PMS finished into its guide's schema before PMS renames it, and
