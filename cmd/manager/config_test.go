@@ -498,3 +498,25 @@ func TestTheVideoPoolDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, c.VideoSelector)
 }
+
+// Two names reach the server, one from the LAN and one from the internet
+// (talos, 2026-11-03), and Plex advertises every address in the list, in the
+// order given, as the comma-separated customConnections Plex itself reads.
+func TestEveryExternalURLIsAdvertisedInOrder(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig([]string{
+		"--postgres-host", "postgres",
+		"--plex-external-url", " https://plex.lan.example.com:443 , https://plex.example.com:443 ",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://plex.lan.example.com:443,https://plex.example.com:443", c.EnforcedPreferences(c.ExternalURL)["customConnections"])
+}
+
+func TestConfigRefusesAListWithAnAddressThatIsNotAURL(t *testing.T) {
+	// One bad entry fails the clients that happen to try it, so the whole
+	// list is refused, naming the entry.
+	podIdentity(t)
+	_, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-external-url", "https://plex.lan.example.com:443,plex.example.com"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"plex.example.com"`)
+}

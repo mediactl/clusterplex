@@ -235,6 +235,20 @@ actually serves; declaring `customConnections` directly is refused. Plex treats
 it as an additional connection rather than a replacement, so it is additive and
 safe to set.
 
+Several addresses are a comma-separated list, in the order clients should
+prefer them, which is the form Plex itself reads for `customConnections`:
+
+```yaml
+plex-external-url: https://plex.lan.example.com:443,https://plex.example.com:443
+```
+
+plex.tv hands every one to a client, which tries them and keeps the first that
+answers, so a server reached by one name from the LAN and another from the
+internet advertises both. With only one address advertised, a client that
+used the other name had nothing else to switch to: on talos (2026-11-03) the
+LoadBalancer address alone was advertised, and a client on the LAN using the
+public name went out through Cloudflare and back in.
+
 Use the address clients actually reach — the LoadBalancer in front of the proxy,
 or whatever ingress sits in front of that.
 

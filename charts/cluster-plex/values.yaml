@@ -25,6 +25,10 @@ plex:
   # https://plex.example.com:443, and with proxy.enabled, to the proxy's own
   # hostname. See docs/configuration.md, "Advertising an address clients can
   # use".
+  # Several addresses are a comma-separated list in the order clients should
+  # prefer them (the form Plex itself reads), for a server reached by one
+  # name from the LAN and another from the internet:
+  # https://plex.lan.example.com:443,https://plex.example.com:443.
   externalURL: ""
   # Settings an operator chooses, applied on every start. A list, not a map:
   # the config loader lowercases nested map keys and Plex names are case

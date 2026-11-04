@@ -175,8 +175,9 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   retires whenever it likes — so Plex would be killed at random. `pkg/plex/net`
   rejects it rather than letting it be set.
 - **Plex advertises `169.254.1.2` to plex.tv,** because that is the only address
-  it can see. Set `plex-external-url` (chart: `plex.externalURL`) for an
-  address clients can reach; see `docs/configuration.md`.
+  it can see. Set `plex-external-url` (chart: `plex.externalURL`) to the
+  address clients can reach, or several comma-separated in the order to try
+  (a LAN name and an internet name); see `docs/configuration.md`.
 - **`ProcessedMachineIdentifier` is what clients see as the server ID.** Plex
   derives it from `MachineIdentifier` with a salt you cannot reproduce, and
   **never recomputes it**. Change the UUID without deleting the derived value

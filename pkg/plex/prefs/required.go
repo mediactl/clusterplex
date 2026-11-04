@@ -5,9 +5,11 @@ import (
 	"slices"
 )
 
-// customConnections is the address Plex hands to clients. Plex otherwise
-// advertises only what it can see of itself, which here is a link-local
-// address inside its own network namespace that no client can reach.
+// customConnections is the address Plex hands to clients, or several as a
+// comma-separated list, which plex.tv passes on whole and a client tries in
+// order. Plex otherwise advertises only what it can see of itself, which
+// here is a link-local address inside its own network namespace that no
+// client can reach.
 const customConnections = "customConnections"
 
 // transcoderTempDirectory is where Plex writes the chunks it transcodes into.
@@ -146,10 +148,11 @@ func Required() map[string]string {
 }
 
 // Enforced returns everything the manager writes into Preferences.xml itself.
-// externalURL is the address clients reach the proxy on; an empty one leaves
-// whatever Plex already advertises in place, because clearing it is worse than
-// not setting it. transcodeDir is the per-pod directory for transcode chunks,
-// and is treated the same way.
+// externalURL is the address clients reach the proxy on, or several
+// comma-separated in the order clients should prefer them, written as Plex
+// reads them; an empty one leaves whatever Plex already advertises in place,
+// because clearing it is worse than not setting it. transcodeDir is the
+// per-pod directory for transcode chunks, and is treated the same way.
 func Enforced(externalURL, transcodeDir string) map[string]string {
 	prefs := Required()
 	maps.Copy(prefs, DisabledButlerTasks())

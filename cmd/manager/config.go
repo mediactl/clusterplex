@@ -77,15 +77,22 @@ type Config struct {
 	// reads to Plex as an ordinary outage and it serves regardless, but
 	// nothing can claim the server or serve remotely while this is set.
 	BlockPlexTV bool
-	// ExternalURL is the address clients reach the proxy on. Plex advertises
-	// it as a custom connection; without it Plex offers only the link-local
-	// address inside its own namespace, which no client can reach.
+	// ExternalURL is the address clients reach the proxy on, or several,
+	// comma-separated in the order clients should prefer them: Plex
+	// advertises every one as a custom connection (customConnections is a
+	// comma-separated list to Plex too), plex.tv hands them all to a client,
+	// and the client tries each and keeps the first that answers. Without it
+	// Plex offers only the link-local address inside its own namespace, which
+	// no client can reach.
 	//
 	// Leave it empty to take the address from ExternalService, which is the
 	// better answer whenever a LoadBalancer is what clients reach. Set it when
 	// something the cluster cannot see is in front — a DNS name, an ingress,
 	// a certificate — because then that name is the address, not the one the
-	// Service happens to hold.
+	// Service happens to hold; and set two when the LAN and the internet reach
+	// the server by different names (talos, 2026-11-03: advertised the one
+	// LoadBalancer address, so a client on the LAN that used the public name
+	// went out through Cloudflare and back in).
 	ExternalURL string
 	// ExternalService is the Service whose LoadBalancer address Plex
 	// advertises when ExternalURL is empty. It is read before every start, so
@@ -221,7 +228,7 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("postgres-sslmode", "disable", "libpq sslmode for the library database")
 	fs.Bool("block-plex-tv", false, "keep every pod away from plex.tv, the lease holder included; Plex still serves but cannot be claimed or reached remotely")
 	fs.String("plex-transcode-dir", "/transcode", "per-pod directory Plex writes transcode chunks to; it must be the path the pod mounts, not shared storage")
-	fs.String("plex-external-url", "", "address clients reach the proxy on, advertised to Plex clients, for example https://plex.example.com:443; empty takes it from plex-external-service")
+	fs.String("plex-external-url", "", "addresses clients reach the proxy on, advertised to Plex clients in this order, comma-separated, for example https://plex.lan.example.com:443,https://plex.example.com:443; empty takes the one address from plex-external-service")
 	fs.String("plex-external-service", "plex-main", "Service whose LoadBalancer address is advertised when plex-external-url is empty")
 	fs.String("shim-library", ShimLibrary, "interposer preloaded into Plex so its database calls reach PostgreSQL; empty leaves Plex on its own SQLite file")
 	fs.String("plex-subreaper", Subreaper, "wrapper that adopts Plex's re-exec so it is not mistaken for an exit; empty starts Plex directly")
@@ -291,7 +298,7 @@ func loadConfig(args []string) (Config, error) {
 		ProbePort:        port("probe-port"),
 		DrainTimeout:     v.GetDuration("drain-timeout"),
 		BlockPlexTV:      v.GetBool("block-plex-tv"),
-		ExternalURL:      strings.TrimSpace(v.GetString("plex-external-url")),
+		ExternalURL:      normalizeExternalURL(v.GetString("plex-external-url")),
 		ExternalService:  strings.TrimSpace(v.GetString("plex-external-service")),
 		TranscodeDir:     strings.TrimSpace(v.GetString("plex-transcode-dir")),
 		ShimLibrary:      v.GetString("shim-library"),
@@ -434,22 +441,37 @@ func loadPreferences(v *viper.Viper, fs *pflag.FlagSet, environ []string) (map[s
 	return prefs, errors.Join(errs...)
 }
 
+// normalizeExternalURL is the comma-separated list as Plex reads it: each
+// address trimmed, none empty, in the order given.
+func normalizeExternalURL(raw string) string {
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
 // validateExternalURL rejects an address Plex would advertise to clients but
 // clients could not use. Plex hands the string over unexamined, so a bad one
-// surfaces only as clients failing to connect.
+// surfaces only as clients failing to connect; in a list every address is
+// checked, since one bad entry fails the clients that happen to try it.
 func validateExternalURL(raw string) error {
-	if raw == "" {
-		return nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("plex-external-url: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("plex-external-url: %q needs an http:// or https:// scheme", raw)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("plex-external-url: %q has no host", raw)
+	for _, s := range strings.Split(raw, ",") {
+		if s == "" {
+			continue
+		}
+		u, err := url.Parse(s)
+		if err != nil {
+			return fmt.Errorf("plex-external-url: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("plex-external-url: %q needs an http:// or https:// scheme", s)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("plex-external-url: %q has no host", s)
+		}
 	}
 	return nil
 }
