@@ -43,7 +43,7 @@ func TestTheLiveTVCallsDecodeWhatPMSAnswered(t *testing.T) {
 	devs, err := c.Devices(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, []plexapi.Device{{
-		Key: "4", UUID: probeUUID, URI: "http://10.96.55.197", DeviceID: "CAFE0001", Model: "clustarr probe", State: "enabled",
+		Key: "4", UUID: probeUUID, URI: "http://10.96.55.197", DeviceID: "CAFE0001", Model: "clustarr probe", State: "enabled", Status: "alive",
 	}}, devs)
 
 	require.NoError(t, c.AddDevice(ctx, "http://clustarr-livetv.clustarr-system.svc.cluster.local:80/hdhr/CAFE0001"))

@@ -44,6 +44,9 @@ type Device struct {
 	DeviceID string `json:"deviceId"`
 	Model    string `json:"model"`
 	State    string `json:"state"`
+	// Status is PMS's view of the device: "alive", or "dead" once a refresh
+	// of it failed, which PMS never retries on its own.
+	Status   string `json:"status"`
 	ParentID int    `json:"parentID"`
 }
 
@@ -188,6 +191,15 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 // AddDevice registers the device at uri.
 func (c *Client) AddDevice(ctx context.Context, uri string) error {
 	return c.do(ctx, http.MethodPost, "/media/grabbers/devices", url.Values{"uri": {uri}}, nil)
+}
+
+// DiscoverDevice has PMS probe the device at uri again. A device whose
+// refresh failed once is "dead" until this: PMS neither retries it nor
+// tunes it ("Device not found. Ensure your device is powered on and
+// connected to your network"), and a manager restart leaves the tuner's
+// device paths unserved for the length of its first render (2026-11-04).
+func (c *Client) DiscoverDevice(ctx context.Context, uri string) error {
+	return c.do(ctx, http.MethodPost, "/media/grabbers/devices/discover", url.Values{"uri": {uri}}, nil)
 }
 
 // DeleteDevice removes a device.

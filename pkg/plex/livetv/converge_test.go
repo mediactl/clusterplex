@@ -260,6 +260,34 @@ func TestADeviceAtAStaleURIIsReplaced(t *testing.T) {
 	assert.Equal(t, "machine-a", r.leases.holder[ns+"/livetv-b0000000"], "the Lease is kept through the replacement")
 }
 
+// TestADeadDeviceIsDiscoveredAgain: a device PMS marked dead (its refresh
+// failed once: on 2026-11-04 the tuner's first render after a manager
+// restart had not served the device's path yet) is asked about again, once
+// a minute while it stays dead, since PMS never retries it and shows its
+// DVR as "Device not found".
+func TestADeadDeviceIsDiscoveredAgain(t *testing.T) {
+	r := newRig(t)
+	b := r.block(0)
+	p := provider(b)
+	r.converge(t, 4, p)
+	r.pms.takeWrites()
+
+	r.pms.mu.Lock()
+	r.pms.devices[0].Status = "dead"
+	r.pms.mu.Unlock()
+	r.converge(t, 2, p)
+	writes := r.pms.takeWrites()
+	assert.Equal(t, 1, count(writes, "POST /media/grabbers/devices/discover"), "%v", writes)
+	devs, _ := r.pms.state()
+	require.Len(t, devs, 1)
+	assert.Equal(t, "alive", devs[0].Status)
+	assert.Equal(t, 1, count(r.ev.reasons(), livetv.ReasonRevived))
+	assert.Zero(t, count(writes, "DELETE"), "the device and its DVR stay")
+
+	r.converge(t, 2, p)
+	assert.Zero(t, count(r.pms.takeWrites(), "POST /media/grabbers/devices/discover"), "alive again: not asked")
+}
+
 // TestAnOldDeviceStaysWhilePMSCannotReachTheNewOne: a block that moved to
 // a new device (argon-tv onto Plex's own guide, 2026-11-04) is named in the
 // status before the tuner serves the device, and PMS answers not found to

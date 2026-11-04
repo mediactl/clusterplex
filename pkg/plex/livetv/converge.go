@@ -59,6 +59,7 @@ const (
 	ReasonChannelMapTooBig = "DVRChannelMapTooLarge"
 	ReasonPodsRestarted    = "DVRPodsRestarted"
 	ReasonDVRListStale     = "DVRListStale"
+	ReasonRevived          = "DVRDeviceRevived"
 )
 
 // Status is how far a pass got.
@@ -192,6 +193,10 @@ type Converger struct {
 	held map[string]heldLease
 	// stale is, by device id, the devices staleList asked a restart for.
 	stale map[string]staleDVR
+	// revived is, by device id, when PMS was last asked to discover a
+	// device it had marked dead again, so a device that stays dead (its
+	// tuner down) is asked about once a reviveEvery, not every pass.
+	revived map[string]time.Time
 	// emptyReloaded is, by device id, when an empty guide was last
 	// reloaded: a guide its feed leaves empty is tried again only hourly.
 	emptyReloaded map[string]time.Time
@@ -306,6 +311,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	if c.saved == nil {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
 		c.emptyReloaded, c.addresses, c.registered = map[string]time.Time{}, map[string]bool{}, map[string]registeredNote{}
+		c.revived = map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -496,6 +502,12 @@ func (c *Converger) renewHeld(ctx context.Context) {
 	}
 }
 
+// deviceDead is PMS's status for a device whose refresh failed.
+const deviceDead = "dead"
+
+// reviveEvery is how often a device that stays dead is asked about again.
+const reviveEvery = time.Minute
+
 // converge brings one block's device, DVR, channel map and guide into PMS.
 func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass) error {
 	id := strings.ToUpper(b.DeviceID)
@@ -549,6 +561,19 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 				fmt.Sprintf("block %s: PMS lists device %s at %s, not %s as registered; it is kept as PMS stored it", b.Start, id, dev.URI, uri), true)
 		}
 		c.noteRegistered(ctx, p, id, registeredNote{URI: uri, Stored: dev.URI})
+	}
+
+	// A device PMS marked dead is asked about again: PMS never retries
+	// one itself, and shows its DVR as "Device not found". On 2026-11-04
+	// PMS refreshed the device seven seconds after the manager's tuner
+	// began listening, before its first render served the device's path,
+	// and Live TV stayed off until a discover by hand.
+	if dev.Status == deviceDead && c.now().Sub(c.revived[id]) >= reviveEvery {
+		if err := c.PMS.DiscoverDevice(ctx, uri); err != nil {
+			return fmt.Errorf("discover dead device %s again: %w", uri, err)
+		}
+		c.revived[id] = c.now()
+		c.record(p, ReasonRevived, fmt.Sprintf("block %s: PMS had marked device %s dead; asked it to discover %s again", b.Start, dev.UUID, uri), true)
 	}
 
 	dvrs := ps.dvrsOf(dev.UUID)

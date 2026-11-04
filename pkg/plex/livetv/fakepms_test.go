@@ -157,6 +157,17 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		d := plexapi.Device{Key: plexapi.Str(f.key()), UUID: "device://tv.plex.grabbers.hdhomerun/" + id, URI: stored, DeviceID: id, Model: "clustarr", State: "enabled"}
 		f.devices = append(f.devices, d)
 		f.answer(w, "Device", []plexapi.Device{d})
+	case r.Method == http.MethodPost && path == "/media/grabbers/devices/discover":
+		found := false
+		for i := range f.devices {
+			if f.devices[i].URI == q.Get("uri") {
+				f.devices[i].Status = "alive"
+				found = true
+			}
+		}
+		if !found {
+			w.WriteHeader(http.StatusNotFound)
+		}
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/media/grabbers/devices/"):
 		k := strings.TrimPrefix(path, "/media/grabbers/devices/")
 		n := len(f.devices)
