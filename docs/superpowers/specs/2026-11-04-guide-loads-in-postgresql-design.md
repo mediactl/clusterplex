@@ -276,7 +276,18 @@ room for it.
   the translator. One statement it refuses fails the load, and a failed
   load costs a 30-minute reload and, without the map guard, a re-paired
   lineup. The kill switch stays off on talos until the rig has run the
-  XMLTV and the cloud load end to end.
+  XMLTV and the cloud load end to end. The pattern of the misses so far
+  (`.47`, `.48`, `.49`, every one found on PMS's incremental refresh,
+  which runs the loader's lookups against the live guide) is stable:
+  each was in the collation preprocessing (`preprocess.rs`'s
+  `rewrite_sqlite_collations`, which rewrites `collate icu_root` before
+  the AST translator sees the statement), never in the translator, and
+  each showed only on data that reached that statement -- an IN list, a
+  title with an apostrophe, a show whose episodes PMS ordered by
+  `parents.\`title_sort\``. A load from scratch sends the same lookups
+  (its step 2 asks `/library/metadata/<id>` per programme), so the rig
+  runs on `.49` or later, and the XMLTV guide's titles are chosen to
+  reach the ORDER BY paths (below).
 - **Savepoints double the round trips** of every write in a transaction:
   about 0.4 ms each, on a load whose own work is 1,651 s. Measured on the
   rig with the switch on and off.
@@ -468,10 +479,18 @@ the result-cache key (none for a load) and the statement savepoints
 guide; `should_redirect_with` redirects a load only under the flag; 869 lib
 tests pass and the cdylib links. The gating sits in `pg_config.rs` and
 `guide_load.rs`, not `pg_route.rs`, which a peer session was changing for
-`.47` (an IN list's ICU collation) and `.48` (a doubled quote inside a
+`.47` (an IN list's ICU collation), `.48` (a doubled quote inside a
 literal, `title='America''s Funniest Home Videos'`, read as the literal's
-end, so the ORDER BY's `collate icu_root` reached the parser unrewritten).
-Both were found on PMS's incremental refresh, which already sends the
+end, so the ORDER BY's `collate icu_root` reached the parser unrewritten)
+and `.49` (the rewrite parenthesised a backtick-quoted identifier before
+its collation, so PostgreSQL received ``(parents.`title_sort`) COLLATE
+plex.icu_root`` in the show-level episode lookup, `SELECT grandparents.*,
+parents.*, metadata_items.* ... WHERE grandparents.id = ? ORDER BY
+media_items.begins_at DESC, parents.`index`, parents.`title_sort` collate
+icu_root, ...`; the refresh under `.48` got through all seven chunks and
+died on that last lookup). The guide-loads shim's next release, should it
+need one, is `.50`; the peer session owns `.49`. All three were found on
+PMS's incremental refresh, which already sends the
 loader's statements through the translator: the title lookup is `select
 <every column> from metadata_items left join media_items ... where
 library_section_id=? and metadata_type=2 and title='<title>' order by
@@ -483,7 +502,9 @@ apostrophes, doubled quotes, backslashes and non-ASCII.
 **Not yet:** the rig runs, which need the kind cluster-plex rig (manager,
 PMS, PostgreSQL) rather than the shim's standalone compose, since the
 `stage` verb lives in the manager; talos with the value on. The `.48`
-deploy carries both halves inert, except the map guard, which runs whatever
-the value: checked against talos's live DVR 32 before that deploy (PMS
-stores the map byte for byte as the tuner sends it, 248 entries, every one
-enabled; `mapDifference` 0/0/0).
+deploy (talos rev 221, 2026-11-04) carries both halves inert, except the
+map guard, which runs whatever the value: checked against talos's live DVR
+32 before that deploy (PMS stores the map byte for byte as the tuner sends
+it, 248 entries, every one enabled; `mapDifference` 0/0/0). The start rule
+ran clean on that deploy: no `_next` schema to drop, the guide-shadow
+template built, no load file to remove.
