@@ -10,7 +10,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -99,16 +101,25 @@ func deviceMux(deviceID string, first int, count *atomic.Int64) *http.ServeMux {
 	})
 	guide := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
-		start := time.Now().UTC().Truncate(time.Hour)
+		// The guide is the same for every request on one UTC day, so two loads
+		// of it (one copied in, one made in PostgreSQL) can be diffed.
+		start := time.Now().UTC().Truncate(24 * time.Hour)
 		_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+`<tv generator-info-name="hdhrprobe">`+"\n")
 		for i := 0; i < int(count.Load()); i++ {
 			_, _ = fmt.Fprintf(w, `<channel id="%d"><display-name>Probe %d</display-name></channel>`+"\n", first+i, first+i)
 		}
 		for i := 0; i < int(count.Load()); i++ {
-			for h := 0; h < 48; h += 2 {
-				s, e := start.Add(time.Duration(h)*time.Hour), start.Add(time.Duration(h+2)*time.Hour)
-				_, _ = fmt.Fprintf(w, `<programme start="%s" stop="%s" channel="%d"><title>Probe %d</title></programme>`+"\n",
-					s.Format("20060102150405 -0700"), e.Format("20060102150405 -0700"), first+i, first+i)
+			for slot := 0; slot < 24; slot++ {
+				s, e := start.Add(time.Duration(2*slot)*time.Hour), start.Add(time.Duration(2*slot+2)*time.Hour)
+				t := titles[(i*7+slot)%len(titles)]
+				_, _ = fmt.Fprintf(w, `<programme start="%s" stop="%s" channel="%d"><title>%s</title>`,
+					s.Format("20060102150405 -0700"), e.Format("20060102150405 -0700"), first+i, esc(t.title))
+				if t.sub != "" {
+					// A show's episodes recur across channels under the same
+					// sub-title, so the loader's dupe check merges them.
+					_, _ = fmt.Fprintf(w, `<sub-title>%s %d</sub-title><episode-num system="xmltv_ns">0.%d.</episode-num>`, esc(t.sub), slot%4, slot%4)
+				}
+				_, _ = fmt.Fprintf(w, `<desc>%s</desc><category>%s</category></programme>`+"\n", esc(t.desc), esc(t.category))
 			}
 		}
 		_, _ = fmt.Fprint(w, "</tv>\n")
@@ -169,4 +180,28 @@ func forward(listen, target string) {
 			_, _ = io.Copy(c, u)
 		}()
 	}
+}
+
+// titles are the guide's programmes: the shapes the loader inlines as SQL
+// literals (apostrophes, doubled quotes, double quotes, backslashes,
+// non-ASCII, XML specials), so a load made in PostgreSQL is tried on them.
+var titles = []struct{ title, sub, desc, category string }{
+	{"America's Funniest Home Videos", "Viewers' Clips", "Clips sent in by viewers.", "Comedy"},
+	{`The "Quoted" Show`, "Pilot", `A title with "double quotes" and a backslash \ in it.`, "Drama"},
+	{"Café Müller: Übung", "Ouvertüre", "Non-ASCII: ñ, ü, 日本語, 😀.", "Arts"},
+	{"Bob's Burgers", "Human Flesh", "Bob's restaurant.", "Animation"},
+	{`C:\Path\To\Show`, `Back\slash`, "Backslashes in the title.", "Documentary"},
+	{"It's Always Sunny in Philadelphia", "The Gang Gets Quarantined", "The Gang.", "Comedy"},
+	{"Paid Programming", "", "Paid programming.", "Shopping"},
+	{"The Godfather", "", "A film.", "Movie"},
+	{"Who's the Boss? & <Friends>", "Pilot", "Question mark, ampersand and <angle brackets>.", "Sitcom"},
+	{"O'Brien's ''Doubled'' Quotes", "Part", "Two single quotes in a row: ''.", "Talk"},
+	{"Probe News", "Evening Edition", "The news.", "News"},
+	{"100% Wrestling", "Night", "A percent sign and a semicolon; here.", "Sports"},
+}
+
+func esc(s string) string {
+	var b bytes.Buffer
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
