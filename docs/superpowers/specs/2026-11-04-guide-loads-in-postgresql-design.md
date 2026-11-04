@@ -456,9 +456,10 @@ chart and `docs/configuration.md`):
   exit 1 on a difference; its queries proven against two cloned guide
   schemas.
 
-**plex-postgresql** (`a20a76e`, on top of `.47`; to be released as
-`v1.3.17-clusterplex.49`, since a peer session cut `.48` the same
-afternoon for a second translator fix found on the incremental refresh): `guide_load.rs` holds the flags, the stage
+**plex-postgresql** (`a20a76e`, on top of `.47`; shipped inert in
+`v1.3.17-clusterplex.48`, which a peer session tagged on top of it the same
+afternoon for a second translator fix found on the incremental refresh, so
+no release of its own is needed): `guide_load.rs` holds the flags, the stage
 request at the open (`db_interpose_open.rs`, before the real open, 60 s),
 the result-cache key (none for a load) and the statement savepoints
 (`write_exec.rs`, `cached_write.rs`, `SAVEPOINT plex_pg_stmt`, on unless
@@ -479,7 +480,10 @@ desc, originally_available_at`, the title inlined as a literal. The loader
 inlines values, so the rig's XMLTV guide should carry titles with
 apostrophes, doubled quotes, backslashes and non-ASCII.
 
-**Not yet:** the shim release and cluster-plex's `PLEX_PG_REF` bump; the
-rig runs, which need the kind cluster-plex rig (manager, PMS, PostgreSQL)
-rather than the shim's standalone compose, since the `stage` verb lives in
-the manager; talos.
+**Not yet:** the rig runs, which need the kind cluster-plex rig (manager,
+PMS, PostgreSQL) rather than the shim's standalone compose, since the
+`stage` verb lives in the manager; talos with the value on. The `.48`
+deploy carries both halves inert, except the map guard, which runs whatever
+the value: checked against talos's live DVR 32 before that deploy (PMS
+stores the map byte for byte as the tuner sends it, 248 entries, every one
+enabled; `mapDifference` 0/0/0).
