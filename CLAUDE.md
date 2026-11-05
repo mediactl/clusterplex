@@ -136,6 +136,18 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   `pkg/video/relay`. When the pool cannot take it, it is refused: there is
   no fallback to Plex's transcoder. The pool writes nothing to disk; it
   muxes in memory and streams back to the relay.
+- **The cutter drops a packet whose decode time is not past its stream's
+  last, instead of failing the job** (`pkg/video/pipeline/cut.go` `write`,
+  2026-11-05; counted and told to `Options.Skipped`). The TS muxer refuses
+  such a packet ("non monotonically increasing dts to muxer in stream 1",
+  `av_interleaved_write_frame: Invalid argument`), and on talos at 05:00Z
+  that refusal ended a Live TV session an hour in: clustarr's relay had
+  reopened the provider's connection and spliced the new one in as it
+  came, and the copied audio stepped back 47 ms at the splice, under the
+  timeline's `stepsBack` (100 ms), which re-anchors only a larger jump.
+  The relay now splices forward (clustarr `relay.catchUp`); this is the
+  belt under it. `TestASmallStepBackAtASpliceIsDroppedNotFatal` reproduces
+  the refusal with the guard bypassed.
 - **Scheduling lives in Kubernetes, not in the manager.** Maintenance is
   CronJobs calling `/api/v1/maintenance/{task}`, so a call that fails during a
   failover is a failed Job that retries and shows up in `kubectl`.

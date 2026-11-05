@@ -46,6 +46,15 @@ type cutter struct {
 	open             bool
 	start            time.Duration
 	vEnd, aEnd, last time.Duration
+	// vDTS and aDTS are the last decode times written to each stream
+	// (vSet, aSet once one has been); a packet not past its stream's is
+	// dropped (write), counted in dropped, the largest step back in
+	// stepped, and told to skipped.
+	vDTS, aDTS time.Duration
+	vSet, aSet bool
+	dropped    int
+	stepped    time.Duration
+	skipped    func(error)
 }
 
 type queued struct {
@@ -193,16 +202,33 @@ func (c *cutter) write(q queued, video bool) error {
 		}
 		c.open, c.start, c.vEnd, c.aEnd = true, q.pts, q.pts, q.pts
 	}
-	ms := c.vs
+	ms, last, set := c.vs, &c.vDTS, &c.vSet
 	if !video {
-		ms = c.as
+		ms, last, set = c.as, &c.aDTS, &c.aSet
 	}
 	if ms == nil {
+		return nil
+	}
+	// The TS muxer refuses a packet whose decode time is not past its
+	// stream's last ("non monotonically increasing dts"), and that refusal
+	// ended a Live TV session on talos (2026-11-05 05:00Z: the relay's
+	// upstream reopened, and the audio stepped back 47 ms at the splice).
+	// Such a packet is dropped instead: a small step back is a glitch of
+	// its own length, where the refusal was the whole conversion's end.
+	// (The timeline re-anchors a jump of more than stepsBack before the
+	// decode; this catches what it lets through.)
+	if *set && q.dts <= *last {
+		c.dropped++
+		c.stepped = max(c.stepped, *last-q.dts)
+		if c.skipped != nil {
+			c.skipped(fmt.Errorf("mux: a packet's decode time stepped back %s, not past its stream's last; dropped", *last-q.dts))
+		}
 		return nil
 	}
 	if err := c.m.WritePacket(ms, q.p); err != nil {
 		return fmt.Errorf("mux: %w", err)
 	}
+	*last, *set = q.dts, true
 	if video {
 		c.vEnd = max(c.vEnd, q.end)
 	} else {
@@ -210,6 +236,10 @@ func (c *cutter) write(q queued, video bool) error {
 	}
 	return nil
 }
+
+// Dropped is how many packets write dropped for a decode time not past
+// their stream's last, and the largest such step back.
+func (c *cutter) Dropped() (int, time.Duration) { return c.dropped, c.stepped }
 
 func videoCutDue(pts time.Duration, n int, s video.Segmenting) bool {
 	return video.CutDue(pts, 0, n, s)

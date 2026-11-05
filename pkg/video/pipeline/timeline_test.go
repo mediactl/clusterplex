@@ -109,6 +109,41 @@ func TestATimestampJumpKeepsTheTimeline(t *testing.T) {
 	}
 }
 
+// liveTSAt is liveTS with a fractional output_ts_offset.
+func liveTSAt(t *testing.T, s int, offset string) []byte {
+	t.Helper()
+	out := makeClip(t, filepath.Join(t.TempDir(), "live-"+offset+".ts"),
+		"-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30000/1001",
+		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+		"-t", strconv.Itoa(s), "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-b:a", "128k", "-output_ts_offset", offset, "-f", "mpegts")
+	b, err := os.ReadFile(out)
+	require.NoError(t, err)
+	return b
+}
+
+func TestASmallStepBackAtASpliceIsDroppedNotFatal(t *testing.T) {
+	// clustarr's relay reopens an IPTV upstream that ended and splices the
+	// new connection in; the splice stepped the audio's decode time back
+	// 47 ms, under the timeline's stepsBack, and the TS muxer refused it
+	// ("non monotonically increasing dts to muxer in stream 1 ... Invalid
+	// argument"), which ended the Live TV session (talos, 2026-11-05
+	// 05:00Z). The packets of such a step are dropped and told to Skipped;
+	// the conversion goes on.
+	need(t)
+	data := append(liveTSAt(t, 8, "100"), liveTSAt(t, 8, "107.95")...)
+	oracle(t, data)
+	job, o := liveJob(t, data)
+	job.Audio.Copy = true // as on talos: the audio's packets reach the muxer with their own times
+	var skipped atomic.Int32
+	o.Skipped = func(error) { skipped.Add(1) }
+	r := &recorder{}
+	require.NoError(t, pipeline.Run(t.Context(), job, o, r), "a 50 ms step back is no longer the conversion's end")
+	sum, _ := covered(r)
+	assert.InDelta(t, 16, sum.Seconds(), 1, "both halves are converted")
+	assert.Positive(t, skipped.Load(), "the packets of the step back were dropped and counted")
+}
+
 func TestALiveInputReportsNoProgressKnown(t *testing.T) {
 	// Plex's transcoder reports a live input's progress as -1.0 and its
 	// remaining time as -1 (the capture's trace); 0.0 and 0, a job at its

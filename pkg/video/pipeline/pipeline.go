@@ -87,7 +87,9 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 	if burn != nil {
 		defer burn.close()
 	}
-	var c segmenter = newCutter(job, sink)
+	cut := newCutter(job, sink)
+	cut.skipped = o.Skipped
+	var c segmenter = cut
 	if job.Output == video.OutputDASH {
 		c = newDashCutter(job, sink, in.d.Duration())
 	}
