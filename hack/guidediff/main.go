@@ -79,6 +79,17 @@ var keyedTables = []keyed{
 		FROM %[1]s.taggings tg JOIN %[1]s.metadata_items m ON m.id = tg.metadata_item_id JOIN %[1]s.tags t ON t.id = tg.tag_id`},
 }
 
+// notGuide are the tables a guide schema carries that hold no guide: what
+// the clone took from the library (the migration rows, the preferences) or
+// the shim's own FTS node table. A load made in PostgreSQL (cloned from the
+// library's schema) and one copied from PMS's SQLite file (PMS's template)
+// fill them differently, so their counts are shown but never a difference.
+var notGuide = map[string]bool{
+	"schema_migrations": true, "preferences": true, "sqlite_column_types": true,
+	"locations_node": true, "locations_parent": true, "locations_rowid": true,
+	"spellfix_vocab": true, "maintenance_control": true,
+}
+
 // Compare reports the two schemas' row counts per table and the keyed
 // differences, and whether anything differs.
 func Compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (string, bool, error) {
@@ -99,7 +110,9 @@ func Compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (st
 			return "", false, err
 		}
 		mark := ""
-		if ca != cb {
+		if ca != cb && notGuide[t] {
+			mark = "  (not the guide)"
+		} else if ca != cb {
 			mark, differs = "  <-- differs", true
 		}
 		fmt.Fprintf(&out, "%-32s %12d %12d%s\n", t, ca, cb, mark)
