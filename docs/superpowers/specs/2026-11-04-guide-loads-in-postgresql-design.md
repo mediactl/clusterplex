@@ -630,11 +630,69 @@ recovery), 2026-11-04 20:21-20:40Z:**
   delete falls) is to be read on talos, or on the rig once it holds a
   cloud DVR, which needs a claimed server.
 
+**2026-11-05, 01:30-02:35Z, on `.53` (image `5780e1f`), the owner's "Do
+all":** plex-postgresql `.53` runs the `.50` resync in a savepoint of its
+own (`plex_pg_resync`): with the statement savepoints off since `.51`, a
+refused resync would have aborted PMS's transaction and failed the load;
+proven on the rig's PostgreSQL (a table without `id`, a missing table,
+each refused inside the savepoint, the transaction usable after).
+
+- The failing statement on the library path (the rollout lessons' third
+  check): with `plex.fts4_metadata_titles_icu` renamed away, 100 searches
+  answered 500 while 100 concurrent `/library/sections` probes answered
+  200; with the view back, 60 of each answered 200, no restart, the
+  shim's errors only the expected "relation does not exist".
+- A load that fails before its rename, and the recovery, live: the
+  clean `_next` cloned ahead had its `media_parts` renamed under it, the
+  next load staged onto it and PMS failed 5 s in ("Exception inside
+  transaction", "Failed to load EPG") and removed its load file; 8 s
+  later the poll found the loading mark with no load file and the guide
+  file's own inode, dropped the schema and cloned it clean ("a staged Live
+  TV guide load failed before its rename; its staging schema is cloned
+  again"), and the next load staged onto the clean clone and swapped in
+  63 s later.
+- **The cloud loader through the staged path**, the design's open risk:
+  the rig claimed onto the owner's account under its own identity
+  ("clusterplex guide rig (kind)"; a claimed PMS takes no call without a
+  token), a second HDHomeRun stub (`CAFE0002`, 12 channels) as a device,
+  a DVR on the DIRECTV Mobile lineup
+  (`lineup://tv.plex.providers.epg.cloud/657c8183afd0f02cd353633f#...`),
+  PMS's own empty-map load failing in 2 s as on talos, then a 12-channel
+  map saved by hand (WEAR, CNN, ESPN, Fox News, TNT, TBS, USA, AMC, FX,
+  Discovery, Nat Geo, TLC; `channelMappingByKey` the station id,
+  `channelMapping` the vcn). The load ran in PostgreSQL from its first
+  statement: two 7-day steps, 73 s ("network 22.3 + 27.0 s, database
+  32.5 + 55.2 s"), no statement refused, PMS renamed, the manager swapped
+  the schema in, `refreshedAt` written, the grid answering real
+  programmes; 4,009 metadata items, 3,794 airings, 235 tags, 13,828
+  taggings.
+- **Both oracles are empty** (`hack/guidediff`, which since this commit
+  sets the non-guide tables aside: `schema_migrations`, `preferences`
+  and the FTS node table come from the clone's source and never match a
+  SQLite load's): the staged XMLTV guide (2,300 airings) against the copy
+  path's load 16 min later, and the staged cloud guide against the copy
+  path's load 3 min later, agree on every metadata item, airing, tag and
+  tagging by key.
+- Time, cloud: 73 s staged against 57 s copied plus the 26,116-row copy's
+  6 s; the loader's "database" phase doubled (87.7 s against 43.6 s) while
+  its network phase did not, so on talos's 248-channel load (network
+  513 s, database 1,651 s) the value on means about 27 min more on a
+  36-min load, minus the 35 s copy, in the background while the old
+  guide serves. XMLTV: 65 s staged against 47 s copied (2,300 airings).
+
 **Not yet:** the late hook (covered by the recovery test; no knob on the
-rig), the refused statement (the loader fails the load; the map guard
-needs a cloud block, not on the rig), the cloud lineup (needs a claimed
-server: the rig stays unclaimed, see the identity note); talos with the
-value on, which is the owner's call on the load's length: a from-scratch cloud load there is some 60,000 airings, so at the
+rig), the refused statement on a cloud block (the map guard; the rig's
+DVR map is saved by hand); talos with the value on, which is the owner's
+call on two counts -- the load's length above, and the rollout: talos
+runs clustarr chart 0.6.7, whose cluster-plex 0.6.3 predates the value,
+so it needs clustarr chart **0.6.8** (branch `chart-0.6.8`, cluster-plex
+**0.6.5** from `5780e1f`, both published 2026-11-05; rendered against the
+talos values 0.6.8 differs from 0.6.7 only in the chart labels and the
+plex-config lines `guideRefreshWindow: "8-11"`, the code's own default,
+and `guideLoadsInPostgres`), and a `chart_version` bump restarts every
+clustarr pod. The edits (cluster-plex tag `5780e1f`,
+`guideLoadsInPostgres: true`, `chart_version = "0.6.8"`) are staged
+outside cluster-bootstrap's working tree. The earlier estimate: a from-scratch cloud load there is some 60,000 airings, so at the
 rig's 50-70 ms an airing over SQLite's it runs an hour or more against
 today's 21 minutes plus the 35 s copy, in the background while the old
 guide serves, as today's does. The `.48`
