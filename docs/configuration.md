@@ -751,7 +751,9 @@ owner's ruling, 2026-10-07). It deletes:
 
 `enabled: false` deletes nothing; Plex shows the devices offline.
 
-**The other pods.** Each PMS reads its DVRs once, at its start, and no call
+**The other pods.** With Live TV on there is one Plex pod (below), so this
+round finds no other pod to restart; it is what several pods would need.
+Each PMS reads its DVRs once, at its start, and no call
 refreshes them (recorded). After a pass that created or deleted a DVR, the
 lease holder restarts PMS on each other pod in turn, waiting for each to
 answer for its library again, at most once per `restartEvery`
@@ -776,6 +778,43 @@ which restarts Plex and, if it keeps failing, the pod.
 
 **The calls** are recorded against the owner's PMS in
 `docs/livetv-pms-calls.md`.
+
+### Live TV runs on one Plex pod
+
+With `plex.liveTV.enabled` the deployment holds one Plex pod. The chart
+refuses `plex.replicas` above 1, and the manager of any pod past the
+StatefulSet's first refuses to start, before its PMS does, for an install
+the chart did not render (a kustomize base, a `kubectl scale`). The error
+reads `plex.liveTV.enabled needs one Plex pod`.
+
+The reason is that every PMS runs Live TV's background work on its own, and
+PMS has no setting that turns it off:
+
+- **Guide refreshes.** PMS refreshes each DVR's guide at its start when the
+  guide reads stale, and on a timer 24 hours after its last refresh. The
+  butler setting governs neither. Every pod reads and writes one guide, in
+  PostgreSQL, and a refresh is not atomic (see "The guide, in PostgreSQL"
+  below), so two at once leave holes or doubled airings.
+- **Recordings.** The recording rules live in the shared library, but PMS
+  keeps the grabs it schedules from them in memory, and the library has no
+  table of them. A second PMS schedules and records every programme again.
+
+Both were seen on the kind rig on 2026-11-09. A second pod's PMS began an
+incremental refresh of the rig's cloud guide at its boot, beside the first,
+and started a recording scheduler of its own (`Subscription: Initialized 2
+schedulers`).
+
+Running Live TV on several pods would take three things, none built:
+
+- one PMS writing the guide, or a guide per pod;
+- one PMS recording, and no lever for that has been found;
+- the converger reading every pod's `/activities` before a delete, a map
+  save or a reload, not only its own.
+
+What is not a reason: client sign-in. A pod without the plex.tv Lease still
+reaches `servers.plex.tv`, where PMS checks a token it has not seen. On the
+rig the second pod took the owner's account token at once and refused a
+made-up one. See `pkg/plex/net`'s `DefaultBlockedHosts`.
 
 ### The guide, in PostgreSQL
 

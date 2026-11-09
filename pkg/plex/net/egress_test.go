@@ -147,6 +147,15 @@ func TestDefaultHostsCoverPlexsOwnServices(t *testing.T) {
 	assert.Contains(t, DefaultBlockedHosts, "pubsub.plex.tv")
 }
 
+// TestAPodWithoutTheLeaseStillSignsClientsIn: PMS checks a token it has not
+// seen at servers.plex.tv, so blocking it would refuse every new client's
+// sign-in on the pods without the lease (the kind rig, 2026-11-09).
+func TestAPodWithoutTheLeaseStillSignsClientsIn(t *testing.T) {
+	for _, h := range []string{"servers.plex.tv", "epg.provider.plex.tv"} {
+		assert.NotContains(t, DefaultBlockedHosts, h)
+	}
+}
+
 func TestEgressGuardBlocksTheLeaderTooWhenNobodyMayReachPlexTV(t *testing.T) {
 	// An operator needs to be able to keep every pod away from plex.tv, lease
 	// holder included: a cluster that is not meant to be published, or one

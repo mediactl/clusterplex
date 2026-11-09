@@ -77,6 +77,14 @@ advertises another address, which works until a client signs in.
 {{- if and (not .Values.proxy.enabled) (or .Values.proxy.service.loadBalancerIP .Values.proxy.service.annotations) -}}
 {{- fail "proxy.service.* is the media proxy's own Service since chart 0.3.0, rendered only with proxy.enabled; the Service clients connect to is configured under service.*" -}}
 {{- end -}}
+{{- /* Live TV holds the deployment to one Plex pod: every PMS refreshes the
+       guides and records the recording rules on its own, against the one
+       guide and the one set of rules the pods share, and PMS has no setting
+       to turn either off (the kind rig, 2026-11-09). The manager refuses a
+       second pod too, for installs this chart did not render. */}}
+{{- if and (dig "liveTV" "enabled" false .Values.plex) (gt (int .Values.plex.replicas) 1) -}}
+{{- fail (printf "plex.liveTV.enabled needs plex.replicas 1 (it is %v): every PMS refreshes Live TV's guides and records its recording rules on its own, so a second pod refreshes the one shared guide beside the first and records every programme again (docs/configuration.md, \"Live TV runs on one Plex pod\")" .Values.plex.replicas) -}}
+{{- end -}}
 {{- if .Values.httpRoute.enabled -}}
 {{- if not .Values.httpRoute.parentRefs -}}
 {{- fail "httpRoute.enabled needs httpRoute.parentRefs: the Gateway (name, namespace, and sectionName for one listener) the route attaches to; a route with no parent is attached to nothing" -}}

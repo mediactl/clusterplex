@@ -172,3 +172,47 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	}
 	return lt, nil
 }
+
+// liveTVNeedsOnePod refuses Live TV on any Plex pod but a StatefulSet's
+// first. Every PMS runs Live TV's background work on its own, and PMS has
+// no setting to turn it off:
+//   - it refreshes each DVR's guide at its start and on its own timer,
+//     against the one guide the pods share in PostgreSQL, and a refresh is
+//     not atomic, so two at once leave holes or doubled airings;
+//   - it schedules and records the recording rules the pods share, keeping
+//     its grabs in memory (the library has no table of them), so a second
+//     PMS records every programme again.
+//
+// Found on the kind rig, 2026-11-09: a second pod's PMS began an
+// incremental refresh of the cloud guide at its boot, beside the first,
+// and started a recording scheduler of its own. So the deployment holds
+// one Plex pod while Live TV is on. The chart refuses plex.replicas above 1
+// with it; this is the same rule for an install the chart did not render
+// (a kustomize base, a `kubectl scale`), checked before PMS starts, so the
+// second PMS never runs.
+func liveTVNeedsOnePod(podName string, liveTV bool) error {
+	if !liveTV {
+		return nil
+	}
+	if n, ok := statefulSetOrdinal(podName); !ok || n == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s.enabled needs one Plex pod, and this is %s: every PMS refreshes Live TV's guides and "+
+		"records its recording rules on its own, so a second pod refreshes the one shared guide beside the first "+
+		"and records every programme again; run one Plex pod with Live TV (docs/configuration.md, "+
+		"\"Live TV runs on one Plex pod\")", liveTVKey, podName)
+}
+
+// statefulSetOrdinal is the ordinal a StatefulSet pod's name ends in; a
+// name without one (a manager run outside a StatefulSet) has none.
+func statefulSetOrdinal(name string) (int, bool) {
+	i := strings.LastIndexByte(name, '-')
+	if i < 0 || i == len(name)-1 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(name[i+1:])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}

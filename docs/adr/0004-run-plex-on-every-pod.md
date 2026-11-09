@@ -159,6 +159,16 @@ the blobs database, or media-provider state, and none of those has been tested
 with concurrent writers. The fixes that made 1.43.4 work were all
 single-instance.
 
+**Answered for Live TV, 2026-11-09.** Plex does not tolerate it there.
+Every PMS refreshes the DVR guides and records the recording rules on its
+own, and PMS has no setting to turn either off. On the kind rig, a second
+pod's PMS refreshed the shared cloud guide at its boot and started its own
+recording scheduler. Live TV therefore holds the deployment to one Plex
+pod: the chart and the manager refuse a second (`docs/configuration.md`,
+"Live TV runs on one Plex pod"). Client sign-in on a pod without the lease
+does work, through `servers.plex.tv`, which the egress filter does not
+block.
+
 ## Action Items
 
 1. [x] Split the volumes in `k8s/base/statefulset.yaml`; update the comment in

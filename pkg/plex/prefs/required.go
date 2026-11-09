@@ -185,9 +185,12 @@ func Required() map[string]string {
 // reloadGuide rebuilds it whole, half an hour at a core, and the task
 // cannot be run by hand (POST /butler/RefreshEpgGuides answers and does
 // nothing outside its schedule). It runs in the ButlerStartHour-EndHour
-// window, in the pod's time, UTC; the operator sets those. With one Plex
-// pod per installation, as the chart's HTTPRoute requires, no two pods
-// refresh the one shared guide at once.
+// window, in the pod's time, UTC; the operator sets those. PMS also
+// refreshes a guide on its own: at its start when the guide reads stale,
+// and on a timer 24 hours after its last refresh, which this setting does
+// not govern. That is why Live TV holds the deployment to one Plex pod (the
+// chart and the manager refuse a second): on the kind rig, 2026-11-09, a
+// second pod's PMS refreshed the one shared guide at its boot.
 func GuideRefresh() map[string]string { return map[string]string{"ButlerTaskRefreshEpgGuides": "1"} }
 
 // Enforced returns everything the manager writes into Preferences.xml itself.

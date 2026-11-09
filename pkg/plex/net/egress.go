@@ -21,6 +21,15 @@ import (
 //
 // Blocking by resolved address rather than by name because the filter is a
 // packet filter: the names are resolved periodically and the set updated.
+//
+// They are not all of Plex's services, and must not become so. A pod without
+// the lease still reaches servers.plex.tv, where PMS checks a token it has
+// not seen ("Auth: Refreshing tokens", GET /api/v2/server/access_tokens) and
+// reads the account's users and subscriptions, and epg.provider.plex.tv,
+// Plex's own guide. Blocking servers.plex.tv would refuse every new client's
+// sign-in on the pods without the lease. On the kind rig, 2026-11-09, a
+// second pod took the owner's account token it had never seen after one
+// servers.plex.tv lookup, and refused a made-up one.
 var DefaultBlockedHosts = []string{
 	"plex.tv",
 	"pubsub.plex.tv",

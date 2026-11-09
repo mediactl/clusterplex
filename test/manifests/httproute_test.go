@@ -84,6 +84,26 @@ func TestHTTPRouteNeedsOnePlexPodAndAParent(t *testing.T) {
 	require.NotNil(t, find(objs, "HTTPRoute", "cp"))
 }
 
+// TestLiveTVNeedsOnePlexPod: every PMS refreshes the shared guide and
+// records the shared recording rules on its own (the kind rig, 2026-11-09),
+// so the chart refuses Live TV with more than one Plex pod, and renders it
+// with one, or several pods without it.
+func TestLiveTVNeedsOnePlexPod(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH")
+	}
+	out, err := exec.Command("helm", "template", "cp", "../../charts/cluster-plex",
+		"--namespace", "media", "--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg",
+		"--set", "plex.liveTV.enabled=true", "--set", "plex.clustarr.namespace=clustarr-system", "--set", "plex.replicas=3",
+	).CombinedOutput()
+	require.Error(t, err, "rendered:\n%s", out)
+	assert.Contains(t, string(out), "plex.liveTV.enabled needs plex.replicas 1 (it is 3)")
+
+	require.NotNil(t, find(renderObjects(t, "--set", "plex.liveTV.enabled=true",
+		"--set", "plex.clustarr.namespace=clustarr-system", "--set", "plex.replicas=1"), "StatefulSet", "cp"))
+	require.NotNil(t, find(renderObjects(t, "--set", "plex.replicas=3"), "StatefulSet", "cp"))
+}
+
 // TestHTTPRouteTakesExtraRules: httpRoute.extraRules are rendered verbatim
 // beside the rule sending every path to Plex -- clustarr's /art to its ui,
 // which the Gateway prefers over / as the longer prefix. The provider names

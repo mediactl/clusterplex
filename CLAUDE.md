@@ -109,6 +109,19 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   - Its own informer keeps a missing CRD from stalling the clustarr watch.
   - The PMS calls are in `docs/livetv-pms-calls.md`, recorded against the
     owner's PMS.
+- **Live TV holds the deployment to one Plex pod** (2026-11-09). Every PMS
+  refreshes the DVR guides (at its start, and on its own 24-hour timer,
+  which the butler setting does not govern) and records the recording rules
+  on its own, against the one guide and the one set of rules the pods share,
+  and PMS has no setting to turn either off. On the kind rig a second pod's
+  PMS refreshed the shared cloud guide at its boot and started a recording
+  scheduler of its own. The chart refuses `plex.replicas` above 1 with
+  `plex.liveTV.enabled`, and `liveTVNeedsOnePod` (`cmd/manager`) refuses
+  to start a pod past the StatefulSet's first, before its PMS starts. The
+  converger reads only its own PMS's `/activities` for that reason. A pod
+  without the plex.tv Lease still signs clients in: PMS checks an unseen
+  token at `servers.plex.tv`, which the egress filter leaves open
+  (`plexnet.DefaultBlockedHosts`).
 - **Media analysis and skip markers are seeded into Plex's database**
   (ADR 0006), the one exception to API-only: Plex's API can write neither.
   `pkg/plexseed` writes clustarr's probe into an unanalysed media item and

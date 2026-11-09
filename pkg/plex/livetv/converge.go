@@ -922,7 +922,11 @@ func inWindow(h int, w [2]int) bool {
 	}
 }
 
-// grabbing is whether PMS is recording or serving a Live TV session.
+// grabbing is whether PMS is recording or serving a Live TV session. It
+// reads this pod's PMS alone, which is every PMS there is: Live TV holds the
+// deployment to one Plex pod (cmd/manager's liveTVNeedsOnePod). Several pods
+// would each need reading here, and before every delete, save and reload
+// that waits on a guide load.
 func (c *Converger) grabbing(ctx context.Context) (bool, error) {
 	acts, err := c.PMS.Activities(ctx)
 	if err != nil {

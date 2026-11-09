@@ -93,6 +93,48 @@ func TestLiveTVKeepsPlexsGuideRefreshOn(t *testing.T) {
 	assert.Equal(t, "0", c.EnforcedPreferences("")["ButlerTaskRefreshEpgGuides"])
 }
 
+// TestLiveTVRefusesASecondPlexPod: every PMS refreshes the shared guide and
+// records the shared recording rules on its own (the kind rig, 2026-11-09:
+// a second pod's PMS refreshed the cloud guide at its boot), so with Live TV
+// on, a pod past a StatefulSet's first refuses to start, and Plex never
+// runs there. Without Live TV every pod serves.
+func TestLiveTVRefusesASecondPlexPod(t *testing.T) {
+	podIdentity(t)
+	liveTV := writeConfig(t, `
+plex:
+  clustarr:
+    namespace: clustarr-system
+  liveTV:
+    enabled: true
+`)
+	_, err := loadConfig([]string{"--config", liveTV})
+	require.NoError(t, err, "plex-0 runs Live TV")
+
+	t.Setenv("POD_NAME", "plex-1")
+	_, err = loadConfig([]string{"--config", liveTV})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plex.liveTV.enabled needs one Plex pod, and this is plex-1")
+
+	_, err = loadConfig(nil)
+	require.NoError(t, err, "plex-1 serves without Live TV")
+}
+
+func TestOnlyAStatefulSetsFirstPodMayRunLiveTV(t *testing.T) {
+	for pod, refused := range map[string]bool{
+		"plex-0":         false,
+		"plex-1":         true,
+		"cluster-plex-2": true,
+		"plex-10":        true,
+		"plex":           false, // not a StatefulSet pod: a manager run by hand
+		"plex-local":     false,
+		"plex-":          false,
+	} {
+		err := liveTVNeedsOnePod(pod, true)
+		assert.Equal(t, refused, err != nil, "%s: %v", pod, err)
+		assert.NoError(t, liveTVNeedsOnePod(pod, false), "%s without Live TV", pod)
+	}
+}
+
 func TestTheExternalURLIsWhatPlexAdvertises(t *testing.T) {
 	podIdentity(t)
 	c, err := loadConfig([]string{

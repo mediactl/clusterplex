@@ -10,7 +10,8 @@ image:
 
 plex:
   # Every pod runs Plex against the shared library and serves clients; the
-  # Lease decides only which one talks to plex.tv. See ADR-0004.
+  # Lease decides only which one talks to plex.tv. See ADR-0004. Live TV
+  # (plex.liveTV) and the HTTPRoute (httpRoute) each need 1.
   replicas: 3
   # Pin the server identity so a rebuilt cluster keeps the identity clients
   # already know. Setting this on a server that already has one CHANGES it.
@@ -90,6 +91,9 @@ plex:
   # Deleting a provider deletes its DVR and that DVR's recording rules.
   # Grants get, list and watch on iptvproviders.clustarr.io and create and
   # patch on events.k8s.io Events there.
+  # Needs plex.replicas 1: every PMS refreshes the guides and records the
+  # recording rules on its own (docs/configuration.md, "Live TV runs on one
+  # Plex pod"). The chart refuses it with more Plex pods.
   liveTV:
     enabled: false
     language: eng
