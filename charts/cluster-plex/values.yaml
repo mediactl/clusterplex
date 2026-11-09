@@ -213,6 +213,27 @@ otel:
   # k8s.namespace.name are set already.
   resourceAttributes: ""
 
+# A Grafana dashboard of the clusterplex_* series (dashboards/cluster-plex.json:
+# playback, transcodes and the GPU pool, libraries and clustarr's projection,
+# the proxy, Live TV and each pod's resources; docs/configuration.md,
+# "Grafana"), as a ConfigMap Grafana's dashboard sidecar loads -- the grafana
+# chart's sidecar.dashboards, or kube-prometheus-stack's, which select on the
+# label below by default. The dashboard picks a Prometheus data source in a
+# variable and filters by namespace and pod; it reads what the chart's pods
+# serve on their probe port, however they are scraped.
+metrics:
+  grafanaDashboard:
+    enabled: false
+    # The ConfigMap's namespace; empty is the release's. Name Grafana's own
+    # namespace when its sidecar searches only that one.
+    namespace: ""
+    # The labels the sidecar selects on.
+    labels:
+      grafana_dashboard: "1"
+    # For example grafana_folder: Media, where the sidecar's
+    # folderAnnotation is grafana_folder.
+    annotations: {}
+
 # The Service clients connect to, <fullname>: a LoadBalancer in front of
 # every ready Plex pod, landing on the manager's proxy that holds 32400 in
 # front of Plex's own network namespace (ADR-0003) -- k8s/base's plex-main,

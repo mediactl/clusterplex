@@ -471,6 +471,25 @@ turns one signal off, `OTEL_SDK_DISABLED=true` both, and the
 endpoint and options. The remote-execution spans the shim carries
 (`ExecuteRemote`) export the same way.
 
+#### Grafana
+
+`charts/cluster-plex/dashboards/cluster-plex.json` is a Grafana dashboard of
+the `clusterplex_*` series (`Cluster Plex`, uid `cluster-plex`). Set
+`metrics.grafanaDashboard.enabled` and the chart ships it as a ConfigMap
+labelled for Grafana's dashboard sidecar (`grafana_dashboard: "1"`, the
+grafana chart's and kube-prometheus-stack's default; `labels`, `namespace`
+and `annotations` beside it, e.g. `grafana_folder` for a folder). It picks
+its Prometheus data source in a variable and filters by namespace and pod,
+so it reads whatever scrapes the pods' probe ports. Its rows: an overview,
+playback (now playing, streams by decision and location, bandwidth, plays and
+watch time), transcoding (Plex's transcodes by hardware and node, helper
+jobs, the GPU pool's conversions, refusals, startup overhead and encode
+speed), libraries and clustarr's projection, the proxy and Live TV, and,
+collapsed, each pod's resources. The GPU pool's and the remux pool's panels
+fill only when their pods' probe ports are scraped too, not just the Plex
+pods'. clustarr's chart ships its own (`Clustarr`, uid `clustarr`), and the
+two link to each other through their shared tag, `media`.
+
 ### Settings that are per-pod, not per-cluster
 
 Rate limits apply to one Plex process, and every pod runs one. `WanTotalMaxUploadRate`

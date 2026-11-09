@@ -1,0 +1,28 @@
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+{{/*
+The cluster-plex dashboard (dashboards/cluster-plex.json), as a ConfigMap
+Grafana's dashboard sidecar loads: the grafana chart's sidecar.dashboards, and
+kube-prometheus-stack's, pick up every ConfigMap carrying their label
+(grafana_dashboard by default). The dashboard asks for its Prometheus data
+source in a variable, so it names none here. The name carries "cluster-plex"
+because the fullname is the release's, which clustarr's own dashboard shares
+when this chart is its subchart.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}-dashboard-cluster-plex
+  namespace: {{ .Values.metrics.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "cluster-plex.labels" . | nindent 4 }}
+    {{- with .Values.metrics.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  cluster-plex.json: |-
+    {{- .Files.Get "dashboards/cluster-plex.json" | nindent 4 }}
+{{- end }}
