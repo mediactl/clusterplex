@@ -532,6 +532,28 @@ plex:
 	assert.Equal(t, "plex-token", c.Clustarr.TokenSecret)
 }
 
+// The ui's address is what collection images under its /art/ are
+// fetched from (clustarr's 2026-11-10 plex-collections design).
+func TestTheClustarrSectionNamesTheUIURL(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig([]string{"--config", writeConfig(t, `
+plex:
+  clustarr:
+    enabled: true
+    namespace: clustarr-system
+    uiURL: https://clustarr.k8s.appkins.io
+    pathMappings:
+      - {clustarr: /data/media, plex: /media}
+`)})
+	require.NoError(t, err)
+	assert.Equal(t, "https://clustarr.k8s.appkins.io", c.Clustarr.UIURL)
+
+	for _, bad := range []string{"clustarr.k8s.appkins.io", "ftp://clustarr/", "https://"} {
+		_, err := loadConfig([]string{"--config", writeConfig(t, "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    uiURL: "+bad+"\n    pathMappings: [{clustarr: /data, plex: /media}]\n")})
+		require.Error(t, err, bad)
+	}
+}
+
 func TestConfigRefusesATokenSecretItCannotWrite(t *testing.T) {
 	podIdentity(t)
 	for name, body := range map[string]string{

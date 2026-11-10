@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -37,6 +38,11 @@ type ClustarrConfig struct {
 	// it has no token; from then on it is the master copy every replica is
 	// held to (servertoken). Empty keeps none.
 	TokenSecret string `mapstructure:"tokenSecret"`
+	// UIURL is clustarr UI's external URL. A PlexCollection's poster or
+	// background under its /art/ is fetched from there even though the
+	// address is private (clustarr's 2026-11-10 plex-collections design).
+	// Empty refuses such images.
+	UIURL string `mapstructure:"uiURL"`
 }
 
 // loadProvisioning reads what the lease holder provisions into Plex and the
@@ -78,6 +84,11 @@ func loadProvisioning(v *viper.Viper) (plexprovision.Config, ClustarrConfig, err
 				errs = append(errs, fmt.Errorf("%s.pathMappings: %q is mapped twice", clustarrKey, m.Clustarr))
 			}
 			seen[from] = true
+		}
+	}
+	if cl.UIURL != "" {
+		if u, err := url.Parse(cl.UIURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("%s.uiURL: %q is not an absolute http or https URL", clustarrKey, cl.UIURL))
 		}
 	}
 	if cl.TokenSecret != "" {

@@ -64,6 +64,9 @@ data:
         {{- with .Values.plex.clustarr.tokenSecret }}
         tokenSecret: {{ include "cluster-plex.tpl" (list . $) | quote }}
         {{- end }}
+        {{- with .Values.plex.clustarr.uiURL }}
+        uiURL: {{ . | quote }}
+        {{- end }}
         pathMappings:
           {{- range .Values.plex.clustarr.pathMappings }}
           - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}

@@ -205,7 +205,7 @@ func TestSectionItemsPagesThroughTheSection(t *testing.T) {
 		for i := start; i < start+size && i < total; i++ {
 			items = append(items, fmt.Sprintf(`{"ratingKey":"%d","guid":"plex://movie/%d"}`, i, i))
 		}
-		fmt.Fprintf(w, `{"MediaContainer":{"totalSize":%d,"offset":%d,"Metadata":[%s]}}`, total, start, strings.Join(items, ","))
+		_, _ = fmt.Fprintf(w, `{"MediaContainer":{"totalSize":%d,"offset":%d,"Metadata":[%s]}}`, total, start, strings.Join(items, ","))
 	}))
 	t.Cleanup(srv.Close)
 	c := &plexapi.Client{BaseURL: srv.URL}

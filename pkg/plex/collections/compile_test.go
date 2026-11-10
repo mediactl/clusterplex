@@ -63,7 +63,8 @@ func talosTags(field, name string) (string, error) {
 }
 
 func animeDubbed() collections.Spec {
-	return collections.Spec{Library: "Clustarr TV", Title: "Anime Dubbed", ItemType: "show",
+	return collections.Spec{
+		Library: "Clustarr TV", Title: "Anime Dubbed", ItemType: "show",
 		Filter: &collections.Filter{Match: "all", Rules: []collections.Rule{
 			{Field: "episode.audioLanguage", Operator: "is", Value: "en"},
 			{Field: "show.genre", Operator: "is", Value: "Anime"},
@@ -73,13 +74,15 @@ func animeDubbed() collections.Spec {
 }
 
 func netflix() collections.Spec {
-	return collections.Spec{Library: "Clustarr TV", Title: "Netflix", ItemType: "show",
+	return collections.Spec{
+		Library: "Clustarr TV", Title: "Netflix", ItemType: "show",
 		Filter: &collections.Filter{Match: "all", Rules: []collections.Rule{{Field: "show.network", Operator: "is", Value: "Netflix"}}},
 	}
 }
 
 func up() collections.Spec {
-	return collections.Spec{Library: "Clustarr Movies", Title: "UP", ItemType: "movie",
+	return collections.Spec{
+		Library: "Clustarr Movies", Title: "UP", ItemType: "movie",
 		Filter: &collections.Filter{Match: "any", Rules: []collections.Rule{
 			{Field: "title", Operator: "is", Value: "Seven Up!"},
 			{Match: "all", Rules: []collections.Condition{

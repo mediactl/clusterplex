@@ -39,8 +39,10 @@ func (g *guids) GUIDs(_ context.Context, namespace string, members []collections
 }
 
 func ghibli(members ...collections.Member) collections.Spec {
-	return collections.Spec{Library: "Clustarr Movies", Title: "Studio Ghibli Essentials", ItemType: "movie",
-		Members: &collections.Members{Items: members}}
+	return collections.Spec{
+		Library: "Clustarr Movies", Title: "Studio Ghibli Essentials", ItemType: "movie",
+		Members: &collections.Members{Items: members},
+	}
 }
 
 func (f *fakePMS) setItems(section string, itemType string, items ...api.Item) {

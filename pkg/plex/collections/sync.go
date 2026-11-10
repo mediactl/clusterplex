@@ -98,7 +98,18 @@ type Outcome struct {
 	Missing                   []Member
 	Poster, Background        *ImageState
 	Reason, Message           string
+	// Action is what this sync did to Plex's collection: ActionCreated,
+	// ActionAdopted, or "".
+	Action string
+	// PutBack names what Plex held differently and the sync put back.
+	PutBack []string
 }
+
+// Outcome.Action's values.
+const (
+	ActionCreated = "Created"
+	ActionAdopted = "Adopted"
+)
 
 // Syncer brings Plex's collections in line with PlexCollection specs.
 // Each section's Meta, tag lists and GUID index are cached until Forget.
@@ -203,10 +214,10 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 		if err != nil {
 			return err
 		}
-		col, out.Adopted, out.Reason = &c, false, ReasonCreated
+		col, out.Adopted, out.Reason, out.Action = &c, false, ReasonCreated, ActionCreated
 		out.Message = fmt.Sprintf("created in Plex (ratingKey %s)", c.RatingKey)
 	case adopted:
-		out.Adopted, out.Reason = true, ReasonAdopted
+		out.Adopted, out.Reason, out.Action = true, ReasonAdopted, ActionAdopted
 		out.Message = fmt.Sprintf("adopted Plex's collection %q (ratingKey %s)", col.Title, col.RatingKey)
 	default:
 		out.Reason = ReasonSynced
@@ -277,6 +288,7 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 	if q, _ := ParseContent(col.Content); q != "" {
 		out.Content = "library/sections/" + section.Key + "/all?" + Decode(q)
 	}
+	out.PutBack = notes
 	if len(notes) > 0 {
 		drift := fmt.Sprintf("Plex's %s differed from the resource and %s put back", strings.Join(notes, ", "), map[bool]string{true: "was", false: "were"}[len(notes) == 1])
 		if out.Message != "" {

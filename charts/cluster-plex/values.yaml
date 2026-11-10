@@ -83,6 +83,13 @@ plex:
     # it (docs/configuration.md). Grants get and update on that one Secret,
     # and create on Secrets there.
     tokenSecret: ""
+    # clustarr UI's external URL (https://clustarr.example.com). With the
+    # integration on, the lease holder also reconciles clustarr's
+    # PlexCollections into Plex and writes their status and finalizer;
+    # a collection's poster or background under this URL's /art/ is
+    # fetched though its address is private. Empty refuses those images;
+    # images on public https hosts are fetched either way.
+    uiURL: ""
   # Live TV: add each of clustarr's IPTVProviders (in plex.clustarr.namespace)
   # to Plex as a DVR -- its HDHomeRun device, its XMLTV guide and the full
   # channel map, which carries more than the setup wizard's 480 channels.

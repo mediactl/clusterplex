@@ -91,9 +91,11 @@ roleRef:
 {{- if or .Values.plex.clustarr.enabled .Values.plex.liveTV.enabled }}
 ---
 # clustarr's catalog, read-only: the lease holder rescans the folders its
-# MediaFiles change and refreshes the items whose metadata changes. With
-# plex.clustarr.tokenSecret it also keeps that one Secret, the only thing it
-# writes in clustarr's namespace.
+# MediaFiles change and refreshes the items whose metadata changes. It
+# reconciles clustarr's PlexCollections into Plex and is the one writer of
+# their status and finalizer (clustarr's 2026-11-10 plex-collections
+# design, option A), recording Events on them. With
+# plex.clustarr.tokenSecret it also keeps that one Secret.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -104,16 +106,28 @@ rules:
   - apiGroups: ["catalog.clustarr.io"]
     resources: ["mediafiles", "movies", "series", "episodes"]
     verbs: ["get", "list", "watch"]
-  {{- if .Values.plex.liveTV.enabled }}
-  # Live TV: clustarr's IPTVProviders, read-only; the Events the lease
-  # holder records on them; and one Lease per block, held as the server's
-  # machineIdentifier so one installation registers each block.
-  - apiGroups: ["clustarr.io"]
-    resources: ["iptvproviders"]
-    verbs: ["get", "list", "watch"]
+  {{- if .Values.plex.clustarr.enabled }}
+  # Plex collections: the finalizer by server-side apply (patch), and the
+  # status.
+  - apiGroups: ["catalog.clustarr.io"]
+    resources: ["plexcollections"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["catalog.clustarr.io"]
+    resources: ["plexcollections/status"]
+    verbs: ["patch"]
+  {{- end }}
+  # The Events the lease holder records on PlexCollections and
+  # IPTVProviders.
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
+  {{- if .Values.plex.liveTV.enabled }}
+  # Live TV: clustarr's IPTVProviders, read-only, and one Lease per block,
+  # held as the server's machineIdentifier so one installation registers
+  # each block.
+  - apiGroups: ["clustarr.io"]
+    resources: ["iptvproviders"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update"]

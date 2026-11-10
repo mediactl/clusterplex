@@ -160,17 +160,18 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := r.Method + " " + r.URL.Path
-	if status, ok := f.failOnce[key]; ok {
-		delete(f.failOnce, key)
-		w.WriteHeader(status)
-		return
-	}
 	q := r.URL.Query()
 	if r.Method == http.MethodGet {
 		f.gets[key]++
 	} else {
 		body, _ := io.ReadAll(r.Body)
 		f.writes = append(f.writes, write{r.Method, r.URL.Path, q, body, r.Header.Get("Content-Type")})
+	}
+	// A failed write is still recorded: it was asked for.
+	if status, ok := f.failOnce[key]; ok {
+		delete(f.failOnce, key)
+		w.WriteHeader(status)
+		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch {
@@ -345,8 +346,10 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		case r.Method == http.MethodPut && len(parts) == 5:
 			for i, h := range f.hubs[section] {
 				if h.Identifier == parts[4] {
-					f.hubs[section][i] = api.ManagedHub{Identifier: h.Identifier,
-						Recommended: q.Get("promotedToRecommended") == "1", OwnHome: q.Get("promotedToOwnHome") == "1", SharedHome: q.Get("promotedToSharedHome") == "1"}
+					f.hubs[section][i] = api.ManagedHub{
+						Identifier:  h.Identifier,
+						Recommended: q.Get("promotedToRecommended") == "1", OwnHome: q.Get("promotedToOwnHome") == "1", SharedHome: q.Get("promotedToSharedHome") == "1",
+					}
 				}
 			}
 		}
