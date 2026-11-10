@@ -294,7 +294,7 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 	}
 	out.PutBack = notes
 	if len(notes) > 0 {
-		drift := fmt.Sprintf("Plex's %s differed from the resource and %s put back", strings.Join(notes, ", "), map[bool]string{true: "was", false: "were"}[len(notes) == 1])
+		drift := "put back what Plex held differently: " + strings.Join(notes, ", ")
 		if out.Message != "" {
 			out.Message += "; " + drift
 		} else {
