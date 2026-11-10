@@ -6,7 +6,7 @@
 // The fixture directory holds what PMS fetched for one load: the lineup's
 // stations (lineup-channels.json), each channel's weeks (grid/*.json) and
 // each show's and movie's metadata (metadata/<ratingKey>.json). The channels
-// built are the reference's channel tags.
+// built are the reference's channel tags, each its grid key and number.
 //
 //	go run ./hack/guidebuild -dsn "$(cat dsn)" -fixture ./fixture -ref epg_ref_pms -out epg_ref_built
 //
@@ -88,8 +88,10 @@ func run() int {
 }
 
 // loadTime is the build's time: an added_at of PMS's within a quarter hour
-// of it is PMS's own load time, which the build's equals.
-var loadTime int64
+// of it, or of PMS's last request a capture's log records (loadEnd; the
+// rig's 248-channel load ran 24 minutes), is PMS's own load time, which the
+// build's equals.
+var loadTime, loadEnd int64
 
 func build(ctx context.Context, conn *pgx.Conn, fixture, ref, out, library string, now time.Time) error {
 	read := func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(fixture, name)) }
@@ -108,6 +110,11 @@ func build(ctx context.Context, conn *pgx.Conn, fixture, ref, out, library strin
 		di, dj := strings.SplitN(filepath.Base(files[i]), "-", 2)[1], strings.SplitN(filepath.Base(files[j]), "-", 2)[1]
 		return di < dj || (di == dj && files[i] < files[j])
 	})
+	asked := askedAt(filepath.Join(fixture, "capture.log"))
+	for _, t := range asked {
+		loadEnd = max(loadEnd, t.Unix())
+	}
+	readAt := map[string][]time.Time{}
 	for _, f := range files {
 		b, err := os.ReadFile(f)
 		if err != nil {
@@ -119,6 +126,10 @@ func build(ctx context.Context, conn *pgx.Conn, fixture, ref, out, library strin
 		}
 		key := strings.SplitN(filepath.Base(f), "-", 2)[0]
 		grids[key] = append(grids[key], items)
+		readAt[key] = append(readAt[key], asked[filepath.Base(f)])
+	}
+	if len(asked) == 0 {
+		readAt = nil
 	}
 	meta := map[string]epgcloud.Item{}
 	files, _ = filepath.Glob(filepath.Join(fixture, "metadata", "*.json"))
@@ -133,17 +144,18 @@ func build(ctx context.Context, conn *pgx.Conn, fixture, ref, out, library strin
 		}
 		meta[strings.TrimSuffix(filepath.Base(f), ".json")] = items[0]
 	}
-	var channels []string
-	rows, err := conn.Query(ctx, fmt.Sprintf(`SELECT extra_data::json->>'at:gridKey' FROM %s.tags WHERE tag_type = 310`, pgx.Identifier{ref}.Sanitize()))
+	var channels []guidebuild.Channel
+	rows, err := conn.Query(ctx, fmt.Sprintf(`SELECT extra_data::json->>'at:gridKey', coalesce(extra_data::json->>'at:channelVcn', '')
+		FROM %s.tags WHERE tag_type = 310 ORDER BY id`, pgx.Identifier{ref}.Sanitize()))
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
+		var c guidebuild.Channel
+		if err := rows.Scan(&c.GridKey, &c.VCN); err != nil {
 			return err
 		}
-		channels = append(channels, k)
+		channels = append(channels, c)
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -176,7 +188,7 @@ func build(ctx context.Context, conn *pgx.Conn, fixture, ref, out, library strin
 	}
 	start := time.Now()
 	st, err := guidebuild.Build(ctx, tx, out, guidebuild.Input{
-		Lineup: lineup, Stations: stations, Channels: channels, Grids: grids, Metadata: meta, Sections: sec, Now: now,
+		Lineup: lineup, Stations: stations, Channels: channels, Grids: grids, Metadata: meta, Sections: sec, Now: now, ReadAt: readAt,
 	})
 	if err != nil {
 		return err
@@ -316,10 +328,10 @@ func load(ctx context.Context, conn *pgx.Conn, t table, schema string) (map[stri
 }
 
 // nearLoad reports whether a timestamp is within a quarter hour of the
-// build's time, so of PMS's load.
+// build's time, or of PMS's load as its capture recorded it.
 func nearLoad(v any) bool {
 	f, ok := v.(float64)
-	return ok && f > float64(loadTime-900) && f < float64(loadTime+900)
+	return ok && f > float64(loadTime-900) && f < float64(max(loadTime, loadEnd)+900)
 }
 
 func short(v any) string {
@@ -337,4 +349,25 @@ func slicesContains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// askedAt reads a capture's log (capture.log: "PMS-REQ <PMS's time> <file>",
+// one line a grid week as PMS asked for it) into when PMS asked for each
+// fixture file, PMS's clock in UTC; nothing when there is no log.
+func askedAt(path string) map[string]time.Time {
+	out := map[string]time.Time{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		f := strings.Fields(l)
+		if len(f) != 6 || f[0] != "PMS-REQ" {
+			continue
+		}
+		if t, err := time.ParseInLocation("Jan 2, 2006 15:04:05.000", strings.Join(f[1:5], " "), time.UTC); err == nil {
+			out[f[5]] = t
+		}
+	}
+	return out
 }

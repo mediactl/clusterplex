@@ -67,10 +67,21 @@ const (
 
 // cloudPlan is what the holder asks the pods to fetch for one build.
 type cloudPlan struct {
-	DVR      string    `json:"dvr"`
-	Lineup   string    `json:"lineup"`
-	Channels []string  `json:"channels"` // grid keys
-	Start    time.Time `json:"start"`    // the first day, midnight UTC
+	DVR      string               `json:"dvr"`
+	Lineup   string               `json:"lineup"`
+	Channels []guidebuild.Channel `json:"channels"` // the map's, grid key and number
+	Start    time.Time            `json:"start"`    // the first day, midnight UTC
+}
+
+// gridKeys is the grid keys the plan's channels are fetched by, each once.
+func (p cloudPlan) gridKeys() []string {
+	var out []string
+	for _, c := range p.Channels {
+		if !slices.Contains(out, c.GridKey) {
+			out = append(out, c.GridKey)
+		}
+	}
+	return out
 }
 
 // weeks are the plan's requests: a week each, both days inclusive.
@@ -221,7 +232,7 @@ func (c *cloudGuides) fetchPlans(ctx context.Context, all bool) error {
 	ring := c.share(ctx)
 	for _, p := range plans {
 		var mine []string
-		for _, k := range p.Channels {
+		for _, k := range p.gridKeys() {
 			if all || ring.Locate(k) == c.m.Config.PodName {
 				mine = append(mine, k)
 			}
@@ -448,7 +459,7 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 		}
 		if time.Now().After(deadline) {
 			log.Info("Live TV: fetching the rest of a cloud guide's answers here", "missing", missing)
-			if err := c.fetch(ctx, conn, p, p.Channels); err != nil {
+			if err := c.fetch(ctx, conn, p, p.gridKeys()); err != nil {
 				return fmt.Errorf("fetch the rest: %w", err)
 			}
 			break
@@ -500,9 +511,11 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 	return nil
 }
 
-// mapChannels reads the block's channels' grid keys from the tuner's map,
-// each "<lineup>-<gridKey>".
-func (c *cloudGuides) mapChannels(ctx context.Context, w cloudWant) ([]string, error) {
+// mapChannels reads the block's channels from the tuner's map: each
+// channel key's grid key ("<lineup>-<gridKey>") and its lineupIdentifier,
+// the lineup's number for the station, which says which of a station's
+// places in the lineup PMS takes (guidebuild.Channel).
+func (c *cloudGuides) mapChannels(ctx context.Context, w cloudWant) ([]guidebuild.Channel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(w.mapURI, "/")+"/plexmap.json", nil)
 	if err != nil {
 		return nil, err
@@ -519,16 +532,18 @@ func (c *cloudGuides) mapChannels(ctx context.Context, w cloudWant) ([]string, e
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m); err != nil {
 		return nil, fmt.Errorf("read the tuner's map: %w", err)
 	}
-	var keys []string
+	var out []guidebuild.Channel
 	for _, e := range m {
-		if _, k, ok := strings.Cut(e.ChannelKey, "-"); ok && !slices.Contains(keys, k) {
-			keys = append(keys, k)
+		if _, k, ok := strings.Cut(e.ChannelKey, "-"); ok {
+			if ch := (guidebuild.Channel{GridKey: k, VCN: e.LineupIdentifier}); !slices.Contains(out, ch) {
+				out = append(out, ch)
+			}
 		}
 	}
-	if len(keys) == 0 {
+	if len(out) == 0 {
 		return nil, errors.New("the tuner's map names no channel")
 	}
-	return keys, nil
+	return out, nil
 }
 
 // missing counts the plan's answers the cache lacks or holds stale: its
@@ -540,7 +555,7 @@ func (c *cloudGuides) mapChannels(ctx context.Context, w cloudWant) ([]string, e
 func (c *cloudGuides) missing(ctx context.Context, conn *pgx.Conn, p cloudPlan, meta *[]string) (int, error) {
 	now := time.Now()
 	var grids []string
-	for _, k := range p.Channels {
+	for _, k := range p.gridKeys() {
 		for _, w := range p.weeks() {
 			grids = append(grids, epgcloud.GridKey(k, w[0], w[1]))
 		}
@@ -592,7 +607,7 @@ func (c *cloudGuides) input(ctx context.Context, conn *pgx.Conn, p cloudPlan) (g
 	if in.Stations, err = epgcloud.DecodeChannels(body); err != nil {
 		return in, err
 	}
-	for _, k := range p.Channels {
+	for _, k := range p.gridKeys() {
 		for _, w := range p.weeks() {
 			body, _, ok, err := epgcloud.CacheGet(ctx, conn, epgcloud.GridKey(k, w[0], w[1]))
 			if err != nil {

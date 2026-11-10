@@ -1,6 +1,8 @@
 package guidebuild
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,9 +43,16 @@ var stations = []epgcloud.Station{
 }
 
 func input(grids map[string][][]epgcloud.Item) Input {
-	keys := make([]string, 0, len(grids))
+	keys := make([]Channel, 0, len(grids))
 	for k := range grids {
-		keys = append(keys, k)
+		c := Channel{GridKey: k}
+		for _, s := range stations {
+			if s.GridKey == k {
+				c.VCN = s.VCN
+				break
+			}
+		}
+		keys = append(keys, c)
 	}
 	return Input{
 		Lineup: "lineup", Stations: stations, Channels: keys, Grids: grids, Metadata: map[string]epgcloud.Item{},
@@ -281,28 +290,54 @@ func TestAShowIsKnownByItsSectionAndTitle(t *testing.T) {
 	assert.Equal(t, item(t, rows, "plex://show/show1")["id"], season["parent_id"], "the season keeps its episode's show id, under the show met first")
 }
 
-func TestAnUnnumberedEpisodeFiledUnderAYearJoinsThatYearsSeasonElseTheLatestNumbered(t *testing.T) {
+func TestAnUnnumberedEpisodeJoinsItsSeasonElseItsYearsElseMakesItsOwn(t *testing.T) {
+	n := 0
+	ep := func(guid, show string, season, index, year int) epgcloud.Item {
+		n++
+		title := "Show " + show
+		if show == "x" || show == "y" {
+			title = "Red Chargers"
+		}
+		e := episode(guid, show, title, season, index, slot(at(n), at(n+1)))
+		e.Year = year
+		return e
+	}
 	rows := plan(t, input(map[string][][]epgcloud.Item{"k2": {{
-		episode("n12", "s", "Show", 12, 3, slot(at(1), at(2))),
-		episode("n17", "s", "Show", 17, 1, slot(at(2), at(3))),
-		episode("u1", "s", "Show", 2026, 0, slot(at(3), at(4))),
-		episode("u2", "t", "Other", 2026, 0, slot(at(4), at(5))),
-		episode("n2", "t", "Other", 2, 1, slot(at(5), at(6))),
-		episode("u3", "t", "Other", 2026, 0, slot(at(6), at(7))),
+		// Forensic Files: an episode filed under 2005 joins the numbered
+		// season of 2005, the first made of that year.
+		ep("f9", "f", 9, 1, 2004), ep("f10", "f", 10, 1, 2005), ep("f11", "f", 11, 1, 2005), ep("f14", "f", 14, 1, 2011),
+		ep("fu", "f", 2005, 0, 2005),
+		// Peppa Pig: "season 7" episodes of 2021 join the show's 2021
+		// season while it has no season 7; one of 2022 makes season 7, and
+		// a later one of 2021 joins season 7.
+		ep("p2021", "p", 2021, 0, 2021), ep("p7a", "p", 7, 0, 2021), ep("p7b", "p", 7, 0, 2022), ep("p7c", "p", 7, 0, 2021),
+		// A year season beats a numbered season of that year.
+		ep("q7", "q", 7, 1, 2026), ep("qy", "q", 2026, 0, 2026),
+		ep("r7", "r", 7, 1, 2025), ep("ry1", "r", 2026, 0, 2026), ep("ry2", "r", 2026, 0, 2026),
+		// One show under two ids: an unnumbered episode of the second id
+		// joins the first id's 2026 season; a numbered one makes its own.
+		ep("x1", "x", 2026, 0, 2026), ep("y1", "y", 2026, 0, 2026), ep("y2", "y", 2026, 3, 2026),
 	}}}))
 	parent := func(guid string) any {
-		p := item(t, rows, guid)["parent_id"]
+		p := item(t, rows, "plex://episode/"+guid)["parent_id"]
 		for _, r := range byColumn(ItemColumns, rows.Items) {
 			if r["id"] == p {
-				return r["guid"]
+				return strings.TrimPrefix(r["guid"].(string), "plex://season/")
 			}
 		}
 		return nil
 	}
-	assert.Equal(t, "plex://season/s/17", parent("plex://episode/u1"), "the show's latest numbered season")
-	assert.Equal(t, "plex://season/t/2026", parent("plex://episode/u2"), "no numbered season yet: the year's")
-	assert.Equal(t, "plex://season/t/2026", parent("plex://episode/u3"), "the year's season, once the show has it")
-	assert.Equal(t, int64(-1), item(t, rows, "plex://episode/u1")["index"], "an episode without a number is -1")
+	assert.Equal(t, "f/10", parent("fu"), "the first numbered season of its year")
+	assert.Equal(t, "p/2021", parent("p7a"), "no season 7 yet: its own year's season")
+	assert.Equal(t, "p/7", parent("p7b"), "no season of 2022: it makes season 7")
+	assert.Equal(t, int64(2022), item(t, rows, "plex://season/p/7")["year"], "the year of the episode that made it")
+	assert.Equal(t, "p/7", parent("p7c"), "season 7 once it is made")
+	assert.Equal(t, "q/7", parent("qy"), "a numbered season of 2026")
+	assert.Equal(t, "r/2026", parent("ry1"), "no season of 2026: it makes the year's")
+	assert.Equal(t, "r/2026", parent("ry2"))
+	assert.Equal(t, "x/2026", parent("y1"), "a season of the show's other id")
+	assert.Equal(t, "y/2026", parent("y2"), "a numbered episode's own id's season")
+	assert.Equal(t, int64(-1), item(t, rows, "plex://episode/fu")["index"], "an episode without a number is -1")
 }
 
 func TestASeasonsYearAndAShowsRatingAreTheFirstEpisodes(t *testing.T) {
@@ -360,6 +395,14 @@ func TestSortTitlesAndDatesAreReadAsPMSReadsThem(t *testing.T) {
 		"The Merger": "Merger", "A Benihana Christmas": "Benihana Christmas", "... And a Hearse": "And a Hearse",
 		"El Dorado": "Dorado", "Los Angeles Chargers": "Los Angeles Chargers", "Dónde Vives": "Donde Vives",
 		"90 Day Fiancé": "90 Day Fiance",
+		// The rig's 248-channel load (2026-11-10).
+		"$25K to Save the Day": "$25K to Save the Day", "#JOLO": "#JOLO", "&Basics - Fashion": "&Basics - Fashion",
+		"'Tis the Season": "Tis the Season", "(The Angels Wanna Wear My) Green Mask": "Angels Wanna Wear My) Green Mask",
+		"¡A rockear!": "rockear!", "\u2060Loose Gemstone Deals": "Loose Gemstone Deals", `"A" Is for Aardvark`: `A" Is for Aardvark`,
+		"THE SOLAR EXIT HOTLINE": "SOLAR EXIT HOTLINE", "La La Anthony; Lil Keed": "La Anthony; Lil Keed", "Der Tag": "Tag",
+		"Das Negroes": "Negroes", "Die Hard": "Die Hard", "Les Boss Sauce": "Les Boss Sauce", "Las Vegas": "Las Vegas",
+		"Il Mostro": "Il Mostro", "O Canada": "O Canada", "Le Voyage Incroyable": "Le Voyage Incroyable",
+		"Gergő Németh": "Gergő Nemeth", "Sebastián Yatra": "Sebastian Yatra", "La": "La",
 	} {
 		assert.Equal(t, want, sortTitle(in), in)
 	}
@@ -373,6 +416,15 @@ func TestAShowDatedByItsYearAloneIsDatedItsFirstDay(t *testing.T) {
 	in.Metadata["s"] = epgcloud.Item{Year: 2026}
 	rows := plan(t, in)
 	assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Unix(), item(t, rows, "plex://show/s")["originally_available_at"])
+
+	// A movie too, its date one PMS does not keep; never an episode.
+	m := movie("m", slot(at(3), at(4)))
+	m.Year, m.OriginallyAvailableAt = 2026, "2026-06-23T10:35:32.792Z"
+	e := episode("e2", "s", "Show", 1, 2, slot(at(5), at(6)))
+	e.OriginallyAvailableAt = "2026-07-06T14:36:54.507Z"
+	rows = plan(t, input(map[string][][]epgcloud.Item{"k2": {{m, e}}}))
+	assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Unix(), item(t, rows, "plex://movie/m")["originally_available_at"])
+	assert.Nil(t, item(t, rows, "plex://episode/e2")["originally_available_at"])
 }
 
 func TestAMappedChannelTheLineupLacksIsLeftOut(t *testing.T) {
@@ -386,4 +438,72 @@ func TestAMappedChannelTheLineupLacksIsLeftOut(t *testing.T) {
 
 	_, err := Plan(input(map[string][][]epgcloud.Item{"gone": {{movie("m", slot(at(1), at(2)))}}}))
 	assert.Error(t, err, "but not a guide of no channel at all")
+}
+
+func TestAStationTheLineupListsTwiceIsThePlaceWithTheMapsNumber(t *testing.T) {
+	// DIRECTV Mobile lists DTV203 at 002, 078 and 203: the map's number
+	// picks the place, which is the channel's tag and its turn in the load.
+	in := input(map[string][][]epgcloud.Item{
+		"k2": {{movie("a", slot(at(1), at(2)))}},
+		"k3": {{movie("b", slot(at(1), at(2)))}},
+	})
+	in.Stations = append(slices.Clone(stations), epgcloud.Station{ID: "lineup-k2", GridKey: "k2", VCN: "078", CallSign: "CNNHD", Title: "CNN HD"})
+	in.Channels = []Channel{{GridKey: "k2", VCN: "078"}, {GridKey: "k3", VCN: "206"}}
+	rows := plan(t, in)
+	tags := byColumn(TagColumns, rows.Tags)
+	require.Len(t, tags, 2)
+	assert.Equal(t, []any{int64(3), "206 ESPNHD (ESPN HD)"}, []any{tags[0]["id"], tags[0]["tag"]})
+	assert.Equal(t, []any{int64(4), "078 CNNHD (CNN HD)"}, []any{tags[1]["id"], tags[1]["tag"]})
+	assert.Equal(t, int64(1), item(t, rows, "plex://movie/b")["id"], "the channel at the earlier place loads first")
+	assert.Equal(t, int64(2), item(t, rows, "plex://movie/a")["id"])
+	media := byColumn(MediaColumns, rows.Media)
+	assert.Equal(t, int64(4), media[1]["channel_id"])
+	assert.Contains(t, media[1]["extra_data"], "078")
+
+	in.Channels = []Channel{{GridKey: "k2", VCN: "999"}, {GridKey: "k3", VCN: "206"}}
+	rows = plan(t, in)
+	assert.Equal(t, []string{"999 k2"}, rows.Stats.Unmatched, "a number the lineup has no such station at matches nothing")
+}
+
+func TestAChannelTagIsTitledAndFlaggedAsPMSWritesIt(t *testing.T) {
+	in := input(map[string][][]epgcloud.Item{"k1": {{movie("a", slot(at(1), at(2)))}}, "k2": {{movie("b", slot(at(1), at(2)))}}})
+	in.Stations = []epgcloud.Station{
+		{ID: "lineup-k1", GridKey: "k1", VCN: "244", CallSign: "SYFY", Title: "SYFY", IsHD: true},
+		{ID: "lineup-k2", GridKey: "k2", VCN: "003", CallSign: "WEAR", Title: "WEAR", Affiliate: "ABC"},
+	}
+	in.Channels = []Channel{{GridKey: "k1", VCN: "244"}, {GridKey: "k2", VCN: "003"}}
+	tags := byColumn(TagColumns, plan(t, in).Tags)
+	require.Len(t, tags, 2)
+	assert.Equal(t, "244 SYFY", tags[0]["tag"], "no network beside a call sign that is the network")
+	assert.Equal(t, int64(1), tags[0]["tag_value"], "an HD station")
+	assert.Equal(t, "003 WEAR (ABC)", tags[1]["tag"])
+	assert.Nil(t, tags[1]["tag_value"], "an SD station")
+}
+
+func TestAnAiringsResolutionIsSDOrHD(t *testing.T) {
+	for v, want := range map[string][2]int64{"480": {720, 480}, "720": {1280, 720}, "2160": {1280, 720}, "": {0, 0}} {
+		w, h := resolution(v)
+		assert.Equal(t, want, [2]int64{w, h}, v)
+	}
+}
+
+func TestAnOraclesChannelLosesWhatEndedBeforePMSReadIt(t *testing.T) {
+	in := input(map[string][][]epgcloud.Item{
+		"k1": {{episode("a", "s", "Show", 1, 1, slot(at(1), at(2)), slot(at(5), at(6)))}},
+		"k2": {{movie("b", slot(at(1), at(2)))}},
+	})
+	in.ReadAt = map[string][]time.Time{"k1": {time.Unix(at(3), 0)}}
+	rows := plan(t, in)
+	media := byColumn(MediaColumns, rows.Media)
+	require.Len(t, media, 2, "k1's first airing had ended when PMS read k1; k2 is read at Now")
+	assert.Equal(t, at(5), media[0]["begins_at"])
+	assert.Equal(t, int64(2), item(t, rows, "plex://episode/a")["media_item_count"], "listed still counts the ended airing")
+}
+
+func TestAnAiringOfAStationWithoutALogoHasNoChannelThumb(t *testing.T) {
+	rows := plan(t, input(map[string][][]epgcloud.Item{"k1": {{movie("a", slot(at(1), at(2)))}}, "k2": {{movie("b", slot(at(1), at(2)))}}}))
+	media := byColumn(MediaColumns, rows.Media)
+	require.Len(t, media, 2)
+	assert.Contains(t, media[0]["extra_data"], `"at:channelThumb":"https://provider-static.plex.tv/`)
+	assert.NotContains(t, media[1]["extra_data"], "channelThumb")
 }

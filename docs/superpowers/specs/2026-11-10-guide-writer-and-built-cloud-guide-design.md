@@ -349,16 +349,28 @@ The rig's full load of 12 DIRECTV channels (3,787 airings, 4,004 items)
 against a build from the same answers, fetched in the same minutes:
 
 - PMS reads every channel's first week, in lineup order, before any second
-  week, and that order decides each item's "first" airing.
-- An airing that ended before the load is not written, nor an item with
-  nothing still to come; a slot both weeks' answers hold is written once.
+  week, and that order decides each item's "first" airing. A channel is the
+  lineup's station with both the map's grid key and its number (the map's
+  `lineupIdentifier`): the lineup lists one station under several numbers
+  (DTV203 at 002, 078 and 203; 64 of DIRECTV Mobile's 1,000), each a place
+  of its own, and the matched place is the channel's turn and tag id. The
+  12-channel rig never showed it; the map's order is not the load's.
+- An airing that ended before PMS read its answer is not written, nor an
+  item with nothing still to come; a slot both weeks' answers hold is
+  written once. A long load reads its channels minutes apart, so the
+  oracle gives each channel's week the moment PMS asked for it
+  (`Input.ReadAt`, from the capture's log); a build reads all at once.
 - Every airing of an item carries the item's duration, which is the slot
   length (end minus start) of its first airing; a movie's or episode's
   duration is the same.
 - A channel tag's id is its station's place in the lineup's list, from 1,
   and an airing's `channel_id` is that id; genres and teams follow from the
   list's length. Its title is number, call sign and the station's
-  affiliate network, else its title ("003 WEARDT (ABC)"); its key is empty.
+  affiliate network, else its title ("003 WEARDT (ABC)"), the network left
+  off when it is the call sign ("244 SYFY"); its key is empty, its
+  `tag_value` 1 for an HD station and NULL otherwise. An airing of a
+  station without a logo has no `at:channelThumb`. An airing's resolution
+  is 720x480 at 480 and 1280x720 above (720 and 2160 alike).
 - `extra_data` is compact JSON in key order with a `url` copy in PMS's
   escaping, which escapes `.` too; a premiere airing carries
   `at:premiere` and `media_analysis_version` 1.
@@ -368,15 +380,21 @@ against a build from the same answers, fetched in the same minutes:
   Sports when its own metadata genres, or its first episode's, name the
   Sports genre ("Sports talk" does not), or the episode names teams.
 - A season's year and a show's content rating are its first episode's.
-- An episode without a number filed under a year joins that year's season
-  when the show has one, else the show's most recently made numbered
-  season; it makes the year's season only when the show has neither.
+- A numbered episode joins its own season (its show id and index). One
+  without a number joins the show's season of its index, else the season
+  of its year (the index when that is a year, else the episode's own
+  year): the show's season of that index, else the first made numbered
+  season of that year, of any of the show's ids; failing those it makes
+  its own (39,108 of 39,108 at 248 channels; "the most recently made
+  numbered season", the 12-channel rule, was a coincidence there).
 - `tags_genre` is an item's first two genres; its taggings carry them all,
   and a channel's tagging index is its place among the item's channels.
-- Sort titles fold accents and drop leading punctuation and a leading
-  "The", "A", "An" or "El" ("Los Angeles" keeps its "Los").
-- A date with fractional seconds is not kept; a show the service dates by
-  its year alone is dated its first day.
+- Sort titles fold accents (not a double acute: "Gergő"), drop leading
+  quotes, brackets and dots but keep "#", "$" and "&", and drop a leading
+  "The", "A", "An", "El", "La", "Der" or "Das" in any case, never "Los",
+  "Las", "Le", "Les", "Die", "Il" or "O" (48,548 of 48,548).
+- A date with fractional seconds is not kept; a show or a movie without a
+  kept date is dated its year's first day, an episode not.
 - What PMS leaves unset is an empty string, never NULL (but `trivia`,
   `quotes`, `extra_data`); `is_adult` is 0; `index` -1 for an episode
   without a number.
@@ -440,3 +458,17 @@ apart, and the metadata after the load at no more than 3 a second, which
 keeps PMS's own requests under the token's limit. Send the server token as
 `X-Plex-Token`: the `X-Plex-Api-Token` in PMS's requests is its own and the
 service refuses another caller's (401).
+
+### At scale: 248 channels (2026-11-10, shim .57)
+
+PMS's own load of the rig's DVR on 248 DIRECTV Mobile channels (talos's
+number), captured as before: 1,427 s (two steps, 564 s and 1,353 s, 0
+HTTP errors), 48,548 items, 70,912 airings, 184,226 taggings, 798 tags;
+the manager's copy into PostgreSQL 375,854 rows in 73 s. The first
+comparison differed in channel order, seasons, sort titles, a channel
+tag's title and flag, an airing's resolution and logo, and a movie's date
+-- rules twelve channels never exercised, each now above and held by a
+test that fails without it. The build then matched the load in every row,
+column and id of all five tables; only `added_at` from PMS's own clock
+differs, and the tool reads those as the load's time across the whole
+captured load. The build from the captured answers took 41 s.

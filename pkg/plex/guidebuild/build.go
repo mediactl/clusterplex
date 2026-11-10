@@ -64,15 +64,14 @@ type Input struct {
 	// identifier.
 	Lineup string
 	// Stations is the lineup's stations in the service's order: a
-	// station's channel tag is its place, from 1.
+	// channel's tag is its station's place, from 1.
 	Stations []epgcloud.Station
-	// Channels is the grid keys of the channels the guide holds: the DVR's
-	// channel map.
-	Channels []string
+	// Channels is the channels the guide holds: the DVR's channel map.
+	Channels []Channel
 	// Grids is each channel's answers, by grid key, a week each, in the
-	// order asked: PMS reads the first week of every channel, in lineup
-	// order, before the second, and that order decides which airing comes
-	// first.
+	// order asked: PMS reads the first week of every channel, in its
+	// station's lineup order, before the second, and that order decides
+	// which airing comes first.
 	Grids map[string][][]epgcloud.Item
 	// Metadata is each show's and movie's own metadata, by rating key.
 	Metadata map[string]epgcloud.Item
@@ -81,6 +80,26 @@ type Input struct {
 	// Now is the build's time: an airing over by then is left out, as PMS
 	// leaves out what ended before its load, and it is created_at.
 	Now time.Time
+	// ReadAt, for an oracle, is when PMS's load read each channel's weeks,
+	// by grid key, in Grids' order. PMS leaves out what has ended by the
+	// moment it reads an answer, and a load of 248 channels runs 24
+	// minutes, so a channel read late loses an airing one read early keeps
+	// (The Loud House's 11:53 airing on the rig, read at 11:56). A build
+	// reads every answer at Now and leaves this nil.
+	ReadAt map[string][]time.Time
+}
+
+// Channel is one channel of a DVR's map: its station's grid key and the
+// lineup's number for it, the map's lineupIdentifier. A lineup lists one
+// station under several numbers (DIRECTV Mobile's DTV203 at 002, 078 and
+// 203, 64 such of its 1,000), each a station of its own place, and PMS's
+// load takes the one with both ("Matched channel 002 (DirecTV203) with
+// grabber channel"): that place is the channel's tag id and its turn in the
+// load (the rig, 248 channels, 2026-11-10). A channel without a number
+// takes its grid key's first station.
+type Channel struct {
+	GridKey string `json:"gridKey"`
+	VCN     string `json:"vcn,omitempty"`
 }
 
 // Stats counts what a build wrote, and the mapped channels it left out
@@ -120,10 +139,10 @@ type row struct {
 	// announced is set once the item's own taggings are written: a channel
 	// it gains after that rewrites its channel taggings.
 	announced bool
-	// A show's seasons by index, and the index of its most recently made
-	// numbered one.
-	seasons      map[int]*row
-	lastNumbered int
+	// A show's seasons, by index and in the order made. A season's year is
+	// the year of the episode that made it (5,129 of 5,129 on the rig).
+	seasons map[int]*row
+	made    []*row
 }
 
 // tagEvent is a moment PMS writes an item's taggings: made, its genres,
@@ -146,11 +165,15 @@ type airingRow struct {
 // from 1. It reads nothing but in.
 func Plan(in Input) (*Rows, error) {
 	now := in.Now.Unix()
-	tagIDs := map[string]int64{} // channel grid key -> tag id
-	stations := map[string]epgcloud.Station{}
+	// A station's place, by grid key and number and by grid key alone,
+	// the first of each.
+	place := map[Channel]int{}
 	for i, s := range in.Stations {
-		tagIDs[s.GridKey] = int64(i + 1)
-		stations[s.GridKey] = s
+		for _, c := range []Channel{{GridKey: s.GridKey, VCN: s.VCN}, {GridKey: s.GridKey}} {
+			if _, ok := place[c]; !ok {
+				place[c] = i
+			}
+		}
 	}
 	nextTag := int64(len(in.Stations)) + 1
 
@@ -189,33 +212,47 @@ func Plan(in Input) (*Rows, error) {
 	// adding") and asks for no other: one station gone must not stop the
 	// guide being built.
 	var unmatched []string
-	channels := slices.DeleteFunc(slices.Clone(in.Channels), func(k string) bool {
-		_, ok := tagIDs[k]
+	type mapped struct {
+		key     string
+		tag     int64
+		station epgcloud.Station
+	}
+	var channels []mapped
+	for _, c := range in.Channels {
+		i, ok := place[c]
 		if !ok {
-			unmatched = append(unmatched, k)
+			unmatched = append(unmatched, strings.TrimSpace(c.VCN+" "+c.GridKey))
+			continue
 		}
-		return !ok
-	})
+		if !slices.ContainsFunc(channels, func(m mapped) bool { return m.tag == int64(i+1) }) {
+			channels = append(channels, mapped{key: c.GridKey, tag: int64(i + 1), station: in.Stations[i]})
+		}
+	}
 	if len(channels) == 0 && len(unmatched) > 0 {
 		return nil, fmt.Errorf("guidebuild: no mapped channel is in the lineup (%d mapped)", len(unmatched))
 	}
-	slices.SortFunc(channels, func(a, b string) int { return cmp.Compare(tagIDs[a], tagIDs[b]) })
+	slices.SortFunc(channels, func(a, b mapped) int { return cmp.Compare(a.tag, b.tag) })
 	weeks := 0
-	for _, key := range channels {
-		weeks = max(weeks, len(in.Grids[key]))
+	for _, c := range channels {
+		weeks = max(weeks, len(in.Grids[c.key]))
 	}
 	seen := map[string]bool{} // "<channel>|<begins>": a slot either week's answer holds
 	for w := range weeks {
-		for _, key := range channels {
+		for _, c := range channels {
+			key := c.key
 			if w >= len(in.Grids[key]) {
 				continue
 			}
-			ch := tagIDs[key]
+			ch := c.tag
+			read := now
+			if t := in.ReadAt[key]; w < len(t) && !t[w].IsZero() {
+				read = t[w].Unix()
+			}
 			for _, it := range in.Grids[key][w] {
 				var kept []epgcloud.Airing
 				for _, m := range it.Media {
 					slot := strconv.FormatInt(ch, 10) + "|" + strconv.FormatInt(m.BeginsAt, 10)
-					if m.EndsAt <= now || seen[slot] {
+					if m.EndsAt <= read || seen[slot] {
 						continue
 					}
 					seen[slot] = true
@@ -276,7 +313,7 @@ func Plan(in Input) (*Rows, error) {
 					announce(r)
 				}
 				for _, m := range kept {
-					airings = append(airings, airingRow{item: r, channel: ch, station: stations[key], m: m})
+					airings = append(airings, airingRow{item: r, channel: ch, station: c.station, m: m})
 				}
 			}
 		}
@@ -304,15 +341,21 @@ func Plan(in Input) (*Rows, error) {
 	// Tags: the channels, then genres and teams as first met.
 	tags := map[string]int64{} // key -> id
 	var tagRows [][]any
-	for _, key := range channels {
-		s := stations[key]
+	for _, c := range channels {
+		s := c.station
 		extra := extradata.Encode(map[string]string{
 			"at:channelCallSign":   s.CallSign,
 			"at:channelIdentifier": channelIdentifier(in.Lineup, s),
 			"at:channelVcn":        s.VCN,
 			"at:gridKey":           s.GridKey,
 		})
-		tagRows = append(tagRows, []any{tagIDs[key], channelTitle(s), int64(TagChannel), s.Thumb, "", "", nil, now, int64(1), extra, ""})
+		// tag_value is 1 for an HD station, NULL otherwise (217 SD and 31
+		// HD of 248 on the rig).
+		var hd any
+		if s.IsHD {
+			hd = int64(1)
+		}
+		tagRows = append(tagRows, []any{c.tag, channelTitle(s), int64(TagChannel), s.Thumb, "", "", nil, now, hd, extra, ""})
 	}
 	tagOf := func(t epgcloud.Tag, typ int) int64 {
 		key := t.RatingKey
@@ -392,11 +435,15 @@ func Plan(in Input) (*Rows, error) {
 		fields := map[string]string{
 			"at:channelCallSign":   a.station.CallSign,
 			"at:channelIdentifier": channelIdentifier(in.Lineup, a.station),
-			"at:channelThumb":      a.station.Thumb,
 			"at:channelTitle":      channelTitle(a.station),
 			"at:channelVcn":        a.station.VCN,
 			"at:gridKey":           a.station.GridKey,
 			"at:protocol":          "livetv",
+		}
+		// A station without a logo has no channelThumb at all, not an
+		// empty one (20,465 of the rig's 70,912 airings).
+		if a.station.Thumb != "" {
+			fields["at:channelThumb"] = a.station.Thumb
 		}
 		version := int64(0)
 		if a.m.Premiere {
@@ -497,7 +544,7 @@ func itemRow(it epgcloud.Item, first epgcloud.Airing) *row {
 		return &row{
 			typ: TypeMovie, guid: it.GUID, title: it.Title, summary: it.Summary, contentRating: it.ContentRating,
 			index: 1, duration: slotLength(first), thumb: it.Thumb, art: it.Art, genreLists: [][]epgcloud.Tag{it.Genre},
-			available: date(it.OriginallyAvailableAt), year: it.Year, addedAt: it.AddedAt,
+			available: yearDate(date(it.OriginallyAvailableAt), it.Year), year: it.Year, addedAt: it.AddedAt,
 		}
 	case "episode":
 		index := it.Index
@@ -523,13 +570,20 @@ func showRow(it epgcloud.Item, in Input) *row {
 	if m, ok := in.Metadata[it.GrandparentRatingKey]; ok {
 		r.summary, r.year, r.available, r.addedAt = m.Summary, m.Year, date(m.OriginallyAvailableAt), m.AddedAt
 		r.genreLists = [][]epgcloud.Tag{m.Genre}
-		// A show the service dates by its year alone is dated its first
-		// day, as PMS does.
-		if r.available == 0 && r.year > 0 {
-			r.available = time.Date(r.year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
-		}
+		r.available = yearDate(r.available, r.year)
 	}
 	return r
+}
+
+// yearDate is a show's or a movie's originally_available_at: its date, or
+// with none PMS keeps (none at all, or one with fractional seconds) the
+// first day of its year. An episode keeps none (the rig's 248-channel load:
+// 143 shows and a movie dated their year's first day, 339 episodes NULL).
+func yearDate(date int64, year int) int64 {
+	if date == 0 && year > 0 {
+		return time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
+	}
+	return date
 }
 
 // yearLike is where a season index stops being a season number and is the
@@ -537,32 +591,45 @@ func showRow(it epgcloud.Item, in Input) *row {
 const yearLike = 1900
 
 // seasonOf is an episode's season, made when the show has none for it. A
-// season's guid is the episode's own show id and the season's index. An
-// episode without a number filed under a year joins that year's season when
-// the show has one, else the show's most recently made numbered season,
-// and makes the year's season only when the show has neither (PMS's, 48 of
-// 48 on the rig).
+// season's guid is the episode's own show id and the season's index, and a
+// numbered episode joins the season of that guid. One without a number
+// joins the show's season of the index it is filed under, else the season
+// of its year -- the year it is filed under, else its own -- which is the
+// show's season indexed by that year, else the first made numbered season
+// of that year; the show's seasons there are those of any of its ids (a
+// show is one title: "Red Chargers" holds a 2026 season of each of its two
+// ids). Failing all of those it makes the season it is filed under (Peppa
+// Pig's "season 7" episodes of 2021 join "2021" until one of 2022 makes
+// season 7). PMS's, every one of 39,108 episodes of the rig's 248-channel
+// load (2026-11-10), each in its season of the right id.
 func seasonOf(it epgcloud.Item, show *row, add func(*row) (*row, bool)) *row {
 	index := it.ParentIndex
-	if it.Index == 0 && index >= yearLike {
+	if it.Index == 0 {
 		if s, ok := show.seasons[index]; ok {
 			return s
 		}
-		if show.lastNumbered > 0 {
-			return show.seasons[show.lastNumbered]
+		year := index
+		if year < yearLike {
+			year = it.Year
+		}
+		if s, ok := show.seasons[year]; ok {
+			return s
+		}
+		for _, s := range show.made {
+			if s.index < yearLike && s.year == year {
+				return s
+			}
 		}
 	}
 	s, fresh := add(&row{
 		typ: TypeSeason, guid: "plex://season/" + it.GrandparentRatingKey + "/" + strconv.Itoa(index),
-		index: index, parent: show,
+		index: index, parent: show, year: it.Year,
 	})
 	if fresh {
 		if _, ok := show.seasons[index]; !ok {
-			show.seasons[index] = s
+			show.seasons[index] = s // the first made of an index, of any id
 		}
-		if index < yearLike {
-			show.lastNumbered = index
-		}
+		show.made = append(show.made, s)
 	}
 	return s
 }
@@ -581,9 +648,14 @@ func showSection(it epgcloud.Item, in Input) int64 {
 }
 
 // channelTitle is a channel's title as PMS writes it: number, call sign and
-// the station's network, else its title.
+// the station's network, else its title, unless that is the call sign
+// ("244 SYFY", "003 WEAR (ABC)").
 func channelTitle(s epgcloud.Station) string {
-	return s.VCN + " " + s.CallSign + " (" + cmp.Or(s.Affiliate, s.Title) + ")"
+	t := s.VCN + " " + s.CallSign
+	if n := cmp.Or(s.Affiliate, s.Title); n != s.CallSign {
+		t += " (" + n + ")"
+	}
+	return t
 }
 
 // channelIdentifier is "<lineup>-<gridKey>", the station's own id.
@@ -600,41 +672,57 @@ func slotLength(m epgcloud.Airing) int64 { return (m.EndsAt - m.BeginsAt) * 1000
 
 // resolution is a video resolution's frame size as PMS writes it.
 func resolution(v string) (int64, int64) {
-	switch v {
-	case "1080":
-		return 1920, 1080
-	case "720":
-		return 1280, 720
-	case "480", "sd":
+	n, err := strconv.Atoi(v)
+	switch {
+	case v == "sd" || err == nil && n > 0 && n <= 480:
 		return 720, 480
+	case err == nil && n > 480:
+		return 1280, 720
 	}
 	return 0, 0
 }
 
-// sortTitle is a title as PMS sorts it: its accents folded ("Dónde" sorts
-// as "Donde"), without leading punctuation ("... And a Hearse") and without
-// a leading English article or "El" ("El Dorado"; "Los Angeles" keeps its
-// "Los").
+// sortTitle is a title as PMS sorts it (the rig's 248-channel load,
+// 48,548 titles, 2026-11-10): its accents folded ("Dónde" sorts as
+// "Donde"), without leading quotes, brackets, dots and the like ("... And a
+// Hearse", "'Tis", "(Don't) Lean on Me", "¡A rockear!") -- but a leading
+// "#", "$" or "&" stays ("$25K to Save the Day") -- and without a leading
+// article of PMS's list, in any case: the English ones, "El", "La", "Der"
+// and "Das" ("THE SOLAR EXIT HOTLINE", "La La Anthony"), never "Los",
+// "Las", "Le", "Les", "Die", "Il" or "O" ("Los Angeles", "Die Hard").
 func sortTitle(t string) string {
 	t = foldAccents(t)
-	t = strings.TrimLeftFunc(t, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-	for _, a := range []string{"The ", "A ", "An ", "El "} {
-		if rest, ok := strings.CutPrefix(t, a); ok && rest != "" {
-			return rest
+	t = strings.TrimLeftFunc(t, func(r rune) bool {
+		return strings.ContainsRune(sortStrip, r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r)
+	})
+	for _, a := range sortArticles {
+		if len(t) > len(a) && strings.EqualFold(t[:len(a)], a) {
+			return t[len(a):]
 		}
 	}
 	return t
 }
 
-// foldAccents drops the marks off accented letters.
+// sortStrip is what a sort title loses at its start. The rig showed " ' (
+// [ . ¡ and a word joiner gone; the other quotes, brackets and marks here
+// are their kin, not seen.
+const sortStrip = `"'([{.¡¿“”‘’«»…`
+
+// sortArticles are the articles PMS drops from a sort title, each with the
+// space after it.
+var sortArticles = []string{"the ", "a ", "an ", "el ", "la ", "der ", "das "}
+
+// foldAccents drops the marks off accented letters, but a double acute
+// stays ("Gergő Németh" sorts as "Gergő Nemeth": the one such title on the
+// rig, where the macron of "ā" folded).
 func foldAccents(s string) string {
 	var b strings.Builder
 	for _, r := range norm.NFD.String(s) {
-		if !unicode.Is(unicode.Mn, r) {
+		if !unicode.Is(unicode.Mn, r) || r == '\u030B' {
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	return norm.NFC.String(b.String())
 }
 
 // date is an ISO time as Unix seconds, 0 for none. Only the plain form,
