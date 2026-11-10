@@ -58,6 +58,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/plex/activity/` | What Tautulli reads from Plex, read by the manager: streams, plays, watch time, library counts, as Prometheus series and a span per finished play |
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
+| `pkg/plex/collections/` | Reconciling clustarr's PlexCollections into Plex's collections: the filter compiled as Plex Web encodes it, the members, the presentation, the status and finalizer, on the lease holder |
 | `pkg/remux/` | Plex Web's DASH streams on the remux pool: classify and parse a shimmed job, the manifest, the fMP4 splitter (`remux`), the cache (`cache`), the ffgo pipeline (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
 | `cmd/remux-worker/` | The remux pool's binary; links ffgo |
 | `pkg/video/` | Plex's video conversions on the GPU pool (ADR-0010): parse and classify a shimmed job, Plex's segment cuts and lists (`video`), the Lease that counts them (`lease`), the device measure (`gpu`), the ffgo pipeline muxing in memory (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
@@ -109,6 +110,44 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   - Its own informer keeps a missing CRD from stalling the clustarr watch.
   - The PMS calls are in `docs/livetv-pms-calls.md`, recorded against the
     owner's PMS.
+- **Plex's collections are clustarr's PlexCollections** (owner,
+  2026-11-10; clustarr's `docs/superpowers/specs/2026-11-10-plex-collections-design.md`,
+  option A). `pkg/plex/collections`, behind `plex.clustarr.enabled`, runs on
+  the lease holder (`collectionsLoop`) and is the one writer of their status
+  and finalizer: field manager `cluster-plex`, finalizer
+  `clusterplex.io/plex-collection`, both by server-side apply, beside the
+  token Secret the only writes cluster-plex makes in clustarr's namespace.
+  - It syncs a resource when it is added, when its spec changes or its
+    deletion begins, every 10 minutes and after PMS restarts (which also
+    drops the cached section Meta, tag lists and GUID indexes). Its own
+    status writes wake nothing.
+  - **The resource wins; absent keeps Plex's.** Whatever the spec states --
+    the filter or members, title, summary, sort title, images, mode, order,
+    visibility -- is put back when Plex differs; anything it leaves out is
+    never touched, and a smart filter's sort and limit left out are carried
+    from Plex's.
+  - It adopts only a person-made collection (`collection://` GUID) of the
+    same title, item type and kind; a metadata agent's is `NotAdoptable`.
+    Only a 404 for the recorded ratingKey lets it look further, and a
+    listing Plex could not answer creates nothing. A normal collection is
+    never emptied, and nothing is added or removed when clustarr's items
+    cannot be read.
+  - A filter is compiled as Plex Web's 4.162.1 encoder writes it
+    (`encodeURIComponent` per key and value, `limit` after `sort`, before the
+    rules); the design's three references compile byte for byte to the
+    filters Plex Web stored on talos.
+  - **Images:** a URL is fetched when it changes or a day on, and uploaded
+    when Plex's selected image is not the upload of those bytes (Plex names
+    an upload `upload://posters/<sha1>`). Only https whose every dialled
+    address is public (checked in the dialer), or anything under
+    `plex.clustarr.uiURL`'s `/art/`, whose host is allowed `/art/` alone.
+  - **Visibility** is the managed hub `custom.collection.<section>.<ratingKey>`,
+    which only a claimed server lists (`/hubs/sections/<n>/manage` is 404
+    unclaimed).
+  - Proven against a stock PMS 1.43.5.11029 (the Syncer end to end,
+    2026-11-10): create, drift put back, members added and removed, poster
+    once, mode and order, delete. Not yet proven: hub writes on a claimed
+    server, and whether a second Plex pod shows a change without a restart.
 - **Live TV holds the deployment to one Plex pod** (2026-11-09). Every PMS
   refreshes the DVR guides (at its start, and on its own 24-hour timer,
   which the butler setting does not govern) and records the recording rules
