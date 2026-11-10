@@ -1,6 +1,7 @@
 package collections_test
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -217,7 +218,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.json(w, map[string]any{"MediaContainer": map[string]any{"Metadata": list}})
 
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "sections":
+	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "library" && parts[1] == "sections":
 		vals, ok := f.tags[r.URL.Path]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -306,7 +307,8 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 				list = &c.Arts
 			}
 			if r.Method == http.MethodPost {
-				sha := fmt.Sprintf("%040x", len(f.writes))
+				// PMS names an upload by the SHA-1 of its bytes.
+				sha := fmt.Sprintf("%x", sha1.Sum(f.writes[len(f.writes)-1].Body))
 				for i := range *list {
 					(*list)[i].Selected = false
 				}

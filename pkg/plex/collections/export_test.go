@@ -1,4 +1,8 @@
 package collections
 
-// BaseGUID is baseGUID, for the external tests.
-var BaseGUID = baseGUID
+// For the external tests.
+var (
+	BaseGUID            = baseGUID
+	NewImageFetcherWith = newImageFetcher
+	PublicAddress       = publicAddress
+)

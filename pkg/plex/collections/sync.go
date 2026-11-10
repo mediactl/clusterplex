@@ -257,6 +257,16 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 		}
 	}
 
+	// 6. Presentation, each part only when stated. An image that cannot
+	// be set is reported, and holds back nothing else.
+	shown, err := s.present(ctx, section.Key, col, spec, prev, out)
+	if err != nil {
+		return err
+	}
+	if len(shown.changed) > 0 && !created {
+		notes = append(notes, shown.changed...)
+	}
+
 	// 7. What Plex holds now.
 	if wrote {
 		if c, err := s.PMS.Collection(ctx, col.RatingKey); err == nil {
@@ -281,6 +291,10 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 	if out.MissingMembers > 0 {
 		out.Reason = ReasonMembersPending
 		out.Message = fmt.Sprintf("%d of %d members are not in Plex yet (not scanned or matched, or not in clustarr); %s", out.MissingMembers, members.total, out.Message)
+	}
+	if len(shown.problems) > 0 {
+		out.Reason = ReasonImageUnavailable
+		out.Message = fmt.Sprintf("could not set the %s; %s", strings.Join(shown.problems, "; the "), out.Message)
 	}
 	return nil
 }
