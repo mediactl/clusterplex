@@ -119,8 +119,10 @@ func TestCompileCarriesPlexSortWhenSpecHasNone(t *testing.T) {
 	q, err := compile(t, up(), "1", collections.Carry{Sort: "addedAt:desc", Limit: "25"})
 	require.NoError(t, err)
 	d := collections.Decode(q)
-	assert.True(t, strings.HasPrefix(d, "type=1&sort=addedAt:desc&push=1&"), d)
-	assert.True(t, strings.HasSuffix(d, "&pop=1&limit=25"), d)
+	// Plex Web joins {type, sort, group, having, limit} and then the
+	// filter (its DirectoryListAdvancedFilters, 4.162.1).
+	assert.True(t, strings.HasPrefix(d, "type=1&sort=addedAt:desc&limit=25&push=1&"), d)
+	assert.True(t, strings.HasSuffix(d, "&pop=1"), d)
 
 	// The spec's own sort and limit win.
 	s := up()
@@ -128,8 +130,7 @@ func TestCompileCarriesPlexSortWhenSpecHasNone(t *testing.T) {
 	q, err = compile(t, s, "1", collections.Carry{Sort: "addedAt:desc", Limit: "25"})
 	require.NoError(t, err)
 	d = collections.Decode(q)
-	assert.True(t, strings.HasPrefix(d, "type=1&sort=rating:desc&push=1&"), d)
-	assert.True(t, strings.HasSuffix(d, "&limit=10"), d)
+	assert.True(t, strings.HasPrefix(d, "type=1&sort=rating:desc&limit=10&push=1&"), d)
 }
 
 func TestCompileEncodesSpecialCharacters(t *testing.T) {

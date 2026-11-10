@@ -60,8 +60,9 @@ func ItemTypeNumber(t string) int {
 }
 
 // Compile builds a smart collection's filter query as Plex Web does: the
-// type, the sort (the spec's, else carry's), the filter, the limit (the
-// spec's, else carry's). The query is encoded as Plex Web encodes it --
+// type, the sort (the spec's, else carry's), the limit (the spec's, else
+// carry's), then the filter -- Plex Web's DirectoryListAdvancedFilters
+// (4.162.1) joins {type, sort, group, having, limit} before the rules. The query is encoded as Plex Web encodes it --
 // every key and value percent-encoded on its own, so a value's "&" or "="
 // never splits it -- and Decode reads it.
 func Compile(f Filter, sort *Sort, limit *int32, itemType string, m api.SectionMeta, resolve Resolver, carry Carry) (string, error) {
@@ -80,18 +81,17 @@ func Compile(f Filter, sort *Sort, limit *int32, itemType string, m api.SectionM
 	case carry.Sort != "":
 		ps = append(ps, pair{"sort", carry.Sort})
 	}
-	body, err := compileFilter(f, m, resolve)
-	if err != nil {
-		return "", err
-	}
-	ps = append(ps, body...)
 	switch {
 	case limit != nil:
 		ps = append(ps, pair{"limit", strconv.Itoa(int(*limit))})
 	case carry.Limit != "":
 		ps = append(ps, pair{"limit", carry.Limit})
 	}
-	return encode(ps), nil
+	body, err := compileFilter(f, m, resolve)
+	if err != nil {
+		return "", err
+	}
+	return encode(append(ps, body...)), nil
 }
 
 // compileFilter is the filter's body: a top level of match all holding
