@@ -473,6 +473,18 @@ column and id of all five tables; only `added_at` from PMS's own clock
 differs, and the tool reads those as the load's time across the whole
 captured load. The build from the captured answers took 41 s.
 
+Then through the managers themselves (cluster-plex 29e54da, two pods,
+`severalPods`, the cache emptied first, the build in the holder's process):
+from the plan to the install 35.7 minutes, 4,935 calls at the shared 3 a
+second with three one-minute pauses for the service's 429s, the install
+itself 45 s; the oracle on the installed guide exact in all five tables
+(48,267 items, 70,480 airings, 183,251 taggings), and PMS's grid API
+listing exactly the schema's airings for the hour ahead. **The holder's
+manager peaked at 603 MB** (VmHWM, from about 80 MB; the pod's cgroup at
+652 MB) while it built, the other pod's at 79 MB: a guide's rows are held
+whole before they are written, which is the cost the build Job below takes
+off the Plex pod.
+
 ### The build in a Job, and one budget (2026-11-10, owner)
 
 Owner, 2026-11-10, on learning the build ran in the Plex container beside
