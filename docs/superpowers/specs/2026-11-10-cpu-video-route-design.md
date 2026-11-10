@@ -1,7 +1,10 @@
 # Plex's conversions on the NUC's CPU while clustarr has encodes waiting
 
-**Status:** design, awaiting the owner's approval (2026-11-10). Nothing is
-built.
+**Status:** approved by the owner on 2026-11-10 ("Approve CPU-route re-design
+with a caveat: do an in-depth comparison to reason whether we see performance
+degradation and if it is noticeable for a user of the plex server"). The
+comparison is measured, below ("Measured: the CPU against the GPU, for the
+viewer"), and sizes §2. Nothing is built yet.
 
 ## Why
 
@@ -146,13 +149,17 @@ media mount:
   "on the NUC node"; the only other large amd64 node, talos-9c, is shelved
   for its cooling). `nodeSelector`, `affinity` and `tolerations` are values,
   as the GPU pool's are.
-- **Size (defaults, measured by the builder before they ship):** `maxJobs 2`,
-  requests 4 CPU and 2Gi, limits 8 CPU and 4Gi. A 1080i60 H.264 Live TV
-  channel to 1080p libx264 `veryfast` at 1.0x is the unit: bwdif and the
-  encode together run two to three cores; two such jobs fit the request and
-  burst to the limit. The usenet engine (par2 repairs, multi-core bursts)
-  and clustarr's two intel pods (about a core each) share the node; the
-  requests keep the pool's cores its own and the limit keeps the node's.
+- **Size (from the measurements below):** `maxJobs 2`, requests 3 CPU and
+  2Gi, limits 8 CPU and 4Gi. The unit is a 1080p60 or 1080i60 H.264 Live TV
+  channel to 720p at Plex's 9 Mbps cap, libx264 `veryfast`, held at 1.0x:
+  measured at 1.0-1.25 CPU-seconds per media second (deinterlace and 60 fps
+  included), so two such streams at real time are about 2.5 cores, with the
+  8-core limit leaving a start-up burst (a tune runs flat out until Plex
+  throttles it) and a third stream. The usenet engine (par2 repairs,
+  multi-core bursts) and clustarr's two intel pods (about a core each) share
+  the node; the request keeps the pool's cores its own and the limit keeps
+  the node's. `libx264` is given `threads` equal to the limit, since its
+  default is 1.5x the node's 16 and the pod sees 8.
 - **Eligibility is the worker's, from the source it opens** (flags
   `--max-source-pixels 2073600` -- 1920x1080 --, `--no-hdr` and
   `--sources h264,mpeg2video`, the video codecs it takes): the stream's
@@ -247,6 +254,68 @@ pool did.
   bucket under 1.0 on a stream is the anti-goal showing.
 - clustarr's `clustarr_transcode_jobs_active{class="intel"}` at two while a
   CPU conversion runs is the goal showing.
+
+## Measured: the CPU against the GPU, for the viewer (2026-11-10)
+
+The owner's caveat on approval was to establish whether a viewer would notice
+the move. Measured on talos-88 (the NUC: 16 threads, Arc 140T) in a pod with
+the pool's security context, one GPU share and an 8-CPU limit, through
+ffmpeg 9.0.2's CLI (lscr.io/linuxserver/ffmpeg) with the parameters PMS asked
+for in the recorded jobs and the worker's own encoder options (libx264
+`veryfast`, CRF 16, maxrate 9000k, bufsize 18000k, no B-frames, a forced IDR
+every second, scenecut off; h264_qsv at 80% of maxrate with the same GOP).
+Inputs: 60 s of TNT as the relay serves it (1080p59.94 H.264, 6.8 Mbps), 60 s
+of ESPN (720p59.94, 4.9 Mbps) and 60 s of a 1080p24 x264 film (library
+playback to 720x404 at Plex's 1.8 Mbps). No 1080i channel was on the air in
+the capture, so bwdif over the progressive 1080p is the deinterlace cost, which
+is the same work. The node was otherwise idle (0.3 cores). Raw results are in
+the session's scratchpad (`bench/results.txt`, `bench.sh`).
+
+**Speed, one conversion, free-running (what a tune's burst and a seek get):**
+
+| Conversion | libx264 on 8 CPUs | CPU-s per media s | h264_qsv | host CPU per media s |
+| --- | --- | --- | --- | --- |
+| 1080p60 to 720p30 | 8.2x | 0.97 | 15.8x | 0.05 |
+| 1080p60 to 720p60 | 6.3x | 1.25 | 15.8x | 0.06 |
+| 1080 deinterlaced to 720p30 | 5.9x | 1.21 | 15.9x | 0.05 |
+| the same with Plex's own x264 tweaks (`subme=0`, `me=dia`...) | 10.1x | 0.78 | -- | -- |
+| 720p60 to 720p30 / 720p60 | 12.9x / 8.9x | 0.61 / 0.88 | 31x / 22x | 0.04 |
+| library 1080p24 to 720x404 at 1.8 Mbps | 27x | 0.28 | 39x | 0.03 |
+
+**Speed under the pool's concurrency (deinterlaced 1080 to 720p30, 8 CPUs):**
+two at once 3.45x each (4.0 cores each), two 60 fps ones 2.9x each, three at
+once 2.3x each (2.7 cores each). Holding real time is what a stream needs,
+and the pool's second slot leaves it a 3x margin; a third stream still has
+2x. The GPU's two video engines are not shared with any of this.
+
+**Tune-in (time to each 1 s segment of a deinterlaced 1080 conversion, from
+a cold start):** libx264 has the first segment at 0.55 s and eight by 1.8 s;
+h264_qsv the first at 0.22 s and eight by 0.62 s. Plex plays once two or
+three segments stand, so the CPU adds about 0.6 s to a tune or a seek,
+against the relay's 1.8 s to the upstream's first byte and PMS's own
+seconds of tune latency: below what a person can tell apart.
+
+**Picture, at the same bitrate cap, against the same CPU-scaled lossless
+reference (VMAF / PSNR / SSIM):** live 1080 to 720p30: libx264 81.6 / 29.27 /
+0.961 at 6.6 Mbps, Plex's own tweaks 81.0 at 6.9 Mbps, h264_qsv 80.5 / 29.27 /
+0.961 at 7.5 Mbps; library 720x404: libx264 87.5 / 35.90 / 0.980, h264_qsv
+87.2 / 35.80 / 0.978. The CPU output is a point of VMAF better while using
+fewer bits (h264_qsv is driven at 80% of the cap and spends it); within a
+point is invisible.
+
+**Heat and neighbours:** the package reached about 73 C in the free-running
+bursts (8 cores) and settled at 58 C a minute later; at the 2.5 cores two
+real-time streams need it stays far lower. The usenet engine's par2 repairs
+and clustarr's encodes keep their shares by the pod's request and limit.
+
+**Verdict:** for the conversions in scope (H.264 and MPEG-2 sources at 1080p
+or below, no HDR) the CPU route costs the viewer nothing noticeable: real
+time with a 3x margin at the pool's two slots, about half a second more at a
+tune or a seek, and equal-or-better picture at the same bitrate. What was not
+measured, and stays excluded or watched: HEVC and HDR sources (excluded by
+§2), a burned-in subtitle's libass cost on the CPU (modest; the builder
+checks it in the §Verifying tunes), and the worker's own gRPC streaming
+overhead, which is the same on both pools.
 
 ## Constraints
 
