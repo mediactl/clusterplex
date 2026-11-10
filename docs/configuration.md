@@ -656,6 +656,9 @@ plex:
     guideRefreshWindow: "8-11" # the whole reload of a Plex cloud guide that runs short, in UTC hours; "none" turns it off
     guideLoadsInPostgres: false # the shim stages each guide load in PostgreSQL as PMS makes it ("Guide loads in PostgreSQL")
     cloudGuide: pms            # pms: PMS loads and refreshes Plex cloud guides; manager: the managers build them ("The managers build a cloud guide")
+    cloudGuideBuild: job       # where a built guide is computed: job (a Job per build, off the Plex pod) or inProcess (the lease holder's manager)
+    cloudGuideJob:             # the build Job's pod: resources, nodeSelector, tolerations, affinity, activeDeadlineSeconds (default 3600)
+      resources: {requests: {cpu: 500m, memory: 1Gi}, limits: {memory: 3Gi}}
     severalPods: false         # Live TV on more than one Plex pod, for a deployment that records nothing ("Live TV runs on one Plex pod")
 ```
 
@@ -869,13 +872,35 @@ none of it
   Every serving pod fetches its share of the plan's channels, by a
   consistent hash over the pods, and the holder fetches whatever is still
   missing after 5 minutes. The service limits each token, and every pod
-  sends the same token, so the pods share one budget of 3 calls a second
-  between them, and back off together after a refusal (429).
-- **The build.** The holder builds in a staging schema cloned from the
-  library's, keeps the live guide's sections, playlists and viewing rows,
-  and swaps it into place, so PMS reads the old guide or the new one. It
-  then writes the DVR's provider row as PMS does after a refresh, so PMS's
-  own start-up check finds the guide fresh.
+  sends the same token, so the pods draw on one budget of 3 calls a second
+  kept in a row of the library's database (`clusterplex.epg_budget`): each
+  call claims the next slot, whatever each pod believes about the others,
+  and a refusal (429) holds every pod for its `Retry-After`, a minute at
+  least. PMS's own calls with the token, its refreshes, are not counted.
+- **The build.** By default (`cloudGuideBuild: job`) the holder starts a
+  Job for each build, named by the plan
+  (`plex-guide-build-<dvr>-<plan hash>`), on the Plex image, as nobody,
+  with the library database's settings and nothing else: no
+  ServiceAccount token, no Plex token. The Job reads the plan and the
+  answers from the cache and builds the guide into a staging schema cloned
+  from the library's, with the live guide's sections, recording the build
+  in `clusterplex.guide_builds` in the same transaction, while it holds the
+  guide's lock. The holder waits for that record, then carries the live
+  guide's playlists and viewing rows over and swaps the build into place,
+  so PMS reads the old guide or the new one and nothing done in the guide
+  during the build is lost. With `cloudGuideBuild: inProcess` the holder
+  does all of it itself, beside PMS. Either way it then writes the DVR's
+  provider row as PMS does after a refresh, so PMS's own start-up check
+  finds the guide fresh.
+- **The build Job's failures.** A holder that loses the lease while its Job
+  runs leaves it running; the next holder plans the same build, finds the
+  Job by its name and waits for it, or takes the build it staged. The Job
+  retries twice (`backoffLimit`), fails at once if the cached plan is no
+  longer its own (exit 3), and is ended at `activeDeadlineSeconds`; a
+  failed build leaves the old guide, and the holder tries again 15 minutes
+  later, replacing the finished Job. A finished Job and its pod's log stay
+  for 6 hours. The chart grants the manager `get`, `create` and `delete` on
+  Jobs only when the build Job is in use.
 - **When.** At a block's first map save and whenever its `lineupHash`
   moves; at the manager's start when the guide was never built or is a day
   old; and daily in `guideRefreshWindow`. A map save makes PMS start a load
@@ -883,7 +908,9 @@ none of it
 - **How long.** A first build of a 248-channel lineup is about 500 grid
   calls and some thousands of metadata calls: the better part of an hour at
   that rate, as PMS's own first load is. A daily build fetches the new
-  weeks and the new shows. The build itself, from the cache, takes seconds.
+  weeks and the new shows. The build itself, from the cache, took seconds
+  for 12 channels on the rig; at 248 channels it is still to be measured,
+  which is why it runs in a Job of its own sizing.
 
 The rows are the ones PMS writes from the same answers, every column and
 id (`hack/guidebuild` compares a build with a load PMS made; exact on the

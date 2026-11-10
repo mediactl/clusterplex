@@ -472,3 +472,60 @@ test that fails without it. The build then matched the load in every row,
 column and id of all five tables; only `added_at` from PMS's own clock
 differs, and the tool reads those as the load's time across the whole
 captured load. The build from the captured answers took 41 s.
+
+### The build in a Job, and one budget (2026-11-10, owner)
+
+Owner, 2026-11-10, on learning the build ran in the Plex container beside
+PMS: "Is there any way to distribute the compute or offload it to a job
+reliably?", then "Yes" to: the fetch stays with the pods, the build moves
+to a Job, the swap stays with the holder, and the pods' per-pod 3/N pacing
+becomes one budget in PostgreSQL.
+
+- **Why only the build moves.** The fetch is bound by the token's rate, not
+  by compute: more pods or Jobs divide the same 3 calls a second. The swap
+  must be the holder's, which knows when PMS loads. The build is CPU and
+  memory over the cache and writes one staging schema, and needs neither
+  PMS nor the token. It is one global pass, since ids follow PMS's order
+  across every channel (the rules below), so it is one Job, not shards.
+- **The split.** `plexbootstrap.InstallBuilt` became `StageBuilt` (the
+  staging schema cloned clean, the live guide's sections, the build, the
+  sequences, and a row in `clusterplex.guide_builds` naming the build's
+  stamp, all in one transaction, under the guide's advisory lock) and
+  `SwapStaged` (only the stamp it is given, else `ErrNotStaged`; the live
+  guide's playlists and viewing rows carried at the swap, then the rename).
+  `InstallBuilt` is the two in a row, for `cloudGuideBuild: inProcess`.
+- **The Job** (`cmd/manager/cloudguidejob.go`): named
+  `plex-guide-build-<dvr>-<stamp>`, the stamp a hash of the plan as cached;
+  `manager guide-build --dvr --stamp` on the holder's image, as uid 65534,
+  read-only root, no ServiceAccount token, the holder's
+  `CLUSTERPLEX_POSTGRES_*` environment alone (the password stays a Secret
+  reference), GOMEMLIMIT 90% of its memory limit, owned by the StatefulSet,
+  labelled `guide-build` so no Plex selector matches it; `backoffLimit` 2,
+  `activeDeadlineSeconds` 3600 unless set, kept 6 hours, exit 3 (the cached
+  plan is not its stamp) fails it at once through `podFailurePolicy`. The
+  holder makes sure the lineup is fresh in the cache first (the Job holds no
+  token), then waits for the record of its stamp, polling every 10 s; a
+  failed Job is an error, and the builder's next pass (15 minutes) deletes
+  it and starts another. A new holder finds the same Job, or the staged
+  build, by the stamp.
+- **A PMS start's sweep spares a build.** `SweepGuides` dropped every
+  `_next` schema at a PMS start ("no load runs at a start"), true while
+  only the holder's own process built. A Job builds outside every pod, so
+  the sweep now keeps a staging schema whose guide lock is held (a build or
+  a copy at work, `pg_try_advisory_lock`) or that `guide_builds` names (a
+  build awaiting its swap) (`stagingBusy`). Found in review, before the rig.
+- **One budget.** `epgcloud.Budget`: one row per token in
+  `clusterplex.epg_budget`; a call claims `greatest(next_at, now) +
+  interval` in one statement and sleeps until its slot, the arithmetic on
+  the server's clock; a 429 pushes `next_at` past its `Retry-After` for
+  every pod. PMS's own calls with the token are still outside it.
+- **Tested** against PostgreSQL 15: stage and swap by stamp, a failed stage
+  leaving nothing to install, a playlist made during the build carried at
+  the swap, the stage waiting on the guide's lock, the start sweep keeping a
+  build's staging schema (falsified: fails without `stagingBusy`); two connections sharing
+  one rate and one hold; the Job's pod spec; adoption and replacement of a
+  Job; the holder waiting for a Job's record, taking one already staged,
+  and failing with a failed Job; and `manager guide-build` itself, from the
+  environment, staging the stamped plan and refusing a moved one. Not yet
+  on the rig: a real Job on kind, its memory at 248 channels, and a holder
+  failover mid-build.

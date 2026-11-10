@@ -635,7 +635,18 @@ func SweepGuides(ctx context.Context, log *slog.Logger, conn *pgx.Conn, guides [
 		case strings.HasSuffix(schema, "_next"):
 			// PMS is the manager's child, so at a start no load runs: a
 			// staging schema holds a clean clone a new load clones again,
-			// or an abandoned load's rows.
+			// or an abandoned load's rows. A build is the exception: a
+			// build Job runs outside every pod, so one may be filling the
+			// schema (it holds the guide's lock) or have staged a build the
+			// holder has yet to swap (guide_builds names it).
+			live := strings.TrimSuffix(schema, "_next")
+			if busy, err := stagingBusy(ctx, conn, live); err != nil {
+				errs = append(errs, fmt.Errorf("look at %s: %w", schema, err))
+				continue
+			} else if busy != "" {
+				log.Debug("kept a Live TV guide's staging schema", "schema", schema, "why", busy)
+				continue
+			}
 			why = "a staging schema at a start, when no load runs"
 		case !listed[schema]:
 			if dvrOfSchema(schema) == "" {
@@ -652,6 +663,32 @@ func SweepGuides(ctx context.Context, log *slog.Logger, conn *pgx.Conn, guides [
 		log.Info("dropped a Live TV guide schema", "schema", schema, "why", why)
 	}
 	return errors.Join(errs...)
+}
+
+// stagingBusy says why the staging schema of the guide whose live schema is
+// live must stay, "" when it may go: a build holds the guide's lock, or a
+// finished build waits there for its swap.
+func stagingBusy(ctx context.Context, conn *pgx.Conn, live string) (string, error) {
+	if err := ensureBuilds(ctx, conn); err != nil {
+		return "", err
+	}
+	var staged bool
+	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM "+buildsTable+" WHERE schema = $1)", live).Scan(&staged); err != nil {
+		return "", err
+	}
+	if staged {
+		return "a staged build waits for its swap", nil
+	}
+	var free bool
+	key := "clusterplex-guide-" + live
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtext($1))", key).Scan(&free); err != nil {
+		return "", err
+	}
+	if !free {
+		return "a build or a copy holds the guide's lock", nil
+	}
+	_, err := conn.Exec(ctx, "SELECT pg_advisory_unlock(hashtext($1))", key)
+	return "", err
 }
 
 // dvrOfSchema is the DVR uuid a live guide schema is named for, with

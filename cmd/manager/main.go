@@ -141,6 +141,11 @@ type Manager struct {
 }
 
 func main() {
+	// A cloud guide's build Job runs the manager's image as its own
+	// process (cloudguidejob.go): no Plex, no lease, no Kubernetes.
+	if len(os.Args) > 1 && os.Args[1] == guideBuildCommand {
+		os.Exit(runGuideBuild(os.Args[2:]))
+	}
 	os.Exit(run())
 }
 

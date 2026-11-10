@@ -77,6 +77,8 @@ data:
         guideLoadsInPostgres: {{ .Values.plex.liveTV.guideLoadsInPostgres | default false }}
         severalPods: {{ .Values.plex.liveTV.severalPods | default false }}
         cloudGuide: {{ .Values.plex.liveTV.cloudGuide | default "pms" | quote }}
+        cloudGuideBuild: {{ .Values.plex.liveTV.cloudGuideBuild | default "job" | quote }}
+        cloudGuideJob: {{ .Values.plex.liveTV.cloudGuideJob | default dict | toJson | quote }}
     {{- if kindIs "slice" .Values.plex.codecPrefetch }}
     plex-codec-prefetch: {{ join "," .Values.plex.codecPrefetch | default "none" | quote }}
     {{- end }}

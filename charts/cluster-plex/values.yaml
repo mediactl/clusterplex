@@ -129,6 +129,23 @@ plex:
     # to it are held (docs/configuration.md, "The cloud guide, built by the
     # managers").
     cloudGuide: pms
+    # Where a built cloud guide (cloudGuide "manager") is computed: "job", a
+    # Job the lease holder starts for each build, off the Plex pod, or
+    # "inProcess", in the lease holder's manager beside PMS. The pods fetch
+    # and the lease holder installs the guide either way (docs/configuration.md,
+    # "The cloud guide, built by the managers").
+    cloudGuideBuild: job
+    # The build Job's pod: resources, nodeSelector, tolerations, affinity and
+    # activeDeadlineSeconds (default 3600). Its memory limit sets the build's
+    # GOMEMLIMIT (90%). It runs the Plex image as nobody, with the library
+    # database's settings alone: no ServiceAccount token, no Plex token.
+    cloudGuideJob:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          memory: 3Gi
   # Audio codecs whose decoders the lease holder has Plex download once it
   # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex
   # downloads a decoder only for a transcode of a file it has analysed,

@@ -23,26 +23,79 @@ const builtComment = "clusterplex: built from Plex's guide service at %d (Unix n
 type BuildFunc func(ctx context.Context, tx pgx.Tx, staging string) error
 
 // InstallBuilt makes g's guide what build writes, the way ImportGuide makes
-// it a load's copy: a staging schema cloned clean from the library's, the
-// live guide's sections, its playlists (renumbered past the build's items,
-// as PMS numbers them past a load's) and its viewing rows carried over,
-// build's rows, then the schemas renamed, so PMS reads the old guide or the
-// new one and a build that fails leaves the old one. A guide with no
-// sections yet (a DVR whose first load never landed) gets PMS's three.
+// it a load's copy: StageBuilt, then SwapStaged, on one connection. A build
+// that fails leaves the old guide. The lease holder runs this when the
+// guide is built in its own process (plex.liveTV.cloudGuideBuild
+// "inProcess"); a build Job runs StageBuilt and the holder SwapStaged.
 // docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md, plan B.
 func InstallBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library string, g Guide, build BuildFunc) error {
+	stamp := fmt.Sprintf("in-process-%d", time.Now().UnixNano())
+	if err := StageBuilt(ctx, log, conn, library, g, stamp, build); err != nil {
+		return err
+	}
+	return SwapStaged(ctx, log, conn, library, g, stamp)
+}
+
+// buildsTable records each guide whose staging schema holds a finished
+// build that SwapStaged has yet to install: one row per guide schema,
+// written in the build's own transaction, so a row never names a staging
+// schema whose build did not finish, and deleted by the swap.
+const buildsTable = "clusterplex.guide_builds"
+
+// ErrNotStaged is SwapStaged's answer when g's staging schema does not hold
+// the build it names: another build replaced it, or none finished.
+var ErrNotStaged = errors.New("the staging schema does not hold that build")
+
+// ensureBuilds makes buildsTable.
+func ensureBuilds(ctx context.Context, conn *pgx.Conn) error {
+	for _, s := range []string{
+		"CREATE SCHEMA IF NOT EXISTS clusterplex",
+		"CREATE TABLE IF NOT EXISTS " + buildsTable + " (schema text PRIMARY KEY, stamp text NOT NULL, staged_at timestamptz NOT NULL)",
+	} {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return fmt.Errorf("make %s: %w", buildsTable, err)
+		}
+	}
+	return nil
+}
+
+// lockGuide takes g's advisory lock on conn, the one ImportGuide, StageLoad
+// and the swaps take, and returns its release. A session lock: a connection
+// that drops (a build Job's pod killed) releases it.
+func lockGuide(ctx context.Context, conn *pgx.Conn, g Guide) (func(), error) {
+	key := "clusterplex-guide-" + g.Schema()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
+		return nil, err
+	}
+	return func() { _, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", key) }, nil
+}
+
+// StageBuilt writes build's rows into g's staging schema, cloned clean from
+// the library's, with the live guide's sections (PMS's three for a guide
+// that has none yet: a DVR whose first load never landed), and records the
+// build under stamp in buildsTable in the same transaction. The live guide
+// is not touched; SwapStaged installs the build. A build that fails drops
+// the staging schema.
+func StageBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library string, g Guide, stamp string, build BuildFunc) error {
 	if !g.Valid() {
 		return fmt.Errorf("not a guide the shim reads: %+v", g)
 	}
-	schema, staging, old := g.Schema(), g.Staging(), g.Replaced()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", "clusterplex-guide-"+schema); err != nil {
+	if stamp == "" {
+		return errors.New("a staged build needs a stamp")
+	}
+	if err := ensureBuilds(ctx, conn); err != nil {
 		return err
 	}
-	defer func() {
-		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "clusterplex-guide-"+schema)
-	}()
-	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+	unlock, err := lockGuide(ctx, conn, g)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	schema, staging := g.Schema(), g.Staging()
+	// The record goes first: a staging schema this build is about to
+	// replace must never read as another build's.
+	if _, err := conn.Exec(ctx, "DELETE FROM "+buildsTable+" WHERE schema = $1", schema); err != nil {
+		return err
 	}
 	// Never a staging schema a load left: a build starts from empty tables.
 	if err := dropSchema(ctx, conn, staging); err != nil {
@@ -54,13 +107,7 @@ func InstallBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library
 	}
 	live, err := schemaExists(ctx, conn, schema)
 	if err == nil {
-		err = fillBuilt(ctx, conn, schema, staging, live, build)
-	}
-	if err == nil {
-		if aerr := analyzeSchema(ctx, conn, staging); aerr != nil {
-			log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
-		}
-		err = swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(builtComment, time.Now().UnixNano()))
+		err = fillBuilt(ctx, conn, schema, staging, live, stamp, build)
 	}
 	if err != nil {
 		if dropErr := dropSchema(context.Background(), conn, staging); dropErr != nil {
@@ -68,16 +115,85 @@ func InstallBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library
 		}
 		return fmt.Errorf("build %s: %w", schema, err)
 	}
-	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+	if aerr := analyzeSchema(ctx, conn, staging); aerr != nil {
+		log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
 	}
-	log.Info("built a Live TV guide from Plex's guide service", "guide", g.File(), "schema", schema,
-		"took", time.Since(start).Round(time.Millisecond))
+	log.Info("staged a Live TV guide built from Plex's guide service", "guide", g.File(), "schema", staging,
+		"stamp", stamp, "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
-// fillBuilt writes staging's rows in one transaction.
-func fillBuilt(ctx context.Context, conn *pgx.Conn, schema, staging string, live bool, build BuildFunc) error {
+// StagedBuild is the stamp of the finished build g's staging schema holds
+// and when it was staged; "" when it holds none.
+func StagedBuild(ctx context.Context, conn *pgx.Conn, g Guide) (stamp string, at time.Time, err error) {
+	if err := ensureBuilds(ctx, conn); err != nil {
+		return "", time.Time{}, err
+	}
+	err = conn.QueryRow(ctx, "SELECT stamp, staged_at FROM "+buildsTable+" WHERE schema = $1", g.Schema()).Scan(&stamp, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, nil
+	}
+	return stamp, at, err
+}
+
+// SwapStaged installs the build StageBuilt staged for g under stamp: the
+// live guide's playlists (renumbered past the build's items, as PMS numbers
+// them past a load's) and its viewing rows carried over at this moment,
+// then the schemas renamed, so PMS reads the old guide or the new one. It
+// answers ErrNotStaged, touching nothing, when the staging schema does not
+// hold that build.
+func SwapStaged(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library string, g Guide, stamp string) error {
+	if !g.Valid() {
+		return fmt.Errorf("not a guide the shim reads: %+v", g)
+	}
+	if err := ensureBuilds(ctx, conn); err != nil {
+		return err
+	}
+	unlock, err := lockGuide(ctx, conn, g)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	schema, staging, old := g.Schema(), g.Staging(), g.Replaced()
+	have, _, err := StagedBuild(ctx, conn, g)
+	if err != nil {
+		return err
+	}
+	if have != stamp {
+		return fmt.Errorf("%s: %w (it holds %q, not %q)", staging, ErrNotStaged, have, stamp)
+	}
+	if exists, err := schemaExists(ctx, conn, staging); err != nil {
+		return err
+	} else if !exists {
+		_, _ = conn.Exec(ctx, "DELETE FROM "+buildsTable+" WHERE schema = $1", schema)
+		return fmt.Errorf("%s: %w (the schema is gone)", staging, ErrNotStaged)
+	}
+	if err := dropSchema(ctx, conn, old); err != nil {
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+	}
+	live, err := schemaExists(ctx, conn, schema)
+	if err == nil && live {
+		err = carryLive(ctx, conn, schema, staging)
+	}
+	if err == nil {
+		err = swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(builtComment, time.Now().UnixNano()))
+	}
+	if err != nil {
+		return fmt.Errorf("install %s: %w", schema, err)
+	}
+	if _, err := conn.Exec(ctx, "DELETE FROM "+buildsTable+" WHERE schema = $1", schema); err != nil {
+		log.Warn("clear an installed build's record", "schema", schema, "error", err)
+	}
+	if err := dropSchema(ctx, conn, old); err != nil {
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+	}
+	log.Info("built a Live TV guide from Plex's guide service", "guide", g.File(), "schema", schema, "stamp", stamp)
+	return nil
+}
+
+// fillBuilt writes staging's sections and build's rows, and records the
+// build under stamp, in one transaction.
+func fillBuilt(ctx context.Context, conn *pgx.Conn, schema, staging string, live bool, stamp string, build BuildFunc) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -100,14 +216,32 @@ func fillBuilt(ctx context.Context, conn *pgx.Conn, schema, staging string, live
 	if err := build(ctx, tx, staging); err != nil {
 		return err
 	}
-	if live {
-		if err := carryPlaylists(ctx, tx, schema, staging); err != nil {
-			return err
-		}
-		for _, t := range []string{"metadata_item_settings", "metadata_item_views"} {
-			if _, err := tx.Exec(ctx, "INSERT INTO "+s+"."+t+" SELECT * FROM "+l+"."+t); err != nil {
-				return fmt.Errorf("carry %s over: %w", t, err)
-			}
+	if err := resetSequences(ctx, tx, staging); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO "+buildsTable+" (schema, stamp, staged_at) VALUES ($1, $2, now()) "+
+		"ON CONFLICT (schema) DO UPDATE SET stamp = EXCLUDED.stamp, staged_at = EXCLUDED.staged_at", schema, stamp); err != nil {
+		return fmt.Errorf("record the build: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// carryLive copies the live guide's playlists and viewing rows into
+// staging, in one transaction, as the swap takes it: what a person did in
+// the guide while the build ran is carried too.
+func carryLive(ctx context.Context, conn *pgx.Conn, schema, staging string) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	s, l := pgx.Identifier{staging}.Sanitize(), pgx.Identifier{schema}.Sanitize()
+	if err := carryPlaylists(ctx, tx, schema, staging); err != nil {
+		return err
+	}
+	for _, t := range []string{"metadata_item_settings", "metadata_item_views"} {
+		if _, err := tx.Exec(ctx, "INSERT INTO "+s+"."+t+" SELECT * FROM "+l+"."+t); err != nil {
+			return fmt.Errorf("carry %s over: %w", t, err)
 		}
 	}
 	if err := resetSequences(ctx, tx, staging); err != nil {

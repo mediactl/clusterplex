@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/viper"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -587,4 +589,26 @@ func TestConfigRefusesAListWithAnAddressThatIsNotAURL(t *testing.T) {
 	_, err := loadConfig([]string{"--postgres-host", "postgres", "--plex-external-url", "https://plex.lan.example.com:443,plex.example.com"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"plex.example.com"`)
+}
+
+// TestABuiltCloudGuideIsBuiltInAJobUnlessToldOtherwise: cloudGuideBuild
+// defaults to "job", takes "inProcess", refuses anything else, and the
+// build Job's pod settings are checked at start.
+func TestABuiltCloudGuideIsBuiltInAJobUnlessToldOtherwise(t *testing.T) {
+	cl := ClustarrConfig{Namespace: "clustarr-system"}
+	load := func(lt map[string]any) (LiveTVConfig, error) {
+		v := viper.New()
+		v.Set(liveTVKey, lt)
+		return loadLiveTV(v, cl)
+	}
+	lt, err := load(map[string]any{"enabled": true})
+	require.NoError(t, err)
+	assert.Equal(t, CloudGuideBuildJob, lt.CloudGuideBuild)
+	lt, err = load(map[string]any{"enabled": true, "cloudGuideBuild": "inProcess"})
+	require.NoError(t, err)
+	assert.Equal(t, CloudGuideBuildInProcess, lt.CloudGuideBuild)
+	_, err = load(map[string]any{"enabled": true, "cloudGuideBuild": "cron"})
+	assert.Error(t, err)
+	_, err = load(map[string]any{"enabled": true, "cloudGuideJob": `{"activeDeadlineSeconds":-1}`})
+	assert.Error(t, err)
 }

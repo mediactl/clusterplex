@@ -123,6 +123,16 @@ type LiveTVConfig struct {
 	// Plex's guide service, and PMS's own writes to it are held). Default
 	// "pms". docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md.
 	CloudGuide string `mapstructure:"cloudGuide"`
+	// CloudGuideBuild is where a built cloud guide (CloudGuide "manager")
+	// is computed: "job", a Kubernetes Job the lease holder starts for
+	// each build, off the Plex pod (cloudguidejob.go), or "inProcess", in
+	// the lease holder's own manager. The pods fetch and the holder swaps
+	// either way. Default "job".
+	CloudGuideBuild string `mapstructure:"cloudGuideBuild"`
+	// CloudGuideJob is the build Job's pod, as the chart renders
+	// plex.liveTV.cloudGuideJob: JSON of resources, nodeSelector,
+	// tolerations, affinity and activeDeadlineSeconds (cloudGuideJobSpec).
+	CloudGuideJob string `mapstructure:"cloudGuideJob"`
 }
 
 // Who fills a Plex cloud lineup's guide (LiveTVConfig.CloudGuide).
@@ -195,6 +205,16 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	case CloudGuidePMS, CloudGuideManager:
 	default:
 		return lt, fmt.Errorf("%s.cloudGuide: %q is neither %q nor %q", liveTVKey, lt.CloudGuide, CloudGuidePMS, CloudGuideManager)
+	}
+	switch lt.CloudGuideBuild {
+	case "":
+		lt.CloudGuideBuild = CloudGuideBuildJob
+	case CloudGuideBuildJob, CloudGuideBuildInProcess:
+	default:
+		return lt, fmt.Errorf("%s.cloudGuideBuild: %q is neither %q nor %q", liveTVKey, lt.CloudGuideBuild, CloudGuideBuildJob, CloudGuideBuildInProcess)
+	}
+	if _, err := parseCloudGuideJob(lt.CloudGuideJob); err != nil {
+		return lt, fmt.Errorf("%s.cloudGuideJob: %w", liveTVKey, err)
 	}
 	if _, err := parseWindow(lt.GuideRefreshWindow); err != nil {
 		return lt, fmt.Errorf("%s.guideRefreshWindow: %w", liveTVKey, err)

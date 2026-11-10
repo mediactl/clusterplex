@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/time/rate"
 
 	"github.com/mediactl/clusterplex/pkg/hashring"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
@@ -37,14 +36,19 @@ import (
 // service with the one server token, so spreading the fetching across pods
 // divides one budget rather than adding to it. The holder waits for the
 // plan's answers, fetches what is still missing itself, builds the guide
-// into a staging schema and swaps it in (plexbootstrap.InstallBuilt).
+// into a staging schema and swaps it in: in a build Job by default
+// (cloudguidejob.go, plexbootstrap.StageBuilt then SwapStaged), else in its
+// own process (plexbootstrap.InstallBuilt). Every pod's calls share one
+// budget at cloudGuideRate, kept in PostgreSQL (epgcloud.Budget).
 
 const (
 	// cloudGuideRate is every pod's calls to the guide service together, a
 	// second: PMS's own serial load ran at about four without a refusal
 	// (talos, 2026-11-04); a burst of eight at once was refused (the rig,
-	// 2026-11-10).
-	cloudGuideRate = 3.0
+	// 2026-11-10). The pods draw on it from one row (cloudBudgetKey).
+	cloudGuideRate = 3
+	// cloudBudgetKey names the guide service's budget: one server token.
+	cloudBudgetKey = "plex-guide-service"
 	// cloudGridTTL and cloudMetadataTTL are how long an answer is kept:
 	// a channel's weeks change through the day; a show's or movie's own
 	// metadata hardly ever.
@@ -112,54 +116,11 @@ type cloudGuides struct {
 	wants map[string]cloudWant // by DVR uuid
 	built map[string]cloudBuilt
 	kick  chan struct{}
-	pace  *pacer
-}
-
-// pacer paces the pod's calls at its share of the token's rate, and holds
-// them all for the service's Retry-After once it refuses one.
-type pacer struct {
-	mu      sync.Mutex
-	limiter *rate.Limiter
-	pods    int
-	until   time.Time
-}
-
-// Wait implements epgcloud.Limiter.
-func (p *pacer) Wait(ctx context.Context) error {
-	p.mu.Lock()
-	wait := time.Until(p.until)
-	p.mu.Unlock()
-	if wait > 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
-		}
-	}
-	return p.limiter.Wait(ctx)
-}
-
-// setPods gives the pod its share of the rate among pods.
-func (p *pacer) setPods(pods int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if pods != p.pods {
-		p.pods = pods
-		p.limiter.SetLimit(rate.Limit(cloudGuideRate / float64(pods)))
-	}
-}
-
-// pause holds every call for d.
-func (p *pacer) pause(d time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.until = time.Now().Add(d)
 }
 
 func newCloudGuides(m *Manager) *cloudGuides {
 	return &cloudGuides{
 		m: m, wants: map[string]cloudWant{}, built: map[string]cloudBuilt{}, kick: make(chan struct{}, 1),
-		pace: &pacer{limiter: rate.NewLimiter(rate.Limit(cloudGuideRate), 1), pods: 1},
 	}
 }
 
@@ -182,20 +143,24 @@ func (c *cloudGuides) Want(dvrUUID, lineup, mapURI, lineupHash string) {
 
 func (c *cloudGuides) log() *slog.Logger { return c.m.Logger.With("component", "livetv-cloud-guide") }
 
-// client is the guide service with the server's token, paced by the pod's
-// share of the token's rate.
-func (c *cloudGuides) client() *epgcloud.Client {
-	return &epgcloud.Client{Token: c.m.plexToken(), Limiter: c.pace, HTTP: &http.Client{Timeout: 60 * time.Second}}
+// budget is the guide service's one budget, claimed through q.
+func budget(q epgcloud.Querier) *epgcloud.Budget {
+	return &epgcloud.Budget{Q: q, Key: cloudBudgetKey, Interval: time.Second / cloudGuideRate}
 }
 
-// share sets the pod's share of the rate from how many pods serve, and
-// returns the ring that shares the channels out.
+// client is the guide service with the server's token, paced by the
+// budget through conn, which the caller uses for nothing else while a call
+// waits.
+func (c *cloudGuides) client(conn *pgx.Conn) *epgcloud.Client {
+	return &epgcloud.Client{Token: c.m.plexToken(), Limiter: budget(conn), HTTP: &http.Client{Timeout: 60 * time.Second}}
+}
+
+// share is the ring that shares the channels out among the serving pods.
 func (c *cloudGuides) share(ctx context.Context) *hashring.Ring {
 	members := []string{c.m.Config.PodName}
 	if others, err := c.m.otherServingPods(ctx); err == nil {
 		members = append(members, others...)
 	}
-	c.pace.setPods(len(members))
 	return hashring.New(members...)
 }
 
@@ -225,6 +190,9 @@ func (c *cloudGuides) fetchPlans(ctx context.Context, all bool) error {
 	if err := epgcloud.EnsureCache(ctx, conn); err != nil {
 		return err
 	}
+	if err := epgcloud.EnsureBudget(ctx, conn); err != nil {
+		return err
+	}
 	plans, err := readPlans(ctx, conn)
 	if err != nil {
 		return err
@@ -247,7 +215,7 @@ func (c *cloudGuides) fetchPlans(ctx context.Context, all bool) error {
 // fetch keeps channels' weeks, and the metadata of every show and movie
 // they name, fresh in the cache.
 func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, channels []string) error {
-	cl := c.client()
+	cl := c.client(conn)
 	now := time.Now()
 	ids := map[string]bool{}
 	for _, k := range channels {
@@ -259,7 +227,7 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 			}
 			if !fresh {
 				if body, err = cl.Grid(ctx, k, w[0], w[1]); err != nil {
-					return c.refused(err)
+					return refused(ctx, conn, err)
 				}
 				if err := epgcloud.CachePut(ctx, conn, key, body, time.Now()); err != nil {
 					return err
@@ -285,7 +253,7 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 		if errors.Is(err, epgcloud.ErrNotFound) {
 			body = []byte(`{"MediaContainer":{}}`)
 		} else if err != nil {
-			return c.refused(err)
+			return refused(ctx, conn, err)
 		}
 		if err := epgcloud.CachePut(ctx, conn, key, body, time.Now()); err != nil {
 			return err
@@ -307,12 +275,15 @@ func metadataIDs(items []epgcloud.Item, ids map[string]bool) {
 	}
 }
 
-// refused waits out the service's refusal before the error goes back, so
-// the next pass does not spend the budget again at once.
-func (c *cloudGuides) refused(err error) error {
+// refused holds every pod's calls for the service's Retry-After (a minute
+// at least) when err is its refusal, so no pod spends the budget again at
+// once, and returns err.
+func refused(ctx context.Context, conn *pgx.Conn, err error) error {
 	var rl *epgcloud.RateLimitedError
 	if errors.As(err, &rl) {
-		c.pace.pause(max(rl.RetryAfter, time.Minute))
+		if herr := budget(conn).Hold(ctx, max(rl.RetryAfter, time.Minute)); herr != nil {
+			return errors.Join(err, herr)
+		}
 	}
 	return err
 }
@@ -437,6 +408,9 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 	if err := epgcloud.EnsureCache(ctx, conn); err != nil {
 		return err
 	}
+	if err := epgcloud.EnsureBudget(ctx, conn); err != nil {
+		return err
+	}
 	body, _ := json.Marshal(p)
 	if err := epgcloud.CachePut(ctx, conn, planPrefix+w.dvr, body, time.Now()); err != nil {
 		return err
@@ -470,26 +444,28 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 		case <-time.After(10 * time.Second):
 		}
 	}
-	in, err := c.input(ctx, conn, p)
-	if err != nil {
+	if err := c.freshLineup(ctx, conn, p.Lineup); err != nil {
 		return err
 	}
 	g := plexbootstrap.Guide{Provider: cloudGuideProvider, DVR: w.dvr}
 	var stats guidebuild.Stats
-	err = plexbootstrap.InstallBuilt(ctx, log, conn, c.m.Config.Postgres.Schema, g, func(ctx context.Context, tx pgx.Tx, staging string) error {
-		if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT
-			coalesce(max(id) FILTER (WHERE name = 'Movies'), 1), coalesce(max(id) FILTER (WHERE name = 'Shows'), 2),
-			coalesce(max(id) FILTER (WHERE name = 'Sports'), 3) FROM %s.library_sections`, pgx.Identifier{staging}.Sanitize())).
-			Scan(&in.Sections.Movies, &in.Sections.Shows, &in.Sections.Sports); err != nil {
+	inJob := c.m.Config.LiveTV.CloudGuideBuild != CloudGuideBuildInProcess
+	if inJob {
+		stamp := cloudPlanStamp(body)
+		if err := c.stageInJob(ctx, log, conn, g, stamp); err != nil {
 			return err
 		}
-		in.Now = time.Now()
-		var err error
-		stats, err = guidebuild.Build(ctx, tx, staging, in)
-		return err
-	})
-	if err != nil {
-		return err
+		if err := plexbootstrap.SwapStaged(ctx, log, conn, c.m.Config.Postgres.Schema, g, stamp); err != nil {
+			return err
+		}
+	} else {
+		in, err := cloudInput(ctx, conn, p)
+		if err != nil {
+			return err
+		}
+		if err := plexbootstrap.InstallBuilt(ctx, log, conn, c.m.Config.Postgres.Schema, g, cloudBuildFunc(&in, &stats)); err != nil {
+			return err
+		}
 	}
 	if err := plexbootstrap.MarkGuideRefreshed(ctx, conn, c.m.Config.Postgres.Schema, w.dvr,
 		start.AddDate(0, 0, 7*cloudWeeks), time.Now()); err != nil {
@@ -501,6 +477,10 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 	// Weeks before this build's are no longer asked for.
 	if err := epgcloud.CachePrune(ctx, conn, "grid/", start.AddDate(0, 0, -2)); err != nil {
 		log.Warn("Live TV: prune the cloud guides' cache", "error", err)
+	}
+	if inJob {
+		log.Info("Live TV: built a cloud guide from Plex's guide service in a Job", "took", time.Since(began).Round(time.Second))
+		return nil
 	}
 	log.Info("Live TV: built a cloud guide from Plex's guide service", "channels", stats.Channels, "items", stats.Items,
 		"airings", stats.Airings, "took", time.Since(began).Round(time.Second))
@@ -587,22 +567,36 @@ func (c *cloudGuides) missing(ctx context.Context, conn *pgx.Conn, p cloudPlan, 
 	return epgcloud.CacheStale(ctx, conn, *meta, cloudMetadataTTL, now)
 }
 
-// input reads a build's answers from the cache, fetching the lineup when
-// it is stale.
-func (c *cloudGuides) input(ctx context.Context, conn *pgx.Conn, p cloudPlan) (guidebuild.Input, error) {
+// freshLineup fetches lineup's stations into the cache when they are
+// stale there, so a build Job, which holds no token, finds them.
+func (c *cloudGuides) freshLineup(ctx context.Context, conn *pgx.Conn, lineup string) error {
+	_, fresh, err := epgcloud.CacheFresh(ctx, conn, epgcloud.LineupKey(lineup), cloudLineupTTL, time.Now())
+	if err != nil || fresh {
+		return err
+	}
+	body, err := c.client(conn).Channels(ctx, lineup)
+	if err != nil {
+		return fmt.Errorf("fetch the lineup's stations: %w", refused(ctx, conn, err))
+	}
+	return epgcloud.CachePut(ctx, conn, epgcloud.LineupKey(lineup), body, time.Now())
+}
+
+// cachedPlan is the plan cached for dvr, as the holder wrote it.
+func cachedPlan(ctx context.Context, conn *pgx.Conn, dvr string) ([]byte, time.Time, bool, error) {
+	return epgcloud.CacheGet(ctx, conn, planPrefix+dvr)
+}
+
+// cloudInput reads a build's answers from the cache. The lineup's stations
+// are taken as cached (freshLineup keeps them), and are an error only when
+// none are.
+func cloudInput(ctx context.Context, conn *pgx.Conn, p cloudPlan) (guidebuild.Input, error) {
 	in := guidebuild.Input{Lineup: p.Lineup, Channels: p.Channels, Grids: map[string][][]epgcloud.Item{}, Metadata: map[string]epgcloud.Item{}}
-	now := time.Now()
-	body, fresh, err := epgcloud.CacheFresh(ctx, conn, epgcloud.LineupKey(p.Lineup), cloudLineupTTL, now)
+	body, _, ok, err := epgcloud.CacheGet(ctx, conn, epgcloud.LineupKey(p.Lineup))
 	if err != nil {
 		return in, err
 	}
-	if !fresh {
-		if body, err = c.client().Channels(ctx, p.Lineup); err != nil {
-			return in, fmt.Errorf("fetch the lineup's stations: %w", err)
-		}
-		if err := epgcloud.CachePut(ctx, conn, epgcloud.LineupKey(p.Lineup), body, now); err != nil {
-			return in, err
-		}
+	if !ok {
+		return in, fmt.Errorf("the cache holds no stations for lineup %s", p.Lineup)
 	}
 	if in.Stations, err = epgcloud.DecodeChannels(body); err != nil {
 		return in, err

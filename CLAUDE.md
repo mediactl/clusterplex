@@ -141,11 +141,18 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   manager` the managers build each cloud guide from `epg.provider.plex.tv`
   (`pkg/plex/epgcloud`, `pkg/plex/guidebuild`,
   `plexbootstrap.InstallBuilt`, `cmd/manager/cloudguide.go`): every pod
-  fetches its share into `clusterplex.epg_cache`, the holder builds and
-  swaps, and writes the DVR's provider row fresh; the converger cancels the
+  fetches its share into `clusterplex.epg_cache`, a build Job the holder
+  starts per plan stages the guide (`cmd/manager/cloudguidejob.go`,
+  `plexbootstrap.StageBuilt`, recorded in `clusterplex.guide_builds`; owner,
+  2026-11-10: off the Plex pod) and the holder swaps it
+  (`plexbootstrap.SwapStaged`, carrying playlists and viewing rows at the
+  swap) and writes the DVR's provider row fresh; `cloudGuideBuild:
+  inProcess` builds in the holder instead. The converger cancels the
   load PMS starts at a map save and asks for a build instead of a reload.
   The service limits each token and every pod sends the same one, so the
-  pods share one budget (`cloudGuideRate`, 3 a second). `hack/guidebuild`
+  pods claim slots from one budget row (`epgcloud.Budget`,
+  `clusterplex.epg_budget`, `cloudGuideRate` 3 a second), and a 429 holds
+  them all. `hack/guidebuild`
   is the oracle against a load PMS made; the rules it settled are in the
   design's "What PMS writes".
 - **Media analysis and skip markers are seeded into Plex's database**
