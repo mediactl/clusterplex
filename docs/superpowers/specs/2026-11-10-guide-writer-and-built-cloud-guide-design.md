@@ -271,7 +271,8 @@ whenever Live TV is.
 ### The rig, end to end (2026-11-10)
 
 The kind rig's 12-channel DIRECTV DVR, under `cloudGuide: manager`, then
-`severalPods: true` with two pods:
+`severalPods: true` with two pods (the rig itself, its capture and its
+oracle scripts: `docs/guide-rig.md`, `hack/guiderig`):
 
 - **The build.** The converger adopted the DVR, saved its map from the fake
   tuner's `plexmap.json` and cancelled the load PMS started for it. The
