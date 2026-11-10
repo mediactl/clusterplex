@@ -63,6 +63,18 @@ func CacheFresh(ctx context.Context, q Querier, key string, ttl time.Duration, n
 	return body, true, nil
 }
 
+// CacheStale counts the keys the cache holds no answer for, or one at least
+// ttl old (CacheFresh's test), in one query.
+func CacheStale(ctx context.Context, q Querier, keys []string, ttl time.Duration, now time.Time) (int, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	var n int
+	err := q.QueryRow(ctx, "SELECT count(*) FROM unnest($1::text[]) AS k(key) LEFT JOIN "+cacheTable+
+		" c USING (key) WHERE c.key IS NULL OR c.fetched_at <= $2", keys, now.Add(-ttl)).Scan(&n)
+	return n, err
+}
+
 // CachePut stores an answer.
 func CachePut(ctx context.Context, q Querier, key string, body []byte, fetched time.Time) error {
 	_, err := q.Exec(ctx, "INSERT INTO "+cacheTable+" (key, fetched_at, body) VALUES ($1, $2, $3) "+

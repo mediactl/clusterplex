@@ -294,6 +294,55 @@ The kind rig's 12-channel DIRECTV DVR, under `cloudGuide: manager`, then
   build's clone; `stageGuide` now refuses such a load. And `.54`'s held
   answers, above.
 
+### The rig again, with the exact build (2026-11-10, shim .57)
+
+Each step on the same 12-channel DVR, checked by the oracle on the guide the
+manager installed: the manager's cache exported as a fixture, built by
+`hack/guidebuild` at the install's own time, compared in all five tables,
+ids included (identical every time).
+
+- **A first build** (9 s, the metadata already cached), served by PMS: its
+  grid API listed exactly the airings the schema holds, on every channel,
+  and the What's On hubs filled. Sequences end past the build's ids,
+  playlists sit past its items, sections and viewing rows came over.
+- **PMS's boot refresh held**, single pod and holder: the provider row made
+  stale and PMS restarted, its incremental refresh ran seven steps in 42 s
+  and every guide table's rows hashed alike before and after.
+- **A restart builds nothing; a day-old guide waits for
+  `guideRefreshWindow`** (8-11 UTC by default) and **a two-day-old one is
+  built at once** (10 s).
+- **A map change** (one channel dropped, the lineup hash moved): the
+  converger saved the 11-channel map, cancelled PMS's load in the same
+  second, and the build installed 11 channels 12 s later; DVR, activities
+  and the other channels untouched.
+- **Two pods** (`severalPods`): the holder's writer file read `*
+  -epg_<uuid>`, the other's was empty; a shared rebuild from a cache made
+  wholly stale (520 calls) took 266 s, the other pod fetching its share
+  (the holder built before its own five-minute deadline) and the holder
+  building 15 s after the last metadata arrived; failover handed the
+  writer file over in 14 s and built nothing; the non-holder's boot
+  refresh ran to its end and changed no row.
+
+Fixed on the way:
+
+- **The holder waits for metadata, not grids alone** (`cloudGuides.missing`,
+  `epgcloud.CacheStale`): a pod fetches its channels' grids before their
+  shows and movies, so with several pods the holder could build while
+  another still fetched, leaving those shows without summary or genres.
+- **A mapped channel the lineup lacks is left out** (`Stats.Unmatched`,
+  logged), as PMS's load adds only the channels it matches; it had failed
+  every build, so one station gone stopped the whole guide.
+- **A 500, 502, 503 or 504, or no answer, is asked again** twice (2 s, 5 s)
+  before a build fails (`epgcloud.retryBackoff`): PMS's own refresh met a
+  503 mid-load and went on; one would have failed the build, which keeps
+  the old guide and tries again in 15 minutes.
+- **The provider row's `updated_at`** is the build's time too: PMS reports
+  it as the DVR's `refreshedAt`, and its own refresh writes the two alike.
+  PMS keeps the row it read at its start and writes it back after any
+  refresh of its own, so its API shows a build's time only after a restart;
+  the row is PMS's, and the build's write only spares PMS a needless (and
+  held) boot refresh.
+
 ### What PMS writes (the rules the oracle settled)
 
 The rig's full load of 12 DIRECTV channels (3,787 airings, 4,004 items)

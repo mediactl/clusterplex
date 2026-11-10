@@ -88,7 +88,37 @@ func (c *Client) Metadata(ctx context.Context, ratingKey string) ([]byte, error)
 	return c.get(ctx, "/library/metadata/"+url.PathEscape(ratingKey), nil)
 }
 
+// retryBackoff is the wait before each retry of a request the service
+// failed (a 500, 502, 503 or 504, or no answer at all): it fails one now
+// and then mid-load (PMS's own refresh on the rig met a 503, 2026-11-10,
+// and went on without that answer), and one failed answer would fail a
+// whole build, so it is asked again before the build gives up.
+var retryBackoff = []time.Duration{2 * time.Second, 5 * time.Second}
+
+// errRetryable marks a failure worth asking again.
+type errRetryable struct{ error }
+
+func (e errRetryable) Unwrap() error { return e.error }
+
 func (c *Client) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		body, err := c.getOnce(ctx, path, q)
+		var r errRetryable
+		if !errors.As(err, &r) || attempt == len(retryBackoff) || ctx.Err() != nil {
+			if errors.As(err, &r) {
+				err = r.error
+			}
+			return body, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(retryBackoff[attempt]):
+		}
+	}
+}
+
+func (c *Client) getOnce(ctx context.Context, path string, q url.Values) ([]byte, error) {
 	if c.Limiter != nil {
 		if err := c.Limiter.Wait(ctx); err != nil {
 			return nil, err
@@ -118,12 +148,15 @@ func (c *Client) get(ctx context.Context, path string, q url.Values) ([]byte, er
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("epgcloud: GET %s: %w", path, err)
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("epgcloud: GET %s: %w", path, err)
+		}
+		return nil, errRetryable{fmt.Errorf("epgcloud: GET %s: %w", path, err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("epgcloud: GET %s: %w", path, err)
+		return nil, errRetryable{fmt.Errorf("epgcloud: GET %s: %w", path, err)}
 	}
 	if len(body) > maxBody {
 		return nil, fmt.Errorf("epgcloud: GET %s: %w", path, ErrResponseTooLarge)
@@ -137,6 +170,9 @@ func (c *Client) get(ctx context.Context, path string, q url.Values) ([]byte, er
 		return nil, e
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, fmt.Errorf("epgcloud: GET %s: %w", path, ErrNotFound)
+	case resp.StatusCode == http.StatusInternalServerError, resp.StatusCode == http.StatusBadGateway,
+		resp.StatusCode == http.StatusServiceUnavailable, resp.StatusCode == http.StatusGatewayTimeout:
+		return nil, errRetryable{fmt.Errorf("epgcloud: GET %s: HTTP %d", path, resp.StatusCode)}
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("epgcloud: GET %s: HTTP %d", path, resp.StatusCode)
 	}

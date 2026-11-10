@@ -258,14 +258,7 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 			if err != nil {
 				return err
 			}
-			for _, it := range items {
-				switch {
-				case it.Type == "episode" && it.GrandparentRatingKey != "":
-					ids[it.GrandparentRatingKey] = true
-				case it.Type == "movie" && it.RatingKey != "":
-					ids[it.RatingKey] = true
-				}
-			}
+			metadataIDs(items, ids)
 		}
 	}
 	for id := range ids {
@@ -288,6 +281,19 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 		}
 	}
 	return nil
+}
+
+// metadataIDs adds the rating keys whose own metadata a build reads for
+// items: an episode's show's, a movie's own.
+func metadataIDs(items []epgcloud.Item, ids map[string]bool) {
+	for _, it := range items {
+		switch {
+		case it.Type == "episode" && it.GrandparentRatingKey != "":
+			ids[it.GrandparentRatingKey] = true
+		case it.Type == "movie" && it.RatingKey != "":
+			ids[it.RatingKey] = true
+		}
+	}
 }
 
 // refused waits out the service's refusal before the error goes back, so
@@ -431,8 +437,9 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 		log.Warn("Live TV: fetch this pod's share of a cloud guide", "error", err)
 	}
 	deadline := time.Now().Add(cloudFetchWait)
+	var meta []string
 	for {
-		missing, err := c.missing(ctx, conn, p)
+		missing, err := c.missing(ctx, conn, p, &meta)
 		if err != nil {
 			return err
 		}
@@ -486,6 +493,10 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 	}
 	log.Info("Live TV: built a cloud guide from Plex's guide service", "channels", stats.Channels, "items", stats.Items,
 		"airings", stats.Airings, "took", time.Since(began).Round(time.Second))
+	if len(stats.Unmatched) > 0 {
+		log.Warn("Live TV: mapped channels the cloud lineup lists no station for were left out of its guide",
+			"lineup", w.lineup, "gridKeys", stats.Unmatched)
+	}
 	return nil
 }
 
@@ -520,22 +531,45 @@ func (c *cloudGuides) mapChannels(ctx context.Context, w cloudWant) ([]string, e
 	return keys, nil
 }
 
-// missing counts the plan's answers the cache lacks or holds stale.
-func (c *cloudGuides) missing(ctx context.Context, conn *pgx.Conn, p cloudPlan) (int, error) {
-	n := 0
+// missing counts the plan's answers the cache lacks or holds stale: its
+// grids, and once they are all in, the metadata of every show and movie
+// they name, read from them once into *meta. A pod fetches its channels'
+// grids before their metadata, so with grids alone the holder could build
+// while another pod still fetched shows, and those shows would have no
+// summary or genres.
+func (c *cloudGuides) missing(ctx context.Context, conn *pgx.Conn, p cloudPlan, meta *[]string) (int, error) {
 	now := time.Now()
+	var grids []string
 	for _, k := range p.Channels {
 		for _, w := range p.weeks() {
-			_, fresh, err := epgcloud.CacheFresh(ctx, conn, epgcloud.GridKey(k, w[0], w[1]), cloudGridTTL, now)
+			grids = append(grids, epgcloud.GridKey(k, w[0], w[1]))
+		}
+	}
+	if n, err := epgcloud.CacheStale(ctx, conn, grids, cloudGridTTL, now); err != nil || n > 0 {
+		return n, err
+	}
+	if *meta == nil {
+		ids := map[string]bool{}
+		for _, key := range grids {
+			body, _, ok, err := epgcloud.CacheGet(ctx, conn, key)
 			if err != nil {
 				return 0, err
 			}
-			if !fresh {
-				n++
+			if !ok {
+				continue
 			}
+			items, err := epgcloud.DecodeItems(body)
+			if err != nil {
+				return 0, err
+			}
+			metadataIDs(items, ids)
+		}
+		*meta = make([]string, 0, len(ids))
+		for id := range ids {
+			*meta = append(*meta, epgcloud.MetadataKey(id))
 		}
 	}
-	return n, nil
+	return epgcloud.CacheStale(ctx, conn, *meta, cloudMetadataTTL, now)
 }
 
 // input reads a build's answers from the cache, fetching the lineup when

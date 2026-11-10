@@ -170,8 +170,10 @@ func carryPlaylists(ctx context.Context, tx pgx.Tx, schema, staging string) erro
 
 // MarkGuideRefreshed writes a DVR's cloud guide provider row as PMS does at
 // a refresh's end -- pv:timeOfLastRefresh refreshed, pv:lastChunkEndedAt
-// the day after the last one built -- keeping its other fields, so PMS's
-// start-up check finds the guide fresh.
+// the day after the last one built, and the row's updated_at refreshed too,
+// which PMS reports as the DVR's refreshedAt (PMS's own refresh on the rig,
+// 2026-11-10, wrote updated_at equal to pv:timeOfLastRefresh) -- keeping
+// its other fields, so PMS's start-up check finds the guide fresh.
 func MarkGuideRefreshed(ctx context.Context, conn *pgx.Conn, library, dvrUUID string, lastChunkEnded, refreshed time.Time) error {
 	lib := pgx.Identifier{library}.Sanitize()
 	var id int64
@@ -192,7 +194,8 @@ func MarkGuideRefreshed(ctx context.Context, conn *pgx.Conn, library, dvrUUID st
 	}
 	fields["pv:lastChunkEndedAt"] = strconv.FormatInt(lastChunkEnded.Unix(), 10)
 	fields["pv:timeOfLastRefresh"] = strconv.FormatInt(refreshed.Unix(), 10)
-	_, err = conn.Exec(ctx, `UPDATE `+lib+`.media_provider_resources SET extra_data = $1 WHERE id = $2`, extradata.Encode(fields), id)
+	_, err = conn.Exec(ctx, `UPDATE `+lib+`.media_provider_resources SET extra_data = $1, updated_at = $3 WHERE id = $2`,
+		extradata.Encode(fields), id, refreshed.Unix())
 	return err
 }
 

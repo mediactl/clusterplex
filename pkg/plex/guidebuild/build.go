@@ -83,9 +83,11 @@ type Input struct {
 	Now time.Time
 }
 
-// Stats counts what a build wrote.
+// Stats counts what a build wrote, and the mapped channels it left out
+// because the lineup lists no such station.
 type Stats struct {
 	Channels, Items, Airings, Tags, Taggings int
+	Unmatched                                []string `json:",omitempty"`
 }
 
 // row is one metadata_items row before its id.
@@ -182,13 +184,24 @@ func Plan(in Input) (*Rows, error) {
 		events = append(events, tagEvent{item: r, made: true, channels: slices.Clone(r.channels)})
 	}
 	var airings []airingRow
-	channels := slices.Clone(in.Channels)
+	// A mapped channel the lineup no longer lists is left out, as PMS's
+	// load matches each mapped channel to a station ("Matched channel ...
+	// adding") and asks for no other: one station gone must not stop the
+	// guide being built.
+	var unmatched []string
+	channels := slices.DeleteFunc(slices.Clone(in.Channels), func(k string) bool {
+		_, ok := tagIDs[k]
+		if !ok {
+			unmatched = append(unmatched, k)
+		}
+		return !ok
+	})
+	if len(channels) == 0 && len(unmatched) > 0 {
+		return nil, fmt.Errorf("guidebuild: no mapped channel is in the lineup (%d mapped)", len(unmatched))
+	}
 	slices.SortFunc(channels, func(a, b string) int { return cmp.Compare(tagIDs[a], tagIDs[b]) })
 	weeks := 0
 	for _, key := range channels {
-		if _, ok := tagIDs[key]; !ok {
-			return nil, fmt.Errorf("guidebuild: channel %s is not in the lineup", key)
-		}
 		weeks = max(weeks, len(in.Grids[key]))
 	}
 	seen := map[string]bool{} // "<channel>|<begins>": a slot either week's answer holds
@@ -400,7 +413,7 @@ func Plan(in Input) (*Rows, error) {
 
 	return &Rows{
 		Tags: tagRows, Items: itemRows, Taggings: taggings, Media: mediaRows, Parts: partRows,
-		Stats: Stats{Channels: len(channels), Items: len(itemRows), Airings: len(mediaRows), Tags: len(tagRows), Taggings: len(taggings)},
+		Stats: Stats{Channels: len(channels), Items: len(itemRows), Airings: len(mediaRows), Tags: len(tagRows), Taggings: len(taggings), Unmatched: unmatched},
 	}, nil
 }
 

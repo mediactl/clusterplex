@@ -375,7 +375,15 @@ func TestAShowDatedByItsYearAloneIsDatedItsFirstDay(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Unix(), item(t, rows, "plex://show/s")["originally_available_at"])
 }
 
-func TestAChannelOutsideTheLineupIsRefused(t *testing.T) {
-	_, err := Plan(input(map[string][][]epgcloud.Item{"nope": {{movie("m", slot(at(1), at(2)))}}}))
-	assert.Error(t, err)
+func TestAMappedChannelTheLineupLacksIsLeftOut(t *testing.T) {
+	rows := plan(t, input(map[string][][]epgcloud.Item{
+		"k1":   {{movie("m", slot(at(1), at(2)))}},
+		"gone": {{movie("x", slot(at(1), at(2)))}},
+	}))
+	assert.Equal(t, []string{"gone"}, rows.Stats.Unmatched)
+	assert.Equal(t, 1, rows.Stats.Channels)
+	assert.Len(t, rows.Media, 1, "the other channels' guide is still built")
+
+	_, err := Plan(input(map[string][][]epgcloud.Item{"gone": {{movie("m", slot(at(1), at(2)))}}}))
+	assert.Error(t, err, "but not a guide of no channel at all")
 }
