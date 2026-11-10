@@ -118,6 +118,22 @@ func TestPublicAddress(t *testing.T) {
 		"[fd00::1]:443":      false,
 		"0.0.0.0:443":        false,
 		"not-an-ip:443":      false,
+		// Reserved, benchmarking, documentation and future-use ranges.
+		"0.1.2.3:443":       false,
+		"192.0.0.8:443":     false,
+		"192.0.2.10:443":    false,
+		"198.18.0.1:443":    false,
+		"198.51.100.7:443":  false,
+		"203.0.113.9:443":   false,
+		"240.0.0.1:443":     false,
+		"[2001:db8::1]:443": false,
+		// Translated IPv6 is judged by the IPv4 inside it.
+		"[64:ff9b::a00:1]:443":                       false, // NAT64 of 10.0.0.1
+		"[64:ff9b::5db8:d822]:443":                   true,  // NAT64 of 93.184.216.34
+		"[64:ff9b:1::a00:1]:443":                     false, // local-use NAT64
+		"[2002:a00:1::1]:443":                        false, // 6to4 of 10.0.0.1
+		"[2002:5db8:d822::1]:443":                    true,  // 6to4 of 93.184.216.34
+		"[2001:0:4136:e378:8000:63bf:3fff:fdd2]:443": false, // Teredo
 	} {
 		assert.Equal(t, want, collections.PublicAddress(addr), addr)
 	}

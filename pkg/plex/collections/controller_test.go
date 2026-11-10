@@ -404,3 +404,125 @@ func TestAConflictKeepsTheRecordedCollection(t *testing.T) {
 	assert.Equal(t, "77", s["ratingKey"], "a conflict must not release the collection it holds")
 	assert.Equal(t, true, s["adopted"])
 }
+
+func netflixResource(title string) map[string]any {
+	return map[string]any{
+		"library": "Clustarr TV", "title": title, "itemType": "show",
+		"filter": map[string]any{"match": "all", "rules": []any{
+			map[string]any{"field": "show.network", "operator": "is", "value": "Netflix"},
+		}},
+	}
+}
+
+func withStatus(u *unstructured.Unstructured, fields map[string]any) *unstructured.Unstructured {
+	for k, v := range fields {
+		_ = unstructured.SetNestedField(u.Object, v, "status", k)
+	}
+	return u
+}
+
+func TestTwoResourcesNeverShareACollection(t *testing.T) {
+	// "a" holds ratingKey rk as "Netflix"; in Plex Web someone retitles it
+	// "Streaming", the title of "b", which is older and so syncs first:
+	// without the hold it would adopt a's collection.
+	h := newHarness(t, true)
+	rk := h.f.add(fakeCollection{Section: "2", Title: "Streaming", Subtype: "show", Smart: true, Content: storedContent(t, "2", "Netflix")})
+	a := withStatus(plexCollection("a", time.Now().Add(-time.Hour), netflixResource("Netflix")), map[string]any{"ratingKey": rk})
+	b := plexCollection("b", time.Now().Add(-2*time.Hour), netflixResource("Streaming"))
+	for _, o := range []*unstructured.Unstructured{a, b} {
+		_, err := h.dyn.Resource(collections.GVR).Namespace(ns).Create(t.Context(), o, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+	h.run(t)
+
+	// b never adopts a's collection; once a puts its title back, b gets
+	// one of its own.
+	require.Eventually(t, func() bool {
+		rkB, _, _ := unstructured.NestedString(h.get(t, "b").Object, "status", "ratingKey")
+		return rkB != ""
+	}, 5*time.Second, 10*time.Millisecond)
+	rkB, _, _ := unstructured.NestedString(h.get(t, "b").Object, "status", "ratingKey")
+	assert.NotEqual(t, rk, rkB)
+	assert.Equal(t, "Netflix", h.f.col(rk).Title)
+	for _, e := range h.recorded() {
+		if e.Name == "b" && e.Reason == "Adopted" {
+			t.Fatalf("b adopted a collection: %s", e.Message)
+		}
+	}
+}
+
+func TestADuplicateClaimIsReleased(t *testing.T) {
+	h := newHarness(t, true)
+	rk := h.f.add(fakeCollection{Section: "2", Title: "Netflix", Subtype: "show", Smart: true, Content: storedContent(t, "2", "Netflix")})
+	a := withStatus(plexCollection("a", time.Now().Add(-2*time.Hour), netflixResource("Netflix")), map[string]any{"ratingKey": rk})
+	b := withStatus(plexCollection("b", time.Now().Add(-time.Hour), netflixResource("Other")), map[string]any{"ratingKey": rk})
+	for _, o := range []*unstructured.Unstructured{a, b} {
+		_, err := h.dyn.Resource(collections.GVR).Namespace(ns).Create(t.Context(), o, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+	h.f.add(fakeCollection{Section: "2", Title: "Other", Subtype: "show", Smart: true, Content: storedContent(t, "2", "Netflix")})
+	h.ctrl.Every = time.Hour
+	h.run(t)
+
+	require.Eventually(t, func() bool {
+		s := h.sentStatus(t, "b")
+		return s != nil && s["conditions"] != nil
+	}, 5*time.Second, 10*time.Millisecond)
+	s := h.sentStatus(t, "b")
+	assert.Equal(t, "Conflict", s["conditions"].([]any)[0].(map[string]any)["reason"])
+	assert.Contains(t, s["conditions"].([]any)[0].(map[string]any)["message"], `"a"`)
+	assert.Nil(t, s["ratingKey"], "the newer claim is released")
+	assert.Equal(t, "Netflix", h.f.col(rk).Title, "b never wrote a's collection")
+}
+
+func TestDeletionSparesACollectionAnotherHolds(t *testing.T) {
+	h := newHarness(t, true)
+	rk := h.f.add(fakeCollection{Section: "2", Title: "Netflix", Subtype: "show", Smart: true, Content: storedContent(t, "2", "Netflix")})
+	a := withStatus(plexCollection("a", time.Now().Add(-2*time.Hour), netflixResource("Netflix")), map[string]any{"ratingKey": rk})
+	b := withStatus(plexCollection("b", time.Now().Add(-time.Hour), netflixResource("Other")), map[string]any{"ratingKey": rk})
+	b.SetFinalizers([]string{collections.Finalizer})
+	b.SetDeletionTimestamp(&metav1.Time{Time: time.Now()})
+	for _, o := range []*unstructured.Unstructured{a, b} {
+		_, err := h.dyn.Resource(collections.GVR).Namespace(ns).Create(t.Context(), o, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+	h.run(t)
+	require.Eventually(t, func() bool { return len(h.get(t, "b").GetFinalizers()) == 0 }, 5*time.Second, 10*time.Millisecond)
+	assert.Empty(t, h.f.writesTo("DELETE /library/collections/"+rk))
+	assert.NotNil(t, h.f.col(rk), "a still holds it")
+}
+
+func TestDuplicateTitlesIgnoreCaseButNotItemType(t *testing.T) {
+	older := plexCollection("netflix", time.Now().Add(-2*time.Hour), netflixResource("Netflix"))
+	lower := plexCollection("netflix-lower", time.Now().Add(-time.Hour), netflixResource("netflix"))
+	episodes := netflixResource("NETFLIX")
+	episodes["itemType"] = "episode"
+	episodes["filter"] = map[string]any{"match": "all", "rules": []any{
+		map[string]any{"field": "episode.unwatched", "operator": "isTrue"},
+	}}
+	other := plexCollection("netflix-episodes", time.Now(), episodes)
+	h := newHarness(t, true, older, lower, other)
+	h.f.add(fakeCollection{Section: "2", Title: "Netflix", Subtype: "show", Smart: true, Content: storedContent(t, "2", "Netflix")})
+	h.run(t)
+
+	require.Eventually(t, func() bool {
+		return condition(h.get(t, "netflix-lower")) != nil && condition(h.get(t, "netflix-episodes")) != nil
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, "Conflict", condition(h.get(t, "netflix-lower"))["reason"], "a title of another case is the same collection")
+	assert.NotEqual(t, "Conflict", condition(h.get(t, "netflix-episodes"))["reason"], "another item type is another collection")
+}
+
+func TestLastSyncedAtMovesOnlyOnASync(t *testing.T) {
+	lost := upResource()
+	lost["library"] = "No Such Library"
+	when := "2026-11-01T00:00:00Z"
+	h := newHarness(t, true, withStatus(plexCollection("up", time.Now(), lost), map[string]any{"lastSyncedAt": when}))
+	h.run(t)
+	require.Eventually(t, func() bool {
+		s := h.sentStatus(t, "up")
+		return s != nil && s["conditions"] != nil
+	}, 5*time.Second, 10*time.Millisecond)
+	s := h.sentStatus(t, "up")
+	assert.Equal(t, "LibraryNotFound", s["conditions"].([]any)[0].(map[string]any)["reason"])
+	assert.Equal(t, when, s["lastSyncedAt"], "a refusal keeps the last sync's time")
+}

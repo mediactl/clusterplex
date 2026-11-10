@@ -152,11 +152,34 @@ func hostPort(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), "443")
 }
 
-// cgnat is the shared address space (RFC 6598), no public address.
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+// notPublic are ranges IsGlobalUnicast admits that are no public host:
+// "this network", shared (CGNAT), IETF protocol assignments, the
+// documentation and benchmarking nets, future use, IPv6 documentation,
+// local-use NAT64 and Teredo (whose IPv4 is obfuscated).
+var notPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+}
+
+// Translated IPv6 carries an IPv4 address, which decides: NAT64's well-
+// known prefix holds it in the last four bytes, 6to4 in bytes 2 to 5.
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+)
 
 // publicAddress says whether a dialled "ip:port" is a public unicast
-// address: not private, loopback, link-local, unspecified or shared.
+// address: not private, loopback, link-local, unspecified, shared,
+// reserved or documentation, and for translated IPv6 its IPv4 likewise.
 func publicAddress(address string) bool {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -166,6 +189,24 @@ func publicAddress(address string) bool {
 	if err != nil {
 		return false
 	}
-	ip = ip.Unmap()
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !cgnat.Contains(ip)
+	return publicIP(ip.Unmap())
+}
+
+func publicIP(ip netip.Addr) bool {
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	for _, p := range notPublic {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	b := ip.As16()
+	switch {
+	case nat64.Contains(ip):
+		return publicIP(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+	case sixToFour.Contains(ip):
+		return publicIP(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}))
+	}
+	return true
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -71,6 +72,9 @@ func Compile(f Filter, sort *Sort, limit *int32, itemType string, m api.SectionM
 		return "", fmt.Errorf("%w: itemType: %q is not movie, show, season or episode", ErrInvalidRule, itemType)
 	}
 	ps := []pair{{"type", strconv.Itoa(n)}}
+	if sort != nil && !slices.Contains(m.Sorts, sort.Field) {
+		return "", fmt.Errorf("%w: sort.field: the library sorts by none of %q (it takes %s)", ErrInvalidRule, sort.Field, strings.Join(m.Sorts, ", "))
+	}
 	switch {
 	case sort != nil:
 		s := sort.Field

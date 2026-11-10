@@ -126,8 +126,16 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
     visibility -- is put back when Plex differs; anything it leaves out is
     never touched, and a smart filter's sort and limit left out are carried
     from Plex's.
+  - **No two resources share a collection.** Each pass maps every recorded
+    ratingKey to the oldest resource recording it (`holdsOf`): adoption
+    never takes a collection another resource holds (`Conflict`, naming
+    the holder), a newer resource recording the same one releases its
+    claim, and a deletion spares a collection another resource still
+    records. Two resources of one library, title (in any case) and item
+    type are a `Conflict` for the newer.
   - It adopts only a person-made collection (`collection://` GUID) of the
-    same title, item type and kind; a metadata agent's is `NotAdoptable`.
+    same title (in any case), item type and kind; a metadata agent's is
+    `NotAdoptable`.
     Only a 404 for the recorded ratingKey lets it look further, and a
     listing Plex could not answer creates nothing. A normal collection is
     never emptied, and nothing is added or removed when clustarr's items

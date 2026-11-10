@@ -184,14 +184,54 @@ func (c *Controller) pass(ctx context.Context, store cache.Store) {
 		}
 	}
 	slices.SortFunc(objs, older)
+	held := holdsOf(objs)
 	for _, u := range objs {
 		if ctx.Err() != nil {
 			return
 		}
 		if all || dirty[u.GetName()] {
-			c.reconcile(ctx, u.GetName(), objs)
+			c.reconcile(ctx, u.GetName(), objs, held)
 		}
 	}
+}
+
+// holdsOf maps each collection a resource's status records to the oldest
+// resource recording it: the one that holds it. Every stage respects it:
+// adoption never takes a held collection, a newer claim on one is
+// released, and a deletion spares one another resource holds.
+func holdsOf(objs []*unstructured.Unstructured) map[string]string {
+	held := map[string]string{}
+	for _, o := range objs {
+		rk, _, _ := unstructured.NestedString(o.Object, "status", "ratingKey")
+		if rk != "" && held[rk] == "" {
+			held[rk] = o.GetName()
+		}
+	}
+	return held
+}
+
+// othersHold is held without the collections name holds.
+func othersHold(held map[string]string, name string) map[string]string {
+	out := make(map[string]string, len(held))
+	for rk, holder := range held {
+		if holder != name {
+			out[rk] = holder
+		}
+	}
+	return out
+}
+
+// otherHolder is another resource than name recording ratingKey, or "".
+func otherHolder(all []*unstructured.Unstructured, name, ratingKey string) string {
+	for _, o := range all {
+		if o.GetName() == name {
+			continue
+		}
+		if rk, _, _ := unstructured.NestedString(o.Object, "status", "ratingKey"); rk == ratingKey {
+			return o.GetName()
+		}
+	}
+	return ""
 }
 
 // older orders resources by creation, then name.
@@ -205,7 +245,7 @@ func older(a, b *unstructured.Unstructured) int {
 // reconcile is one resource, read afresh so its status is the last
 // written: its deletion, its finalizer, a duplicate's conflict, or a
 // sync, then its status and Events.
-func (c *Controller) reconcile(ctx context.Context, name string, all []*unstructured.Unstructured) {
+func (c *Controller) reconcile(ctx context.Context, name string, all []*unstructured.Unstructured, held map[string]string) {
 	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
 	log := c.Logger.With("collection", c.Namespace+"/"+name)
@@ -217,13 +257,24 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 		}
 		return
 	}
-	held := slices.Contains(u.GetFinalizers(), Finalizer)
+	finalized := slices.Contains(u.GetFinalizers(), Finalizer)
 
 	if u.GetDeletionTimestamp() != nil {
-		if !held {
+		if !finalized {
 			return
 		}
 		rk, _, _ := unstructured.NestedString(u.Object, "status", "ratingKey")
+		if holder := otherHolder(all, name, rk); rk != "" && holder != "" {
+			// Another resource holds it too: release this one's claim and
+			// leave the collection to it.
+			if err := c.applyFinalizers(ctx, u, nil); err != nil {
+				log.Warn("release the finalizer", "error", err)
+				return
+			}
+			log.Info("deleted; the Plex collection stays with another resource", "ratingKey", rk, "holder", holder)
+			c.record(u, false, "Released", fmt.Sprintf("Plex's collection (ratingKey %s) is held by the PlexCollection %q and stays", rk, holder))
+			return
+		}
 		if err := c.Syncer.Delete(ctx, rk); err != nil {
 			log.Warn("delete the Plex collection; the finalizer stays", "ratingKey", rk, "error", err)
 			c.record(u, true, ReasonPlexUnavailable, fmt.Sprintf("could not delete Plex's collection (ratingKey %s): %v", rk, err))
@@ -239,7 +290,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 		}
 		return
 	}
-	if !held {
+	if !finalized {
 		if err := c.applyFinalizers(ctx, u, []string{Finalizer}); err != nil {
 			log.Warn("add the finalizer", "error", err)
 			return
@@ -257,13 +308,26 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 	switch {
 	case err != nil:
 		out.Reason, out.Message = ReasonInvalidRule, err.Error()
+	case prev.RatingKey != "" && held[prev.RatingKey] != "" && held[prev.RatingKey] != name:
+		// An older resource records the same collection: it holds it, and
+		// this claim is released, so this one never writes or deletes it.
+		holder := held[prev.RatingKey]
+		out = Outcome{Reason: ReasonConflict, Message: fmt.Sprintf("Plex's collection (ratingKey %s) is held by the older PlexCollection %q; this one released it and changes nothing in Plex", prev.RatingKey, holder)}
 	default:
 		if first := firstHolder(u, spec, all); first != "" {
 			out.Reason = ReasonConflict
-			out.Message = fmt.Sprintf("the older PlexCollection %q holds %q in %q; this one changes nothing in Plex", first, spec.Title, spec.Library)
+			out.Message = fmt.Sprintf("the older PlexCollection %q holds %q (%s) in %q; this one changes nothing in Plex", first, spec.Title, spec.ItemType, spec.Library)
 		} else {
+			prev.HeldByOthers = othersHold(held, name)
 			out = c.Syncer.Sync(ctx, u.GetNamespace(), spec, prev)
 		}
+	}
+	// What this resource holds now, for the rest of the pass.
+	if prev.RatingKey != "" && held[prev.RatingKey] == name && prev.RatingKey != out.RatingKey {
+		delete(held, prev.RatingKey)
+	}
+	if out.RatingKey != "" && held[out.RatingKey] == "" {
+		held[out.RatingKey] = name
 	}
 	if err := c.writeStatus(ctx, u, out, prevCond); err != nil {
 		log.Warn("write the collection's status", "error", err)
@@ -272,7 +336,8 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 }
 
 // firstHolder is the name of an older resource, not being deleted, of
-// the same library and title, or "".
+// the same library and title -- in any case, as Plex's titles are matched
+// -- and item type, or "".
 func firstHolder(u *unstructured.Unstructured, spec Spec, all []*unstructured.Unstructured) string {
 	for _, o := range all {
 		if o.GetName() == u.GetName() {
@@ -283,7 +348,8 @@ func firstHolder(u *unstructured.Unstructured, spec Spec, all []*unstructured.Un
 		}
 		lib, _, _ := unstructured.NestedString(o.Object, "spec", "library")
 		title, _, _ := unstructured.NestedString(o.Object, "spec", "title")
-		if lib == spec.Library && title == spec.Title {
+		itemType, _, _ := unstructured.NestedString(o.Object, "spec", "itemType")
+		if strings.EqualFold(lib, spec.Library) && strings.EqualFold(title, spec.Title) && itemType == spec.ItemType {
 			return o.GetName()
 		}
 	}
@@ -318,7 +384,13 @@ func (c *Controller) writeStatus(ctx context.Context, u *unstructured.Unstructur
 			out.MissingMembers, out.Missing = int(m), missingOf(u)
 		}
 	}
-	status := map[string]any{"observedGeneration": u.GetGeneration(), "lastSyncedAt": now}
+	status := map[string]any{"observedGeneration": u.GetGeneration()}
+	// lastSyncedAt is when a sync last reached Plex: a refusal keeps it.
+	if healthy || out.Reason == ReasonImageUnavailable {
+		status["lastSyncedAt"] = now
+	} else if t, _, _ := unstructured.NestedString(u.Object, "status", "lastSyncedAt"); t != "" {
+		status["lastSyncedAt"] = t
+	}
 	set := func(k string, v any, ok bool) {
 		if ok {
 			status[k] = v

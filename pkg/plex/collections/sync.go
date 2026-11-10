@@ -85,6 +85,10 @@ type Previous struct {
 	Adopted    bool
 	Poster     *ImageState
 	Background *ImageState
+	// HeldByOthers are the collections other resources hold, ratingKey to
+	// the holder's name: never adopted, so two resources never write one
+	// collection.
+	HeldByOthers map[string]string
 }
 
 // Outcome is a sync's result, which the resource's status records.
@@ -198,7 +202,7 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 	}
 
 	// 3. Find, adopt or create.
-	col, adopted, err := s.find(ctx, section.Key, spec, prev.RatingKey)
+	col, adopted, err := s.find(ctx, section.Key, spec, prev.RatingKey, prev.HeldByOthers)
 	if err != nil {
 		return err
 	}
@@ -358,11 +362,12 @@ func (s *Syncer) section(ctx context.Context, spec Spec) (api.Section, error) {
 }
 
 // find is the collection the resource holds: its recorded ratingKey's,
-// else one of its title and item type to adopt; nil when there is none.
+// else one of its title (in any case) and item type to adopt, never one
+// another resource holds; nil when there is none.
 // Only a 404 for the recorded ratingKey lets it look further, and a
 // candidate it may not adopt stops it, so nothing is ever created beside
 // a collection Plex already has.
-func (s *Syncer) find(ctx context.Context, sectionKey string, spec Spec, ratingKey string) (*api.Collection, bool, error) {
+func (s *Syncer) find(ctx context.Context, sectionKey string, spec Spec, ratingKey string, held map[string]string) (*api.Collection, bool, error) {
 	smart := spec.Filter != nil
 	if ratingKey != "" {
 		c, err := s.PMS.Collection(ctx, ratingKey)
@@ -380,12 +385,14 @@ func (s *Syncer) find(ctx context.Context, sectionKey string, spec Spec, ratingK
 		return nil, false, err
 	}
 	var adoptable []api.Collection
-	var notByPerson, otherKind *api.Collection
+	var notByPerson, otherKind, heldCol *api.Collection
 	for i, c := range list {
-		if c.Title != spec.Title || c.Subtype != spec.ItemType {
+		if !strings.EqualFold(c.Title, spec.Title) || c.Subtype != spec.ItemType {
 			continue
 		}
 		switch {
+		case held[c.RatingKey] != "":
+			heldCol = &list[i]
 		case !c.MadeByPerson():
 			notByPerson = &list[i]
 		case c.Smart != smart:
@@ -399,6 +406,8 @@ func (s *Syncer) find(ctx context.Context, sectionKey string, spec Spec, ratingK
 		return &adoptable[0], true, nil
 	case len(adoptable) > 1:
 		return nil, false, refuse(ReasonConflict, "Plex has %d collections titled %q; delete or rename all but one", len(adoptable), spec.Title)
+	case heldCol != nil:
+		return nil, false, refuse(ReasonConflict, "Plex's collection %q (ratingKey %s) is held by the PlexCollection %q; it is not adopted, and this one is created once that resource's title is put back on it", heldCol.Title, heldCol.RatingKey, held[heldCol.RatingKey])
 	case notByPerson != nil:
 		return nil, false, refuse(ReasonNotAdoptable, "Plex's collection %q was made by a metadata agent (%s), not a person, and is never adopted; retitle the resource", spec.Title, notByPerson.GUID)
 	case otherKind != nil:

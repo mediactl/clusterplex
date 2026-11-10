@@ -231,3 +231,43 @@ func TestSyncCachesTheSectionMeta(t *testing.T) {
 	assert.Equal(t, 2, f.gets["GET /library/sections/1/all"])
 	assert.True(t, strings.HasPrefix(storedContent(t, "1", "UP"), "server://"))
 }
+
+func TestSyncNeverAdoptsACollectionAnotherResourceHolds(t *testing.T) {
+	f := newFakePMS(t)
+	// "other" holds this collection; someone retitled it UP in Plex Web.
+	rk := f.add(fakeCollection{Section: "1", Title: "UP", Subtype: "movie", Smart: true, Content: storedContent(t, "1", "UP")})
+	out := syncer(f).Sync(t.Context(), ns, up(), collections.Previous{HeldByOthers: map[string]string{rk: "other"}})
+	assert.Equal(t, collections.ReasonConflict, out.Reason)
+	assert.Contains(t, out.Message, `"other"`)
+	assert.Empty(t, out.RatingKey)
+	assert.Empty(t, f.allWrites(), "neither adopted nor created beside it")
+
+	// An unheld candidate beside the held one is adopted.
+	free := f.add(fakeCollection{Section: "1", Title: "UP", Subtype: "movie", Smart: true, Content: storedContent(t, "1", "UP")})
+	out = syncer(f).Sync(t.Context(), ns, up(), collections.Previous{HeldByOthers: map[string]string{rk: "other"}})
+	assert.Equal(t, collections.ReasonAdopted, out.Reason, out.Message)
+	assert.Equal(t, free, out.RatingKey)
+}
+
+func TestSyncAdoptsATitleOfAnotherCase(t *testing.T) {
+	f := newFakePMS(t)
+	rk := f.add(fakeCollection{Section: "1", Title: "Up", Subtype: "movie", Smart: true, Content: storedContent(t, "1", "UP")})
+	out := syncer(f).Sync(t.Context(), ns, up(), collections.Previous{})
+	assert.Equal(t, collections.ReasonAdopted, out.Reason, out.Message)
+	assert.Equal(t, rk, out.RatingKey)
+	assert.Equal(t, "UP", f.col(rk).Title, "the resource's spelling is put on it")
+}
+
+func TestSyncRefusesASortTheLibraryLacks(t *testing.T) {
+	f := newFakePMS(t)
+	s := up()
+	s.Sort = &collections.Sort{Field: "nonsense"}
+	out := syncer(f).Sync(t.Context(), ns, s, collections.Previous{})
+	assert.Equal(t, collections.ReasonInvalidRule, out.Reason)
+	assert.Contains(t, out.Message, "nonsense")
+	assert.Empty(t, f.allWrites())
+
+	s.Sort = &collections.Sort{Field: "addedAt", Descending: true}
+	out = syncer(f).Sync(t.Context(), ns, s, collections.Previous{})
+	assert.Equal(t, collections.ReasonCreated, out.Reason, out.Message)
+}
