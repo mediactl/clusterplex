@@ -61,6 +61,11 @@ const (
 	// cloudFetchWait is how long the holder waits for the other pods'
 	// shares before it fetches the rest itself.
 	cloudFetchWait = 5 * time.Minute
+	// cloudRetryAfter is the wait after a failed build before the next.
+	cloudRetryAfter = 15 * time.Minute
+	// cloudProgressEvery is how often a fetch says how far it has got: a
+	// cold fetch of 248 channels runs half an hour or more.
+	cloudProgressEvery = 2 * time.Minute
 	// cloudFetchPoll is how often every pod looks at the plans.
 	cloudFetchPoll = time.Minute
 	// cloudWeeks is how many weeks a build holds, a request each, as PMS's
@@ -119,6 +124,9 @@ type cloudWant struct {
 type cloudBuilt struct {
 	hash string
 	at   time.Time
+	// failed is when the last build failed; due waits cloudRetryAfter
+	// from it.
+	failed time.Time
 }
 
 // cloudGuides is the manager's builder of cloud guides.
@@ -231,6 +239,7 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 	cl := c.client(conn)
 	now := time.Now()
 	ids := map[string]bool{}
+	pr := c.progress(p.DVR)
 	for _, k := range channels {
 		for _, w := range p.weeks() {
 			key := epgcloud.GridKey(k, w[0], w[1])
@@ -245,6 +254,8 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 				if err := epgcloud.CachePut(ctx, conn, key, body, time.Now()); err != nil {
 					return err
 				}
+				pr.grids++
+				pr.say(false)
 			}
 			items, err := epgcloud.DecodeItems(body)
 			if err != nil {
@@ -271,8 +282,36 @@ func (c *cloudGuides) fetch(ctx context.Context, conn *pgx.Conn, p cloudPlan, ch
 		if err := epgcloud.CachePut(ctx, conn, key, body, time.Now()); err != nil {
 			return err
 		}
+		pr.shows++
+		pr.say(false)
 	}
+	pr.say(true)
 	return nil
+}
+
+// fetchProgress counts one fetch's calls and says so every
+// cloudProgressEvery, and once at its end when it made any.
+type fetchProgress struct {
+	log          *slog.Logger
+	began, said  time.Time
+	grids, shows int
+}
+
+func (c *cloudGuides) progress(dvr string) *fetchProgress {
+	now := time.Now()
+	return &fetchProgress{log: c.log().With("dvr", dvr), began: now, said: now}
+}
+
+func (f *fetchProgress) say(done bool) {
+	if f.grids+f.shows == 0 || (!done && time.Since(f.said) < cloudProgressEvery) {
+		return
+	}
+	f.said = time.Now()
+	msg := "Live TV: fetching a cloud guide's answers"
+	if done {
+		msg = "Live TV: fetched a cloud guide's answers"
+	}
+	f.log.Info(msg, "grids", f.grids, "shows", f.shows, "took", time.Since(f.began).Round(time.Second).String())
 }
 
 // metadataIDs adds the rating keys whose own metadata a build reads for
@@ -339,10 +378,9 @@ func (c *cloudGuides) runBuilder(ctx context.Context) {
 				continue
 			}
 			if err := c.build(ctx, w); err != nil && ctx.Err() == nil {
-				c.log().Warn("Live TV: build a cloud guide", "dvr", w.dvr, "error", err)
-				c.mu.Lock()
-				c.built[w.dvr] = cloudBuilt{hash: "", at: time.Now().Add(-cloudBuildEvery + 15*time.Minute)}
-				c.mu.Unlock()
+				c.log().Warn("Live TV: build a cloud guide", "dvr", w.dvr, "error", err,
+					"retryIn", cloudRetryAfter.String())
+				c.failed(w.dvr, time.Now())
 			}
 		}
 		select {
@@ -352,6 +390,18 @@ func (c *cloudGuides) runBuilder(ctx context.Context) {
 		case <-time.After(cloudFetchPoll):
 		}
 	}
+}
+
+// failed records a failed build of dvr's guide at at: the guide is built
+// again, but not before cloudRetryAfter (an empty hash alone made every
+// failure due again at the next minute's poll: talos's first build, which
+// failed on its lineup, retried each minute).
+func (c *cloudGuides) failed(dvr string, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.built[dvr]
+	b.hash, b.failed = "", at
+	c.built[dvr] = b
 }
 
 // due reports whether w's guide wants building: its map changed since the
@@ -380,6 +430,8 @@ func (c *cloudGuides) due(ctx context.Context, w cloudWant) bool {
 		c.mu.Unlock()
 	}
 	switch {
+	case !b.failed.IsZero() && time.Since(b.failed) < cloudRetryAfter:
+		return false
 	case b.at.IsZero(), b.hash != w.hash:
 		return true
 	case time.Since(b.at) < cloudBuildEvery-time.Hour:
@@ -433,6 +485,11 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 		return err
 	}
 	began := time.Now()
+	// The lineup first: a lineup the service does not know fails the build
+	// before half an hour of fetching, not after it.
+	if err := c.freshLineup(ctx, conn, p.Lineup); err != nil {
+		return err
+	}
 	// This pod's share first, then the other pods' while they fetch, then
 	// whatever is left.
 	if err := c.fetchPlans(ctx, false); err != nil {
@@ -461,7 +518,7 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 		case <-time.After(10 * time.Second):
 		}
 	}
-	if err := c.freshLineup(ctx, conn, p.Lineup); err != nil {
+	if err := c.freshLineup(ctx, conn, p.Lineup); err != nil { // kept fresh past a long fetch
 		return err
 	}
 	g := plexbootstrap.Guide{Provider: cloudGuideProvider, DVR: w.dvr}
@@ -496,11 +553,11 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 		log.Warn("Live TV: prune the cloud guides' cache", "error", err)
 	}
 	if inJob {
-		log.Info("Live TV: built a cloud guide from Plex's guide service in a Job", "took", time.Since(began).Round(time.Second))
+		log.Info("Live TV: built a cloud guide from Plex's guide service in a Job", "took", time.Since(began).Round(time.Second).String())
 		return nil
 	}
 	log.Info("Live TV: built a cloud guide from Plex's guide service", "channels", stats.Channels, "items", stats.Items,
-		"airings", stats.Airings, "took", time.Since(began).Round(time.Second))
+		"airings", stats.Airings, "took", time.Since(began).Round(time.Second).String())
 	if len(stats.Unmatched) > 0 {
 		log.Warn("Live TV: mapped channels the cloud lineup lists no station for were left out of its guide",
 			"lineup", w.lineup, "gridKeys", stats.Unmatched)

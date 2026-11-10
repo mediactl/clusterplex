@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,4 +49,21 @@ func TestACloudGuideAsksForItsLineupByItsID(t *testing.T) {
 	c := &cloudGuides{wants: map[string]cloudWant{}, built: map[string]cloudBuilt{}, kick: make(chan struct{}, 1)}
 	c.Want("dvr", "lineup://tv.plex.providers.epg.cloud/657c8183afd0f02cd353633f#DIRECTV", "http://tuner/hdhr/1", "h")
 	assert.Equal(t, "657c8183afd0f02cd353633f", c.wants["dvr"].lineup, "the block's lineup URI is the service's lineup id")
+}
+
+// TestAFailedBuildWaitsBeforeItsRetry: a failed build is built again only
+// after cloudRetryAfter, and the guide it failed to replace keeps its age.
+func TestAFailedBuildWaitsBeforeItsRetry(t *testing.T) {
+	ctx := context.Background()
+	built := time.Now().Add(-2 * time.Hour)
+	c := &cloudGuides{built: map[string]cloudBuilt{"dvr": {hash: "h", at: built}}}
+	w := cloudWant{dvr: "dvr", hash: "h2"}
+	require.True(t, c.due(ctx, w), "a changed map is due")
+
+	c.failed("dvr", time.Now())
+	assert.False(t, c.due(ctx, w), "not again at the next poll")
+	assert.Equal(t, built, c.built["dvr"].at, "the installed guide keeps its age")
+
+	c.failed("dvr", time.Now().Add(-cloudRetryAfter-time.Second))
+	assert.True(t, c.due(ctx, w), "due once the wait is over")
 }
