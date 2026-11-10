@@ -70,7 +70,8 @@ type Status string
 
 const (
 	Converged Status = "converged"
-	// Waiting is a pass that only waited for a guide load: nothing failed.
+	// Waiting is a pass that only waited, for a guide load or for a dead
+	// device PMS was asked to discover again: nothing failed.
 	Waiting Status = "waiting"
 	Pending Status = "pending"
 	Errored Status = "error"
@@ -360,7 +361,10 @@ type pass struct {
 	devices map[string]plexapi.Device // by device id, HDHomeRun only
 	dvrs    []plexapi.DVR
 	// guideBusy is PMS loading a guide, or this pass having started one.
-	guideBusy   bool
+	guideBusy bool
+	// deadDevice is a block's device PMS listed dead at this pass: the pass
+	// waits for PMS to list it alive again.
+	deadDevice  bool
 	changed     map[string]Provider
 	restartSelf bool
 }
@@ -498,7 +502,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	switch {
 	case pending:
 		res.Status = Pending
-	case waiting:
+	case waiting, ps.deadDevice:
 		res.Status = Waiting
 	}
 	return res, errors.Join(errs...)
@@ -633,12 +637,23 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 	// PMS refreshed the device seven seconds after the manager's tuner
 	// began listening, before its first render served the device's path,
 	// and Live TV stayed off until a discover by hand.
-	if dev.Status == deviceDead && c.now().Sub(c.revived[id]) >= reviveEvery {
-		if err := c.PMS.DiscoverDevice(ctx, uri); err != nil {
-			return fmt.Errorf("discover dead device %s again: %w", uri, err)
+	//
+	// The pass that finds it dead is not converged, so the next comes in
+	// seconds rather than provisionEvery: PMS answers a discover whether or
+	// not the device came back, and one sent before the tuner serves the
+	// path leaves it dead. On 2026-11-10 (talos rev 231, the manager and
+	// Plex restarted together) PMS marked the device dead again during the
+	// discover at 07:57:48Z, the pass read as converged, and Live TV was off
+	// until the next pass revived it at 08:08:27Z.
+	if dev.Status == deviceDead {
+		ps.deadDevice = true
+		if c.now().Sub(c.revived[id]) >= reviveEvery {
+			if err := c.PMS.DiscoverDevice(ctx, uri); err != nil {
+				return fmt.Errorf("discover dead device %s again: %w", uri, err)
+			}
+			c.revived[id] = c.now()
+			c.record(p, ReasonRevived, fmt.Sprintf("block %s: PMS had marked device %s dead; asked it to discover %s again", b.Start, dev.UUID, uri), true)
 		}
-		c.revived[id] = c.now()
-		c.record(p, ReasonRevived, fmt.Sprintf("block %s: PMS had marked device %s dead; asked it to discover %s again", b.Start, dev.UUID, uri), true)
 	}
 
 	dvrs := ps.dvrsOf(dev.UUID)

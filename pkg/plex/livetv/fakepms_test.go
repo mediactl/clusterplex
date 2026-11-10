@@ -55,6 +55,9 @@ type fakePMS struct {
 	mapOverride map[string][]plexapi.ChannelMapping
 	// deviceReads counts GET /media/grabbers/devices/<key>.
 	deviceReads int
+	// discoversLeaveDead is how many more discovers answer as PMS does
+	// before the tuner serves the device's path: 200, the device still dead.
+	discoversLeaveDead int
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
@@ -198,9 +201,14 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		found := false
 		for i := range f.devices {
 			if f.devices[i].URI == q.Get("uri") {
-				f.devices[i].Status = "alive"
+				if f.discoversLeaveDead == 0 {
+					f.devices[i].Status = "alive"
+				}
 				found = true
 			}
+		}
+		if found && f.discoversLeaveDead > 0 {
+			f.discoversLeaveDead--
 		}
 		if !found {
 			w.WriteHeader(http.StatusNotFound)

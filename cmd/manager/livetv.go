@@ -124,8 +124,8 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	}
 }
 
-// liveTVGuidePoll is how soon a pass that only waited for a guide load runs
-// again.
+// liveTVGuidePoll is how soon a pass that only waited, for a guide load or
+// a dead device's discover, runs again.
 var liveTVGuidePoll = 20 * time.Second
 
 // nextLiveTVPass is how long the loop waits after a pass of status, and the
@@ -136,7 +136,9 @@ func nextLiveTVPass(status plexlivetv.Status, backoff, every time.Duration) (wai
 		return every, min(provisionBackoffStart, every)
 	case plexlivetv.Waiting:
 		// A guide load ends on its own, in minutes; backing off to
-		// provisionEvery made a 32-block provider take hours.
+		// provisionEvery made a 32-block provider take hours. A dead
+		// device is asked about again once a minute (reviveEvery) until
+		// PMS lists it alive, not once a provisionEvery.
 		return min(liveTVGuidePoll, every), min(provisionBackoffStart, every)
 	}
 	return backoff, min(backoff*2, every)
