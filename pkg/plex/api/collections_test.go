@@ -76,6 +76,12 @@ func TestCollectionsDecodesSmartContentAndGUID(t *testing.T) {
 	assert.NotEmpty(t, ad.RatingKey)
 	assert.Equal(t, "show", ad.Subtype)
 
+	one, _ := pms(t, map[string]string{"GET /library/metadata/9": `{"MediaContainer":{"Metadata":[{"ratingKey":"9","title":"UP","summary":"Every Up film.","titleSort":"Up 00"}]}}`})
+	col, err := one.Collection(t.Context(), "9")
+	require.NoError(t, err)
+	assert.Equal(t, "Every Up film.", col.Summary)
+	assert.Equal(t, "Up 00", col.TitleSort)
+
 	movies, err := c.Collections(t.Context(), "1")
 	require.NoError(t, err)
 	require.NotEmpty(t, movies)

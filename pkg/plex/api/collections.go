@@ -45,6 +45,10 @@ type Collection struct {
 	GUID       string `json:"guid"`
 	Smart      bool   `json:"smart"`
 	ChildCount int    `json:"childCount"`
+	// Summary and TitleSort are the collection's own; Plex omits a
+	// titleSort nobody set.
+	Summary   string `json:"summary"`
+	TitleSort string `json:"titleSort"`
 }
 
 // UnmarshalJSON reads smart as Plex sends it: "1", 1 or true.
