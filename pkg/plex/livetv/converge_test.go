@@ -288,6 +288,52 @@ func TestADeadDeviceIsDiscoveredAgain(t *testing.T) {
 	assert.Zero(t, count(r.pms.takeWrites(), "POST /media/grabbers/devices/discover"), "alive again: not asked")
 }
 
+// TestADeviceADiscoverLeftDeadIsAskedAboutAgainInAMinute: PMS answers a
+// discover sent before the tuner serves the device's path and marks the
+// device dead again. The pass is Waiting, not Converged, so the loop runs
+// the next in seconds and asks again once reviveEvery has passed; on talos
+// (2026-11-10, rev 231) such a pass read as converged and Live TV was off
+// for the ten minutes to the next.
+func TestADeviceADiscoverLeftDeadIsAskedAboutAgainInAMinute(t *testing.T) {
+	r := newRig(t)
+	clock := time.Date(2026, 11, 10, 7, 57, 48, 0, time.UTC)
+	r.conv.Now = func() time.Time { return clock }
+	b := r.block(0)
+	p := provider(b)
+	r.converge(t, 4, p)
+	r.pms.takeWrites()
+
+	r.pms.mu.Lock()
+	r.pms.devices[0].Status = "dead"
+	r.pms.discoversLeaveDead = 1
+	r.pms.mu.Unlock()
+	pass := func() livetv.Status {
+		t.Helper()
+		res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		return res.Status
+	}
+
+	assert.Equal(t, livetv.Waiting, pass(), "the discover left the device dead")
+	assert.Equal(t, 1, count(r.pms.takeWrites(), "POST /media/grabbers/devices/discover"))
+
+	clock = clock.Add(20 * time.Second)
+	assert.Equal(t, livetv.Waiting, pass(), "still dead")
+	assert.Zero(t, count(r.pms.takeWrites(), "POST /media/grabbers/devices/discover"), "not again within reviveEvery")
+
+	clock = clock.Add(time.Minute)
+	assert.Equal(t, livetv.Waiting, pass(), "the pass that asked again saw the device dead")
+	assert.Equal(t, 1, count(r.pms.takeWrites(), "POST /media/grabbers/devices/discover"), "asked again after reviveEvery")
+	devs, _ := r.pms.state()
+	require.Len(t, devs, 1)
+	assert.Equal(t, "alive", devs[0].Status)
+
+	clock = clock.Add(20 * time.Second)
+	assert.Equal(t, livetv.Converged, pass(), "alive: converged")
+	assert.Zero(t, count(r.pms.takeWrites(), "POST"), "nothing more to do")
+	assert.Equal(t, 2, count(r.ev.reasons(), livetv.ReasonRevived))
+}
+
 // TestAnOldDeviceStaysWhilePMSCannotReachTheNewOne: a block that moved to
 // a new device (argon-tv onto Plex's own guide, 2026-11-04) is named in the
 // status before the tuner serves the device, and PMS answers not found to
