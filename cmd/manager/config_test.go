@@ -129,9 +129,10 @@ func TestOnlyAStatefulSetsFirstPodMayRunLiveTV(t *testing.T) {
 		"plex-local":     false,
 		"plex-":          false,
 	} {
-		err := liveTVNeedsOnePod(pod, true)
+		err := liveTVNeedsOnePod(pod, LiveTVConfig{Enabled: true})
 		assert.Equal(t, refused, err != nil, "%s: %v", pod, err)
-		assert.NoError(t, liveTVNeedsOnePod(pod, false), "%s without Live TV", pod)
+		assert.NoError(t, liveTVNeedsOnePod(pod, LiveTVConfig{}), "%s without Live TV", pod)
+		assert.NoError(t, liveTVNeedsOnePod(pod, LiveTVConfig{Enabled: true, SeveralPods: true}), "%s with severalPods", pod)
 	}
 }
 

@@ -122,13 +122,13 @@ func (m *Manager) copyGuides(ctx context.Context, dvrUUID string) {
 		// A load under way, whose staging schema the watch should have made
 		// already: the poll is its backstop.
 		if g, ok := plexbootstrap.GuideForLoadFile(filepath.Base(file)); ok {
-			if dvrUUID == "" && connect() {
+			if dvrUUID == "" && m.loadsNotOurs(g) == "" && connect() { // checked first: no connection for a load not ours
 				m.stageGuide(ctx, conn, g)
 			}
 			continue
 		}
 		g, ok := plexbootstrap.GuideForFile(filepath.Base(file))
-		if !ok || (dvrUUID != "" && !strings.EqualFold(g.DVR, dvrUUID)) {
+		if !ok || (dvrUUID != "" && !strings.EqualFold(g.DVR, dvrUUID)) || m.loadsNotOurs(g) != "" {
 			continue
 		}
 		state, err := statGuideFile(file)
@@ -164,8 +164,13 @@ func (m *Manager) guideDir() string {
 }
 
 // stageGuide makes g's staging schema if it has none, so the copy at the
-// load's end is short. Under guides.mu.
+// load's end is short; never for a load this pod does not copy, whose
+// staging schema would be left over, and for a guide the managers build
+// would race the build's own clone of it. Under guides.mu.
 func (m *Manager) stageGuide(ctx context.Context, conn *pgx.Conn, g plexbootstrap.Guide) {
+	if m.loadsNotOurs(g) != "" {
+		return
+	}
 	made, err := plexbootstrap.PrepareStaging(ctx, conn, m.Config.Postgres.Schema, g)
 	if err != nil {
 		m.Logger.Warn("Live TV: make a loading guide's staging schema", "guide", g.File(), "error", err)
@@ -300,10 +305,30 @@ func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 	if !ok {
 		return "fail not a guide load"
 	}
+	if why := m.loadsNotOurs(g); why != "" {
+		return "skip " + why
+	}
 	if verb == "stage" {
 		return m.stageLoad(ctx, g, path)
 	}
 	return m.swapLoad(ctx, g, path)
+}
+
+// loadsNotOurs says why this pod does not stage, swap or copy g's load, or
+// "" when it does. With the guides' writer on (guidewriter.go) only the
+// plex.tv Lease holder does, and nobody for a guide the managers build: a
+// load PMS makes there stays in its own file, and its PMS reopens the guide
+// by name, which the shim serves from the shared schema.
+func (m *Manager) loadsNotOurs(g plexbootstrap.Guide) string {
+	switch {
+	case !m.Config.LiveTV.GuideWriter():
+		return ""
+	case !m.holdsLease():
+		return "this pod does not write the guides"
+	case m.Config.LiveTV.CloudGuide == CloudGuideManager && g.Provider == cloudGuideProvider:
+		return "the managers build this guide"
+	}
+	return ""
 }
 
 // guideStageDeadline bounds a stage request: a clone takes about 3 s when
@@ -433,6 +458,9 @@ func (m *Manager) connectGuides(ctx context.Context) (*pgx.Conn, error) {
 // rebuilds its shadow, copying a load the file holds first, before every
 // PMS start (Supervisor.BeforeStart).
 func (m *Manager) prepareGuides(ctx context.Context) error {
+	if err := m.prepareGuideWriter(ctx); err != nil {
+		return fmt.Errorf("the guides' writer file: %w", err)
+	}
 	cfg, err := pgx.ParseConfig(m.Config.Postgres.DSN())
 	if err != nil {
 		return fmt.Errorf("postgres settings: %w", err)
@@ -440,7 +468,8 @@ func (m *Manager) prepareGuides(ctx context.Context) error {
 	m.guides.mu.Lock()
 	defer m.guides.mu.Unlock()
 	return plexbootstrap.PrepareGuides(ctx, m.Logger.With("component", "plex-postgresql-init"),
-		plexbootstrap.ConnectWith(cfg), m.Config.Postgres.Schema, m.Config.SchemaDir, m.Config.PlexDir)
+		plexbootstrap.ConnectWith(cfg), m.Config.Postgres.Schema, m.Config.SchemaDir, m.Config.PlexDir,
+		!m.Config.LiveTV.GuideWriter() || m.holdsLease())
 }
 
 // guideEmpty is whether a DVR's guide, in its schema, holds no airings,

@@ -118,6 +118,17 @@ plex:
     # (docs/configuration.md, "Guide loads in PostgreSQL"). Off until a
     # release has run it on the rig.
     guideLoadsInPostgres: false
+    # Live TV on more than one Plex pod. The guides then have one writer,
+    # the plex.tv Lease holder's PMS, but every PMS still records every
+    # recording rule, so set it only where nothing is recorded
+    # (docs/configuration.md, "Live TV runs on one Plex pod").
+    severalPods: false
+    # Who fills a Plex cloud lineup's guide: "pms", PMS's own loads and
+    # refreshes, or "manager", the managers build it from Plex's guide
+    # service, their fetching spread across the pods, and PMS's own writes
+    # to it are held (docs/configuration.md, "The cloud guide, built by the
+    # managers").
+    cloudGuide: pms
   # Audio codecs whose decoders the lease holder has Plex download once it
   # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex
   # downloads a decoder only for a transcode of a file it has analysed,

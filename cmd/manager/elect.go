@@ -101,8 +101,12 @@ func (m *Manager) runPlex(ctx context.Context) {
 	// Closed before Plex starts, not after: a pod must never reach plex.tv
 	// while it is still deciding whether it owns it.
 	m.releasePlexTV(ctx)
-	m.start(ctx)
+	// The first attempt runs before Plex starts rather than after, so the
+	// Live TV guides' writer file PMS starts with says what the Lease says
+	// (prepareGuideWriter waits for it); winning opens plex.tv to a pod that
+	// owns it, which is no change for Plex.
 	go m.holdPlexTVLease(ctx, elector)
+	m.start(ctx)
 }
 
 // takePlexTV records that this pod now owns the connection to plex.tv and
@@ -129,6 +133,10 @@ func (m *Manager) takePlexTV(ctx context.Context) {
 // 0/1 for ever and the rolling update that was waiting on it never finished.
 func (m *Manager) releasePlexTV(ctx context.Context) {
 	m.stopLeaderWork()
+	// Another pod may write the guides from now on.
+	if err := m.writeGuideWriter(ctx, false); err != nil {
+		m.Logger.Warn("Live TV: the guides' writer file", "error", err)
+	}
 	m.Metrics.LeaderStatus.Set(0)
 	m.markReady(ctx, RoleWorker)
 	m.applyEgress(ctx, false)
@@ -171,14 +179,20 @@ func (m *Manager) holdUntilLost(ctx context.Context, elector *lease.Elector) {
 func (m *Manager) holdPlexTVLease(ctx context.Context, elector *lease.Elector) {
 	ticker := time.NewTicker(acquireInterval)
 	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	for first := true; ; first = false {
+		if !first {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 		}
-		if err := elector.Acquire(ctx); err == nil {
+		err := elector.Acquire(ctx)
+		if err == nil {
 			m.takePlexTV(ctx)
+		}
+		m.guideWriter.markElected()
+		if err == nil {
 			m.holdUntilLost(ctx, elector)
 			m.Logger.Warn("gave up plex.tv to another pod; still serving",
 				"lease", m.Config.LeaseName)

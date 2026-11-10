@@ -117,6 +117,11 @@ type Manager struct {
 	liveTV *liveTVFeed
 	// guides is what copyGuides has seen of the pod's guide files.
 	guides guideCopies
+	// guideWriter is the Live TV guides' writer file (guidewriter.go).
+	guideWriter guideWriterState
+	// cloud builds the Plex cloud guides when the managers build them
+	// (plex.liveTV.cloudGuide "manager"; cloudguide.go), nil otherwise.
+	cloud *cloudGuides
 
 	mu         sync.RWMutex
 	isReady    bool
@@ -374,9 +379,17 @@ func run() int {
 	} else {
 		go m.serveGuideSocket(ctx, ln)
 	}
+	if m.Config.LiveTV.Enabled && m.Config.LiveTV.CloudGuide == CloudGuideManager {
+		// Made before the election, whose win starts the builder.
+		m.cloud = newCloudGuides(m)
+	}
 	m.runPlex(ctx)
 	go m.watchGuideLoads(ctx)
 	go m.copyGuideLoads(ctx)
+	if m.cloud != nil {
+		// Every serving pod fetches its share of the cloud guides' answers.
+		go m.cloud.runFetcher(ctx)
+	}
 	if cfg.LiveTV.Enabled && m.Dynamic != nil {
 		go m.watchLiveTVRestart(ctx)
 		go m.endStaleGrabs(ctx)

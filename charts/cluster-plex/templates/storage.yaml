@@ -75,6 +75,8 @@ data:
         staleGrabAfter: {{ .Values.plex.liveTV.staleGrabAfter | default "5m" | quote }}
         guideRefreshWindow: {{ .Values.plex.liveTV.guideRefreshWindow | default "8-11" | quote }}
         guideLoadsInPostgres: {{ .Values.plex.liveTV.guideLoadsInPostgres | default false }}
+        severalPods: {{ .Values.plex.liveTV.severalPods | default false }}
+        cloudGuide: {{ .Values.plex.liveTV.cloudGuide | default "pms" | quote }}
     {{- if kindIs "slice" .Values.plex.codecPrefetch }}
     plex-codec-prefetch: {{ join "," .Values.plex.codecPrefetch | default "none" | quote }}
     {{- end }}

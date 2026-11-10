@@ -55,6 +55,10 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 	if m.Config.LiveTV.Enabled && m.Dynamic != nil {
 		go m.liveTVLoop(ctx)
 	}
+	go m.keepGuideWriter(ctx)
+	if m.cloud != nil {
+		go m.cloud.runBuilder(ctx)
+	}
 	if store != nil {
 		go m.keepServerToken(ctx, store)
 	}

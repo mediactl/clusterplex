@@ -121,7 +121,33 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   converger reads only its own PMS's `/activities` for that reason. A pod
   without the plex.tv Lease still signs clients in: PMS checks an unseen
   token at `servers.plex.tv`, which the egress filter leaves open
-  (`plexnet.DefaultBlockedHosts`).
+  (`plexnet.DefaultBlockedHosts`). `plex.liveTV.severalPods` lifts both
+  refusals for a deployment that records nothing: recordings still have no
+  owner.
+- **One PMS writes the guides, and the managers can build a cloud guide
+  themselves** (2026-11-10,
+  `docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md`).
+  With `severalPods` or `plex.liveTV.cloudGuide: manager` the shim
+  (plex-postgresql .55, `PLEX_PG_GUIDE_WRITER_FILE`) holds every write on a
+  guide's connection that `<Databases>/.clusterplex-guide-writer` does not
+  allow: it is not sent, and PMS is told it ran, with the change count its
+  text implies and a row id under 2^31 for an insert (refusing would kill
+  PMS's loader; `.54`'s ids from 2^62 read as 0 in PMS and killed it too). The plex.tv Lease holder's file reads
+  `*` plus `-epg_<uuid>` for each guide the managers build; every other
+  pod's is empty (`cmd/manager/guidewriter.go`). The election's first try
+  runs before PMS starts, PMS's start waits for it, and a new holder waits
+  for its own PMS's guide work to end before it writes `*`. Only the holder
+  stages, swaps or copies a load (`loadsNotOurs`). Under `cloudGuide:
+  manager` the managers build each cloud guide from `epg.provider.plex.tv`
+  (`pkg/plex/epgcloud`, `pkg/plex/guidebuild`,
+  `plexbootstrap.InstallBuilt`, `cmd/manager/cloudguide.go`): every pod
+  fetches its share into `clusterplex.epg_cache`, the holder builds and
+  swaps, and writes the DVR's provider row fresh; the converger cancels the
+  load PMS starts at a map save and asks for a build instead of a reload.
+  The service limits each token and every pod sends the same one, so the
+  pods share one budget (`cloudGuideRate`, 3 a second). `hack/guidebuild`
+  is the oracle against a load PMS made; the rules it settled are in the
+  design's "What PMS writes".
 - **Media analysis and skip markers are seeded into Plex's database**
   (ADR 0006), the one exception to API-only: Plex's API can write neither.
   `pkg/plexseed` writes clustarr's probe into an unanalysed media item and

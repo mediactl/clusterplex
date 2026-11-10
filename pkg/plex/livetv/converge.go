@@ -155,6 +155,14 @@ type Event struct {
 	Warning              bool
 }
 
+// CloudGuideBuilder builds Plex cloud lineup guides in place of PMS's
+// loads (cmd/manager's cloudGuides; docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md).
+type CloudGuideBuilder interface {
+	// Want is called each pass for a block on a cloud lineup: its DVR's
+	// uuid, the lineup, the tuner's map at mapURI and that map's hash.
+	Want(dvrUUID, lineup, mapURI, lineupHash string)
+}
+
 // Converger runs passes. It is used from one goroutine at a time.
 type Converger struct {
 	PMS *plexapi.Client
@@ -186,6 +194,13 @@ type Converger struct {
 	// read from its schema; the zero time for a guide with no airings. Nil
 	// never reloads a cloud guide.
 	GuideHorizon func(ctx context.Context, dvrUUID string) (time.Time, error)
+	// CloudGuides builds a Plex cloud lineup's guide in place of PMS's own
+	// loads, when set (plex.liveTV.cloudGuide "manager"): each pass tells
+	// it every cloud block's DVR, lineup and tuner map, the reload of a
+	// guide that runs short is its, not PMS's, and the whole load PMS starts
+	// at a map save is cancelled -- a load writes its own file, so the
+	// cancel leaves the live guide as it was.
+	CloudGuides CloudGuideBuilder
 	// HTTP fetches a Plex block's channel map from the tuner; nil is a
 	// client with a 10 s timeout.
 	HTTP *http.Client
@@ -216,6 +231,9 @@ type Converger struct {
 	// was last asked for: PMS moves the DVR's refreshedAt only when the
 	// load ends, half an hour later, so the ask is not repeated meanwhile.
 	cloudReloaded map[string]time.Time
+	// cancelLoadsUntil is, by block, until when PMS's loads of a guide the
+	// managers build are cancelled after a map save (cancelBuiltLoads).
+	cancelLoadsUntil map[string]time.Time
 	// addresses is every livetv Service address a live provider has named
 	// since this converger started, so a deleted provider's devices and
 	// DVRs, still under its Service, are found and removed.
@@ -357,6 +375,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
 		c.emptyReloaded, c.addresses, c.registered = map[string]time.Time{}, map[string]bool{}, map[string]registeredNote{}
 		c.revived, c.cloudReloaded = map[string]time.Time{}, map[string]time.Time{}
+		c.cancelLoadsUntil = map[string]time.Time{}
 		c.mapChecked, c.mapRestored = map[string]mapCheck{}, map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
@@ -714,8 +733,13 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 			return fmt.Errorf("save the channel map (%d channels): %w", len(m), err)
 		}
 		// The save rebuilds the guide (recorded), which reads the block's
-		// guide as it is now: no reload follows it.
+		// guide as it is now: no reload follows it. A guide the managers
+		// build is theirs: the load PMS starts is cancelled.
 		ps.guideBusy = true
+		if b.Lineup != "" && c.CloudGuides != nil {
+			c.cancelLoadsUntil[id] = c.now().Add(cancelLoadsFor)
+			ps.guideBusy = false
+		}
 		s.lineup, s.guide = b.LineupHash, b.GuideHash
 		c.saved[id] = s
 		c.note(ctx, p, id, dvr.Key, s)
@@ -728,7 +752,10 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		// on for Live TV; incremental since the shim stopped timing its
 		// whole-guide read out, 2026-11-04) extends it; the lease holder
 		// reloads it whole only once it has run short.
-		if err := c.refreshCloudGuide(ctx, p, b, id, dvr, ps); err != nil {
+		if c.CloudGuides != nil {
+			c.cancelBuiltLoads(ctx, id)
+			c.CloudGuides.Want(dvr.UUID, b.Lineup, uri, b.LineupHash)
+		} else if err := c.refreshCloudGuide(ctx, p, b, id, dvr, ps); err != nil {
 			return err
 		}
 		if err := c.restoreMap(ctx, p, b, id, dev, dvr, uri, ps); err != nil {
@@ -814,6 +841,10 @@ func (c *Converger) restoreMap(ctx context.Context, p Provider, b Block, id stri
 		return fmt.Errorf("save the channel map again (%d channels): %w", len(want), err)
 	}
 	ps.guideBusy = true // the save rebuilds the guide
+	if c.CloudGuides != nil {
+		c.cancelLoadsUntil[id] = c.now().Add(cancelLoadsFor)
+		ps.guideBusy = false
+	}
 	c.mapRestored[id] = c.now()
 	delete(c.told, "restore/"+id)
 	c.record(p, ReasonChannelMapRestored, what+"; saved the tuner's map again", true)
@@ -938,6 +969,39 @@ func (c *Converger) grabbing(ctx context.Context) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// cancelLoadsFor is how long after a map save of a built guide the
+// converger cancels the whole load PMS starts for it: PMS starts the load
+// within a pass or two of the save.
+const cancelLoadsFor = 5 * time.Minute
+
+// cancelBuiltLoads cancels PMS's guide loads while a built guide's map save
+// is recent. A load writes its own file, which nobody copies in for a built
+// guide (cmd/manager's loadsNotOurs), so it is only half an hour at a core.
+func (c *Converger) cancelBuiltLoads(ctx context.Context, id string) {
+	until, ok := c.cancelLoadsUntil[id]
+	if !ok {
+		return
+	}
+	if c.now().After(until) {
+		delete(c.cancelLoadsUntil, id)
+		return
+	}
+	acts, err := c.PMS.Activities(ctx)
+	if err != nil {
+		return
+	}
+	for _, a := range acts {
+		if a.Type != plexapi.ActivityGuideLoad {
+			continue
+		}
+		if err := c.PMS.CancelActivity(ctx, a.UUID); err != nil {
+			c.log("Live TV: cancel PMS's load of a guide the managers build", "activity", a.UUID, "error", err)
+			continue
+		}
+		c.log("Live TV: cancelled PMS's load of a guide the managers build", "activity", a.UUID)
+	}
 }
 
 // maxPlexMapBytes caps the tuner's plexmap.json: a block's map is under

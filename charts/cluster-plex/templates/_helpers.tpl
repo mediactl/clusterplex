@@ -82,8 +82,8 @@ advertises another address, which works until a client signs in.
        guide and the one set of rules the pods share, and PMS has no setting
        to turn either off (the kind rig, 2026-11-09). The manager refuses a
        second pod too, for installs this chart did not render. */}}
-{{- if and (dig "liveTV" "enabled" false .Values.plex) (gt (int .Values.plex.replicas) 1) -}}
-{{- fail (printf "plex.liveTV.enabled needs plex.replicas 1 (it is %v): every PMS refreshes Live TV's guides and records its recording rules on its own, so a second pod refreshes the one shared guide beside the first and records every programme again (docs/configuration.md, \"Live TV runs on one Plex pod\")" .Values.plex.replicas) -}}
+{{- if and (dig "liveTV" "enabled" false .Values.plex) (not (dig "liveTV" "severalPods" false .Values.plex)) (gt (int .Values.plex.replicas) 1) -}}
+{{- fail (printf "plex.liveTV.enabled needs plex.replicas 1 (it is %v): every PMS refreshes Live TV's guides and records its recording rules on its own, so a second pod refreshes the one shared guide beside the first and records every programme again; set plex.liveTV.severalPods if nothing is recorded (docs/configuration.md, \"Live TV runs on one Plex pod\")" .Values.plex.replicas) -}}
 {{- end -}}
 {{- if .Values.httpRoute.enabled -}}
 {{- if not .Values.httpRoute.parentRefs -}}

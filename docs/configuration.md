@@ -655,6 +655,8 @@ plex:
     staleGrabAfter: 5m         # a Live TV grab no player watches is ended after this
     guideRefreshWindow: "8-11" # the whole reload of a Plex cloud guide that runs short, in UTC hours; "none" turns it off
     guideLoadsInPostgres: false # the shim stages each guide load in PostgreSQL as PMS makes it ("Guide loads in PostgreSQL")
+    cloudGuide: pms            # pms: PMS loads and refreshes Plex cloud guides; manager: the managers build them ("The managers build a cloud guide")
+    severalPods: false         # Live TV on more than one Plex pod, for a deployment that records nothing ("Live TV runs on one Plex pod")
 ```
 
 **Blocks.** PMS takes one device's channel map in one request, capped at
@@ -751,9 +753,9 @@ owner's ruling, 2026-10-07). It deletes:
 
 `enabled: false` deletes nothing; Plex shows the devices offline.
 
-**The other pods.** With Live TV on there is one Plex pod (below), so this
-round finds no other pod to restart; it is what several pods would need.
-Each PMS reads its DVRs once, at its start, and no call
+**The other pods.** With Live TV on there is one Plex pod unless
+`severalPods` is set (below), and then this round finds no other pod to
+restart. Each PMS reads its DVRs once, at its start, and no call
 refreshes them (recorded). After a pass that created or deleted a DVR, the
 lease holder restarts PMS on each other pod in turn, waiting for each to
 answer for its library again, at most once per `restartEvery`
@@ -804,17 +806,89 @@ incremental refresh of the rig's cloud guide at its boot, beside the first,
 and started a recording scheduler of its own (`Subscription: Initialized 2
 schedulers`).
 
-Running Live TV on several pods would take three things, none built:
-
-- one PMS writing the guide, or a guide per pod;
-- one PMS recording, and no lever for that has been found;
-- the converger reading every pod's `/activities` before a delete, a map
-  save or a reload, not only its own.
+`severalPods: true` lifts both refusals. The guides then have one writer
+(next section), but the recordings still have no owner: use it only for a
+deployment that records nothing, or accept that each pod records every
+rule. The converger reads only the lease holder's `/activities` before a
+delete, a map save or a reload; the other pods' loads write only their
+own files, so the shared guide is not at risk, but a DVR deleted while
+another pod's PMS loads has not been tried.
 
 What is not a reason: client sign-in. A pod without the plex.tv Lease still
 reaches `servers.plex.tv`, where PMS checks a token it has not seen. On the
 rig the second pod took the owner's account token at once and refused a
 made-up one. See `pkg/plex/net`'s `DefaultBlockedHosts`.
+
+### One pod writes the guides
+
+With `severalPods`, or with `cloudGuide: manager`, only the plex.tv Lease
+holder's PMS writes a guide. The PostgreSQL shim (plex-postgresql
+`v1.3.17-clusterplex.55`, `PLEX_PG_GUIDE_WRITER_FILE`) runs a write on a
+guide's connection only when the manager's file
+`Plug-in Support/Databases/.clusterplex-guide-writer`, on the pod's own
+volume, allows that guide's schema: `*` for every guide, `-epg_<uuid>` to
+hold one back whatever else it says. A write it does not allow is held:
+it is not sent, and PMS is told it ran, with the change count its text
+implies and, for an insert, a made-up row id. Refusing it instead would
+kill PMS's loader, as the statement timeout of 2026-11-04 did. On the kind
+rig a PMS whose refresh met nothing but held writes ran all seven steps
+and left the guide's rows as they were.
+
+- **The holder's file** reads `*`, plus a `-epg_<uuid>` line for each guide
+  the managers build. Every other pod's file is empty, so its PMS's
+  refreshes and purges change nothing.
+- **PMS waits for the election.** The manager takes its first turn at the
+  Lease before PMS starts, and PMS's start waits up to 10 s for it, so the
+  file PMS starts with says what the Lease says.
+- **A new holder waits for its PMS.** A pod that takes the Lease while its
+  PMS loads or refreshes a guide writes `*` only once that ends: a refresh
+  whose first writes were held and whose last were not would delete
+  airings it never inserted. Losing the Lease empties the file at once.
+- **Only the holder copies a load.** Only it stages, swaps or copies a
+  guide load, or sweeps staging schemas at its start. A load another pod's
+  PMS makes stays in its own file. That PMS reopens the guide by name,
+  which the shim serves from the shared schema.
+
+With one Plex pod and `cloudGuide: pms` the file is not used, and every
+write runs as before.
+
+### The managers build a cloud guide
+
+With `cloudGuide: manager` the managers build each Plex cloud guide (a
+block with `status.blocks[].lineup`) from Plex's guide service,
+`epg.provider.plex.tv`, the way PMS's own load builds it, and PMS writes
+none of it
+(`docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md`).
+
+- **What is fetched.** The lineup's stations, two weeks of each mapped
+  channel's airings (one call per channel per week), and each show's and
+  movie's own metadata, with the server's token. The answers are kept in
+  `clusterplex.epg_cache`, a table in the library's database that every
+  pod shares: grids for 6 hours, the lineup for a day, metadata for a week.
+- **Who fetches.** The lease holder writes the build's plan to the cache.
+  Every serving pod fetches its share of the plan's channels, by a
+  consistent hash over the pods, and the holder fetches whatever is still
+  missing after 5 minutes. The service limits each token, and every pod
+  sends the same token, so the pods share one budget of 3 calls a second
+  between them, and back off together after a refusal (429).
+- **The build.** The holder builds in a staging schema cloned from the
+  library's, keeps the live guide's sections, playlists and viewing rows,
+  and swaps it into place, so PMS reads the old guide or the new one. It
+  then writes the DVR's provider row as PMS does after a refresh, so PMS's
+  own start-up check finds the guide fresh.
+- **When.** At a block's first map save and whenever its `lineupHash`
+  moves; at the manager's start when the guide was never built or is a day
+  old; and daily in `guideRefreshWindow`. A map save makes PMS start a load
+  of its own, which the converger cancels, since the build replaces it.
+- **How long.** A first build of a 248-channel lineup is about 500 grid
+  calls and some thousands of metadata calls: the better part of an hour at
+  that rate, as PMS's own first load is. A daily build fetches the new
+  weeks and the new shows. The build itself, from the cache, takes seconds.
+
+The rows match what PMS writes from the same answers, column by column
+(`hack/guidebuild` compares a build with a load PMS made), with three known
+differences listed in the design: some episodes' `media_item_count`, the
+order of some movies' genres, and one summary.
 
 ### The guide, in PostgreSQL
 
@@ -885,6 +959,11 @@ loads a guide, nor while a recording or Live TV session runs (a
 reach is read from its schema: PMS moves the DVR's `refreshedAt` at the
 end of any refresh, a cancelled or failed one too, so it says a refresh
 ended, not that the guide is whole. `none` turns the fallback off.
+
+With `cloudGuide: manager` none of this applies to a cloud guide: the
+managers build it daily in `guideRefreshWindow` instead of asking for a
+reload, and the shim holds PMS's own refreshes of it ("The managers build
+a cloud guide" above). The butler task stays on for the guides PMS still writes.
 
 ### Guide loads in PostgreSQL
 

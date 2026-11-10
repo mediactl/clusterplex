@@ -102,6 +102,9 @@ func TestLiveTVNeedsOnePlexPod(t *testing.T) {
 	require.NotNil(t, find(renderObjects(t, "--set", "plex.liveTV.enabled=true",
 		"--set", "plex.clustarr.namespace=clustarr-system", "--set", "plex.replicas=1"), "StatefulSet", "cp"))
 	require.NotNil(t, find(renderObjects(t, "--set", "plex.replicas=3"), "StatefulSet", "cp"))
+	require.NotNil(t, find(renderObjects(t, "--set", "plex.liveTV.enabled=true", "--set", "plex.liveTV.severalPods=true",
+		"--set", "plex.clustarr.namespace=clustarr-system", "--set", "plex.replicas=3"), "StatefulSet", "cp"),
+		"severalPods: Live TV on several pods, for a deployment that records nothing")
 }
 
 // TestHTTPRouteTakesExtraRules: httpRoute.extraRules are rendered verbatim

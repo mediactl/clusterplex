@@ -113,6 +113,31 @@ type LiveTVConfig struct {
 	// in PostgreSQL (PLEX_PG_GUIDE_LOADS), where the load is otherwise
 	// made in a SQLite file and copied at PMS's rename. Default false.
 	GuideLoadsInPostgres bool `mapstructure:"guideLoadsInPostgres"`
+	// SeveralPods allows Live TV on more than one Plex pod. The guides then
+	// have one writer, the plex.tv Lease holder's PMS (guidewriter.go), but
+	// every PMS still records every recording rule: no pod owns a
+	// recording yet. Default false (liveTVNeedsOnePod).
+	SeveralPods bool `mapstructure:"severalPods"`
+	// CloudGuide is who fills a Plex cloud lineup's guide: "pms" (PMS
+	// loads and refreshes it) or "manager" (the managers build it from
+	// Plex's guide service, and PMS's own writes to it are held). Default
+	// "pms". docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md.
+	CloudGuide string `mapstructure:"cloudGuide"`
+}
+
+// Who fills a Plex cloud lineup's guide (LiveTVConfig.CloudGuide).
+const (
+	CloudGuidePMS     = "pms"
+	CloudGuideManager = "manager"
+)
+
+// GuideWriter reports whether the guides have one writer: the shim holds
+// guide writes the manager's writer file does not allow. It is on when
+// several pods may run Live TV, or when the managers build the cloud
+// guides, whose PMS writes every pod holds. With one pod and PMS's own
+// cloud guides it is off, and the shim writes as it always did.
+func (lt LiveTVConfig) GuideWriter() bool {
+	return lt.Enabled && (lt.SeveralPods || lt.CloudGuide == CloudGuideManager)
 }
 
 // defaultGuideRefreshWindow is plex.liveTV.guideRefreshWindow's default.
@@ -164,6 +189,13 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	if lt.GuideRefreshWindow == "" {
 		lt.GuideRefreshWindow = defaultGuideRefreshWindow
 	}
+	switch lt.CloudGuide {
+	case "":
+		lt.CloudGuide = CloudGuidePMS
+	case CloudGuidePMS, CloudGuideManager:
+	default:
+		return lt, fmt.Errorf("%s.cloudGuide: %q is neither %q nor %q", liveTVKey, lt.CloudGuide, CloudGuidePMS, CloudGuideManager)
+	}
 	if _, err := parseWindow(lt.GuideRefreshWindow); err != nil {
 		return lt, fmt.Errorf("%s.guideRefreshWindow: %w", liveTVKey, err)
 	}
@@ -190,8 +222,11 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 // with it; this is the same rule for an install the chart did not render
 // (a kustomize base, a `kubectl scale`), checked before PMS starts, so the
 // second PMS never runs.
-func liveTVNeedsOnePod(podName string, liveTV bool) error {
-	if !liveTV {
+//
+// plex.liveTV.severalPods lifts it, for a deployment that records nothing:
+// the guides then have one writer (guidewriter.go), but recordings do not.
+func liveTVNeedsOnePod(podName string, lt LiveTVConfig) error {
+	if !lt.Enabled || lt.SeveralPods {
 		return nil
 	}
 	if n, ok := statefulSetOrdinal(podName); !ok || n == 0 {
@@ -199,8 +234,8 @@ func liveTVNeedsOnePod(podName string, liveTV bool) error {
 	}
 	return fmt.Errorf("%s.enabled needs one Plex pod, and this is %s: every PMS refreshes Live TV's guides and "+
 		"records its recording rules on its own, so a second pod refreshes the one shared guide beside the first "+
-		"and records every programme again; run one Plex pod with Live TV (docs/configuration.md, "+
-		"\"Live TV runs on one Plex pod\")", liveTVKey, podName)
+		"and records every programme again; run one Plex pod with Live TV, or set %s.severalPods if nothing "+
+		"is recorded (docs/configuration.md, \"Live TV runs on one Plex pod\")", liveTVKey, podName, liveTVKey)
 }
 
 // statefulSetOrdinal is the ordinal a StatefulSet pod's name ends in; a

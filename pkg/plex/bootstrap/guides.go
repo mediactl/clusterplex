@@ -391,7 +391,12 @@ func EnsureGuideSchema(ctx context.Context, conn *pgx.Conn, library string, g Gu
 // is replaced too, and its error returned. A guide whose schema could
 // not be made keeps the SQLite file PMS left, which the shim leaves alone;
 // that failure is returned with the others, but the rest are prepared.
-func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, library, schemaDir, plexDir string) error {
+//
+// A pod that does not write the guides (writer false: the Live TV guides'
+// writer file allows it none, cmd/manager's guidewriter.go) copies no load
+// in and sweeps no staging schema: the pod that writes them may be loading
+// into one, and a load this pod's PMS left is not the guide's.
+func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, library, schemaDir, plexDir string, writer bool) error {
 	conn, err := connect(ctx)
 	if err != nil {
 		return err
@@ -413,7 +418,9 @@ func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, libra
 	}
 	for _, g := range guides {
 		file := filepath.Join(dir, g.File())
-		if _, err := ImportGuide(ctx, log, conn, library, g, file); err != nil {
+		if !writer {
+			// Nothing to copy: the shadow below replaces the file.
+		} else if _, err := ImportGuide(ctx, log, conn, library, g, file); err != nil {
 			// The shadow replaces a file the copy could not read all the
 			// same: the guide's next load fills the schema.
 			errs = append(errs, err)
@@ -435,8 +442,10 @@ func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, libra
 			errs = append(errs, fmt.Errorf("build the shadow of %s: %w", g.File(), err))
 		}
 	}
-	if err := SweepGuides(ctx, log, conn, guides, dir); err != nil {
-		errs = append(errs, err)
+	if writer {
+		if err := SweepGuides(ctx, log, conn, guides, dir); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -945,6 +954,13 @@ func dropSchema(ctx context.Context, conn *pgx.Conn, schema string) error {
 
 // resetSequences starts each sequence a column of schema owns past the
 // column's highest value.
+// ResetSequences sets each of schema's id sequences past its table's
+// highest id, as a copy of a guide does once its rows are in: a writer of
+// a guide with ids of its own (pkg/plex/guidebuild) ends the same way.
+func ResetSequences(ctx context.Context, tx pgx.Tx, schema string) error {
+	return resetSequences(ctx, tx, schema)
+}
+
 func resetSequences(ctx context.Context, tx pgx.Tx, schema string) error {
 	rows, err := tx.Query(ctx, `SELECT s.relname::text, t.relname::text, a.attname::text
 		FROM pg_depend dep

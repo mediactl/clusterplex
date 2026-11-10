@@ -82,6 +82,11 @@ func shimEnv(base []string, cfg Config) []string {
 		if cfg.LiveTV.GuideLoadsInPostgres {
 			env = append(env, "PLEX_PG_GUIDE_LOADS=1")
 		}
+		// The guides have one writer: the shim holds the writes to a guide
+		// the manager's file does not allow (guidewriter.go).
+		if cfg.LiveTV.GuideWriter() {
+			env = append(env, "PLEX_PG_GUIDE_WRITER_FILE="+guideWriterPath(cfg))
+		}
 	}
 	return append(env, pgEnv(cfg)...)
 }

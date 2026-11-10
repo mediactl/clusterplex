@@ -19,6 +19,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -37,7 +38,9 @@ func main() {
 	var devices, forwards list
 	flag.Var(&devices, "device", "addr,deviceID,firstNumber: one more device (repeatable); replaces the default")
 	flag.Var(&forwards, "forward", "listen=target: a byte-level TCP forward (repeatable)")
+	plexmap := flag.String("plexmap", "", "a file served as /plexmap.json, as clustarr's tuner serves a cloud block's channel map")
 	flag.Parse()
+	plexMapFile = *plexmap
 
 	var count atomic.Int64
 	count.Store(int64(*n))
@@ -69,6 +72,10 @@ func main() {
 	log.Fatal(<-errs)
 }
 
+// plexMapFile is -plexmap: a cloud block's map, for the converger's tests
+// of a cloud lineup the managers build.
+var plexMapFile string
+
 func deviceMux(deviceID string, first int, count *atomic.Int64) *http.ServeMux {
 	base := func(r *http.Request) string { return "http://" + r.Host }
 	writeJSON := func(w http.ResponseWriter, v any) {
@@ -76,6 +83,15 @@ func deviceMux(deviceID string, first int, count *atomic.Int64) *http.ServeMux {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/plexmap.json", func(w http.ResponseWriter, _ *http.Request) {
+		b, err := os.ReadFile(plexMapFile)
+		if plexMapFile == "" || err != nil {
+			http.NotFound(w, nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
+	})
 	mux.HandleFunc("/discover.json", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"FriendlyName": "clustarr probe " + strconv.Itoa(first) + "+", "Manufacturer": "Silicondust", "ModelNumber": "HDTC-2US",

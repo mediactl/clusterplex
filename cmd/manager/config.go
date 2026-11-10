@@ -348,7 +348,7 @@ func loadConfig(args []string) (Config, error) {
 		errs = append(errs, err)
 	}
 	c.LiveTV = lt
-	if err := liveTVNeedsOnePod(c.PodName, lt.Enabled); err != nil {
+	if err := liveTVNeedsOnePod(c.PodName, lt); err != nil {
 		errs = append(errs, err)
 	}
 	codecs, err := codecList(v.Get(codecPrefetchKey))
