@@ -144,6 +144,13 @@ type LiveTVConfig struct {
 	// plex.liveTV.cloudGuideJob: JSON of resources, nodeSelector,
 	// tolerations, affinity and activeDeadlineSeconds (cloudGuideJobSpec).
 	CloudGuideJob string `mapstructure:"cloudGuideJob"`
+	// XMLTVGuide is who fills the guide of a DVR on an XMLTV lineup (a
+	// block of clustarr's custom guides): "pms" (PMS loads and refreshes
+	// it) or "manager" (PMS's own load is the DVR's first fill, the
+	// managers build the rest, and PMS's later writes to it are held, so
+	// nothing reloads it). Default "pms".
+	// docs/superpowers/specs/2026-11-10-livetv-custom-guides-design.md §5.8.
+	XMLTVGuide string `mapstructure:"xmltvGuide"`
 }
 
 // Who fills a Plex cloud lineup's guide (LiveTVConfig.CloudGuide).
@@ -152,13 +159,25 @@ const (
 	CloudGuideManager = "manager"
 )
 
+// Who fills an XMLTV lineup's guide (LiveTVConfig.XMLTVGuide).
+const (
+	XMLTVGuidePMS     = "pms"
+	XMLTVGuideManager = "manager"
+)
+
+// BuildsGuides reports whether the managers build any guide: either the
+// cloud guides or the XMLTV guides are "manager".
+func (lt LiveTVConfig) BuildsGuides() bool {
+	return lt.Enabled && (lt.CloudGuide == CloudGuideManager || lt.XMLTVGuide == XMLTVGuideManager)
+}
+
 // GuideWriter reports whether the guides have one writer: the shim holds
 // guide writes the manager's writer file does not allow. It is on when
 // several pods may run Live TV, or when the managers build the cloud
-// guides, whose PMS writes every pod holds. With one pod and PMS's own
+// guides or the XMLTV guides, whose PMS writes every pod holds. With one pod and PMS's own
 // cloud guides it is off, and the shim writes as it always did.
 func (lt LiveTVConfig) GuideWriter() bool {
-	return lt.Enabled && (lt.SeveralPods || lt.CloudGuide == CloudGuideManager)
+	return lt.Enabled && (lt.SeveralPods || lt.BuildsGuides())
 }
 
 // defaultGuideRefreshWindow is plex.liveTV.guideRefreshWindow's default.
@@ -216,6 +235,13 @@ func loadLiveTV(v *viper.Viper, cl ClustarrConfig) (LiveTVConfig, error) {
 	case CloudGuidePMS, CloudGuideManager:
 	default:
 		return lt, fmt.Errorf("%s.cloudGuide: %q is neither %q nor %q", liveTVKey, lt.CloudGuide, CloudGuidePMS, CloudGuideManager)
+	}
+	switch lt.XMLTVGuide {
+	case "":
+		lt.XMLTVGuide = XMLTVGuidePMS
+	case XMLTVGuidePMS, XMLTVGuideManager:
+	default:
+		return lt, fmt.Errorf("%s.xmltvGuide: %q is neither %q nor %q", liveTVKey, lt.XMLTVGuide, XMLTVGuidePMS, XMLTVGuideManager)
 	}
 	switch lt.CloudGuideBuild {
 	case "":

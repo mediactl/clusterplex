@@ -136,6 +136,13 @@ plex:
     # to it are held (docs/configuration.md, "The cloud guide, built by the
     # managers").
     cloudGuide: pms
+    # Who fills the guide of a DVR on an XMLTV lineup (clustarr's custom
+    # guides): "pms", PMS's own loads and refreshes, or "manager", PMS's own
+    # load is the DVR's first fill, the managers build the rest and PMS's
+    # later writes to it are held, so nothing reloads it. "manager" also
+    # holds the guide writes of every pod, as cloudGuide does
+    # (docs/configuration.md, "The managers build an XMLTV guide").
+    xmltvGuide: pms
     # Where a built cloud guide (cloudGuide "manager") is computed: "job", a
     # Job the lease holder starts for each build, off the Plex pod, or
     # "inProcess", in the lease holder's manager beside PMS. The pods fetch

@@ -634,3 +634,40 @@ func TestABuiltCloudGuideIsBuiltInAJobUnlessToldOtherwise(t *testing.T) {
 	_, err = load(map[string]any{"enabled": true, "cloudGuideJob": `{"activeDeadlineSeconds":-1}`})
 	assert.Error(t, err)
 }
+
+// TestXMLTVGuideDefaultsToPMSAndValidates: xmltvGuide defaults to "pms",
+// takes "manager", refuses anything else, and "manager" makes the guides
+// have one writer and the managers build guides.
+func TestXMLTVGuideDefaultsToPMSAndValidates(t *testing.T) {
+	cl := ClustarrConfig{Namespace: "clustarr-system"}
+	load := func(lt map[string]any) (LiveTVConfig, error) {
+		v := viper.New()
+		v.Set(liveTVKey, lt)
+		return loadLiveTV(v, cl)
+	}
+	lt, err := load(map[string]any{"enabled": true})
+	require.NoError(t, err)
+	assert.Equal(t, XMLTVGuidePMS, lt.XMLTVGuide)
+	assert.False(t, lt.GuideWriter())
+	assert.False(t, lt.BuildsGuides())
+
+	lt, err = load(map[string]any{"enabled": true, "xmltvGuide": "manager"})
+	require.NoError(t, err)
+	assert.Equal(t, XMLTVGuideManager, lt.XMLTVGuide)
+	assert.Equal(t, CloudGuidePMS, lt.CloudGuide)
+	assert.True(t, lt.GuideWriter())
+	assert.True(t, lt.BuildsGuides())
+
+	lt, err = load(map[string]any{"enabled": true, "cloudGuide": "manager"})
+	require.NoError(t, err)
+	assert.True(t, lt.GuideWriter())
+	assert.True(t, lt.BuildsGuides())
+
+	lt, err = load(map[string]any{"enabled": false, "xmltvGuide": "manager"})
+	require.NoError(t, err)
+	assert.False(t, lt.GuideWriter())
+
+	_, err = load(map[string]any{"enabled": true, "xmltvGuide": "cron"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "xmltvGuide")
+}

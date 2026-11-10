@@ -32,8 +32,8 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get"]
-  {{- if and .Values.plex.liveTV.enabled (eq (.Values.plex.liveTV.cloudGuide | default "pms") "manager") (ne (.Values.plex.liveTV.cloudGuideBuild | default "job") "inProcess") }}
-  # A built cloud guide's build Job (plex.liveTV.cloudGuideBuild "job"): the
+  {{- if and .Values.plex.liveTV.enabled (or (eq (.Values.plex.liveTV.cloudGuide | default "pms") "manager") (eq (.Values.plex.liveTV.xmltvGuide | default "pms") "manager")) (ne (.Values.plex.liveTV.cloudGuideBuild | default "job") "inProcess") }}
+  # A built guide's build Job, cloud or XMLTV (plex.liveTV.cloudGuideBuild "job"): the
   # lease holder starts one per plan, waits on it, and deletes a finished one
   # before it starts the next under the same name; a new holder lists a
   # guide's Jobs to find a build its predecessor left running.

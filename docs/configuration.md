@@ -919,6 +919,29 @@ id (`hack/guidebuild` compares a build with a load PMS made; exact on the
 rig, 2026-11-10), but for an `added_at` PMS stamps with its own clock as it
 loads, which a build stamps with its own time.
 
+### The managers build an XMLTV guide
+
+With `xmltvGuide: manager` the managers build the guide of every DVR on an
+XMLTV lineup (a block of clustarr's custom guides, whose device serves
+`xmltv.xml`) and PMS writes none of it after its first fill
+(`docs/superpowers/specs/2026-11-10-livetv-custom-guides-design.md` §5.8).
+
+- **PMS's own load is the DVR's first fill.** A new DVR's first guide is
+  the load PMS makes from the device's XMLTV; the converger lets it finish.
+- **The manager builds the rest.** Each later guide is built from the same
+  XMLTV by the managers and installed by the lease holder, in the way and
+  the place a built cloud guide is (`cloudGuideBuild` chooses the Job or the
+  holder, and the Job's RBAC is granted when either guide mode is
+  `manager`).
+- **No reloads.** PMS's later writes to the guide are held, as for a built
+  cloud guide, so neither its refreshes nor `reloadGuide` rewrite it; the
+  guide changes only when the managers build it.
+- **One writer.** The key turns on the single guide writer
+  (`GuideWriter`), as `cloudGuide: manager` and `severalPods` do.
+
+With `xmltvGuide: pms`, the default, PMS loads and refreshes an XMLTV
+guide as it always did.
+
 ### The guide, in PostgreSQL
 
 To PMS each DVR's guide is a database of its own:
