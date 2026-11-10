@@ -98,6 +98,18 @@ func (p cloudPlan) weeks() [][2]time.Time {
 	return out
 }
 
+// cloudLineupID is a cloud lineup's id, the 24 hex digits the guide service
+// knows it by. A block names its lineup as PMS does,
+// lineup://tv.plex.providers.epg.cloud/<id>#<title> (clustarr's
+// status.blocks[].lineup), which the service answers 404 as a lineup id: on
+// talos the first build fetched every grid and show for 52 minutes and then
+// failed on the lineup's stations (2026-11-10). A bare id stays as it is.
+func cloudLineupID(lineup string) string {
+	id := strings.TrimPrefix(lineup, "lineup://tv.plex.providers.epg.cloud/")
+	id, _, _ = strings.Cut(id, "#")
+	return strings.Trim(id, "/")
+}
+
 // cloudWant is a block the converger named.
 type cloudWant struct {
 	dvr, lineup, mapURI, hash string
@@ -126,6 +138,7 @@ func newCloudGuides(m *Manager) *cloudGuides {
 
 // Want implements plexlivetv.CloudGuideBuilder.
 func (c *cloudGuides) Want(dvrUUID, lineup, mapURI, lineupHash string) {
+	lineup = cloudLineupID(lineup)
 	if dvrUUID == "" || lineup == "" {
 		return
 	}

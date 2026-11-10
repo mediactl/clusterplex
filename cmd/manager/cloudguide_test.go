@@ -36,3 +36,16 @@ func TestAPlansChannelsAreTheMapsGridKeysAndNumbers(t *testing.T) {
 	var old cloudPlan
 	assert.Error(t, json.Unmarshal([]byte(`{"dvr":"d","lineup":"l","channels":["k1"]}`), &old))
 }
+
+func TestACloudGuideAsksForItsLineupByItsID(t *testing.T) {
+	for in, want := range map[string]string{
+		"lineup://tv.plex.providers.epg.cloud/657c8183afd0f02cd353633f#DIRECTV%20Mobile%20%281009%20channels%29": "657c8183afd0f02cd353633f",
+		"lineup://tv.plex.providers.epg.cloud/657c8183afd0f02cd353633f":                                          "657c8183afd0f02cd353633f",
+		"657c8183afd0f02cd353633f": "657c8183afd0f02cd353633f",
+	} {
+		assert.Equal(t, want, cloudLineupID(in), in)
+	}
+	c := &cloudGuides{wants: map[string]cloudWant{}, built: map[string]cloudBuilt{}, kick: make(chan struct{}, 1)}
+	c.Want("dvr", "lineup://tv.plex.providers.epg.cloud/657c8183afd0f02cd353633f#DIRECTV", "http://tuner/hdhr/1", "h")
+	assert.Equal(t, "657c8183afd0f02cd353633f", c.wants["dvr"].lineup, "the block's lineup URI is the service's lineup id")
+}
