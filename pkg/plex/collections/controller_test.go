@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -525,4 +526,22 @@ func TestLastSyncedAtMovesOnlyOnASync(t *testing.T) {
 	s := h.sentStatus(t, "up")
 	assert.Equal(t, "LibraryNotFound", s["conditions"].([]any)[0].(map[string]any)["reason"])
 	assert.Equal(t, when, s["lastSyncedAt"], "a refusal keeps the last sync's time")
+}
+
+// An image newer than its chart's RBAC: the CRD is installed, but this
+// pod may not list or watch the resources yet. Run waits, as for a
+// missing CRD, rather than starting a watch the apiserver refuses.
+func TestWaitsForTheRBAC(t *testing.T) {
+	h := newHarness(t, true, plexCollection("up", time.Now(), upResource()))
+	h.f.add(fakeCollection{Section: "1", Title: "UP", Subtype: "movie", Smart: true, Content: storedContent(t, "1", "UP")})
+	var allowed atomic.Bool
+	h.ctrl.Allowed = func(context.Context) (bool, error) { return allowed.Load(), nil }
+	h.run(t)
+	time.Sleep(150 * time.Millisecond)
+	for _, a := range h.dyn.Actions() {
+		assert.NotEqual(t, "list", a.GetVerb(), "listed before the RBAC allowed it")
+	}
+
+	allowed.Store(true)
+	require.Eventually(t, func() bool { return condition(h.get(t, "up")) != nil }, 5*time.Second, 10*time.Millisecond)
 }

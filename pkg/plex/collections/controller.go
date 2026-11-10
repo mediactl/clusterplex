@@ -50,9 +50,15 @@ type Controller struct {
 	Record func(obj *unstructured.Unstructured, warning bool, reason, msg string)
 	// Every is how often every resource is synced again. Default 10m.
 	Every time.Duration
-	// Retry is how often a missing CRD is looked for again. Default 1m.
-	Retry  time.Duration
-	Logger *slog.Logger
+	// Retry is how often a missing CRD, or access to it, is looked for
+	// again. Default 1m.
+	Retry time.Duration
+	// Allowed reports whether this pod may list, watch and patch the
+	// namespace's PlexCollections and patch their status; nil is allowed.
+	// An image newer than its chart's RBAC finds the CRD and no access,
+	// and waits rather than start a watch the apiserver refuses.
+	Allowed func(ctx context.Context) (bool, error)
+	Logger  *slog.Logger
 
 	once  sync.Once
 	mu    sync.Mutex
@@ -103,10 +109,20 @@ func (c *Controller) Run(ctx context.Context) error {
 	if retry <= 0 {
 		retry = defaultRetry
 	}
-	for logged := false; !c.installed(); {
-		if !logged {
-			c.Logger.Info("plexcollections.catalog.clustarr.io is not installed; collections wait for it", "retry", retry)
-			logged = true
+	for logged := ""; ; {
+		why := ""
+		switch {
+		case !c.installed():
+			why = "plexcollections.catalog.clustarr.io is not installed; collections wait for it"
+		case !c.allowed(ctx):
+			why = "this pod's RBAC grants no list, watch and patch on plexcollections (a chart older than the image); collections wait for it"
+		}
+		if why == "" {
+			break
+		}
+		if why != logged {
+			c.Logger.Info(why, "retry", retry)
+			logged = why
 		}
 		select {
 		case <-ctx.Done():
@@ -152,6 +168,18 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 		c.pass(ctx, inf.GetStore())
 	}
+}
+
+func (c *Controller) allowed(ctx context.Context) bool {
+	if c.Allowed == nil {
+		return true
+	}
+	ok, err := c.Allowed(ctx)
+	if err != nil {
+		c.Logger.Warn("ask whether this pod may reconcile plexcollections", "error", err)
+		return false
+	}
+	return ok
 }
 
 func (c *Controller) installed() bool {

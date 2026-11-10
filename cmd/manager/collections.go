@@ -5,8 +5,11 @@ import (
 	"strings"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 
@@ -54,11 +57,41 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 		Record: func(obj *unstructured.Unstructured, warning bool, reason, msg string) {
 			recordCollectionEvent(recorder, obj, warning, reason, msg)
 		},
-		Logger: log,
+		Allowed: collectionsAccess(m.K8sClient, m.Config.Clustarr.Namespace),
+		Logger:  log,
 	}
 	go m.notePMSRestarts(ctx, ctrl.PMSRestarted)
 	if err := ctrl.Run(ctx); err != nil {
 		log.Error("reconcile Plex collections", "error", err)
+	}
+}
+
+// collectionsAccess asks the apiserver whether this pod may do what the
+// collections controller does in namespace: list, watch and patch (the
+// finalizer) PlexCollections, and patch their status. A chart older than
+// the image grants none of it, and the controller waits for it.
+func collectionsAccess(cs kubernetes.Interface, namespace string) func(context.Context) (bool, error) {
+	checks := []authorizationv1.ResourceAttributes{
+		{Verb: "list", Resource: "plexcollections"},
+		{Verb: "watch", Resource: "plexcollections"},
+		{Verb: "patch", Resource: "plexcollections"},
+		{Verb: "patch", Resource: "plexcollections", Subresource: "status"},
+	}
+	return func(ctx context.Context) (bool, error) {
+		for _, ra := range checks {
+			ra.Group = plexcollections.GVR.Group
+			ra.Namespace = namespace
+			r, err := cs.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
+				Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &ra},
+			}, metav1.CreateOptions{})
+			if err != nil {
+				return false, err
+			}
+			if !r.Status.Allowed {
+				return false, nil
+			}
+		}
+		return true, nil
 	}
 }
 
