@@ -1,0 +1,765 @@
+{
+    "MediaContainer": {
+        "size": 0,
+        "totalSize": 534,
+        "offset": 0,
+        "allowSync": true,
+        "art": "/:/resources/show-fanart.jpg",
+        "identifier": "com.plexapp.plugins.library",
+        "librarySectionID": 2,
+        "librarySectionTitle": "Clustarr TV",
+        "librarySectionUUID": "31ff65f9-c569-4f3f-bcbe-6432230c7313",
+        "mediaTagPrefix": "/system/bundle/media/flags/",
+        "mediaTagVersion": 1791214630,
+        "nocache": true,
+        "thumb": "/:/resources/show.png",
+        "title1": "Clustarr TV",
+        "title2": "All Shows",
+        "viewGroup": "show",
+        "viewMode": 65592,
+        "Meta": {
+            "Type": [
+                {
+                    "key": "/library/sections/2/all?type=2",
+                    "type": "show",
+                    "title": "TV Shows",
+                    "active": true,
+                    "Filter": [
+                        {
+                            "filter": "genre",
+                            "filterType": "string",
+                            "key": "/library/sections/2/genre?type=2",
+                            "title": "Genre",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "year",
+                            "filterType": "integer",
+                            "key": "/library/sections/2/year?type=2",
+                            "title": "Year",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "contentRating",
+                            "filterType": "string",
+                            "key": "/library/sections/2/contentRating?type=2",
+                            "title": "Content Rating",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "studio",
+                            "filterType": "string",
+                            "key": "/library/sections/2/studio?type=2",
+                            "title": "Studio",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "network",
+                            "filterType": "string",
+                            "key": "/library/sections/2/network?type=2",
+                            "title": "Network",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "country",
+                            "filterType": "string",
+                            "key": "/library/sections/2/country",
+                            "title": "Country",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "collection",
+                            "filterType": "string",
+                            "key": "/library/sections/2/collection?type=2",
+                            "title": "Collection",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "director",
+                            "filterType": "string",
+                            "key": "/library/sections/2/director?type=2",
+                            "title": "Director",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "actor",
+                            "filterType": "string",
+                            "key": "/library/sections/2/actor?type=2",
+                            "title": "Actor",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "writer",
+                            "filterType": "string",
+                            "key": "/library/sections/2/writer?type=2",
+                            "title": "Writer",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "producer",
+                            "filterType": "string",
+                            "key": "/library/sections/2/producer?type=2",
+                            "title": "Producer",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "unwatchedLeaves",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/unwatchedLeaves?type=2",
+                            "title": "Unwatched",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "unmatched",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/unmatched",
+                            "title": "Unmatched",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "editionTitle",
+                            "filterType": "string",
+                            "key": "/library/sections/2/editionTitle",
+                            "title": "Edition",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "label",
+                            "filterType": "string",
+                            "key": "/library/sections/2/label?type=2",
+                            "title": "Labels",
+                            "type": "filter"
+                        }
+                    ],
+                    "Sort": [
+                        {
+                            "active": true,
+                            "activeDirection": "asc",
+                            "default": "asc",
+                            "defaultDirection": "asc",
+                            "descKey": "titleSort:desc",
+                            "firstCharacterKey": "/library/sections/2/firstCharacter",
+                            "key": "titleSort",
+                            "title": "Title"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "originallyAvailableAt:desc",
+                            "key": "originallyAvailableAt",
+                            "title": "Release Date"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "rating:desc",
+                            "key": "rating",
+                            "title": "Critic Rating"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "audienceRating:desc",
+                            "key": "audienceRating",
+                            "title": "Audience Rating"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "unviewedLeafCount:desc",
+                            "key": "unviewedLeafCount",
+                            "title": "Unwatched"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "episode.addedAt:desc",
+                            "key": "episode.addedAt",
+                            "title": "Last Episode Date Added"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "lastViewedAt:desc",
+                            "key": "lastViewedAt",
+                            "title": "Date Viewed"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "random:desc",
+                            "key": "random",
+                            "title": "Randomly"
+                        }
+                    ],
+                    "Field": [
+                        {
+                            "key": "show.title",
+                            "title": "Show Title",
+                            "type": "string"
+                        },
+                        {
+                            "key": "show.studio",
+                            "title": "Studio",
+                            "type": "string"
+                        },
+                        {
+                            "key": "show.network",
+                            "title": "Network",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.country",
+                            "title": "Country",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.userRating",
+                            "subType": "rating",
+                            "title": "Show Rating",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "show.contentRating",
+                            "title": "Content Rating",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.year",
+                            "subType": "year",
+                            "title": "Show Year",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "show.viewCount",
+                            "title": "Show Plays",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "show.lastViewedAt",
+                            "title": "Show Last Watched",
+                            "type": "date"
+                        },
+                        {
+                            "key": "show.genre",
+                            "title": "Genre",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.collection",
+                            "title": "Show Collection",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.director",
+                            "title": "Show Director",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.writer",
+                            "title": "Show Writer",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.producer",
+                            "title": "Show Producer",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.actor",
+                            "title": "Show Actor",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "show.addedAt",
+                            "title": "Date Show Added",
+                            "type": "date"
+                        },
+                        {
+                            "key": "show.unmatched",
+                            "title": "Show Unmatched",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "show.unwatchedLeaves",
+                            "title": "Unwatched Episodes",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "show.editionTitle",
+                            "title": "Show Edition",
+                            "type": "string"
+                        },
+                        {
+                            "key": "show.label",
+                            "title": "Label",
+                            "type": "tag"
+                        }
+                    ]
+                },
+                {
+                    "key": "/library/sections/2/all?type=3",
+                    "type": "season",
+                    "title": "Seasons",
+                    "active": false,
+                    "Sort": [
+                        {
+                            "default": "asc",
+                            "defaultDirection": "asc",
+                            "descKey": "show.titleSort:desc,index",
+                            "key": "show.titleSort,index",
+                            "title": "Show"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "random:desc",
+                            "key": "random",
+                            "title": "Randomly"
+                        }
+                    ]
+                },
+                {
+                    "key": "/library/sections/2/all?type=4",
+                    "type": "episode",
+                    "title": "Episodes",
+                    "active": false,
+                    "Filter": [
+                        {
+                            "filter": "year",
+                            "filterType": "integer",
+                            "key": "/library/sections/2/year?type=4",
+                            "title": "Year",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "collection",
+                            "filterType": "string",
+                            "key": "/library/sections/2/collection?type=4",
+                            "title": "Collection",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "resolution",
+                            "filterType": "string",
+                            "key": "/library/sections/2/resolution?type=4",
+                            "title": "Resolution",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "hdr",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/hdr?type=4",
+                            "title": "HDR",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "dovi",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/dovi?type=4",
+                            "title": "DOVI",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "hdr10plus",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/hdr10plus?type=4",
+                            "title": "HDR10+",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "atmos",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/atmos?type=4",
+                            "title": "Atmos",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "unwatched",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/unwatched?type=4",
+                            "title": "Unwatched",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "inProgress",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/inProgress?type=4",
+                            "title": "In Progress",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "videoCodec",
+                            "filterType": "string",
+                            "key": "/library/sections/2/videoCodec",
+                            "title": "Video Codec",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "audioCodec",
+                            "filterType": "string",
+                            "key": "/library/sections/2/audioCodec",
+                            "title": "Audio Codec",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "subtitleCodec",
+                            "filterType": "string",
+                            "key": "/library/sections/2/subtitleCodec",
+                            "title": "Subtitle Codec",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "audioLayout",
+                            "filterType": "string",
+                            "key": "/library/sections/2/audioLayout",
+                            "title": "Audio Layout",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "audioLanguage",
+                            "filterType": "string",
+                            "key": "/library/sections/2/audioLanguage",
+                            "title": "Audio Language",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "subtitleLanguage",
+                            "filterType": "string",
+                            "key": "/library/sections/2/subtitleLanguage",
+                            "title": "Subtitle Language",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "unmatched",
+                            "filterType": "boolean",
+                            "key": "/library/sections/2/unmatched",
+                            "title": "Unmatched",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "location",
+                            "filterType": "string",
+                            "key": "/library/sections/2/location",
+                            "title": "Folder Location",
+                            "type": "filter"
+                        }
+                    ],
+                    "Sort": [
+                        {
+                            "default": "asc",
+                            "defaultDirection": "asc",
+                            "descKey": "show.titleSort:desc,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+                            "key": "show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+                            "title": "Show"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "originallyAvailableAt:desc",
+                            "key": "originallyAvailableAt",
+                            "title": "Release Date"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "rating:desc",
+                            "key": "rating",
+                            "title": "Critic Rating"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "audienceRating:desc",
+                            "key": "audienceRating",
+                            "title": "Audience Rating"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "addedAt:desc",
+                            "key": "addedAt",
+                            "title": "Date Added"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "lastViewedAt:desc",
+                            "key": "lastViewedAt",
+                            "title": "Date Viewed"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "random:desc",
+                            "key": "random",
+                            "title": "Randomly"
+                        }
+                    ],
+                    "Field": [
+                        {
+                            "key": "episode.title",
+                            "title": "Episode Title",
+                            "type": "string"
+                        },
+                        {
+                            "key": "episode.addedAt",
+                            "title": "Date Episode Added",
+                            "type": "date"
+                        },
+                        {
+                            "key": "episode.originallyAvailableAt",
+                            "title": "Episode Air Date",
+                            "type": "date"
+                        },
+                        {
+                            "key": "episode.year",
+                            "subType": "year",
+                            "title": "Episode Year",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "episode.userRating",
+                            "subType": "rating",
+                            "title": "Episode Rating",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "episode.viewCount",
+                            "title": "Episode Plays",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "episode.lastViewedAt",
+                            "title": "Episode Last Watched",
+                            "type": "date"
+                        },
+                        {
+                            "key": "episode.unwatched",
+                            "title": "Episode Unwatched",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.inProgress",
+                            "title": "Episode In Progress",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.duplicate",
+                            "title": "Episode Duplicate",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.hdr",
+                            "subType": "hdr",
+                            "title": "HDR",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.dovi",
+                            "subType": "dovi",
+                            "title": "DOVI",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.hdr10plus",
+                            "subType": "hdr10plus",
+                            "title": "HDR10+",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.atmos",
+                            "subType": "Atmos",
+                            "title": "Atmos",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.resolution",
+                            "title": "Resolution",
+                            "type": "resolution"
+                        },
+                        {
+                            "key": "episode.mediaSize",
+                            "subType": "fileSize",
+                            "title": "File size",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "episode.mediaBitrate",
+                            "subType": "bitrate",
+                            "title": "Bitrate",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "episode.videoCodec",
+                            "subType": "videoCodec",
+                            "title": "Video Codec",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "episode.audioCodec",
+                            "subType": "audioCodec",
+                            "title": "Audio Codec",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "episode.subtitleCodec",
+                            "subType": "subtitleCodec",
+                            "title": "Subtitle Codec",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "episode.audioLayout",
+                            "subType": "audioLayout",
+                            "title": "Audio Layout",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "episode.subtitleLanguage",
+                            "title": "Subtitle Language",
+                            "type": "subtitleLanguage"
+                        },
+                        {
+                            "key": "episode.audioLanguage",
+                            "title": "Audio Language",
+                            "type": "audioLanguage"
+                        },
+                        {
+                            "key": "episode.trash",
+                            "title": "Trash",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.unmatched",
+                            "title": "Episode Unmatched",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "episode.location",
+                            "title": "Folder Location",
+                            "type": "tag"
+                        }
+                    ]
+                },
+                {
+                    "key": "/library/sections/2/folder",
+                    "type": "folder",
+                    "title": "Folders",
+                    "active": false
+                }
+            ],
+            "FieldType": [
+                {
+                    "type": "tag",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        }
+                    ]
+                },
+                {
+                    "type": "integer",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        },
+                        {
+                            "key": ">>=",
+                            "title": "is greater than"
+                        },
+                        {
+                            "key": "<<=",
+                            "title": "is less than"
+                        }
+                    ]
+                },
+                {
+                    "type": "string",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "contains"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "does not contain"
+                        },
+                        {
+                            "key": "==",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!==",
+                            "title": "is not"
+                        },
+                        {
+                            "key": "<=",
+                            "title": "begins with"
+                        },
+                        {
+                            "key": ">=",
+                            "title": "ends with"
+                        }
+                    ]
+                },
+                {
+                    "type": "boolean",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is true"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is false"
+                        }
+                    ]
+                },
+                {
+                    "type": "date",
+                    "Operator": [
+                        {
+                            "key": "<<=",
+                            "title": "is before"
+                        },
+                        {
+                            "key": ">>=",
+                            "title": "is after"
+                        }
+                    ]
+                },
+                {
+                    "type": "subtitleLanguage",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        }
+                    ]
+                },
+                {
+                    "type": "audioLanguage",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        }
+                    ]
+                },
+                {
+                    "type": "resolution",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

@@ -1,0 +1,93 @@
+{
+    "MediaContainer": {
+        "size": 1,
+        "allowSync": true,
+        "identifier": "com.plexapp.plugins.library",
+        "librarySectionID": 1,
+        "librarySectionTitle": "Movies",
+        "librarySectionUUID": "9a3e852a-ba1e-4861-9f1c-21e383cf1bc8",
+        "mediaTagPrefix": "/system/bundle/media/flags/",
+        "mediaTagVersion": 1791214582,
+        "Metadata": [
+            {
+                "ratingKey": "30",
+                "key": "/library/collections/30/children",
+                "guid": "collection://f930d10f-6f11-472b-a17f-23d127bee390",
+                "type": "collection",
+                "title": "Static Test",
+                "librarySectionTitle": "Movies",
+                "librarySectionID": 1,
+                "librarySectionKey": "/library/sections/1",
+                "subtype": "movie",
+                "summary": "",
+                "index": 149,
+                "ratingCount": 1,
+                "thumb": "/library/metadata/30/thumb/1794319603",
+                "art": "/library/metadata/30/art/1794319603",
+                "addedAt": 1794308026,
+                "updatedAt": 1794319603,
+                "childCount": 2,
+                "collectionMode": "0",
+                "collectionSort": "1",
+                "maxYear": "2009",
+                "minYear": "1995",
+                "Image": [
+                    {
+                        "alt": "Static Test",
+                        "type": "coverPoster",
+                        "url": "/library/metadata/30/thumb/1794319603"
+                    },
+                    {
+                        "alt": "Static Test",
+                        "type": "background",
+                        "url": "/library/metadata/30/art/1794319603"
+                    }
+                ],
+                "UltraBlurColors": {
+                    "topLeft": "3d155d",
+                    "topRight": "a00c81",
+                    "bottomRight": "3d6b35",
+                    "bottomLeft": "206878"
+                },
+                "Field": [
+                    {
+                        "locked": true,
+                        "name": "thumb"
+                    },
+                    {
+                        "locked": true,
+                        "name": "art"
+                    }
+                ],
+                "Preferences": {
+                    "Setting": [
+                        {
+                            "id": "collectionMode",
+                            "label": "Collection Mode",
+                            "summary": "How the items in the collection are displayed on the Library tab.",
+                            "type": "text",
+                            "default": "-1",
+                            "value": "0",
+                            "hidden": false,
+                            "advanced": false,
+                            "group": "",
+                            "enumValues": "-1:Library default|1:Hide items in this collection|2:Show this collection and its items|0:Hide this collection but show its items"
+                        },
+                        {
+                            "id": "collectionSort",
+                            "label": "Collection order",
+                            "summary": "How to sort the items in the collection.",
+                            "type": "text",
+                            "default": "0",
+                            "value": "1",
+                            "hidden": false,
+                            "advanced": false,
+                            "group": "",
+                            "enumValues": "0:Release date|1:Alphabetical"
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+}

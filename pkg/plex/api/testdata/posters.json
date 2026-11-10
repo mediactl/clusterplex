@@ -1,0 +1,22 @@
+{
+    "MediaContainer": {
+        "size": 2,
+        "identifier": "com.plexapp.plugins.library",
+        "mediaTagPrefix": "/system/bundle/media/flags/",
+        "mediaTagVersion": 1791214582,
+        "Metadata": [
+            {
+                "key": "/library/metadata/30/file?url=upload%3A%2F%2Fposters%2Fe9dfa0063251cdcf337791147bdfac4e4ea62df8",
+                "ratingKey": "upload://posters/e9dfa0063251cdcf337791147bdfac4e4ea62df8",
+                "thumb": "/library/metadata/30/file?url=upload%3A%2F%2Fposters%2Fe9dfa0063251cdcf337791147bdfac4e4ea62df8",
+                "selected": true
+            },
+            {
+                "key": "/library/collections/30/composite/1794319603?width=400&height=600",
+                "ratingKey": "default://",
+                "thumb": "/library/collections/30/composite/1794319603?width=200&height=300",
+                "selected": false
+            }
+        ]
+    }
+}

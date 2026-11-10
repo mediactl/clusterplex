@@ -1,0 +1,631 @@
+{
+    "MediaContainer": {
+        "size": 0,
+        "totalSize": 1036,
+        "offset": 0,
+        "allowSync": true,
+        "art": "/:/resources/movie-fanart.jpg",
+        "identifier": "com.plexapp.plugins.library",
+        "librarySectionID": 1,
+        "librarySectionTitle": "Clustarr Movies",
+        "librarySectionUUID": "05acde3c-7470-4b21-abee-417303deaa52",
+        "mediaTagPrefix": "/system/bundle/media/flags/",
+        "mediaTagVersion": 1791214630,
+        "thumb": "/:/resources/movie.png",
+        "title1": "Clustarr Movies",
+        "title2": "All Clustarr Movies",
+        "viewGroup": "movie",
+        "viewMode": 65592,
+        "Meta": {
+            "Type": [
+                {
+                    "key": "/library/sections/1/all?type=1",
+                    "type": "movie",
+                    "title": "Movies",
+                    "active": true,
+                    "Filter": [
+                        {
+                            "filter": "genre",
+                            "filterType": "string",
+                            "key": "/library/sections/1/genre",
+                            "title": "Genre",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "year",
+                            "filterType": "integer",
+                            "key": "/library/sections/1/year",
+                            "title": "Year",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "decade",
+                            "filterType": "integer",
+                            "key": "/library/sections/1/decade",
+                            "title": "Decade",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "contentRating",
+                            "filterType": "string",
+                            "key": "/library/sections/1/contentRating",
+                            "title": "Content Rating",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "collection",
+                            "filterType": "string",
+                            "key": "/library/sections/1/collection",
+                            "title": "Collection",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "director",
+                            "filterType": "string",
+                            "key": "/library/sections/1/director",
+                            "title": "Director",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "actor",
+                            "filterType": "string",
+                            "key": "/library/sections/1/actor",
+                            "title": "Actor",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "writer",
+                            "filterType": "string",
+                            "key": "/library/sections/1/writer",
+                            "title": "Writer",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "producer",
+                            "filterType": "string",
+                            "key": "/library/sections/1/producer",
+                            "title": "Producer",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "country",
+                            "filterType": "string",
+                            "key": "/library/sections/1/country",
+                            "title": "Country",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "studio",
+                            "filterType": "string",
+                            "key": "/library/sections/1/studio",
+                            "title": "Studio",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "resolution",
+                            "filterType": "string",
+                            "key": "/library/sections/1/resolution",
+                            "title": "Resolution",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "hdr",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/hdr",
+                            "title": "HDR",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "dovi",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/dovi",
+                            "title": "DOVI",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "hdr10plus",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/hdr10plus",
+                            "title": "HDR10+",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "atmos",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/atmos",
+                            "title": "Atmos",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "unwatched",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/unwatched",
+                            "title": "Unwatched",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "inProgress",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/inProgress",
+                            "title": "In Progress",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "unmatched",
+                            "filterType": "boolean",
+                            "key": "/library/sections/1/unmatched",
+                            "title": "Unmatched",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "videoCodec",
+                            "filterType": "string",
+                            "key": "/library/sections/1/videoCodec",
+                            "title": "Video Codec",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "audioCodec",
+                            "filterType": "string",
+                            "key": "/library/sections/1/audioCodec",
+                            "title": "Audio Codec",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "subtitleCodec",
+                            "filterType": "string",
+                            "key": "/library/sections/1/subtitleCodec",
+                            "title": "Subtitle Codec",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "audioLayout",
+                            "filterType": "string",
+                            "key": "/library/sections/1/audioLayout",
+                            "title": "Audio Layout",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "audioLanguage",
+                            "filterType": "string",
+                            "key": "/library/sections/1/audioLanguage",
+                            "title": "Audio Language",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "subtitleLanguage",
+                            "filterType": "string",
+                            "key": "/library/sections/1/subtitleLanguage",
+                            "title": "Subtitle Language",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "editionTitle",
+                            "filterType": "string",
+                            "key": "/library/sections/1/editionTitle",
+                            "title": "Edition",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "label",
+                            "filterType": "string",
+                            "key": "/library/sections/1/label",
+                            "title": "Labels",
+                            "type": "filter"
+                        },
+                        {
+                            "filter": "location",
+                            "filterType": "string",
+                            "key": "/library/sections/1/location",
+                            "title": "Folder Location",
+                            "type": "filter"
+                        }
+                    ],
+                    "Sort": [
+                        {
+                            "active": true,
+                            "activeDirection": "asc",
+                            "default": "asc",
+                            "defaultDirection": "asc",
+                            "descKey": "titleSort:desc",
+                            "firstCharacterKey": "/library/sections/1/firstCharacter",
+                            "key": "titleSort",
+                            "title": "Title"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "originallyAvailableAt:desc",
+                            "key": "originallyAvailableAt",
+                            "title": "Release Date"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "rating:desc",
+                            "key": "rating",
+                            "title": "Critic Rating"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "audienceRating:desc",
+                            "key": "audienceRating",
+                            "title": "Audience Rating"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "duration:desc",
+                            "key": "duration",
+                            "title": "Duration"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "addedAt:desc",
+                            "key": "addedAt",
+                            "title": "Date Added"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "lastViewedAt:desc",
+                            "key": "lastViewedAt",
+                            "title": "Date Viewed"
+                        },
+                        {
+                            "defaultDirection": "asc",
+                            "descKey": "mediaHeight:desc",
+                            "key": "mediaHeight",
+                            "title": "Resolution"
+                        },
+                        {
+                            "defaultDirection": "desc",
+                            "descKey": "random:desc",
+                            "key": "random",
+                            "title": "Randomly"
+                        }
+                    ],
+                    "Field": [
+                        {
+                            "key": "title",
+                            "title": "Title",
+                            "type": "string"
+                        },
+                        {
+                            "key": "studio",
+                            "title": "Studio",
+                            "type": "string"
+                        },
+                        {
+                            "key": "userRating",
+                            "subType": "rating",
+                            "title": "Rating",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "contentRating",
+                            "title": "Content Rating",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "year",
+                            "subType": "year",
+                            "title": "Year",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "decade",
+                            "subType": "decade",
+                            "title": "Decade",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "originallyAvailableAt",
+                            "title": "Release Date",
+                            "type": "date"
+                        },
+                        {
+                            "key": "duration",
+                            "subType": "duration",
+                            "title": "Duration",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "unmatched",
+                            "title": "Unmatched",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "duplicate",
+                            "title": "Duplicate",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "genre",
+                            "title": "Genre",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "collection",
+                            "title": "Collection",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "director",
+                            "title": "Director",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "writer",
+                            "title": "Writer",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "producer",
+                            "title": "Producer",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "actor",
+                            "title": "Actor",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "country",
+                            "title": "Country",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "addedAt",
+                            "title": "Date Added",
+                            "type": "date"
+                        },
+                        {
+                            "key": "viewCount",
+                            "title": "Plays",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "lastViewedAt",
+                            "title": "Last Watched",
+                            "type": "date"
+                        },
+                        {
+                            "key": "unwatched",
+                            "title": "Unwatched",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "resolution",
+                            "title": "Resolution",
+                            "type": "resolution"
+                        },
+                        {
+                            "key": "hdr",
+                            "subType": "hdr",
+                            "title": "HDR",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "dovi",
+                            "subType": "dovi",
+                            "title": "DOVI",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "hdr10plus",
+                            "subType": "hdr10plus",
+                            "title": "HDR10+",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "atmos",
+                            "subType": "atmos",
+                            "title": "Atmos",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "mediaSize",
+                            "subType": "fileSize",
+                            "title": "File Size",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "mediaBitrate",
+                            "subType": "bitrate",
+                            "title": "Bitrate",
+                            "type": "integer"
+                        },
+                        {
+                            "key": "videoCodec",
+                            "subType": "videoCodec",
+                            "title": "Video Codec",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "audioCodec",
+                            "subType": "audioCodec",
+                            "title": "Audio Codec",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "subtitleCodec",
+                            "subType": "subtitleCodec",
+                            "title": "Subtitle Codec",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "audioLayout",
+                            "subType": "audioLayout",
+                            "title": "Audio Layout",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "subtitleLanguage",
+                            "title": "Subtitle Language",
+                            "type": "subtitleLanguage"
+                        },
+                        {
+                            "key": "audioLanguage",
+                            "title": "Audio Language",
+                            "type": "audioLanguage"
+                        },
+                        {
+                            "key": "inProgress",
+                            "title": "In Progress",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "trash",
+                            "title": "Trash",
+                            "type": "boolean"
+                        },
+                        {
+                            "key": "location",
+                            "title": "Folder Location",
+                            "type": "tag"
+                        },
+                        {
+                            "key": "editionTitle",
+                            "title": "Edition",
+                            "type": "string"
+                        },
+                        {
+                            "key": "label",
+                            "title": "Label",
+                            "type": "tag"
+                        }
+                    ]
+                },
+                {
+                    "key": "/library/sections/1/folder",
+                    "type": "folder",
+                    "title": "Folders",
+                    "active": false
+                }
+            ],
+            "FieldType": [
+                {
+                    "type": "tag",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        }
+                    ]
+                },
+                {
+                    "type": "integer",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        },
+                        {
+                            "key": ">>=",
+                            "title": "is greater than"
+                        },
+                        {
+                            "key": "<<=",
+                            "title": "is less than"
+                        }
+                    ]
+                },
+                {
+                    "type": "string",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "contains"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "does not contain"
+                        },
+                        {
+                            "key": "==",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!==",
+                            "title": "is not"
+                        },
+                        {
+                            "key": "<=",
+                            "title": "begins with"
+                        },
+                        {
+                            "key": ">=",
+                            "title": "ends with"
+                        }
+                    ]
+                },
+                {
+                    "type": "boolean",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is true"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is false"
+                        }
+                    ]
+                },
+                {
+                    "type": "date",
+                    "Operator": [
+                        {
+                            "key": "<<=",
+                            "title": "is before"
+                        },
+                        {
+                            "key": ">>=",
+                            "title": "is after"
+                        }
+                    ]
+                },
+                {
+                    "type": "subtitleLanguage",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        }
+                    ]
+                },
+                {
+                    "type": "audioLanguage",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        },
+                        {
+                            "key": "!=",
+                            "title": "is not"
+                        }
+                    ]
+                },
+                {
+                    "type": "resolution",
+                    "Operator": [
+                        {
+                            "key": "=",
+                            "title": "is"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

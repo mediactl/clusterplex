@@ -1,0 +1,55 @@
+{
+    "MediaContainer": {
+        "size": 2,
+        "allowSync": true,
+        "art": "/:/resources/show-fanart.jpg",
+        "identifier": "com.plexapp.plugins.library",
+        "librarySectionID": 2,
+        "librarySectionTitle": "Clustarr TV",
+        "librarySectionUUID": "31ff65f9-c569-4f3f-bcbe-6432230c7313",
+        "mediaTagPrefix": "/system/bundle/media/flags/",
+        "mediaTagVersion": 1791214630,
+        "nocache": true,
+        "thumb": "/:/resources/show.png",
+        "title1": "Clustarr TV",
+        "title2": "All Shows",
+        "viewGroup": "show",
+        "viewMode": 65592,
+        "Metadata": [
+            {
+                "ratingKey": "26221",
+                "key": "/library/collections/26221/children",
+                "guid": "collection://1081959e-4c04-4fcd-8c70-d10a05adc48e",
+                "type": "collection",
+                "title": "Anime Dubbed",
+                "subtype": "show",
+                "summary": "",
+                "index": 86252,
+                "content": "server://ae5887ec46d6bfac69927015acffa8941a904368/com.plexapp.plugins.library/library/sections/2/all?type=2&sort=titleSort&episode.audioLanguage=en&and=1&show.genre=6437",
+                "ratingCount": 102,
+                "thumb": "/library/collections/26221/composite/1794315917?width=400&height=600",
+                "addedAt": 1793797073,
+                "updatedAt": 1794315917,
+                "childCount": 259,
+                "smart": "1"
+            },
+            {
+                "ratingKey": "16849",
+                "key": "/library/collections/16849/children",
+                "guid": "collection://2aa7cff5-f77b-47d0-8aeb-c10f57af2ada",
+                "type": "collection",
+                "title": "Netflix",
+                "subtype": "show",
+                "summary": "",
+                "index": 52576,
+                "content": "server://ae5887ec46d6bfac69927015acffa8941a904368/com.plexapp.plugins.library/library/sections/2/all?type=2&show.network=6787",
+                "ratingCount": 102,
+                "thumb": "/library/collections/16849/composite/1794315941?width=400&height=600",
+                "addedAt": 1792457582,
+                "updatedAt": 1794315941,
+                "childCount": 23,
+                "smart": "1"
+            }
+        ]
+    }
+}

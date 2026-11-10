@@ -1,0 +1,88 @@
+{
+    "MediaContainer": {
+        "size": 9,
+        "Hub": [
+            {
+                "identifier": "tv.recentlyaired",
+                "title": "Recently Released Episodes",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.recentlyadded",
+                "title": "Recently Added TV",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "all",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": true,
+                "promotedToSharedHome": true
+            },
+            {
+                "identifier": "recent.library.playlists",
+                "title": "Library Playlists",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.startwatching",
+                "title": "Start Watching",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.rediscover",
+                "title": "Rediscover",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.morefromnetwork",
+                "title": "More from (Network)",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.moreingenre",
+                "title": "More in (Genre)",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.toprated",
+                "title": "Top Rated TV",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            },
+            {
+                "identifier": "tv.recentlyviewed",
+                "title": "Recently Watched Episodes",
+                "recommendationsVisibility": "all",
+                "homeVisibility": "none",
+                "promotedToRecommended": true,
+                "promotedToOwnHome": false,
+                "promotedToSharedHome": false
+            }
+        ]
+    }
+}

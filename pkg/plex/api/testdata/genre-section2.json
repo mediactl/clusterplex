@@ -1,0 +1,403 @@
+{
+    "MediaContainer": {
+        "size": 64,
+        "allowSync": false,
+        "art": "/:/resources/show-fanart.jpg",
+        "content": "secondary",
+        "identifier": "com.plexapp.plugins.library",
+        "mediaTagPrefix": "/system/bundle/media/flags/",
+        "mediaTagVersion": 1791214630,
+        "nocache": true,
+        "thumb": "/:/resources/show.png",
+        "title1": "Clustarr TV",
+        "title2": "By Genre",
+        "viewGroup": "secondary",
+        "viewMode": 65592,
+        "Directory": [
+            {
+                "fastKey": "/library/sections/2/all?genre=5377",
+                "key": "5377",
+                "title": "Action",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63543",
+                "key": "63543",
+                "title": "Adaptation",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63545",
+                "key": "63545",
+                "title": "Adult Animation",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=5376",
+                "key": "5376",
+                "title": "Adventure",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6436",
+                "key": "6436",
+                "title": "Animation",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6437",
+                "key": "6437",
+                "title": "Anime",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=64680",
+                "key": "64680",
+                "title": "Anime - Josei",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63572",
+                "key": "63572",
+                "title": "Anime - Seinen",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63991",
+                "key": "63991",
+                "title": "Anime - Shojo",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63571",
+                "key": "63571",
+                "title": "Anime - Shonen",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65017",
+                "key": "65017",
+                "title": "Based on a True Story",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65193",
+                "key": "65193",
+                "title": "Biography - Fiction",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=66303",
+                "key": "66303",
+                "title": "Blockbuster",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=66001",
+                "key": "66001",
+                "title": "British",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63718",
+                "key": "63718",
+                "title": "C-Drama",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=8541",
+                "key": "8541",
+                "title": "Children",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6044",
+                "key": "6044",
+                "title": "Comedy",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65257",
+                "key": "65257",
+                "title": "Coming of Age",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6435",
+                "key": "6435",
+                "title": "Crime",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63547",
+                "key": "63547",
+                "title": "Critically Acclaimed",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65060",
+                "key": "65060",
+                "title": "Cult",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63562",
+                "key": "63562",
+                "title": "Dark Comedy",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=5836",
+                "key": "5836",
+                "title": "Documentary",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=5375",
+                "key": "5375",
+                "title": "Drama",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=66002",
+                "key": "66002",
+                "title": "Espionage",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=77034",
+                "key": "77034",
+                "title": "Faith Based",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=7015",
+                "key": "7015",
+                "title": "Family",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=5374",
+                "key": "5374",
+                "title": "Fantasy",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=76833",
+                "key": "76833",
+                "title": "Fashion",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=68182",
+                "key": "68182",
+                "title": "Food",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=7975",
+                "key": "7975",
+                "title": "Game Show",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65029",
+                "key": "65029",
+                "title": "Gangster",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6579",
+                "key": "6579",
+                "title": "History",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6434",
+                "key": "6434",
+                "title": "Horror",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63717",
+                "key": "63717",
+                "title": "K-Drama",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65030",
+                "key": "65030",
+                "title": "LGBTQ+",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=18591",
+                "key": "18591",
+                "title": "Martial Arts",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=7751",
+                "key": "7751",
+                "title": "Mini-Series",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=77061",
+                "key": "77061",
+                "title": "Musical",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6466",
+                "key": "6466",
+                "title": "Mystery",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65654",
+                "key": "65654",
+                "title": "Nature",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=64662",
+                "key": "64662",
+                "title": "Noir",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63992",
+                "key": "63992",
+                "title": "Paranormal",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65192",
+                "key": "65192",
+                "title": "Period",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63635",
+                "key": "63635",
+                "title": "Political",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63636",
+                "key": "63636",
+                "title": "Psychological Thriller",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6383",
+                "key": "6383",
+                "title": "Reality",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=64973",
+                "key": "64973",
+                "title": "Reincarnation",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6438",
+                "key": "6438",
+                "title": "Romance",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=6465",
+                "key": "6465",
+                "title": "Science Fiction",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=65194",
+                "key": "65194",
+                "title": "Slapstick Comedy",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=11809",
+                "key": "11809",
+                "title": "Sport",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63544",
+                "key": "63544",
+                "title": "Steampunk",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63546",
+                "key": "63546",
+                "title": "Superhero",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=11543",
+                "key": "11543",
+                "title": "Suspense",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=7381",
+                "key": "7381",
+                "title": "Talk Show",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=5846",
+                "key": "5846",
+                "title": "Thriller",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=82504",
+                "key": "82504",
+                "title": "Time Travel",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=84753",
+                "key": "84753",
+                "title": "Transmigration",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=19477",
+                "key": "19477",
+                "title": "Travel",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=67376",
+                "key": "67376",
+                "title": "True Crime",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=63638",
+                "key": "63638",
+                "title": "Urban",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=5960",
+                "key": "5960",
+                "title": "War",
+                "type": "genre"
+            },
+            {
+                "fastKey": "/library/sections/2/all?genre=7331",
+                "key": "7331",
+                "title": "Western",
+                "type": "genre"
+            }
+        ]
+    }
+}

@@ -279,7 +279,12 @@ func (c *Client) doLimit(ctx context.Context, method, path string, q url.Values,
 // over the defaults (Accept: application/json, the token): what a Plex
 // client says about itself, for the calls PMS answers per client.
 func (c *Client) send(ctx context.Context, method, path string, q url.Values, h http.Header, limit int) ([]byte, error) {
-	req, hc, err := c.request(ctx, method, path, q, h)
+	return c.sendBody(ctx, method, path, q, h, nil, limit)
+}
+
+// sendBody is send with a request body, such as an uploaded image.
+func (c *Client) sendBody(ctx context.Context, method, path string, q url.Values, h http.Header, body io.Reader, limit int) ([]byte, error) {
+	req, hc, err := c.request(ctx, method, path, q, h, body)
 	if err != nil {
 		return nil, err
 	}
@@ -288,23 +293,23 @@ func (c *Client) send(ctx context.Context, method, path string, q url.Values, h 
 		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: read: %w", method, path, err)
 	}
-	if len(body) > limit {
+	if len(answer) > limit {
 		return nil, fmt.Errorf("%s %s: %w", method, path, ErrResponseTooLarge)
 	}
-	if err := statusError(method, path, resp, body); err != nil {
+	if err := statusError(method, path, resp, answer); err != nil {
 		return nil, err
 	}
-	return body, nil
+	return answer, nil
 }
 
 // open is send for a body read as a stream, such as a media segment: the
 // caller reads and closes a 2xx answer's body.
 func (c *Client) open(ctx context.Context, method, path string, q url.Values, h http.Header) (*http.Response, error) {
-	req, hc, err := c.request(ctx, method, path, q, h)
+	req, hc, err := c.request(ctx, method, path, q, h, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -320,12 +325,12 @@ func (c *Client) open(ctx context.Context, method, path string, q url.Values, h 
 	return nil, statusError(method, path, resp, body)
 }
 
-func (c *Client) request(ctx context.Context, method, path string, q url.Values, h http.Header) (*http.Request, *http.Client, error) {
+func (c *Client) request(ctx context.Context, method, path string, q url.Values, h http.Header, body io.Reader) (*http.Request, *http.Client, error) {
 	u := strings.TrimRight(c.BaseURL, "/") + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return nil, nil, err
 	}
