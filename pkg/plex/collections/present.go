@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -31,6 +32,22 @@ type presentation struct {
 // visibility, and nothing it leaves out.
 func (s *Syncer) present(ctx context.Context, sectionKey string, col *api.Collection, spec Spec, prev Previous, out *Outcome) (presentation, error) {
 	var p presentation
+	// Settings and visibility first: an image Plex cannot take must hold
+	// neither back.
+	changed, err := s.syncSettings(ctx, col, spec)
+	if err != nil {
+		return p, err
+	}
+	p.changed = append(p.changed, changed...)
+	if spec.Visibility != nil {
+		set, err := s.syncVisibility(ctx, sectionKey, col.RatingKey, *spec.Visibility)
+		if err != nil {
+			return p, err
+		}
+		if set {
+			p.changed = append(p.changed, "visibility")
+		}
+	}
 	for _, img := range []struct {
 		kind, name string
 		want       *Image
@@ -56,20 +73,6 @@ func (s *Syncer) present(ctx context.Context, sectionKey string, col *api.Collec
 		*img.dst = st
 		if uploaded {
 			p.changed = append(p.changed, img.name)
-		}
-	}
-	changed, err := s.syncSettings(ctx, col, spec)
-	if err != nil {
-		return p, err
-	}
-	p.changed = append(p.changed, changed...)
-	if spec.Visibility != nil {
-		set, err := s.syncVisibility(ctx, sectionKey, col.RatingKey, *spec.Visibility)
-		if err != nil {
-			return p, err
-		}
-		if set {
-			p.changed = append(p.changed, "visibility")
 		}
 	}
 	return p, nil
@@ -110,8 +113,10 @@ func (s *Syncer) syncImage(ctx context.Context, ratingKey, kind, url string, pre
 		}
 		st.SHA1, st.FetchedAt = sha1Hex(body), now
 	}
+	// Plex has just listed the item's images, so a failed upload is Plex
+	// refusing these bytes: the image's problem, not Plex being away.
 	if err := s.PMS.UploadImage(ctx, ratingKey, kind, body, ctype); err != nil {
-		return nil, false, "", err
+		return nil, false, fmt.Sprintf("Plex refused the upload: %v", err), nil
 	}
 	return &st, true, "", nil
 }
@@ -131,8 +136,18 @@ func (s *Syncer) fetchImage(ctx context.Context, url string) ([]byte, string, st
 	case !strings.HasPrefix(ctype, imageTypeStart):
 		return nil, "", fmt.Sprintf("%s is %q, not an image", url, ctype)
 	}
-	return body, ctype, ""
+	// The bytes decide, not the header: an SVG or a page sent as an image
+	// is no poster Plex can show.
+	sniffed := http.DetectContentType(body)
+	if !uploadTypes[sniffed] {
+		return nil, "", fmt.Sprintf("%s is %s, not a JPEG, PNG, GIF, WebP or BMP image", url, sniffed)
+	}
+	return body, sniffed, ""
 }
+
+// uploadTypes are the image types, as http.DetectContentType names them,
+// that a poster or background is uploaded as.
+var uploadTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true, "image/bmp": true}
 
 // syncSettings sets the stated mode, and a normal collection's stated
 // order, where Plex's differ.

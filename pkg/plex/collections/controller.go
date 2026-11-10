@@ -247,16 +247,22 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 	}
 
 	prevCond := syncedCondition(u)
-	var out Outcome
+	prev := previousOf(u)
+	// A refusal before any sync keeps what the status recorded: the
+	// collection the resource holds (its ratingKey, which the finalizer
+	// deletes) and the images uploaded to it. Leaving them out of the
+	// apply would release them, and orphan that collection in Plex.
+	out := Outcome{RatingKey: prev.RatingKey, Adopted: prev.Adopted, Poster: prev.Poster, Background: prev.Background}
 	spec, err := SpecOf(u)
 	switch {
 	case err != nil:
-		out = Outcome{Reason: ReasonInvalidRule, Message: err.Error()}
+		out.Reason, out.Message = ReasonInvalidRule, err.Error()
 	default:
 		if first := firstHolder(u, spec, all); first != "" {
-			out = Outcome{Reason: ReasonConflict, Message: fmt.Sprintf("the older PlexCollection %q holds %q in %q; this one changes nothing in Plex", first, spec.Title, spec.Library)}
+			out.Reason = ReasonConflict
+			out.Message = fmt.Sprintf("the older PlexCollection %q holds %q in %q; this one changes nothing in Plex", first, spec.Title, spec.Library)
 		} else {
-			out = c.Syncer.Sync(ctx, u.GetNamespace(), spec, previousOf(u))
+			out = c.Syncer.Sync(ctx, u.GetNamespace(), spec, prev)
 		}
 	}
 	if err := c.writeStatus(ctx, u, out, prevCond); err != nil {

@@ -366,3 +366,41 @@ func TestDynamicMembersGUIDs(t *testing.T) {
 		series: "tv.plex.agents.custom.clustarr.tv://show/u3",
 	}, got)
 }
+
+// sentStatus is the last status the controller applied to a resource, as
+// sent: the merge-patch reactor keeps fields a real apply would drop, so a
+// release by omission shows only here.
+func (h *harness) sentStatus(t *testing.T, name string) map[string]any {
+	t.Helper()
+	var last map[string]any
+	for _, a := range h.dyn.Actions() {
+		pa, ok := a.(clienttesting.PatchActionImpl)
+		if !ok || pa.GetSubresource() != "status" || pa.GetName() != name {
+			continue
+		}
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(pa.GetPatch(), &body))
+		last, _ = body["status"].(map[string]any)
+	}
+	return last
+}
+
+func TestAConflictKeepsTheRecordedCollection(t *testing.T) {
+	older := plexCollection("up", time.Now().Add(-2*time.Hour), upResource())
+	// "x" held ratingKey 77 under another title, then was retitled to UP.
+	x := plexCollection("x", time.Now().Add(-time.Hour), upResource())
+	require.NoError(t, unstructured.SetNestedField(x.Object, "77", "status", "ratingKey"))
+	require.NoError(t, unstructured.SetNestedField(x.Object, true, "status", "adopted"))
+	h := newHarness(t, true, older, x)
+	h.f.add(fakeCollection{Section: "1", Title: "UP", Subtype: "movie", Smart: true, Content: storedContent(t, "1", "UP")})
+	h.run(t)
+
+	require.Eventually(t, func() bool {
+		s := h.sentStatus(t, "x")
+		return s != nil && s["conditions"] != nil
+	}, 5*time.Second, 10*time.Millisecond)
+	s := h.sentStatus(t, "x")
+	assert.Equal(t, "Conflict", s["conditions"].([]any)[0].(map[string]any)["reason"])
+	assert.Equal(t, "77", s["ratingKey"], "a conflict must not release the collection it holds")
+	assert.Equal(t, true, s["adopted"])
+}

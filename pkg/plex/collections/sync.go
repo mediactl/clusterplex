@@ -122,8 +122,8 @@ type Syncer struct {
 
 	mu    sync.Mutex
 	metas map[string]api.SectionMeta
-	tags  map[string]map[string]string   // tag path -> lower-case title -> id
-	guids map[string]map[string][]string // "section/type" -> base GUID -> rating keys
+	tags  map[string]map[string]string // tag path -> lower-case title -> id
+	guids map[string]guidIndex         // "section/type" -> base GUID -> rating keys
 }
 
 // Forget drops the cached Meta, tag lists and GUID indexes: on Plex's

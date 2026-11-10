@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -212,4 +213,49 @@ func TestVisibilityCreatesThenUpdatesTheHub(t *testing.T) {
 	assert.Equal(t, "0", puts[0].Query.Get("promotedToRecommended"))
 	assert.Equal(t, "1", puts[0].Query.Get("promotedToSharedHome"))
 	assert.Len(t, f.writesTo("POST "+hubPath), 1)
+}
+
+func TestARefusedImageHoldsBackNothingElse(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body []byte
+		ct   string
+		fail bool
+	}{
+		"Plex refuses the upload":  {body: posterBytes, ct: "image/png", fail: true},
+		"an SVG sent as image/png": {body: []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), ct: "image/png"},
+		"bytes that are no image":  {body: []byte("not an image at all"), ct: "image/jpeg"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakePMS(t)
+			rk := f.add(fakeCollection{Section: "2", Title: "Netflix", Subtype: "show", Smart: true, Content: storedContent(t, "2", "Netflix"), Mode: -1})
+			if tc.fail {
+				f.failNext("POST /library/metadata/"+rk+"/posters", http.StatusBadRequest)
+			}
+			img := &images{bodies: map[string][]byte{posterURL: tc.body}, types: map[string]string{posterURL: tc.ct}}
+			now := syncNow
+			spec := netflix()
+			spec.Poster = &collections.Image{URL: posterURL}
+			spec.Settings = &collections.Settings{Mode: "hideCollection"}
+			spec.Visibility = &collections.Visibility{Home: true}
+			out := presentSyncer(f, img, &now).Sync(t.Context(), ns, spec, collections.Previous{RatingKey: rk})
+			assert.Equal(t, collections.ReasonImageUnavailable, out.Reason, out.Message)
+			assert.Contains(t, out.Message, "poster")
+			assert.Len(t, f.writesTo("PUT /library/metadata/"+rk+"/prefs"), 1, "the mode is still set")
+			assert.Len(t, f.writesTo("POST /hubs/sections/2/manage"), 1, "the visibility is still set")
+			if !tc.fail {
+				assert.Empty(t, f.writesTo("POST /library/metadata/"+rk+"/posters"), "nothing Plex cannot show is uploaded")
+			}
+		})
+	}
+}
+
+func TestTheUploadCarriesTheSniffedType(t *testing.T) {
+	f := newFakePMS(t)
+	rk := f.add(fakeCollection{Section: "1", Title: "UP", Subtype: "movie", Smart: true, Content: storedContent(t, "1", "UP")})
+	img := &images{bodies: map[string][]byte{posterURL: posterBytes}, types: map[string]string{posterURL: "image/jpeg"}}
+	now := syncNow
+	presentSyncer(f, img, &now).Sync(t.Context(), ns, upWithPoster(), collections.Previous{RatingKey: rk})
+	ups := f.writesTo("POST /library/metadata/" + rk + "/posters")
+	require.Len(t, ups, 1)
+	assert.Equal(t, "image/png", ups[0].ContentType, "the bytes are a PNG whatever the header said")
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -207,4 +208,24 @@ func TestBaseGUIDMatchesTheProjection(t *testing.T) {
 	for _, g := range []string{"plex://movie/a", "plex://movie/a/edition/Director%27s%20Cut", "tv.plex.agents.custom.clustarr.movies://movie/9", ""} {
 		assert.Equal(t, plexproject.BaseGUID(g), collections.BaseGUID(g), g)
 	}
+}
+
+func TestMembersIndexIsReadAgainOnceStale(t *testing.T) {
+	f := newFakePMS(t)
+	f.setItems("1", "1", api.Item{RatingKey: "2", GUID: "plex://movie/a"})
+	now := syncNow
+	s := memberSyncer(f, &guids{m: ghibliGUIDs})
+	s.Now = func() time.Time { return now }
+	out := s.Sync(t.Context(), ns, ghibli(spirited), collections.Previous{})
+	require.Equal(t, collections.ReasonCreated, out.Reason, out.Message)
+	rk := out.RatingKey
+
+	// The movie is deleted and scanned in again: same GUID, new ratingKey.
+	f.setItems("1", "1", api.Item{RatingKey: "20", GUID: "plex://movie/a"})
+	now = syncNow.Add(11 * time.Minute)
+	out = s.Sync(t.Context(), ns, ghibli(spirited), collections.Previous{RatingKey: rk})
+	puts := f.writesTo("PUT /library/collections/" + rk + "/items")
+	require.Len(t, puts, 1, "the stale index is read again")
+	assert.Equal(t, collections.ItemsURI(talosMachine, []string{"20"}), puts[0].Query.Get("uri"))
+	assert.Equal(t, []string{"20"}, f.col(rk).Children)
 }
