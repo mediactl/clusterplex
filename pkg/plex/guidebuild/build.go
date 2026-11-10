@@ -4,7 +4,8 @@
 // docs/superpowers/specs/2026-11-10-guide-writer-and-built-cloud-guide-design.md.
 //
 // Every row follows what PMS 1.43.5 wrote for the same answers on the kind
-// rig (2026-11-10), field by field, which hack/guidebuild compares: a
+// rig (2026-11-10), field by field and id by id, which hack/guidebuild
+// compares (exact on two loads but for added_at, PMS's own clock): a
 // station is a channel tag numbered by its place in the lineup, an airing a
 // media item on it with the channel's fields in its extra_data, an episode
 // hangs off a season and a show, a movie stands alone, and genres and teams
@@ -100,17 +101,35 @@ type row struct {
 	index         int
 	duration      int64
 	thumb, art    string
-	genres        []epgcloud.Tag
-	teams         []epgcloud.Tag
-	available     int64 // originally_available_at, 0 for none
-	year          int
-	addedAt       int64
-	airings       int     // every slot the answers list, ended or repeated: PMS's media_item_count
-	channels      []int64 // channel tag ids, in first-aired order
+	// genreLists are the item's genre lists as its answers give them, in
+	// the order PMS reads them: a movie's grid answer, then its own
+	// metadata; genres is their merge (mergeTags).
+	genreLists [][]epgcloud.Tag
+	genres     []indexedTag
+	teams      []epgcloud.Tag
+	available  int64 // originally_available_at, 0 for none
+	year       int
+	addedAt    int64
+	// listed is how many airings the answer the item was made from lists,
+	// ended and repeated ones included; written counts the airings written
+	// for it. They make PMS's media_item_count (mediaItemCount).
+	listed, written int
+	channels        []int64 // channel tag ids, in first-aired order
+	// announced is set once the item's own taggings are written: a channel
+	// it gains after that rewrites its channel taggings.
+	announced bool
 	// A show's seasons by index, and the index of its most recently made
 	// numbered one.
 	seasons      map[int]*row
 	lastNumbered int
+}
+
+// tagEvent is a moment PMS writes an item's taggings: made, its genres,
+// teams and channels; otherwise its channels again, the earlier ones gone.
+type tagEvent struct {
+	item     *row
+	made     bool
+	channels []int64
 }
 
 // airingRow is one media_items row.
@@ -144,6 +163,24 @@ func Plan(in Input) (*Rows, error) {
 		order = append(order, r)
 		return r, true
 	}
+	// PMS writes an item's taggings as it meets the item: its genres, teams
+	// and first channel when it makes the item, and, each time the item
+	// turns up on another channel, its channel taggings again, the old ones
+	// deleted. The taggings' ids follow that, gaps and all.
+	var events []tagEvent
+	link := func(r *row, ch int64) {
+		if slices.Contains(r.channels, ch) {
+			return
+		}
+		r.channels = append(r.channels, ch)
+		if r.announced {
+			events = append(events, tagEvent{item: r, channels: slices.Clone(r.channels)})
+		}
+	}
+	announce := func(r *row) {
+		r.announced = true
+		events = append(events, tagEvent{item: r, made: true, channels: slices.Clone(r.channels)})
+	}
 	var airings []airingRow
 	channels := slices.Clone(in.Channels)
 	slices.SortFunc(channels, func(a, b string) int { return cmp.Compare(tagIDs[a], tagIDs[b]) })
@@ -171,9 +208,6 @@ func Plan(in Input) (*Rows, error) {
 					seen[slot] = true
 					kept = append(kept, m)
 				}
-				if have, ok := items[it.GUID]; ok {
-					have.airings += len(it.Media)
-				}
 				if len(kept) == 0 {
 					continue
 				}
@@ -181,38 +215,53 @@ func Plan(in Input) (*Rows, error) {
 				if r == nil {
 					continue
 				}
+				// A new episode's show and season are made before it, as
+				// PMS makes them, so its ids follow theirs.
+				var season *row
+				_, known := items[it.GUID]
+				if !known && it.Type == "episode" {
+					// PMS knows a show by its section and title: "College
+					// Football" under two ids is one show, the first met,
+					// but "College Football Scoreboard" in Sports and in
+					// Shows is two.
+					section := showSection(it, in)
+					showKey := strconv.FormatInt(section, 10) + "|" + it.GrandparentTitle
+					show, ok := shows[showKey]
+					if !ok {
+						show = showRow(it, in)
+						show.section = section
+						show.contentRating = it.ContentRating
+						show.seasons = map[int]*row{}
+						shows[showKey] = show
+						items[show.guid] = show
+						order = append(order, show)
+						link(show, ch)
+						announce(show)
+					}
+					season = seasonOf(it, show, add)
+					if season.year == 0 {
+						season.year = it.Year
+					}
+				}
 				r, fresh := add(r)
+				r.written += len(kept)
 				if fresh {
-					r.airings = len(it.Media)
-					if it.Type == "episode" {
-						// PMS knows a show by its section and title:
-						// "College Football" under two ids is one show,
-						// the first met, but "College Football Scoreboard"
-						// in Sports and in Shows is two.
-						section := showSection(it, in)
-						showKey := strconv.FormatInt(section, 10) + "|" + it.GrandparentTitle
-						show, ok := shows[showKey]
-						if !ok {
-							show = showRow(it, in)
-							show.section = section
-							show.contentRating = it.ContentRating
-							show.seasons = map[int]*row{}
-							shows[showKey] = show
-							items[show.guid] = show
-							order = append(order, show)
-						}
-						season := seasonOf(it, show, add)
-						if season.year == 0 {
-							season.year = it.Year
-						}
-						r.parent = season
-						noteChannel(show, ch)
+					r.listed = len(it.Media)
+					r.parent = season
+					if m, ok := in.Metadata[it.RatingKey]; ok && it.Type == "movie" {
+						// PMS fetches a movie's own metadata as it meets
+						// it and merges that answer's genres into the
+						// grid's.
+						r.genreLists = append(r.genreLists, m.Genre)
 					}
 				}
 				if r.parent != nil {
-					noteChannel(r.parent.parent, ch)
+					link(r.parent.parent, ch)
 				}
-				noteChannel(r, ch)
+				link(r, ch)
+				if fresh {
+					announce(r)
+				}
 				for _, m := range kept {
 					airings = append(airings, airingRow{item: r, channel: ch, station: stations[key], m: m})
 				}
@@ -236,6 +285,7 @@ func Plan(in Input) (*Rows, error) {
 	}
 	for i, r := range order {
 		r.id = int64(i + 1)
+		r.genres = mergeTags(r.genreLists...)
 	}
 
 	// Tags: the channels, then genres and teams as first met.
@@ -262,18 +312,45 @@ func Plan(in Input) (*Rows, error) {
 		tagRows = append(tagRows, []any{id, t.Tag, int64(typ), "", "", "", now, now, nil, nil, key})
 		return id
 	}
-	var taggings [][]any
-	for _, r := range order {
-		for i, g := range r.genres {
-			taggings = append(taggings, []any{r.id, tagOf(g, TagGenre), int64(i), "", "", now})
+	var all [][]any           // every tagging written, deleted ones included
+	deleted := map[int]bool{} // index into all
+	live := map[*row][]int{}  // an item's channel taggings in force, by index into all
+	tagging := func(item, tag int64, index int) int {
+		all = append(all, []any{int64(len(all) + 1), item, tag, int64(index), "", "", now})
+		return len(all) - 1
+	}
+	for _, e := range events {
+		r := e.item
+		if r.typ == TypeSeason {
+			continue // a season has no taggings
 		}
-		for i, t := range r.teams {
-			taggings = append(taggings, []any{r.id, tagOf(t, TagTeam), int64(i), "", "", now})
-		}
-		if r.typ != TypeSeason {
-			for i, ch := range r.channels {
-				taggings = append(taggings, []any{r.id, ch, int64(i), "", "", now})
+		if e.made {
+			// A genre's tag is made where its answers first name it,
+			// before the merge decides which of its places the item keeps.
+			for _, l := range r.genreLists {
+				for _, g := range l {
+					tagOf(g, TagGenre)
+				}
 			}
+			for _, g := range r.genres {
+				tagging(r.id, tagOf(g.Tag, TagGenre), g.index)
+			}
+			for i, t := range r.teams {
+				tagging(r.id, tagOf(t, TagTeam), i)
+			}
+		}
+		for _, i := range live[r] {
+			deleted[i] = true
+		}
+		live[r] = live[r][:0]
+		for i, ch := range e.channels {
+			live[r] = append(live[r], tagging(r.id, ch, i))
+		}
+	}
+	taggings := make([][]any, 0, len(all)-len(deleted))
+	for i, t := range all {
+		if !deleted[i] {
+			taggings = append(taggings, t)
 		}
 	}
 
@@ -287,15 +364,8 @@ func Plan(in Input) (*Rows, error) {
 		if r.typ == TypeMovie || r.typ == TypeEpisode {
 			duration = r.duration
 		}
-		count := int64(0) // a show's or a season's
-		switch r.typ {
-		case TypeEpisode:
-			count = int64(r.airings)
-		case TypeMovie:
-			count = int64(r.airings) - 1 // PMS's, for every movie on the rig
-		}
 		itemRows = append(itemRows, []any{
-			r.id, r.section, parent, int64(r.typ), r.guid, count,
+			r.id, r.section, parent, int64(r.typ), r.guid, mediaItemCount(r),
 			r.title, sortTitle(r.title), r.summary, r.contentRating,
 			int64(r.index), duration, r.thumb, r.art, joinTags(r.genres),
 			nullInt(r.available), nullInt(int64(r.year)), cmp.Or(r.addedAt, now), now, hash(r.guid), int64(0),
@@ -325,7 +395,7 @@ func Plan(in Input) (*Rows, error) {
 			extradata.Encode(fields), a.channel, a.m.BeginsAt, a.m.EndsAt,
 			"", "", "", "", "", "", "",
 		})
-		partRows = append(partRows, []any{id, id})
+		partRows = append(partRows, []any{id, id, "", "", ""})
 	}
 
 	return &Rows{
@@ -352,13 +422,13 @@ var (
 		"tags_director", "tags_writer", "tags_star", "tags_country", "edition_title", "slug", "user_clear_logo_url",
 		"user_square_art_url",
 	}
-	TaggingColumns = []string{"metadata_item_id", "tag_id", "index", "text", "thumb_url", "created_at"}
+	TaggingColumns = []string{"id", "metadata_item_id", "tag_id", "index", "text", "thumb_url", "created_at"}
 	MediaColumns   = []string{
 		"id", "library_section_id", "metadata_item_id", "width", "height", "duration", "audio_channels",
 		"display_offset", "media_analysis_version", "extra_data", "channel_id", "begins_at", "ends_at",
 		"container", "video_codec", "audio_codec", "source", "hints", "settings", "color_trc",
 	}
-	PartColumns = []string{"id", "media_item_id"}
+	PartColumns = []string{"id", "media_item_id", "file", "hash", "open_subtitle_hash"}
 )
 
 // Write writes rows into schema, whose guide tables are empty, in tx. It
@@ -413,7 +483,7 @@ func itemRow(it epgcloud.Item, first epgcloud.Airing) *row {
 	case "movie":
 		return &row{
 			typ: TypeMovie, guid: it.GUID, title: it.Title, summary: it.Summary, contentRating: it.ContentRating,
-			index: 1, duration: slotLength(first), thumb: it.Thumb, art: it.Art, genres: it.Genre,
+			index: 1, duration: slotLength(first), thumb: it.Thumb, art: it.Art, genreLists: [][]epgcloud.Tag{it.Genre},
 			available: date(it.OriginallyAvailableAt), year: it.Year, addedAt: it.AddedAt,
 		}
 	case "episode":
@@ -423,7 +493,7 @@ func itemRow(it epgcloud.Item, first epgcloud.Airing) *row {
 		}
 		return &row{
 			typ: TypeEpisode, guid: it.GUID, title: it.Title, summary: it.Summary, contentRating: it.ContentRating,
-			index: index, duration: slotLength(first), thumb: it.Thumb, art: it.Art, genres: it.Genre, teams: it.Team,
+			index: index, duration: slotLength(first), thumb: it.Thumb, art: it.Art, genreLists: [][]epgcloud.Tag{it.Genre}, teams: it.Team,
 			available: date(it.OriginallyAvailableAt), year: it.Year, addedAt: it.AddedAt,
 		}
 	}
@@ -438,7 +508,8 @@ func showRow(it epgcloud.Item, in Input) *row {
 		thumb: it.GrandparentThumb, art: it.GrandparentArt,
 	}
 	if m, ok := in.Metadata[it.GrandparentRatingKey]; ok {
-		r.summary, r.year, r.available, r.genres, r.addedAt = m.Summary, m.Year, date(m.OriginallyAvailableAt), m.Genre, m.AddedAt
+		r.summary, r.year, r.available, r.addedAt = m.Summary, m.Year, date(m.OriginallyAvailableAt), m.AddedAt
+		r.genreLists = [][]epgcloud.Tag{m.Genre}
 		// A show the service dates by its year alone is dated its first
 		// day, as PMS does.
 		if r.available == 0 && r.year > 0 {
@@ -494,12 +565,6 @@ func showSection(it epgcloud.Item, in Input) int64 {
 		return in.Sections.Sports
 	}
 	return in.Sections.Shows
-}
-
-func noteChannel(r *row, ch int64) {
-	if !slices.Contains(r.channels, ch) {
-		r.channels = append(r.channels, ch)
-	}
 }
 
 // channelTitle is a channel's title as PMS writes it: number, call sign and
@@ -575,15 +640,66 @@ func date(s string) int64 {
 
 // joinTags is the first genresKept tags' names, "|"-joined: PMS's
 // tags_genre.
-func joinTags(ts []epgcloud.Tag) string {
+func joinTags(ts []indexedTag) string {
 	names := make([]string, 0, genresKept)
 	for _, t := range ts {
 		if len(names) == genresKept {
 			break
 		}
-		names = append(names, t.Tag)
+		names = append(names, t.Tag.Tag)
 	}
 	return strings.Join(names, "|")
+}
+
+// indexedTag is a tag at its place in PMS's merged list: its tagging's
+// index.
+type indexedTag struct {
+	epgcloud.Tag
+	index int
+}
+
+// mergeTags is how PMS 1.43 lists an item's genres from its answers: the
+// lists joined in the order it reads them (a movie's grid answer, then its
+// own metadata), sorted by name with libc++'s std::sort (libcxxSort), and
+// the first of each name in that order kept, at its place in the joined
+// list. Where a movie's two answers agree, each genre is kept at one of its
+// two places, by the sort's moves: Action, Adventure, Fantasy, Movies and
+// Adrenaline + Sci-Fi in both answers are kept as Action 0, Movies 3,
+// Adventure 6, Fantasy 7 and Adrenaline + Sci-Fi 9, so tags_genre is
+// "Action|Movies". Names compare byte by byte, C++'s string order; ignoring
+// case decided every movie on the rig the same way. One list keeps its
+// order and places, but for a name it repeats.
+func mergeTags(lists ...[]epgcloud.Tag) []indexedTag {
+	var all []indexedTag
+	for _, l := range lists {
+		for _, t := range l {
+			all = append(all, indexedTag{Tag: t, index: len(all)})
+		}
+	}
+	libcxxSort(all, func(a, b indexedTag) bool { return a.Tag.Tag < b.Tag.Tag })
+	out := make([]indexedTag, 0, len(all))
+	for i, t := range all {
+		if i == 0 || t.Tag.Tag != all[i-1].Tag.Tag {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b indexedTag) int { return cmp.Compare(a.index, b.index) })
+	return out
+}
+
+// mediaItemCount is PMS's media_item_count for an item: an episode's is the
+// airings listed by the answer it was made from, ended and repeated ones
+// included, plus every airing written for it, less one; a movie's is the
+// airings written for it, less one; a show's and a season's are 0 (3,018 of
+// 3,018 episodes and 155 of 155 movies on the kind rig, 2026-11-10).
+func mediaItemCount(r *row) int64 {
+	switch r.typ {
+	case TypeEpisode:
+		return int64(r.listed + r.written - 1)
+	case TypeMovie:
+		return int64(r.written - 1)
+	}
+	return 0
 }
 
 func hash(guid string) string {

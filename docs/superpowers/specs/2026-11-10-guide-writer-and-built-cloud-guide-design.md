@@ -332,22 +332,62 @@ against a build from the same answers, fetched in the same minutes:
   `quotes`, `extra_data`); `is_adult` is 0; `index` -1 for an episode
   without a number.
 
-Every row matched in all four tables, and airings and tags on every column.
-Three differences remain, recorded here rather than chased:
+- `media_item_count`: an episode's is the airings listed by the answer it
+  was made from (ended and repeated ones too), plus every airing written
+  for it, less one; a movie's is the airings written for it, less one
+  (3,018 of 3,018 episodes, 155 of 155 movies). Counting every slot the
+  answers list missed 262 episodes and 4 movies.
+- A movie's genres are its grid answer's and its own metadata's lists
+  joined, sorted by name with libc++'s `std::sort` as it was until LLVM 15
+  (unstable: insertion sort only up to 6 elements of a type that is not
+  trivially copyable), and the first of each name kept, at its place in
+  the joined list (`guidebuild.mergeTags`, `libcxxSort`, 155 of 155;
+  modern libc++, a stable sort or any other key matched 54 or fewer). Where
+  the two lists agree, as they do on the rig, each genre is kept at one of
+  its two places, so the indexes skip and the order (and `tags_genre`, the
+  first two) moves: Action, Adventure, Fantasy, Movies, Adrenaline + Sci-Fi
+  become Action 0, Movies 3, Adventure 6, Fantasy 7, Adrenaline + Sci-Fi 9.
+  Identical lists always end alike (21 groups of 21).
+- Ids: PMS makes a new episode's show and season before the episode, so
+  ids run show, season, episode. It writes an item's taggings as it meets
+  it -- genres, teams, then its first channel -- and when the item turns
+  up on another channel it deletes the item's channel taggings and writes
+  them all again, so those ids follow that moment and the deleted ones are
+  never used (90 gaps on the rig). An airing part's `file`, `hash` and
+  `open_subtitle_hash` are empty strings.
+- `added_at` of an item the service gives no `addedAt` is PMS's own clock
+  as it writes the item: the second the answer that brought it arrived (a
+  show's or movie's metadata, an episode's grid page), plus the
+  milliseconds PMS took (87% to that second, the rest the next). No build
+  can reproduce it and PMS would not repeat it, so the oracle reads two such
+  stamps near the load as the load's time, as it does `created_at`.
 
-- `media_item_count`: PMS's for 262 of 3,004 episodes is higher than the
-  slots its answers list, by a rule the answers do not show; the build
-  writes every slot listed (episodes) or one less (movies, PMS's for all
-  155).
-- A movie's genre order: for 62 of 155 movies PMS's taggings carry indexes
-  that skip, as if it merged the grid's and the metadata's lists by a rule
-  of its own; the build writes the grid's order. It decides only the order
-  a movie's genres are listed in.
-- One sports event whose summary named a venue alone: PMS wrote none.
+**The oracle, exact (2026-11-10).** With those rules a build matches a
+load PMS made, every row and column of `metadata_items`, `media_items`,
+`media_parts`, `tags` and `taggings`, ids included (`hack/guidebuild`
+compares ids since). Twice:
+
+- The first load (03:16Z, 4,004 items, 3,787 airings), on whose answers the
+  rules were found: one row differs, a sports event's summary, which PMS
+  wrote empty and the fixture, fetched two minutes after PMS's load, gives
+  as its venue.
+- A second load of the same DVR (09:56Z, 3,942 items, 3,708 airings), its
+  fixture captured while PMS loaded: each grid week fetched the moment
+  PMS's log showed PMS asking for it, the metadata after. No row differs;
+  101 movies kept genres at their second places and 254 episodes counted
+  more than their written airings, and the same sports event's summary was
+  the venue in PMS's load and the build alike: the first load's difference
+  was the service changing between two fetches, not a rule.
 
 The recorded answers are Plex's guide data and stay out of this public
 repository. `hack/guidebuild` builds from a fixture directory recorded on
 the rig (PMS's debug log names every request of a load; fetch the same
-URLs in the same minutes, and freeze PMS's result as the reference schema)
-and compares column by column; `pkg/plex/guidebuild`'s tests hold each rule
-on synthetic answers.
+URLs, and freeze PMS's result as the reference schema) and compares column
+by column, `-now` the load's start; `pkg/plex/guidebuild`'s tests hold each
+rule on synthetic answers. Fetch each grid week the moment PMS's log shows
+it asked (a debug container tailing the log, its output followed with
+`kubectl logs -f`), since the service changes between fetches minutes
+apart, and the metadata after the load at no more than 3 a second, which
+keeps PMS's own requests under the token's limit. Send the server token as
+`X-Plex-Token`: the `X-Plex-Api-Token` in PMS's requests is its own and the
+service refuses another caller's (401).

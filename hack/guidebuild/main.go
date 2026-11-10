@@ -11,9 +11,14 @@
 //	go run ./hack/guidebuild -dsn "$(cat dsn)" -fixture ./fixture -ref epg_ref_pms -out epg_ref_built
 //
 // It prints, per table, the rows only one side has and, per column, how
-// many rows the two disagree on, with examples. Ids and the load's own
-// timestamps are not compared; foreign keys are compared by what they point
-// at.
+// many rows the two disagree on, with examples. Ids are compared, and
+// foreign keys both as ids and by what they point at; the load's own
+// timestamps are not. An item the service dates no addedAt is stamped by PMS with its own
+// clock as it writes the item (the second the answer that brought it
+// arrived, a few milliseconds later: 87% to the second on the rig, the rest
+// the next one), which no build can reproduce and PMS would not repeat; two
+// such added_at near the load are the same (loadTime), so a compare alone
+// (-compare-only) needs -now, the load's start, as a build does.
 package main
 
 import (
@@ -57,6 +62,9 @@ func run() int {
 		return 2
 	}
 	defer func() { _ = conn.Close(ctx) }()
+	// A compare alone knows the load's time only from -now; without it an
+	// added_at of PMS's own clock is a difference like any other.
+	loadTime = *nowFlag
 	if !*compareOnly {
 		now := time.Now()
 		if *nowFlag > 0 {
@@ -188,26 +196,35 @@ type table struct {
 	ignore []string
 }
 
+// Every table's ids are compared as well as what they point at: a build
+// numbers its rows as PMS's load does, an item by when PMS makes it and a
+// tagging by when PMS writes it, deleted ones' ids left unused (2026-11-10).
+// Only the load's own clock is not compared.
 var tables = []table{
 	{
 		"metadata_items", `SELECT m.guid, to_jsonb(m) || jsonb_build_object('parent', p.guid) FROM %[1]s.metadata_items m
 		LEFT JOIN %[1]s.metadata_items p ON p.id = m.parent_id WHERE m.metadata_type <> 15`,
-		[]string{"id", "parent_id", "created_at", "updated_at", "changed_at", "resources_changed_at"},
+		[]string{"created_at", "updated_at", "changed_at", "resources_changed_at"},
 	},
 	{
 		"media_items", `SELECT concat_ws('|', mi.channel_id, mi.begins_at), to_jsonb(mi) || jsonb_build_object('item', m.guid,
 		'parts', (SELECT count(*) FROM %[1]s.media_parts mp WHERE mp.media_item_id = mi.id))
 		FROM %[1]s.media_items mi LEFT JOIN %[1]s.metadata_items m ON m.id = mi.metadata_item_id`,
-		[]string{"id", "metadata_item_id", "created_at", "updated_at"},
+		[]string{"created_at", "updated_at"},
+	},
+	{
+		"media_parts", `SELECT concat_ws('|', mi.channel_id, mi.begins_at), to_jsonb(mp) FROM %[1]s.media_parts mp
+		JOIN %[1]s.media_items mi ON mi.id = mp.media_item_id`,
+		[]string{"created_at", "updated_at"},
 	},
 	{
 		"tags", `SELECT concat_ws('|', tag_type, tag, key), to_jsonb(t) FROM %[1]s.tags t`,
-		[]string{"id", "created_at", "updated_at"},
+		[]string{"created_at", "updated_at"},
 	},
 	{
 		"taggings", `SELECT concat_ws('|', m.guid, t.tag_type, t.tag, t.key, tg."index"), to_jsonb(tg) FROM %[1]s.taggings tg
 		JOIN %[1]s.metadata_items m ON m.id = tg.metadata_item_id JOIN %[1]s.tags t ON t.id = tg.tag_id`,
-		[]string{"id", "metadata_item_id", "tag_id", "created_at"},
+		[]string{"created_at"},
 	},
 }
 

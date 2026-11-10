@@ -112,7 +112,101 @@ func TestAnAiringOverBeforeTheBuildIsLeftOutAndARepeatedSlotWrittenOnce(t *testi
 	for _, r := range byColumn(ItemColumns, rows.Items) {
 		assert.NotEqual(t, "plex://episode/e0", r["guid"], "an episode with nothing still to come is not written")
 	}
-	assert.Equal(t, int64(3), item(t, rows, "plex://episode/e1")["media_item_count"], "every slot the answers list counts")
+	assert.Equal(t, int64(2), item(t, rows, "plex://episode/e1")["media_item_count"],
+		"the two slots its first answer lists, ended or not, and the one written, less one; the repeat counts nowhere")
+}
+
+func TestAnEpisodesCountIsItsFirstAnswersAiringsAndEveryAiringWrittenLessOne(t *testing.T) {
+	// CNN NewsNight on the rig: two airings listed and written, PMS's count 3.
+	rows := plan(t, input(map[string][][]epgcloud.Item{"k2": {{episode("news", "s", "Show", 2026, 238, slot(at(-1), at(1)), slot(at(4), at(5)))}}}))
+	assert.Equal(t, int64(3), item(t, rows, "plex://episode/news")["media_item_count"])
+
+	// Listed three (one over) in its first week, two more written in the next.
+	rows = plan(t, input(map[string][][]epgcloud.Item{"k2": {
+		{episode("e", "s", "Show", 1, 1, slot(at(-2), at(-1)), slot(at(2), at(3)), slot(at(6), at(7)))},
+		{episode("e", "s", "Show", 1, 1, slot(at(170), at(171)), slot(at(180), at(181)))},
+	}}))
+	assert.Equal(t, int64(3+4-1), item(t, rows, "plex://episode/e")["media_item_count"])
+}
+
+func TestAMoviesCountIsItsAiringsWrittenLessOne(t *testing.T) {
+	// An airing that ended before the load is written nowhere and counts
+	// nowhere (Black Adam on the rig: three listed, two written, PMS's 1).
+	rows := plan(t, input(map[string][][]epgcloud.Item{"k1": {
+		{movie("m", slot(at(-3), at(-1)), slot(at(2), at(4)))},
+		{movie("m", slot(at(170), at(172)))},
+	}}))
+	assert.Equal(t, int64(1), item(t, rows, "plex://movie/m")["media_item_count"])
+}
+
+func TestAMoviesGenresAreItsTwoAnswersMergedAsPMSsSortLeavesThem(t *testing.T) {
+	genres := func(names ...string) []epgcloud.Tag {
+		ts := make([]epgcloud.Tag, len(names))
+		for i, n := range names {
+			ts[i] = epgcloud.Tag{Tag: n, RatingKey: "genre_" + n}
+		}
+		return ts
+	}
+	// Each case is a movie on the rig whose grid answer and own metadata
+	// listed the same genres, with the places PMS kept them at.
+	for _, c := range []struct {
+		genres []string
+		want   map[string]int64
+		first2 string
+	}{
+		{
+			[]string{"Action", "Adventure", "Fantasy", "Movies", "Adrenaline + Sci-Fi"},
+			map[string]int64{"Action": 0, "Movies": 3, "Adventure": 6, "Fantasy": 7, "Adrenaline + Sci-Fi": 9},
+			"Action|Movies",
+		},
+		{
+			[]string{"Action", "Comedy", "Thriller", "Crime drama", "Movies", "Adrenaline + Sci-Fi", "Crime"},
+			map[string]int64{"Action": 0, "Movies": 4, "Crime": 6, "Comedy": 8, "Thriller": 9, "Crime drama": 10, "Adrenaline + Sci-Fi": 12},
+			"Action|Movies",
+		},
+		{
+			[]string{"Science fiction", "Adventure", "Action", "Fantasy", "Movies", "Adrenaline + Sci-Fi"},
+			map[string]int64{"Science fiction": 0, "Movies": 4, "Adrenaline + Sci-Fi": 5, "Adventure": 7, "Action": 8, "Fantasy": 9},
+			"Science fiction|Movies",
+		},
+		{
+			[]string{"Adventure", "Action", "Science fiction", "Fantasy", "Movies", "Adrenaline + Sci-Fi"},
+			map[string]int64{"Adventure": 0, "Action": 1, "Science fiction": 2, "Fantasy": 3, "Movies": 4, "Adrenaline + Sci-Fi": 11},
+			"Adventure|Action",
+		},
+	} {
+		m := movie("m", slot(at(1), at(3)))
+		m.RatingKey, m.Genre = "m", genres(c.genres...)
+		in := input(map[string][][]epgcloud.Item{"k1": {{m}}})
+		in.Metadata["m"] = epgcloud.Item{Type: "movie", Genre: genres(c.genres...)}
+		rows := plan(t, in)
+		assert.Equal(t, c.first2, item(t, rows, "plex://movie/m")["tags_genre"], c.genres)
+		names := map[int64]string{}
+		for _, tg := range byColumn(TagColumns, rows.Tags) {
+			names[tg["id"].(int64)] = tg["tag"].(string)
+		}
+		got := map[string]int64{}
+		var order []int64
+		for _, tg := range byColumn(TaggingColumns, rows.Taggings) {
+			if tg["tag_id"].(int64) > int64(len(stations)) {
+				got[names[tg["tag_id"].(int64)]] = tg["index"].(int64)
+				order = append(order, tg["index"].(int64))
+			}
+		}
+		assert.Equal(t, c.want, got, c.genres)
+		assert.IsIncreasing(t, order, "written in their places' order")
+	}
+
+	m := movie("m", slot(at(1), at(3)))
+	m.RatingKey, m.Genre = "m", genres("Action", "Adventure", "Fantasy")
+	rows := plan(t, input(map[string][][]epgcloud.Item{"k1": {{m}}}))
+	var idx []int64
+	for _, tg := range byColumn(TaggingColumns, rows.Taggings) {
+		if tg["tag_id"].(int64) > int64(len(stations)) {
+			idx = append(idx, tg["index"].(int64))
+		}
+	}
+	assert.Equal(t, []int64{0, 1, 2}, idx, "without its own metadata a movie keeps its grid answer's order")
 }
 
 func TestEveryAiringOfAnItemTakesTheSlotOfItsFirstInPMSsOrder(t *testing.T) {
@@ -126,6 +220,41 @@ func TestEveryAiringOfAnItemTakesTheSlotOfItsFirstInPMSsOrder(t *testing.T) {
 		assert.Equal(t, int64(2*3600*1000), m["duration"], "the first airing's slot, on every airing")
 	}
 	assert.Equal(t, int64(1), item(t, rows, "plex://movie/m")["media_item_count"], "a movie's count is one short (PMS's)")
+}
+
+func TestAnItemIsNumberedWhenPMSMakesIt(t *testing.T) {
+	rows := plan(t, input(map[string][][]epgcloud.Item{"k2": {{
+		movie("m", slot(at(1), at(2))),
+		episode("e", "s", "Show", 1, 1, slot(at(2), at(3))),
+	}}}))
+	assert.Equal(t, int64(1), item(t, rows, "plex://movie/m")["id"])
+	assert.Equal(t, int64(2), item(t, rows, "plex://show/s")["id"], "a new episode's show first")
+	assert.Equal(t, int64(3), item(t, rows, "plex://season/s/1")["id"], "then its season")
+	assert.Equal(t, int64(4), item(t, rows, "plex://episode/e")["id"])
+}
+
+func TestAnItemMetOnAnotherChannelHasItsChannelTaggingsWrittenAgain(t *testing.T) {
+	// PMS deletes an item's channel taggings and writes them all again when
+	// the item turns up on another channel, so their ids follow that moment
+	// and the deleted ones are never used again.
+	a := movie("a", slot(at(1), at(2)))
+	a.Genre = []epgcloud.Tag{{Tag: "Comedy", RatingKey: "genre_c"}}
+	rows := plan(t, input(map[string][][]epgcloud.Item{
+		"k1": {{a, movie("b", slot(at(2), at(3)))}},
+		"k2": {{movie("a", slot(at(5), at(6)))}},
+	}))
+	type tg struct{ id, item, tag, index int64 }
+	var got []tg
+	for _, r := range byColumn(TaggingColumns, rows.Taggings) {
+		got = append(got, tg{r["id"].(int64), r["metadata_item_id"].(int64), r["tag_id"].(int64), r["index"].(int64)})
+	}
+	assert.Equal(t, []tg{
+		{1, 1, int64(len(stations)) + 1, 0}, // a's genre
+		// 2 was a's channel on k1, deleted when a turned up on k2
+		{3, 2, 1, 0}, // b on k1
+		{4, 1, 1, 0}, // a's channels, written again: k1
+		{5, 1, 2, 1}, // and k2
+	}, got)
 }
 
 func TestAShowIsKnownByItsSectionAndTitle(t *testing.T) {

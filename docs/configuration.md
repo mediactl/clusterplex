@@ -885,10 +885,10 @@ none of it
   that rate, as PMS's own first load is. A daily build fetches the new
   weeks and the new shows. The build itself, from the cache, takes seconds.
 
-The rows match what PMS writes from the same answers, column by column
-(`hack/guidebuild` compares a build with a load PMS made), with three known
-differences listed in the design: some episodes' `media_item_count`, the
-order of some movies' genres, and one summary.
+The rows are the ones PMS writes from the same answers, every column and
+id (`hack/guidebuild` compares a build with a load PMS made; exact on the
+rig, 2026-11-10), but for an `added_at` PMS stamps with its own clock as it
+loads, which a build stamps with its own time.
 
 ### The guide, in PostgreSQL
 
