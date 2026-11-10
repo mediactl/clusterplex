@@ -101,7 +101,7 @@ type Outcome struct {
 }
 
 // Syncer brings Plex's collections in line with PlexCollection specs.
-// Each section's Meta and tag lists are cached until Forget.
+// Each section's Meta, tag lists and GUID index are cached until Forget.
 type Syncer struct {
 	PMS       PMS
 	MachineID string
@@ -111,15 +111,16 @@ type Syncer struct {
 
 	mu    sync.Mutex
 	metas map[string]api.SectionMeta
-	tags  map[string]map[string]string // tag path -> lower-case title -> id
+	tags  map[string]map[string]string   // tag path -> lower-case title -> id
+	guids map[string]map[string][]string // "section/type" -> base GUID -> rating keys
 }
 
-// Forget drops the cached Meta and tag lists: on Plex's start, and
-// whenever the caller wants them read afresh.
+// Forget drops the cached Meta, tag lists and GUID indexes: on Plex's
+// start, and whenever the caller wants them read afresh.
 func (s *Syncer) Forget() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.metas, s.tags = nil, nil
+	s.metas, s.tags, s.guids = nil, nil, nil
 }
 
 // refusal is a sync stopped for a reason before Plex was changed.
@@ -157,25 +158,32 @@ func (s *Syncer) Sync(ctx context.Context, namespace string, spec Spec, prev Pre
 	return out
 }
 
-func (s *Syncer) sync(ctx context.Context, _ string, spec Spec, prev Previous, out *Outcome) error {
+func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Previous, out *Outcome) error {
 	// 1. The library.
 	section, err := s.section(ctx, spec)
 	if err != nil {
 		return err
 	}
 	smart := spec.Filter != nil
-	if !smart {
-		return refuse(ReasonWaiting, "normal collections are not synced yet")
-	}
 
-	// 2. Compile: every rule checked and every tag resolved before Plex
-	// is touched.
-	meta, err := s.meta(ctx, section.Key)
-	if err != nil {
-		return err
-	}
-	if _, err := s.compile(ctx, spec, meta, Carry{}); err != nil {
-		return err
+	// 2. Compile a smart collection's filter -- every rule checked and
+	// every tag resolved before Plex is touched -- or resolve a normal
+	// one's members to Plex items.
+	var meta api.SectionMeta
+	var members memberPlan
+	if smart {
+		if meta, err = s.meta(ctx, section.Key); err != nil {
+			return err
+		}
+		if _, err := s.compile(ctx, spec, meta, Carry{}); err != nil {
+			return err
+		}
+	} else {
+		if members, err = s.planMembers(ctx, namespace, section.Key, spec); err != nil {
+			return err
+		}
+		out.MissingMembers = len(members.missing)
+		out.Missing = members.missing[:min(len(members.missing), maxMissing)]
 	}
 
 	// 3. Find, adopt or create.
@@ -187,11 +195,11 @@ func (s *Syncer) sync(ctx context.Context, _ string, spec Spec, prev Previous, o
 	wrote := false
 	switch {
 	case col == nil:
-		q, err := s.compile(ctx, spec, meta, Carry{})
+		uri, err := s.contentURI(ctx, section.Key, spec, meta, members)
 		if err != nil {
 			return err
 		}
-		c, err := s.PMS.CreateCollection(ctx, section.Key, ItemTypeNumber(spec.ItemType), spec.Title, SmartURI(s.MachineID, section.Key, q), true)
+		c, err := s.PMS.CreateCollection(ctx, section.Key, ItemTypeNumber(spec.ItemType), spec.Title, uri, smart)
 		if err != nil {
 			return err
 		}
@@ -206,9 +214,18 @@ func (s *Syncer) sync(ctx context.Context, _ string, spec Spec, prev Previous, o
 	out.RatingKey = col.RatingKey
 	created := out.Reason == ReasonCreated
 
-	// 4. The filter: the resource wins; a sort or limit it leaves out is
-	// Plex's, carried.
-	if !created {
+	// 4. The content: the resource wins. A smart collection's sort or
+	// limit the spec leaves out is Plex's, carried.
+	if !created && !smart {
+		changed, err := s.syncMembers(ctx, col.RatingKey, members)
+		if err != nil {
+			return err
+		}
+		if changed {
+			notes, wrote = append(notes, "members"), true
+		}
+	}
+	if !created && smart {
 		current, carry := ParseContent(col.Content)
 		q, err := s.compile(ctx, spec, meta, carry)
 		if err != nil {
@@ -261,7 +278,28 @@ func (s *Syncer) sync(ctx context.Context, _ string, spec Spec, prev Previous, o
 	if out.Message == "" {
 		out.Message = "Plex matches the resource"
 	}
+	if out.MissingMembers > 0 {
+		out.Reason = ReasonMembersPending
+		out.Message = fmt.Sprintf("%d of %d members are not in Plex yet (not scanned or matched, or not in clustarr); %s", out.MissingMembers, members.total, out.Message)
+	}
 	return nil
+}
+
+// contentURI is what a new collection is created with: a smart one's
+// compiled filter, or a normal one's items. A normal collection none of
+// whose members Plex holds is not created.
+func (s *Syncer) contentURI(ctx context.Context, sectionKey string, spec Spec, meta api.SectionMeta, members memberPlan) (string, error) {
+	if spec.Filter != nil {
+		q, err := s.compile(ctx, spec, meta, Carry{})
+		if err != nil {
+			return "", err
+		}
+		return SmartURI(s.MachineID, sectionKey, q), nil
+	}
+	if len(members.want) == 0 {
+		return "", refuse(ReasonWaiting, "none of its %d members is in Plex yet; the collection is created once one is", members.total)
+	}
+	return ItemsURI(s.MachineID, members.want), nil
 }
 
 // section is the library the spec names, by title, holding its item type.

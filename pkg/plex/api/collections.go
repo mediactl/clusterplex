@@ -192,6 +192,10 @@ func (c *Client) putItems(ctx context.Context, ratingKey, uri string) error {
 }
 
 // RemoveCollectionItem takes one item out of a normal collection.
+// Confirmed on stock PMS 1.43.5.11029 (2026-11-10): it answers 200 and
+// removes that item alone (childCount 2 to 1). Removing the last item
+// left the collection in place with childCount 0 on that build; it was
+// not deleted.
 func (c *Client) RemoveCollectionItem(ctx context.Context, ratingKey, itemRatingKey string) error {
 	return c.do(ctx, http.MethodDelete, "/library/collections/"+url.PathEscape(ratingKey)+"/items/"+url.PathEscape(itemRatingKey), nil, nil)
 }
