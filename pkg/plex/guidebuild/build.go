@@ -11,6 +11,13 @@
 // hangs off a season and a show, a movie stands alone, and genres and teams
 // are tags keyed by the service's own ids. What PMS leaves unset it writes
 // as an empty string, never NULL (but trivia, quotes and extra_data).
+//
+// An XMLTV DVR's guide (Input.Provider ProviderXMLTV) is planned the same
+// way, with what PMS 1.43.5.11029's XMLTV reader writes in place of the cloud
+// load's (the rig's DVR 8, 2026-11-10; clustarr's
+// docs/superpowers/specs/2026-11-10-livetv-custom-guides-design.md §2.3): a
+// channel known by its number, tags keyed by name, credits and countries,
+// and a News section.
 package guidebuild
 
 import (
@@ -41,25 +48,45 @@ const (
 	TypeEpisode = 4
 )
 
-// Tag types PMS uses in a guide.
+// Tag types PMS uses in a guide. Writers, stars, producers and countries are
+// an XMLTV guide's alone; its reader files a director as a star.
 const (
-	TagGenre   = 1
-	TagTeam    = 309
-	TagChannel = 310
+	TagGenre    = 1
+	TagWriter   = 5
+	TagStar     = 6
+	TagProducer = 7
+	TagCountry  = 8
+	TagTeam     = 309
+	TagChannel  = 310
 )
 
-// genresKept is how many genres PMS writes into an item's tags_genre; its
-// taggings carry them all.
-const genresKept = 2
+// genresKept is how many genres PMS writes into an item's tags_genre, and
+// starsKept how many stars into its tags_star; its taggings carry them all.
+const (
+	genresKept = 2
+	starsKept  = 3
+)
 
 // Sections are the guide's library sections, by name, as the live guide
 // holds them (copied, so PMS keeps their ids and uuids).
 type Sections struct {
 	Movies, Shows, Sports int64
+	// News is an XMLTV DVR's fourth section, where PMS's XMLTV reader files
+	// an episode of the genre News; a cloud guide has none.
+	News int64
 }
+
+// The EPG providers a DVR's guide is loaded from, as PMS names them.
+const (
+	ProviderCloud = "tv.plex.providers.epg.cloud"
+	ProviderXMLTV = "tv.plex.providers.epg.xmltv"
+)
 
 // Input is everything a build reads.
 type Input struct {
+	// Provider is the DVR's EPG provider, ProviderCloud when empty: the
+	// rows follow that provider's load (an XMLTV DVR's, design §2.3).
+	Provider string
 	// Lineup is the cloud lineup's id, the first half of each channel's
 	// identifier.
 	Lineup string
@@ -143,6 +170,10 @@ type row struct {
 	// the year of the episode that made it (5,129 of 5,129 on the rig).
 	seasons map[int]*row
 	made    []*row
+
+	// An XMLTV guide's credits and countries, each name once: stars are the
+	// actors, then the directors.
+	writers, stars, producers, countries []epgcloud.Tag
 }
 
 // tagEvent is a moment PMS writes an item's taggings: made, its genres,
@@ -164,6 +195,12 @@ type airingRow struct {
 // Plan works out in's guide: every row Write writes, in PMS's order, ids
 // from 1. It reads nothing but in.
 func Plan(in Input) (*Rows, error) {
+	switch in.Provider {
+	case "", ProviderCloud, ProviderXMLTV:
+	default:
+		return nil, fmt.Errorf("guidebuild: unknown provider %q", in.Provider)
+	}
+	xmltv := in.Provider == ProviderXMLTV
 	now := in.Now.Unix()
 	// A station's place, by grid key and number and by grid key alone,
 	// the first of each.
@@ -224,8 +261,13 @@ func Plan(in Input) (*Rows, error) {
 			unmatched = append(unmatched, strings.TrimSpace(c.VCN+" "+c.GridKey))
 			continue
 		}
+		// An XMLTV channel has no grid key: its grids are by its number.
+		key := c.GridKey
+		if xmltv && key == "" {
+			key = c.VCN
+		}
 		if !slices.ContainsFunc(channels, func(m mapped) bool { return m.tag == int64(i+1) }) {
-			channels = append(channels, mapped{key: c.GridKey, tag: int64(i + 1), station: in.Stations[i]})
+			channels = append(channels, mapped{key: key, tag: int64(i + 1), station: in.Stations[i]})
 		}
 	}
 	if len(channels) == 0 && len(unmatched) > 0 {
@@ -264,6 +306,9 @@ func Plan(in Input) (*Rows, error) {
 				r := itemRow(it, kept[0])
 				if r == nil {
 					continue
+				}
+				if xmltv {
+					r.credit(it)
 				}
 				// A new episode's show and season are made before it, as
 				// PMS makes them, so its ids follow theirs.
@@ -335,7 +380,11 @@ func Plan(in Input) (*Rows, error) {
 	}
 	for i, r := range order {
 		r.id = int64(i + 1)
-		r.genres = mergeTags(r.genreLists...)
+		if xmltv {
+			r.genres = sortedTags(r.genreLists...)
+		} else {
+			r.genres = mergeTags(r.genreLists...)
+		}
 	}
 
 	// Tags: the channels, then genres and teams as first met.
@@ -343,36 +392,47 @@ func Plan(in Input) (*Rows, error) {
 	var tagRows [][]any
 	for _, c := range channels {
 		s := c.station
-		extra := extradata.Encode(map[string]string{
+		title, identifier := channelNames(in, s)
+		fields := map[string]string{
 			"at:channelCallSign":   s.CallSign,
-			"at:channelIdentifier": channelIdentifier(in.Lineup, s),
+			"at:channelIdentifier": identifier,
 			"at:channelVcn":        s.VCN,
-			"at:gridKey":           s.GridKey,
-		})
+		}
+		// An XMLTV channel's tag has no grid key at all (the rig's DVR 8).
+		if !xmltv {
+			fields["at:gridKey"] = s.GridKey
+		}
+		extra := extradata.Encode(fields)
 		// tag_value is 1 for an HD station, NULL otherwise (217 SD and 31
 		// HD of 248 on the rig).
 		var hd any
 		if s.IsHD {
 			hd = int64(1)
 		}
-		tagRows = append(tagRows, []any{c.tag, channelTitle(s), int64(TagChannel), s.Thumb, "", "", nil, now, hd, extra, ""})
+		tagRows = append(tagRows, []any{c.tag, title, int64(TagChannel), s.Thumb, "", "", nil, now, hd, extra, ""})
 	}
 	tagOf := func(t epgcloud.Tag, typ int) int64 {
-		key := t.RatingKey
-		if id, ok := tags[key]; ok {
-			return id
+		// A cloud guide's tags are the service's, by its ids; an XMLTV
+		// guide's are names, one tag of a name for each type, and their key
+		// is empty (33 of 33 on the rig's DVR 8).
+		id, key := t.RatingKey, t.RatingKey
+		if xmltv {
+			id, key = strconv.Itoa(typ)+"|"+t.Tag, ""
 		}
-		id := nextTag
+		if have, ok := tags[id]; ok {
+			return have
+		}
+		tag := nextTag
 		nextTag++
-		tags[key] = id
-		tagRows = append(tagRows, []any{id, t.Tag, int64(typ), "", "", "", now, now, nil, nil, key})
-		return id
+		tags[id] = tag
+		tagRows = append(tagRows, []any{tag, t.Tag, int64(typ), "", "", "", now, now, nil, nil, key})
+		return tag
 	}
 	var all [][]any           // every tagging written, deleted ones included
 	deleted := map[int]bool{} // index into all
 	live := map[*row][]int{}  // an item's channel taggings in force, by index into all
-	tagging := func(item, tag int64, index int) int {
-		all = append(all, []any{int64(len(all) + 1), item, tag, int64(index), "", "", now})
+	tagging := func(item, tag int64, index int, text string) int {
+		all = append(all, []any{int64(len(all) + 1), item, tag, int64(index), text, "", now})
 		return len(all) - 1
 	}
 	for _, e := range events {
@@ -381,18 +441,32 @@ func Plan(in Input) (*Rows, error) {
 			continue // a season has no taggings
 		}
 		if e.made {
-			// A genre's tag is made where its answers first name it,
-			// before the merge decides which of its places the item keeps.
-			for _, l := range r.genreLists {
-				for _, g := range l {
-					tagOf(g, TagGenre)
+			// A cloud genre's tag is made where its answers first name it,
+			// before the merge decides which of its places the item keeps;
+			// an XMLTV one at its tagging, in name order.
+			if !xmltv {
+				for _, l := range r.genreLists {
+					for _, g := range l {
+						tagOf(g, TagGenre)
+					}
 				}
 			}
 			for _, g := range r.genres {
-				tagging(r.id, tagOf(g.Tag, TagGenre), g.index)
+				tagging(r.id, tagOf(g.Tag, TagGenre), g.index, "")
 			}
 			for i, t := range r.teams {
-				tagging(r.id, tagOf(t, TagTeam), i)
+				tagging(r.id, tagOf(t, TagTeam), i, "")
+			}
+			// An XMLTV guide's credits, then its countries, each type
+			// indexed from 0, an actor's role its text: Element Soup on the
+			// rig, its writer, two actors, director, producer and country.
+			for _, c := range []struct {
+				typ  int
+				tags []epgcloud.Tag
+			}{{TagWriter, r.writers}, {TagStar, r.stars}, {TagProducer, r.producers}, {TagCountry, r.countries}} {
+				for i, t := range c.tags {
+					tagging(r.id, tagOf(t, c.typ), i, t.Role)
+				}
 			}
 		}
 		for _, i := range live[r] {
@@ -400,7 +474,7 @@ func Plan(in Input) (*Rows, error) {
 		}
 		live[r] = live[r][:0]
 		for i, ch := range e.channels {
-			live[r] = append(live[r], tagging(r.id, ch, i))
+			live[r] = append(live[r], tagging(r.id, ch, i, ""))
 		}
 	}
 	taggings := make([][]any, 0, len(all)-len(deleted))
@@ -425,20 +499,30 @@ func Plan(in Input) (*Rows, error) {
 			r.title, sortTitle(r.title), r.summary, r.contentRating,
 			int64(r.index), duration, r.thumb, r.art, joinTags(r.genres),
 			nullInt(r.available), nullInt(int64(r.year)), cmp.Or(r.addedAt, now), now, hash(r.guid), int64(0),
-			"", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+			"", "", "", "", "", "", "",
+			// tags_director stays empty: PMS's XMLTV reader files a
+			// director as a star.
+			"", joinNames(r.writers, 0), joinNames(r.stars, starsKept), joinNames(r.countries, 0),
+			"", "", "", "",
 		})
 	}
 	var mediaRows, partRows [][]any
 	for i, a := range airings {
 		id := int64(i + 1)
 		w, h := resolution(a.m.VideoResolution)
+		title, identifier := channelNames(in, a.station)
 		fields := map[string]string{
 			"at:channelCallSign":   a.station.CallSign,
-			"at:channelIdentifier": channelIdentifier(in.Lineup, a.station),
-			"at:channelTitle":      channelTitle(a.station),
+			"at:channelIdentifier": identifier,
+			"at:channelTitle":      title,
 			"at:channelVcn":        a.station.VCN,
 			"at:gridKey":           a.station.GridKey,
 			"at:protocol":          "livetv",
+		}
+		// An XMLTV airing's grid key is there and empty (48 of 48 on the
+		// rig's DVR 8).
+		if xmltv {
+			fields["at:gridKey"] = ""
 		}
 		// A station without a logo has no channelThumb at all, not an
 		// empty one (20,465 of the rig's 70,912 airings).
@@ -571,8 +655,22 @@ func showRow(it epgcloud.Item, in Input) *row {
 		r.summary, r.year, r.available, r.addedAt = m.Summary, m.Year, date(m.OriginallyAvailableAt), m.AddedAt
 		r.genreLists = [][]epgcloud.Tag{m.Genre}
 		r.available = yearDate(r.available, r.year)
+		if in.Provider == ProviderXMLTV {
+			r.credit(m) // as its genres, from its own metadata
+		}
 	}
 	return r
+}
+
+// credit gives an XMLTV guide's item its credits and countries from it,
+// each name once: its actors and directors are its stars, in that order
+// (Element Soup on the rig: its director first in the XML, last of its
+// stars).
+func (r *row) credit(it epgcloud.Item) {
+	r.writers = uniqueNames(it.Writer)
+	r.stars = uniqueNames(it.Role, it.Director)
+	r.producers = uniqueNames(it.Producer)
+	r.countries = uniqueNames(it.Country)
 }
 
 // yearDate is a show's or a movie's originally_available_at: its date, or
@@ -637,14 +735,38 @@ func seasonOf(it epgcloud.Item, show *row, add func(*row) (*row, bool)) *row {
 // showSection is the section of the show an episode first meets: Sports
 // when the show's own genres, or the episode's, name the service's Sports
 // genre ("Sports talk" does not), or the episode names teams; else Shows.
+// In an XMLTV guide, News when they name News, Sports when they name
+// Sports, else Shows (Genres Many and DD Progid SP on the rig).
 func showSection(it epgcloud.Item, in Input) int64 {
-	has := func(ts []epgcloud.Tag) bool {
-		return slices.ContainsFunc(ts, func(t epgcloud.Tag) bool { return t.Tag == "Sports" })
+	show := in.Metadata[it.GrandparentRatingKey].Genre
+	has := func(name string) bool {
+		named := func(t epgcloud.Tag) bool { return t.Tag == name }
+		return slices.ContainsFunc(it.Genre, named) || slices.ContainsFunc(show, named)
 	}
-	if has(it.Genre) || len(it.Team) > 0 || has(in.Metadata[it.GrandparentRatingKey].Genre) {
+	if in.Provider == ProviderXMLTV {
+		switch {
+		case has("News"):
+			return in.Sections.News
+		case has("Sports"):
+			return in.Sections.Sports
+		}
+		return in.Sections.Shows
+	}
+	if has("Sports") || len(it.Team) > 0 {
 		return in.Sections.Sports
 	}
 	return in.Sections.Shows
+}
+
+// channelNames is a station's channel title and identifier as its guide's
+// provider writes them: an XMLTV channel's are "<number> <callSign>" and its
+// number (the rig's DVR 8: "9001 X1 One", "9001"), whatever its station's
+// title or network.
+func channelNames(in Input, s epgcloud.Station) (title, identifier string) {
+	if in.Provider == ProviderXMLTV {
+		return s.VCN + " " + s.CallSign, cmp.Or(s.ID, s.VCN)
+	}
+	return channelTitle(s), channelIdentifier(in.Lineup, s)
 }
 
 // channelTitle is a channel's title as PMS writes it: number, call sign and
@@ -750,6 +872,55 @@ func joinTags(ts []indexedTag) string {
 		names = append(names, t.Tag.Tag)
 	}
 	return strings.Join(names, "|")
+}
+
+// joinNames is the first kept tags' names, all of them for kept 0,
+// "|"-joined: PMS's tags_star, tags_writer and tags_country.
+func joinNames(ts []epgcloud.Tag, kept int) string {
+	if kept > 0 && len(ts) > kept {
+		ts = ts[:kept]
+	}
+	names := make([]string, len(ts))
+	for i, t := range ts {
+		names[i] = t.Tag
+	}
+	return strings.Join(names, "|")
+}
+
+// uniqueNames is the lists' tags joined, the first of each name kept.
+func uniqueNames(lists ...[]epgcloud.Tag) []epgcloud.Tag {
+	var out []epgcloud.Tag
+	for _, l := range lists {
+		for _, t := range l {
+			if !slices.ContainsFunc(out, func(o epgcloud.Tag) bool { return o.Tag == t.Tag }) {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// sortedTags is how PMS's XMLTV reader lists an item's genres: the lists
+// joined, sorted by name with libc++'s std::sort, the first of each name
+// kept, each at its place in that order (Element Soup on the rig: Drama,
+// Series and Comedy kept as Comedy 0, Drama 1 and Series 2, their tags made
+// in that order, tags_genre "Comedy|Drama").
+func sortedTags(lists ...[]epgcloud.Tag) []indexedTag {
+	var all []indexedTag
+	for _, l := range lists {
+		for _, t := range l {
+			all = append(all, indexedTag{Tag: t})
+		}
+	}
+	libcxxSort(all, func(a, b indexedTag) bool { return a.Tag.Tag < b.Tag.Tag })
+	out := make([]indexedTag, 0, len(all))
+	for i, t := range all {
+		if i == 0 || t.Tag.Tag != all[i-1].Tag.Tag {
+			t.index = len(out)
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // indexedTag is a tag at its place in PMS's merged list: its tagging's

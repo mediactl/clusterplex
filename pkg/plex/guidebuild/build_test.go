@@ -507,3 +507,237 @@ func TestAnAiringOfAStationWithoutALogoHasNoChannelThumb(t *testing.T) {
 	assert.Contains(t, media[0]["extra_data"], `"at:channelThumb":"https://provider-static.plex.tv/`)
 	assert.NotContains(t, media[1]["extra_data"], "channelThumb")
 }
+
+// An XMLTV DVR's guide: what PMS 1.43.5.11029's XMLTV reader wrote for the
+// rig's 48-programme probe (DVR 8, schema epg_fde0a670..., 2026-11-10), which
+// the design's §2.3 records.
+
+// xmltvStations are the probe's four channels as the reader makes them: a
+// station per channel, its number its identifier, no grid key.
+var xmltvStations = []epgcloud.Station{
+	{ID: "9001", VCN: "9001", CallSign: "X1 One", Title: "X1 One HD", IsHD: true,
+		Thumb: "https://provider-static.plex.tv/a/epg/channels/logos/gracenote/ac4ffe27107b835cf4e6a7a5b5c4b7c0.png"},
+	{ID: "9002", VCN: "9002", CallSign: "X1 Two", Title: "X1 Two", IsHD: true,
+		Thumb: "https://metadata-static.plex.tv/c/gracenote/cdcc962e86c6c828c2061b994f624cc2.jpg"},
+	{ID: "9003", VCN: "9003", CallSign: "X1 Three", Title: "X1 Three"},
+	{ID: "9004", VCN: "9004", CallSign: "X1 Four", Title: "X1 Four", Affiliate: "ABC", Thumb: "http://10.96.1.1/logo.png"},
+}
+
+// xmltvInput is an XMLTV DVR's input: its channels by number, its grids by
+// number, four sections.
+func xmltvInput(grids map[string][][]epgcloud.Item) Input {
+	in := Input{
+		Provider: ProviderXMLTV, Stations: xmltvStations, Grids: grids, Metadata: map[string]epgcloud.Item{},
+		Sections: Sections{Movies: 1, Shows: 2, Sports: 3, News: 4}, Now: t0,
+	}
+	for _, s := range xmltvStations {
+		if _, ok := grids[s.VCN]; ok {
+			in.Channels = append(in.Channels, Channel{VCN: s.VCN})
+		}
+	}
+	return in
+}
+
+func tagsNamed(names ...string) []epgcloud.Tag {
+	ts := make([]epgcloud.Tag, len(names))
+	for i, n := range names {
+		ts[i] = epgcloud.Tag{Tag: n}
+	}
+	return ts
+}
+
+// taggingsOf is an item's taggings but its channels': tag, index and text.
+func taggingsOf(t *testing.T, rows *Rows, guid string, stations int) [][3]any {
+	t.Helper()
+	id := item(t, rows, guid)["id"]
+	var out [][3]any
+	for _, r := range byColumn(TaggingColumns, rows.Taggings) {
+		if r["metadata_item_id"] == id && r["tag_id"].(int64) > int64(stations) {
+			out = append(out, [3]any{r["tag_id"], r["index"], r["text"]})
+		}
+	}
+	return out
+}
+
+func TestXMLTVFlavourWritesCreditsCountryAndNewsSection(t *testing.T) {
+	// Element Soup: categories Drama, Series and Comedy; a director, two
+	// actors, a writer, a producer and a country.
+	soup := episode("soup", "soup", "Element Soup", 3, 5, slot(at(1), at(2)))
+	soup.Genre = tagsNamed("Drama", "Series", "Comedy")
+	soup.Director = tagsNamed("Dir Ector")
+	soup.Role = []epgcloud.Tag{{Tag: "Act Orone", Role: "Lead"}, {Tag: "Act Ortwo", Role: "Support"}}
+	soup.Writer = tagsNamed("Wri Ter")
+	soup.Producer = tagsNamed("Pro Ducer")
+	soup.Country = tagsNamed("US")
+	// Credits Rich: two directors, three actors, a writer twice.
+	rich := episode("rich", "rich", "Credits Rich", 1, 1, slot(at(2), at(3)))
+	rich.Director = tagsNamed("D One", "D Two")
+	rich.Role = []epgcloud.Tag{{Tag: "A One", Role: "Hero"}, {Tag: "A Two"}, {Tag: "A Three"}}
+	rich.Writer = tagsNamed("W One", "W One")
+	// Genres Many: News among eight categories.
+	news := episode("news", "news", "Genres Many", 1, 1, slot(at(3), at(4)))
+	news.Genre = tagsNamed("Action", "Adventure", "Sci-Fi", "News", "Children", "Talk", "Reality", "Documentary")
+	sports := episode("game", "game", "DD Progid SP", 2026, 0, slot(at(4), at(5)))
+	sports.Genre = tagsNamed("Sports event", "Sports")
+	// A movie stays in Movies whatever its genres say.
+	film := movie("film", slot(at(5), at(6)))
+	film.Genre = tagsNamed("Sports event", "Sports", "Football", "News")
+	film.Country = tagsNamed("GB")
+	rows := plan(t, xmltvInput(map[string][][]epgcloud.Item{"9001": {{soup, rich, news, sports, film}}}))
+
+	type tg struct {
+		id   int64
+		name string
+		typ  int64
+	}
+	var tags []tg
+	for _, r := range byColumn(TagColumns, rows.Tags) {
+		assert.Equal(t, "", r["key"], "an XMLTV guide's tags are keyed by name, their key empty: %v", r["tag"])
+		if r["tag_type"] != int64(TagChannel) {
+			tags = append(tags, tg{r["id"].(int64), r["tag"].(string), r["tag_type"].(int64)})
+		}
+	}
+	assert.Equal(t, []tg{
+		// Element Soup's, as the rig numbered them: its genres sorted, then
+		// writer, actors, director, producer and country.
+		{5, "Comedy", 1}, {6, "Drama", 1}, {7, "Series", 1}, {8, "Wri Ter", 5},
+		{9, "Act Orone", 6}, {10, "Act Ortwo", 6}, {11, "Dir Ector", 6}, {12, "Pro Ducer", 7}, {13, "US", 8},
+		{14, "W One", 5}, {15, "A One", 6}, {16, "A Two", 6}, {17, "A Three", 6}, {18, "D One", 6}, {19, "D Two", 6},
+		{20, "Action", 1}, {21, "Adventure", 1}, {22, "Children", 1}, {23, "Documentary", 1}, {24, "News", 1},
+		{25, "Reality", 1}, {26, "Sci-Fi", 1}, {27, "Talk", 1},
+		{28, "Sports", 1}, {29, "Sports event", 1},
+		{30, "Football", 1}, {31, "GB", 8}, // News, Sports and Sports event are the tags already made
+	}, tags)
+
+	e := item(t, rows, "plex://episode/soup")
+	assert.Equal(t, "Comedy|Drama", e["tags_genre"], "the first two genres in name order")
+	assert.Equal(t, "Act Orone|Act Ortwo|Dir Ector", e["tags_star"], "actors, then directors")
+	assert.Equal(t, "Wri Ter", e["tags_writer"])
+	assert.Equal(t, "US", e["tags_country"])
+	assert.Equal(t, "", e["tags_director"], "a director is a star; tags_director is never set")
+	assert.Equal(t, [][3]any{
+		{int64(5), int64(0), ""}, {int64(6), int64(1), ""}, {int64(7), int64(2), ""}, // genres at their sorted places
+		{int64(8), int64(0), ""},
+		{int64(9), int64(0), "Lead"}, {int64(10), int64(1), "Support"}, {int64(11), int64(2), ""}, // an actor's role is its text
+		{int64(12), int64(0), ""},
+		{int64(13), int64(0), ""},
+	}, taggingsOf(t, rows, "plex://episode/soup", len(xmltvStations)))
+
+	r := item(t, rows, "plex://episode/rich")
+	assert.Equal(t, "A One|A Two|A Three", r["tags_star"], "the first three stars")
+	assert.Equal(t, "W One", r["tags_writer"], "a name listed twice is one tag")
+	assert.Equal(t, [][3]any{
+		{int64(14), int64(0), ""},
+		{int64(15), int64(0), "Hero"}, {int64(16), int64(1), ""}, {int64(17), int64(2), ""}, {int64(18), int64(3), ""}, {int64(19), int64(4), ""},
+	}, taggingsOf(t, rows, "plex://episode/rich", len(xmltvStations)))
+
+	assert.Equal(t, "Action|Adventure", item(t, rows, "plex://episode/news")["tags_genre"])
+	for guid, section := range map[string]int64{
+		"plex://show/soup": 2, "plex://season/soup/3": 2, "plex://episode/soup": 2,
+		"plex://show/news": 4, "plex://season/news/1": 4, "plex://episode/news": 4,
+		"plex://show/game": 3, "plex://episode/game": 3,
+		"plex://movie/film": 1,
+	} {
+		assert.Equal(t, section, item(t, rows, guid)["library_section_id"], guid)
+	}
+	f := item(t, rows, "plex://movie/film")
+	assert.Equal(t, "GB", f["tags_country"])
+	assert.Equal(t, "Football|News", f["tags_genre"])
+
+	// A show's own metadata carries its credits, as it carries its genres.
+	show := episode("e", "s", "Show", 1, 1, slot(at(1), at(2)))
+	in := xmltvInput(map[string][][]epgcloud.Item{"9002": {{show}}})
+	in.Metadata["s"] = epgcloud.Item{Genre: tagsNamed("News"), Role: tagsNamed("Anchor"), Country: tagsNamed("US")}
+	rows = plan(t, in)
+	s := item(t, rows, "plex://show/s")
+	assert.Equal(t, []any{"Anchor", "US", int64(4)}, []any{s["tags_star"], s["tags_country"], s["library_section_id"]},
+		"the show's genre News files it under News")
+}
+
+func TestXMLTVChannelTitleAndIdentifier(t *testing.T) {
+	premiere := slot(at(3), at(4))
+	premiere.Premiere = true
+	in := xmltvInput(map[string][][]epgcloud.Item{
+		"9001": {{episode("a", "s", "Show", 1, 1, slot(at(1), at(2)))}},
+		"9003": {{movie("b", slot(at(1), at(2)))}},
+		"9004": {{episode("c", "s", "Show", 1, 2, premiere)}},
+	})
+	rows := plan(t, in)
+
+	// The rig's tags rows 1, 3 and 4 and media rows 1, 3 and 4, verbatim.
+	tags := byColumn(TagColumns, rows.Tags)
+	require.Len(t, tags, 3)
+	assert.Equal(t, []any{int64(1), "9001 X1 One", int64(TagChannel), int64(1), "", xmltvStations[0].Thumb}, []any{
+		tags[0]["id"], tags[0]["tag"], tags[0]["tag_type"], tags[0]["tag_value"], tags[0]["key"], tags[0]["user_thumb_url"],
+	}, "number and call sign: the station's own title is no part of it")
+	assert.Equal(t, `{"at:channelCallSign":"X1 One","at:channelIdentifier":"9001","at:channelVcn":"9001",`+
+		`"url":"at%3AchannelCallSign=X1%20One&at%3AchannelIdentifier=9001&at%3AchannelVcn=9001"}`, tags[0]["extra_data"],
+		"the station's number as its identifier, and no grid key")
+	assert.Equal(t, "9004 X1 Four", tags[2]["tag"], "nor its network")
+	assert.Equal(t, `{"at:channelCallSign":"X1 Four","at:channelIdentifier":"9004","at:channelVcn":"9004",`+
+		`"url":"at%3AchannelCallSign=X1%20Four&at%3AchannelIdentifier=9004&at%3AchannelVcn=9004"}`, tags[2]["extra_data"])
+
+	media := byColumn(MediaColumns, rows.Media)
+	require.Len(t, media, 3)
+	byChannel := map[int64]map[string]any{}
+	for _, m := range media {
+		byChannel[m["channel_id"].(int64)] = m
+	}
+	assert.Equal(t, `{"at:channelCallSign":"X1 One","at:channelIdentifier":"9001",`+
+		`"at:channelThumb":"https://provider-static.plex.tv/a/epg/channels/logos/gracenote/ac4ffe27107b835cf4e6a7a5b5c4b7c0.png",`+
+		`"at:channelTitle":"9001 X1 One","at:channelVcn":"9001","at:gridKey":"","at:protocol":"livetv",`+
+		`"url":"at%3AchannelCallSign=X1%20One&at%3AchannelIdentifier=9001&at%3AchannelThumb=https%3A%2F%2Fprovider-static%2Eplex%2Etv%2Fa%2Fepg%2Fchannels%2Flogos%2Fgracenote%2Fac4ffe27107b835cf4e6a7a5b5c4b7c0%2Epng`+
+		`&at%3AchannelTitle=9001%20X1%20One&at%3AchannelVcn=9001&at%3AgridKey=&at%3Aprotocol=livetv"}`, byChannel[1]["extra_data"],
+		"an airing's grid key is there and empty")
+	assert.Equal(t, `{"at:channelCallSign":"X1 Three","at:channelIdentifier":"9003","at:channelTitle":"9003 X1 Three",`+
+		`"at:channelVcn":"9003","at:gridKey":"","at:protocol":"livetv",`+
+		`"url":"at%3AchannelCallSign=X1%20Three&at%3AchannelIdentifier=9003&at%3AchannelTitle=9003%20X1%20Three`+
+		`&at%3AchannelVcn=9003&at%3AgridKey=&at%3Aprotocol=livetv"}`, byChannel[3]["extra_data"])
+	assert.Equal(t, `{"at:channelCallSign":"X1 Four","at:channelIdentifier":"9004","at:channelThumb":"http://10.96.1.1/logo.png",`+
+		`"at:channelTitle":"9004 X1 Four","at:channelVcn":"9004","at:gridKey":"","at:premiere":"1","at:protocol":"livetv",`+
+		`"url":"at%3AchannelCallSign=X1%20Four&at%3AchannelIdentifier=9004&at%3AchannelThumb=http%3A%2F%2F10%2E96%2E1%2E1%2Flogo%2Epng`+
+		`&at%3AchannelTitle=9004%20X1%20Four&at%3AchannelVcn=9004&at%3AgridKey=&at%3Apremiere=1&at%3Aprotocol=livetv"}`, byChannel[4]["extra_data"])
+	assert.Equal(t, int64(1), byChannel[4]["media_analysis_version"], "a premiere's airing")
+
+	// A station without an identifier of its own is known by its number; a
+	// channel the lineup lacks is named by its number.
+	in.Stations = slices.Clone(xmltvStations)
+	in.Stations[0].ID = ""
+	in.Channels = append(in.Channels, Channel{VCN: "9999"})
+	rows = plan(t, in)
+	assert.Contains(t, byColumn(TagColumns, rows.Tags)[0]["extra_data"], `"at:channelIdentifier":"9001"`)
+	assert.Equal(t, []string{"9999"}, rows.Stats.Unmatched)
+}
+
+func TestTheCloudFlavourIsUnchanged(t *testing.T) {
+	// The suite above is the cloud flavour's proof. Beside it: the service's
+	// answers may carry credits and countries, which a cloud guide never
+	// writes, and an empty provider is the cloud's.
+	build := func(provider string, credits bool) *Rows {
+		m := movie("m", slot(at(1), at(3)))
+		m.RatingKey, m.Genre = "m", []epgcloud.Tag{{Tag: "Drama", RatingKey: "genre_d"}}
+		e := episode("e", "s", "Show", 1, 1, slot(at(2), at(3)))
+		e.Genre = []epgcloud.Tag{{Tag: "News", RatingKey: "genre_n"}}
+		if credits {
+			for _, it := range []*epgcloud.Item{&m, &e} {
+				it.Role, it.Director = tagsNamed("An Actor"), tagsNamed("A Director")
+				it.Writer, it.Producer, it.Country = tagsNamed("A Writer"), tagsNamed("A Producer"), tagsNamed("US")
+			}
+		}
+		in := input(map[string][][]epgcloud.Item{"k1": {{m}}, "k2": {{e}}})
+		in.Provider = provider
+		if credits {
+			in.Metadata["s"] = epgcloud.Item{Role: tagsNamed("Host")}
+		}
+		return plan(t, in)
+	}
+	want := build("", false)
+	assert.Equal(t, want, build(ProviderCloud, false))
+	assert.Equal(t, want, build("", true), "credits and countries are no part of a cloud guide")
+	assert.Equal(t, int64(2), item(t, want, "plex://episode/e")["library_section_id"], "nor is a News section")
+
+	in := input(map[string][][]epgcloud.Item{"k1": {{movie("m", slot(at(1), at(3)))}}})
+	in.Provider = "tv.plex.providers.epg.onconnect"
+	_, err := Plan(in)
+	assert.ErrorContains(t, err, "tv.plex.providers.epg.onconnect", "a provider it does not know is refused, not built as the cloud's")
+}

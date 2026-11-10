@@ -208,11 +208,14 @@ func DecodeChannels(body []byte) ([]Station, error) {
 	return a.MediaContainer.Channel, nil
 }
 
-// Tag is a genre or a team as the service names it.
+// Tag is a genre, a team, a person or a country as the service names it.
 type Tag struct {
 	ID        string `json:"id"`
 	Tag       string `json:"tag"`
 	RatingKey string `json:"ratingKey"` // "genre_<id>", "team_<id>": the tag's key in PMS
+	// Role is an actor's part ("Lead"), on a Role entry: PMS's XMLTV reader
+	// writes it as the actor's tagging's text.
+	Role string `json:"role"`
 }
 
 // Image is one of an item's images.
@@ -260,6 +263,16 @@ type Item struct {
 	Team                  []Tag    `json:"Team"`
 	Image                 []Image  `json:"Image"`
 	Media                 []Airing `json:"Media"`
+
+	// Role, Director, Writer, Producer and Country are an item's credits
+	// and countries, in Plex's own JSON shapes. Only an XMLTV DVR's guide
+	// writes them (guidebuild.ProviderXMLTV): a cloud guide's PMS load
+	// keeps none, whatever the service's answers carry.
+	Role     []Tag `json:"Role"`
+	Director []Tag `json:"Director"`
+	Writer   []Tag `json:"Writer"`
+	Producer []Tag `json:"Producer"`
+	Country  []Tag `json:"Country"`
 }
 
 // DecodeItems reads a Grid or a Metadata answer's items.
