@@ -355,8 +355,12 @@ func (c *cloudGuides) due(ctx context.Context, w cloudWant) bool {
 			return false
 		}
 		b = cloudBuilt{hash: "", at: at}
-		if !at.IsZero() {
-			b.hash = w.hash // the map it was built from is not recorded; a day's age decides
+		// The map it was built from is not recorded; a day's age decides,
+		// unless a build is under way or staged: this holder took over
+		// mid-build and builds again, which adopts the Job or the build
+		// by the plan's stamp (stageInJob).
+		if !at.IsZero() && !c.inFlight(ctx, w.dvr) {
+			b.hash = w.hash
 		}
 		c.mu.Lock()
 		c.built[w.dvr] = b

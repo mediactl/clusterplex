@@ -35,10 +35,11 @@ rules:
   {{- if and .Values.plex.liveTV.enabled (eq (.Values.plex.liveTV.cloudGuide | default "pms") "manager") (ne (.Values.plex.liveTV.cloudGuideBuild | default "job") "inProcess") }}
   # A built cloud guide's build Job (plex.liveTV.cloudGuideBuild "job"): the
   # lease holder starts one per plan, waits on it, and deletes a finished one
-  # before it starts the next under the same name.
+  # before it starts the next under the same name; a new holder lists a
+  # guide's Jobs to find a build its predecessor left running.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "create", "delete"]
+    verbs: ["get", "list", "create", "delete"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

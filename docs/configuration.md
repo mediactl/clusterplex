@@ -658,7 +658,7 @@ plex:
     cloudGuide: pms            # pms: PMS loads and refreshes Plex cloud guides; manager: the managers build them ("The managers build a cloud guide")
     cloudGuideBuild: job       # where a built guide is computed: job (a Job per build, off the Plex pod) or inProcess (the lease holder's manager)
     cloudGuideJob:             # the build Job's pod: resources, nodeSelector, tolerations, affinity, activeDeadlineSeconds (default 3600)
-      resources: {requests: {cpu: 500m, memory: 1Gi}, limits: {memory: 3Gi}}
+      resources: {requests: {cpu: 500m, memory: 768Mi}, limits: {memory: 2Gi}}
     severalPods: false         # Live TV on more than one Plex pod, for a deployment that records nothing ("Live TV runs on one Plex pod")
 ```
 
@@ -893,14 +893,15 @@ none of it
   provider row as PMS does after a refresh, so PMS's own start-up check
   finds the guide fresh.
 - **The build Job's failures.** A holder that loses the lease while its Job
-  runs leaves it running; the next holder plans the same build, finds the
-  Job by its name and waits for it, or takes the build it staged. The Job
+  runs leaves it running; the next holder sees the unfinished Job (or the
+  staged build) at its first look, plans the same build, finds the Job by
+  its name and waits for it, or takes the build it staged. The Job
   retries twice (`backoffLimit`), fails at once if the cached plan is no
   longer its own (exit 3), and is ended at `activeDeadlineSeconds`; a
   failed build leaves the old guide, and the holder tries again 15 minutes
   later, replacing the finished Job. A finished Job and its pod's log stay
-  for 6 hours. The chart grants the manager `get`, `create` and `delete` on
-  Jobs only when the build Job is in use.
+  for 6 hours. The chart grants the manager `get`, `list`, `create` and
+  `delete` on Jobs only when the build Job is in use.
 - **When.** At a block's first map save and whenever its `lineupHash`
   moves; at the manager's start when the guide was never built or is a day
   old; and daily in `guideRefreshWindow`. A map save makes PMS start a load
@@ -908,8 +909,9 @@ none of it
 - **How long.** A first build of a 248-channel lineup is about 500 grid
   calls and some thousands of metadata calls: the better part of an hour at
   that rate, as PMS's own first load is. A daily build fetches the new
-  weeks and the new shows. The build itself, from the cache, took seconds
-  for 12 channels on the rig; at 248 channels it is still to be measured,
+  weeks and the new shows. The build itself, from the cache, takes about a
+  minute at 248 channels in a Job peaking at 526-551 MiB (the kind rig,
+  2026-11-10); in the holder it raised the manager from 80 MB to 603 MB,
   which is why it runs in a Job of its own sizing.
 
 The rows are the ones PMS writes from the same answers, every column and

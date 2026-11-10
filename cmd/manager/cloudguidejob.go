@@ -232,6 +232,36 @@ func renderCloudJob(own *corev1.Pod, spec cloudGuideJobSpec, dvr, stamp string) 
 	}, nil
 }
 
+// inFlight reports whether a build of dvr's guide is under way or waits for
+// its swap: a build Job not yet finished, or a staged build. A holder that
+// took over mid-build remembers neither, and the guide's own record
+// (builtAt) says only when the last build was installed.
+func (c *cloudGuides) inFlight(ctx context.Context, dvr string) bool {
+	if conn, err := c.m.connectGuides(ctx); err == nil {
+		stamp, _, err := plexbootstrap.StagedBuild(ctx, conn, plexbootstrap.Guide{Provider: cloudGuideProvider, DVR: dvr})
+		_ = conn.Close(context.Background())
+		if err == nil && stamp != "" {
+			return true
+		}
+	}
+	if c.m.Config.LiveTV.CloudGuideBuild == CloudGuideBuildInProcess {
+		return false
+	}
+	list, err := c.m.K8sClient.BatchV1().Jobs(c.m.Config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/component=" + cloudJobComponent + "," + labelGuideDVR + "=" + dvrShort(dvr),
+	})
+	if err != nil {
+		c.log().Warn("Live TV: list a guide's build Jobs", "dvr", dvr, "error", err)
+		return false
+	}
+	for i := range list.Items {
+		if done, _, _ := jobFinished(&list.Items[i]); !done {
+			return true
+		}
+	}
+	return false
+}
+
 // jobFinished is a Job's terminal condition: complete, or failed with its
 // reason and message.
 func jobFinished(j *batchv1.Job) (done, failed bool, why string) {

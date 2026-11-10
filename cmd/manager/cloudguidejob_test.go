@@ -300,3 +300,21 @@ func one(t *testing.T, conn *pgx.Conn, sql string) int {
 	require.NoError(t, conn.QueryRow(context.Background(), sql).Scan(&n))
 	return n
 }
+
+// TestANewHolderSeesABuildItsPredecessorLeftRunning: at its first look a
+// holder reads only when the guide was last installed, so a build Job left
+// running by the holder before it must make the guide due, or the build is
+// never swapped in.
+func TestANewHolderSeesABuildItsPredecessorLeftRunning(t *testing.T) {
+	ctx := context.Background()
+	running, err := renderCloudJob(holderPod(), cloudGuideJobSpec{}, testDVR, "stamp1")
+	require.NoError(t, err)
+	c := newCloudGuides(jobTestManager(running))
+	assert.True(t, c.inFlight(ctx, testDVR))
+	assert.False(t, c.inFlight(ctx, "16cac8a1-0746-4e63-9a32-c9d0fd96a0c1"), "another DVR's Job is not this guide's")
+
+	done, err := renderCloudJob(holderPod(), cloudGuideJobSpec{}, testDVR, "stamp1")
+	require.NoError(t, err)
+	c = newCloudGuides(jobTestManager(finished(done, batchv1.JobComplete, "")))
+	assert.False(t, c.inFlight(ctx, testDVR), "a finished Job is no build under way")
+}

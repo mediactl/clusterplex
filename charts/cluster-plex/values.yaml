@@ -139,13 +139,15 @@ plex:
     # activeDeadlineSeconds (default 3600). Its memory limit sets the build's
     # GOMEMLIMIT (90%). It runs the Plex image as nobody, with the library
     # database's settings alone: no ServiceAccount token, no Plex token.
+    # A 248-channel build peaked at 526-551 MiB (the kind rig, 2026-11-10)
+    # and took a minute.
     cloudGuideJob:
       resources:
         requests:
           cpu: 500m
-          memory: 1Gi
+          memory: 768Mi
         limits:
-          memory: 3Gi
+          memory: 2Gi
   # Audio codecs whose decoders the lease holder has Plex download once it
   # serves (docs/configuration.md, "The audio decoders a tune needs"). Plex
   # downloads a decoder only for a transcode of a file it has analysed,

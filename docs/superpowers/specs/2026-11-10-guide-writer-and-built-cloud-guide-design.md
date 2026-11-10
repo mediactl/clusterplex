@@ -538,6 +538,27 @@ becomes one budget in PostgreSQL.
   one rate and one hold; the Job's pod spec; adoption and replacement of a
   Job; the holder waiting for a Job's record, taking one already staged,
   and failing with a failed Job; and `manager guide-build` itself, from the
-  environment, staging the stamped plan and refusing a moved one. Not yet
-  on the rig: a real Job on kind, its memory at 248 channels, and a holder
-  failover mid-build.
+  environment, staging the stamped plan and refusing a moved one.
+- **A new holder adopts a build its predecessor left.** Found planning the
+  failover run: a holder's first look took the guide's last-installed time
+  (`builtAt`) and the current map as built, so a Job left running, or a
+  staged build, would never be swapped in until the daily rebuild.
+  `inFlight` makes the guide due when an unfinished build Job (listed by its
+  labels; the chart's Role gains `list` on Jobs) or a staged build exists;
+  the new holder plans the same build, so the stamp matches and it adopts.
+- **The rig (kind, 2026-11-10, image 601a90c plus the fix, two pods,
+  severalPods, the warm 248-channel cache clustarr-11 left):**
+  - Run A: the lineup hash moved; the holder (plex-1) planned and started
+    the Job at 14:13:43Z; its pod ran at 14:13:46Z and plex-1 was deleted
+    0.3 s later. plex-0 took the lease at 14:13:59Z, found the Job, started
+    none, and swapped the build in at 14:14:50Z. The Job: 248 channels,
+    48,161 items, 70,338 airings in 60 s, cgroup peak 551 MiB. The oracle
+    (`hack/guidebuild` from the cache at the install's own time) against
+    the installed guide: exact in metadata_items, media_items, media_parts,
+    tags (795) and taggings (182,890).
+  - Run B: the hash moved again with the plan unchanged (the same stamp):
+    the holder deleted the finished Job of that name on the API server,
+    started a new one 8 s after the change, and installed at 14:22:01Z;
+    peak 526 MiB.
+  - No WARN or ERROR on either Plex pod. The chart default became 768Mi
+    requested, 2Gi limit.
