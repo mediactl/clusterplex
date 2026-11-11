@@ -139,11 +139,15 @@ type cloudGuides struct {
 	// logger, when set, is the log of the builder that runs the build Jobs
 	// through this one (xmltvGuides); a cloud builder's own otherwise.
 	logger *slog.Logger
+	// libraryDVRs lists the library's DVRs (Manager.libraryDVRs), which
+	// prune keeps the wants to; a variable for the tests.
+	libraryDVRs func(ctx context.Context) (map[string]bool, error)
 }
 
 func newCloudGuides(m *Manager) *cloudGuides {
 	return &cloudGuides{
 		m: m, wants: map[string]cloudWant{}, built: map[string]cloudBuilt{}, kick: make(chan struct{}, 1),
+		libraryDVRs: m.libraryDVRs,
 	}
 }
 
@@ -375,6 +379,7 @@ func readPlans(ctx context.Context, conn *pgx.Conn) ([]cloudPlan, error) {
 // when it is due, until ctx ends.
 func (c *cloudGuides) runBuilder(ctx context.Context) {
 	for {
+		c.prune(ctx)
 		c.mu.Lock()
 		wants := make([]cloudWant, 0, len(c.wants))
 		for _, w := range c.wants {
@@ -397,6 +402,14 @@ func (c *cloudGuides) runBuilder(ctx context.Context) {
 		case <-c.kick:
 		case <-time.After(cloudFetchPoll):
 		}
+	}
+}
+
+// prune drops the wants whose DVR the library no longer lists (pruneWants).
+func (c *cloudGuides) prune(ctx context.Context) {
+	gone := pruneWants(ctx, &c.mu, c.wants, c.built, c.libraryDVRs, c.log())
+	for _, d := range gone {
+		c.log().Info("Live TV: the library lists no DVR "+d+" any more; its cloud guide is no longer built", "dvr", d)
 	}
 }
 

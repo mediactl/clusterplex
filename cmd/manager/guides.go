@@ -461,6 +461,26 @@ func (m *Manager) connectGuides(ctx context.Context) (*pgx.Conn, error) {
 	return plexbootstrap.ConnectWith(cfg)(ctx)
 }
 
+// libraryDVRs is every DVR the library lists a guide for
+// (plexbootstrap.ListGuides), by lower-case uuid: a DVR's rows exist from
+// its creation, before its guide's first load.
+func (m *Manager) libraryDVRs(ctx context.Context) (map[string]bool, error) {
+	conn, err := m.connectGuides(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	guides, err := plexbootstrap.ListGuides(ctx, conn, m.Config.Postgres.Schema)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(guides))
+	for _, g := range guides {
+		out[strings.ToLower(g.DVR)] = true
+	}
+	return out, nil
+}
+
 // prepareGuides makes each Live TV guide's schema the library lists and
 // rebuilds its shadow, copying a load the file holds first, before every
 // PMS start (Supervisor.BeforeStart): never into a guide the managers build

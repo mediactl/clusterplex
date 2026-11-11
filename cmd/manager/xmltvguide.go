@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"path"
@@ -113,12 +114,15 @@ type xmltvGuides struct {
 	// lastBuild reads when dvr's guide was last built and from which hash
 	// (storedBuild); a variable for the tests.
 	lastBuild func(ctx context.Context, dvr string) (cloudBuilt, error)
+	// libraryDVRs lists the library's DVRs (Manager.libraryDVRs), which
+	// prune keeps the wants to; a variable for the tests.
+	libraryDVRs func(ctx context.Context) (map[string]bool, error)
 }
 
 func newXMLTVGuides(m *Manager) *xmltvGuides {
 	x := &xmltvGuides{
 		m: m, wants: map[string]xmltvWant{}, built: map[string]cloudBuilt{}, known: map[string]bool{},
-		kick: make(chan struct{}, 1),
+		kick: make(chan struct{}, 1), libraryDVRs: m.libraryDVRs,
 	}
 	x.lastBuild = x.storedBuild
 	return x
@@ -191,6 +195,7 @@ func (x *xmltvGuides) log() *slog.Logger { return x.m.Logger.With("component", "
 // when it is due, until ctx ends.
 func (x *xmltvGuides) runBuilder(ctx context.Context) {
 	for {
+		x.prune(ctx)
 		x.mu.Lock()
 		wants := make([]xmltvWant, 0, len(x.wants))
 		for _, w := range x.wants {
@@ -214,6 +219,54 @@ func (x *xmltvGuides) runBuilder(ctx context.Context) {
 		case <-time.After(cloudFetchPoll):
 		}
 	}
+}
+
+// prune drops the wants whose DVR the library no longer lists (pruneWants).
+func (x *xmltvGuides) prune(ctx context.Context) {
+	for _, d := range pruneWants(ctx, &x.mu, x.wants, x.built, x.libraryDVRs, x.log()) {
+		x.log().Info("Live TV: the library lists no DVR "+d+" any more; its XMLTV guide is no longer built", "dvr", d)
+	}
+}
+
+// pruneWants drops from wants, and from built, each want whose DVR the
+// library no longer lists (list, by lower-case uuid; a want's key is its
+// DVR's uuid in any case), returning the DVRs dropped. A DVR the converger
+// deleted -- a category renamed or removed, the rollback to PMS's own
+// loads -- is never named again, but its want stayed: its lineup.json or
+// plexmap.json answered 404 at every build for the holder's life, and were
+// the guides flipped back in the same holder its build would succeed into
+// the schema of a DVR that is gone. A DVR's library row exists from its
+// creation, before its first load, so a want the converger can name is
+// never dropped; one named while the listing runs waits for the next pass,
+// and a listing that fails drops nothing (every build fails then too, and
+// warns). mu guards wants and built.
+func pruneWants[W any](ctx context.Context, mu *sync.Mutex, wants map[string]W, built map[string]cloudBuilt,
+	list func(context.Context) (map[string]bool, error), log *slog.Logger,
+) []string {
+	mu.Lock()
+	keys := slices.Collect(maps.Keys(wants))
+	mu.Unlock()
+	if len(keys) == 0 {
+		return nil
+	}
+	dvrs, err := list(ctx)
+	if err != nil {
+		log.Debug("Live TV: list the library's DVRs; no want is dropped", "error", err)
+		return nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var gone []string
+	for _, k := range keys {
+		if _, ok := wants[k]; !ok || dvrs[strings.ToLower(k)] {
+			continue
+		}
+		delete(wants, k)
+		delete(built, k)
+		gone = append(gone, k)
+	}
+	slices.Sort(gone)
+	return gone
 }
 
 // due reports whether w's guide wants building at now: never built (a

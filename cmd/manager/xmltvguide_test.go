@@ -225,8 +225,12 @@ func TestAnEmptyGuideIsNeverBuilt(t *testing.T) {
 		m := xmltvHolder(t)
 		m.Config.Postgres = db
 		conn := guideConn(t, db.DSN())
-		// The guide PMS's first load filled.
-		_, err := plexbootstrap.EnsureGuideSchema(t.Context(), conn, "plex", xmltvGuide)
+		// The DVR, which the builder keeps its want to, and the guide PMS's
+		// first load filled.
+		_, err := conn.Exec(t.Context(), `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
+			(2, NULL, 1, 'tv.plex.harvesters.dvr', $1), (3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`, testDVR)
+		require.NoError(t, err)
+		_, err = plexbootstrap.EnsureGuideSchema(t.Context(), conn, "plex", xmltvGuide)
 		require.NoError(t, err)
 		_, err = conn.Exec(t.Context(), "INSERT INTO "+pgx.Identifier{xmltvGuide.Schema(), "media_items"}.Sanitize()+" (metadata_item_id) VALUES (1), (1)")
 		require.NoError(t, err)
@@ -571,4 +575,116 @@ func TestALeaseWinnerKnowsTheBuiltGuidesAtOnce(t *testing.T) {
 	m.takePlexTV(t.Context())
 	defer m.releasePlexTV(context.Background())
 	assert.Equal(t, "the managers build this guide", m.loadsNotOurs(xmltvGuide), "known from the lease's win, before any Want")
+}
+
+// Three DVRs for the prune tests: one the library lists, one it no longer
+// does, and one named while the library was being listed.
+const (
+	liveDVR = "1AED97B8-0f6e-4c0b-9d2a-5d0b3c2a1f01"
+	goneDVR = "1AED97B8-0f6e-4c0b-9d2a-5d0b3c2a1f02"
+	lateDVR = "1AED97B8-0f6e-4c0b-9d2a-5d0b3c2a1f03"
+)
+
+// TestAWantWhoseDVRIsGoneIsDropped: a category renamed or removed, or the
+// rollback to PMS's own loads, deletes a DVR the converger had named; its
+// lineup.json answers 404 at every build, a WARN every 15 minutes for the
+// holder's life, and were the guides flipped back in the same holder its
+// build would succeed into the schema of a DVR that is gone. Each builder
+// drops a want whose DVR the library no longer lists (a fake listing; the
+// default listing's own subtest needs CLUSTERPLEX_TEST_POSTGRES_DSN). A
+// want named while the listing ran waits for the next pass, and a listing
+// that fails drops nothing.
+func TestAWantWhoseDVRIsGoneIsDropped(t *testing.T) {
+	failing := errors.New("the library cannot be read")
+
+	t.Run("xmltv", func(t *testing.T) {
+		m := xmltvHolder(t)
+		x := m.xmltv
+		var listErr error
+		x.libraryDVRs = func(context.Context) (map[string]bool, error) {
+			x.Want(lateDVR, "http://tuner/hdhr/C/xmltv.xml", "h1") // named while the listing runs
+			return map[string]bool{strings.ToLower(liveDVR): true}, listErr
+		}
+		x.Want(liveDVR, "http://tuner/hdhr/A/xmltv.xml", "h1")
+		x.Want(goneDVR, "http://tuner/hdhr/B/xmltv.xml", "h1")
+		x.built[strings.ToLower(goneDVR)] = cloudBuilt{hash: "h1", at: time.Now()}
+
+		x.prune(t.Context())
+		assert.True(t, x.wanted(liveDVR), "listed: kept")
+		assert.False(t, x.wanted(goneDVR), "not listed: dropped")
+		assert.NotContains(t, x.built, strings.ToLower(goneDVR), "and its last build forgotten")
+		assert.True(t, x.wanted(lateDVR), "named while the listing ran: kept this pass")
+
+		listErr = failing
+		x.prune(t.Context())
+		assert.True(t, x.wanted(lateDVR), "a listing that fails drops nothing")
+		listErr = nil
+		x.prune(t.Context())
+		assert.False(t, x.wanted(lateDVR), "the next pass drops it")
+		assert.True(t, x.wanted(liveDVR))
+
+		x.lastBuild = func(context.Context, string) (cloudBuilt, error) { return cloudBuilt{}, failing } // builds nothing
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go x.runBuilder(ctx)
+		x.Want(goneDVR, "http://tuner/hdhr/B/xmltv.xml", "h2")
+		assert.Eventually(t, func() bool { return !x.wanted(goneDVR) }, 10*time.Second, 20*time.Millisecond, "the builder prunes")
+	})
+
+	t.Run("cloud", func(t *testing.T) {
+		m := jobTestManager()
+		c := newCloudGuides(m)
+		var listErr error
+		c.libraryDVRs = func(context.Context) (map[string]bool, error) {
+			c.Want(lateDVR, "657c8183afd0f02cd353633f", "http://tuner/hdhr/C", "l1")
+			return map[string]bool{strings.ToLower(liveDVR): true}, listErr
+		}
+		wanted := func(dvr string) bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			_, ok := c.wants[dvr]
+			return ok
+		}
+		c.Want(strings.ToLower(liveDVR), "657c8183afd0f02cd353633f", "http://tuner/hdhr/A", "l1") // any case
+		c.Want(goneDVR, "657c8183afd0f02cd353633f", "http://tuner/hdhr/B", "l1")
+		c.built[goneDVR] = cloudBuilt{hash: "l1", at: time.Now()}
+
+		c.prune(t.Context())
+		assert.True(t, wanted(strings.ToLower(liveDVR)), "listed: kept")
+		assert.False(t, wanted(goneDVR), "not listed: dropped")
+		assert.NotContains(t, c.built, goneDVR, "and its last build forgotten")
+		assert.True(t, wanted(lateDVR), "named while the listing ran: kept this pass")
+
+		listErr = failing
+		c.prune(t.Context())
+		assert.True(t, wanted(lateDVR), "a listing that fails drops nothing")
+		listErr = nil
+		c.prune(t.Context())
+		assert.False(t, wanted(lateDVR), "the next pass drops it")
+
+		// No database: due reads no build time, and nothing builds.
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go c.runBuilder(ctx)
+		c.Want(goneDVR, "657c8183afd0f02cd353633f", "http://tuner/hdhr/B", "l2")
+		assert.Eventually(t, func() bool { return !wanted(goneDVR) }, 10*time.Second, 20*time.Millisecond, "the builder prunes")
+	})
+
+	t.Run("the library lists a DVR from its creation", func(t *testing.T) {
+		db := libraryDatabase(t)
+		m := xmltvHolder(t)
+		m.Config.Postgres = db
+		conn := guideConn(t, db.DSN())
+		dvrs, err := m.libraryDVRs(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, dvrs)
+		// A DVR's rows, as PMS writes them when it creates one, before its
+		// guide's first load: no schema of its own yet.
+		_, err = conn.Exec(t.Context(), `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
+			(2, NULL, 1, 'tv.plex.harvesters.dvr', $1), (3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`, liveDVR)
+		require.NoError(t, err)
+		dvrs, err = m.libraryDVRs(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, map[string]bool{strings.ToLower(liveDVR): true}, dvrs)
+	})
 }
