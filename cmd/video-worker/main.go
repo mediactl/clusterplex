@@ -129,6 +129,10 @@ func run() error {
 	encoder := pflag.String("encoder", "h264_qsv", "h264_qsv on the GPU; libx264 encodes and scales on the CPU")
 	inputsDir := pflag.String("inputs-dir", "/run/video-inputs", "memory-backed directory a streamed subtitle is held in for burn-in")
 	fontsDir := pflag.String("fonts-dir", "/usr/share/fonts/noto", "the fonts burned-in text is drawn in (Noto Sans)")
+	sources := pflag.String("sources", "", "codecs this pod converts, comma-separated as FFmpeg names them (h264,mpeg2video); empty takes every codec")
+	maxPixels := pflag.Int("max-source-pixels", 0, "the most pixels a source frame may carry (2073600 is 1080p); 0 takes any size")
+	noHDR := pflag.Bool("no-hdr", false, "refuse an HDR source (PQ, HLG, or 10-bit BT.2020 of no stated transfer)")
+	threads := pflag.Int("threads", 0, "libx264's thread count; 0 leaves it the encoder's default")
 	check := pflag.Bool("self-check", false, "print the runtime and what the image carries, then exit")
 	pflag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -158,9 +162,12 @@ func run() error {
 	var measured atomic.Bool
 	srv := &worker.Server{
 		Slots: worker.NewSlots(*maxJobs), Run: pipeline.Run, Logger: log, Measured: measured.Load,
-		Options: pipeline.Options{Encoder: *encoder, RenderNode: *node, InputsDir: *inputsDir, FontsDir: *fontsDir},
-		Active:  func(k video.OutputKind, d int) { active.WithLabelValues(string(k)).Add(float64(d)) },
-		Speed:   speed.Observe,
+		Options: pipeline.Options{
+			Encoder: *encoder, RenderNode: *node, InputsDir: *inputsDir, FontsDir: *fontsDir,
+			Eligible: eligibility(*sources, *maxPixels, *noHDR), Threads: *threads,
+		},
+		Active: func(k video.OutputKind, d int) { active.WithLabelValues(string(k)).Add(float64(d)) },
+		Speed:  speed.Observe,
 	}
 	hs := &http.Server{Addr: *probe, Handler: probes(srv.Ready, srv.Wedged)}
 	go func() { _ = hs.ListenAndServe() }()
@@ -186,7 +193,8 @@ func run() error {
 		gs.GracefulStop()
 		_ = hs.Close()
 	}()
-	log.Info("serving", "listen", *listen, "encoder", *encoder, "max_jobs", *maxJobs)
+	log.Info("serving", "listen", *listen, "encoder", *encoder, "max_jobs", *maxJobs,
+		"sources", *sources, "max_source_pixels", *maxPixels, "no_hdr", *noHDR, "threads", *threads)
 	if err := gs.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		return err
 	}
