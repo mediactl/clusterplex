@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -146,7 +147,8 @@ func (t *Tailer) tick(ctx context.Context, stale bool) error {
 	}
 	t.warnBehind(ctx)
 	now := t.now()
-	for key, fl := range t.files {
+	for _, fl := range t.ordered() {
+		key := fl.key
 		if err := t.read(ctx, fl); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			logging.SubsystemLogger(t.Logger, behindSubsystem).WarnContext(ctx, "Plex log: read", "file", fl.rel, "err", err)
 			continue
@@ -160,6 +162,24 @@ func (t *Tailer) tick(ctx context.Context, stale bool) error {
 		}
 	}
 	return nil
+}
+
+// ordered is the followed files in a fixed order: the rotated ones first,
+// each group by path, so a rotated file's last lines are written before
+// the new live file's first and a pass reads the same way every time.
+func (t *Tailer) ordered() []*followed {
+	out := make([]*followed, 0, len(t.files))
+	for _, fl := range t.files {
+		out = append(out, fl)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ri, rj := Stem(filepath.Base(out[i].path)) != filepath.Base(out[i].path), Stem(filepath.Base(out[j].path)) != filepath.Base(out[j].path)
+		if ri != rj {
+			return ri
+		}
+		return out[i].path < out[j].path
+	})
+	return out
 }
 
 // scan lists Dir and Dir/PluginDir, opens each new log file at its start
@@ -198,8 +218,10 @@ func (t *Tailer) scan(ctx context.Context) error {
 				if err != nil {
 					continue
 				}
-				fl = &followed{key: key, f: f, rel: rel, subsystem: subsystem, plugin: plugin, format: format,
-					asm: NewAssembler(filepath.Base(Stem(e.Name())), subsystem, format).WithPlugin(plugin)}
+				fl = &followed{
+					key: key, f: f, rel: rel, subsystem: subsystem, plugin: plugin, format: format,
+					asm: NewAssembler(filepath.Base(Stem(e.Name())), subsystem, format).WithPlugin(plugin),
+				}
 				fl.asm.Now = t.now
 				t.files[key] = fl
 			}
@@ -266,7 +288,9 @@ func (t *Tailer) read(ctx context.Context, fl *followed) error {
 			if t.Metrics != nil {
 				t.Metrics.bytes.WithLabelValues(Stem(filepath.Base(fl.rel))).Add(float64(n))
 			}
-			data := append(fl.partial, buf[:n]...)
+			data := make([]byte, 0, len(fl.partial)+n)
+			data = append(data, fl.partial...)
+			data = append(data, buf[:n]...)
 			for {
 				i := bytes.IndexByte(data, '\n')
 				if i < 0 {

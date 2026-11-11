@@ -48,9 +48,14 @@ func (o *out) records(t *testing.T) []map[string]any {
 	return recs
 }
 
+// msgs is the messages of Plex's records, the tailer's own lines (under
+// supervisor) left out.
 func msgs(recs []map[string]any) []string {
 	var out []string
 	for _, r := range recs {
+		if r["subsystem"] == behindSubsystem {
+			continue
+		}
 		out = append(out, r["msg"].(string))
 	}
 	return out
