@@ -13,11 +13,12 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+ARG VERSION=0.0.0-dev
 ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
-RUN go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
-RUN go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
-RUN go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
-RUN go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
+RUN go build -trimpath -ldflags "-s -w -X github.com/mediactl/clusterplex/pkg/version.Version=${VERSION}" -o bin/manager ./cmd/manager
+RUN go build -trimpath -ldflags "-s -w -X github.com/mediactl/clusterplex/pkg/version.Version=${VERSION}" -o bin/shim ./cmd/shim
+RUN go build -trimpath -ldflags "-s -w -X github.com/mediactl/clusterplex/pkg/version.Version=${VERSION}" -o bin/proxy ./cmd/proxy
+RUN go build -trimpath -ldflags "-s -w -X github.com/mediactl/clusterplex/pkg/version.Version=${VERSION}" -o bin/maintenance ./cmd/maintenance
 
 # Stage 1b: Fetch the PostgreSQL shim.
 #

@@ -39,14 +39,19 @@ lint: ## Run golangci-lint v2
 tidy: ## go mod tidy
 	go mod tidy
 
+# The build's version, every record's service.version and every pod's
+# app.kubernetes.io/version (the 2026-11-10 logging design).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
+LDFLAGS = -s -w -X github.com/mediactl/clusterplex/pkg/version.Version=$(VERSION)
+
 .PHONY: build
 build: ## Build the manager, shim, proxy, maintenance trigger, remux worker and video worker into bin/
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/manager ./cmd/manager
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/shim ./cmd/shim
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/proxy ./cmd/proxy
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/remux-worker ./cmd/remux-worker
-	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/video-worker ./cmd/video-worker
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/manager ./cmd/manager
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/shim ./cmd/shim
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/proxy ./cmd/proxy
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/maintenance ./cmd/maintenance
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/remux-worker ./cmd/remux-worker
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/video-worker ./cmd/video-worker
 
 .PHONY: test
 test: ## Unit tests
