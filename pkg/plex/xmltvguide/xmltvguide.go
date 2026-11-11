@@ -7,8 +7,10 @@
 // or a movie, by the guids PMS makes of a title and its numbers, or by the
 // plex guids the profile carries. So a guide cluster-plex builds and one PMS
 // loads agree on every programme's identity, and differ only in what PMS's
-// reader drops (the images but the first icon, the plex guids, the live
-// flag).
+// reader drops (the images but the first icon, the plex guids). The live
+// flag is no difference: the reader puts it in Airing.Live, which the
+// planner (guidebuild) does not read, and the rig's oracle found the two
+// guides alike on it.
 //
 // Where PMS's reader writes a field on an episode's show and never on the
 // episode (its categories, credits, countries and rating), the reader puts
