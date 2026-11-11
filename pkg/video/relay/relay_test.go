@@ -367,7 +367,7 @@ func setup(t *testing.T, ws map[string]*worker) *harness {
 	t.Cleanup(srv.Close)
 	lister, dial := pool(t, ws)
 	h := &harness{pms: p, count: &counter{}}
-	h.relay = &relay.Relay{
+	h.relay = &relay.Relay{Logger: slog.New(slog.DiscardHandler),
 		Workers: lister, Dial: dial, PMS: plexsession.PMS{Addr: srv.URL, HTTP: srv.Client()}, Count: h.count,
 		Refused: func(r video.Reason) { h.refs = append(h.refs, r) },
 	}

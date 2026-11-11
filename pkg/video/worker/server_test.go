@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -99,7 +100,7 @@ func blocking(ctx context.Context, _ video.Job, _ pipeline.Options, _ pipeline.S
 }
 
 func TestAJobBeyondTheSlotsIsResourceExhausted(t *testing.T) {
-	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: blocking})
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: blocking})
 	first, err := open(t, c, job("A", false))
 	require.NoError(t, err)
 	defer func() { _ = first.CloseSend() }()
@@ -112,7 +113,7 @@ func TestASourceBeyondThePoolIsFailedPrecondition(t *testing.T) {
 	// judged as the input opens): the stream ends FailedPrecondition with
 	// no Done, so the relay passes this pool over and asks the other.
 	slots := worker.NewSlots(1)
-	c := serve(t, &worker.Server{Slots: slots, Run: func(context.Context, video.Job, pipeline.Options, pipeline.Sink) error {
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: slots, Run: func(context.Context, video.Job, pipeline.Options, pipeline.Sink) error {
 		return fmt.Errorf("%w: hevc", video.ErrNotForPool)
 	}})
 	s, err := open(t, c, job("A", false))
@@ -126,7 +127,7 @@ func TestASourceBeyondThePoolIsFailedPrecondition(t *testing.T) {
 
 func TestStreamedInputChunksReachThePipeline(t *testing.T) {
 	var got bytes.Buffer
-	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
 		_, err := io.Copy(&got, o.Inputs(0))
 		return err
 	}})
@@ -156,7 +157,7 @@ func TestEveryConversionEndsWithDone(t *testing.T) {
 		"a shape refusal": {video.ErrShape, video.ReasonShape},
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: func(context.Context, video.Job, pipeline.Options, pipeline.Sink) error {
+			c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: func(context.Context, video.Job, pipeline.Options, pipeline.Sink) error {
 				return tc.run
 			}})
 			s, err := open(t, c, job("A", false))
@@ -174,7 +175,7 @@ func TestEveryConversionEndsWithDone(t *testing.T) {
 
 func TestAStalledStreamedInputReleasesItsSlot(t *testing.T) {
 	slots := worker.NewSlots(1)
-	c := serve(t, &worker.Server{Slots: slots, InputStall: 100 * time.Millisecond, Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: slots, InputStall: 100 * time.Millisecond, Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
 		_, err := io.Copy(io.Discard, o.Inputs(0))
 		return err
 	}})
@@ -194,7 +195,7 @@ func TestReadyFollowsTheDeviceAlone(t *testing.T) {
 	// milliseconds, and only a pod the relay lists can take the restart
 	// into its session's slot; a new session it refuses full.
 	measured := false
-	s := &worker.Server{Slots: worker.NewSlots(1), Run: blocking, Measured: func() bool { return measured }}
+	s := &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: blocking, Measured: func() bool { return measured }}
 	assert.False(t, s.Ready(), "an unmeasured device takes no work")
 	measured = true
 	assert.True(t, s.Ready())
@@ -212,7 +213,7 @@ func TestReadyFollowsTheDeviceAlone(t *testing.T) {
 
 func TestTheEncodeSpeedIsObserved(t *testing.T) {
 	var speeds []float64
-	c := serve(t, &worker.Server{
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler),
 		Slots: worker.NewSlots(1), Speed: func(x float64) { speeds = append(speeds, x) },
 		Run: func(_ context.Context, _ video.Job, _ pipeline.Options, sink pipeline.Sink) error {
 			for i := range 2 {
@@ -248,7 +249,7 @@ func TestAHeldRelayStallsThePipeline(t *testing.T) {
 	var made atomic.Int32
 	l := bufconn.Listen(64 << 20)
 	srv := grpc.NewServer(worker.ServerOptions()...)
-	videopb.RegisterVideoServer(srv, &worker.Server{Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, _ pipeline.Options, sink pipeline.Sink) error {
+	videopb.RegisterVideoServer(srv, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, _ pipeline.Options, sink pipeline.Sink) error {
 		sink.Progress("", "progress=1.0&size=-1&remaining=60&speed=2.0&vdec_hw_status=0")
 		for i := range segments {
 			start := time.Duration(i) * 8 * time.Second
@@ -285,7 +286,7 @@ func TestAHeldRelayStallsThePipeline(t *testing.T) {
 		}
 	}))
 	t.Cleanup(pms.Close)
-	r := &relay.Relay{
+	r := &relay.Relay{Logger: slog.New(slog.DiscardHandler),
 		Workers: readyPool{{Name: "video-0", Addr: "video-0"}},
 		Dial: func(context.Context, string) (videopb.VideoClient, io.Closer, error) {
 			conn, err := grpc.NewClient("passthrough:///video-0", append(relay.DialOptions(),
@@ -324,7 +325,7 @@ func TestAHeldPipelineIsNoStalledInput(t *testing.T) {
 	// A pipeline held by the relay reads nothing from its streamed input,
 	// which then backs up to the manager: the input did not stall, and the
 	// watchdog must not fail the job for it.
-	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), InputStall: 100 * time.Millisecond, Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), InputStall: 100 * time.Millisecond, Run: func(_ context.Context, _ video.Job, o pipeline.Options, _ pipeline.Sink) error {
 		in := o.Inputs(0)
 		if _, err := io.ReadFull(in, make([]byte, 1024)); err != nil {
 			return err
@@ -408,7 +409,7 @@ func TestAConversionThatOutlivesItsContextIsAbandoned(t *testing.T) {
 		return nil
 	}
 	slots := worker.NewSlots(2)
-	s := &worker.Server{Slots: slots, Run: hang, Grace: 50 * time.Millisecond, MaxAbandoned: 2}
+	s := &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: slots, Run: hang, Grace: 50 * time.Millisecond, MaxAbandoned: 2}
 	c := serve(t, s)
 	for i, session := range []string{"A", "B"} {
 		ctx, cancel := context.WithCancel(t.Context())
@@ -435,7 +436,7 @@ func TestARelayThatGoesSilentFreesItsSlot(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	srv := grpc.NewServer(worker.ServerOptionsWith(keepalive.ServerParameters{Time: time.Second, Timeout: time.Second})...)
-	videopb.RegisterVideoServer(srv, &worker.Server{Slots: slots, Run: blocking})
+	videopb.RegisterVideoServer(srv, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: slots, Run: blocking})
 	go func() { _ = srv.Serve(l) }()
 	t.Cleanup(srv.Stop)
 	p, err := netcut.New(l.Addr().String())
@@ -472,7 +473,7 @@ func TestARelayThatHangsUpEndsItsInputs(t *testing.T) {
 	// read it until the 30 s stall (talos, rev 118: three of nine
 	// conversions abandoned).
 	returned := make(chan error, 1)
-	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: reading(returned)})
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: reading(returned)})
 	s, err := open(t, c, job("A", true))
 	require.NoError(t, err)
 	require.NoError(t, s.Send(&videopb.Up{Kind: &videopb.Up_Input{Input: &videopb.Chunk{Input: 0, Data: []byte("a little")}}}))
@@ -495,7 +496,7 @@ func TestATakenOverConversionStopsReading(t *testing.T) {
 	returned := make(chan error, 1)
 	var runs atomic.Int32
 	read := reading(returned)
-	s := &worker.Server{Slots: worker.NewSlots(1), Grace: 200 * time.Millisecond, Run: func(ctx context.Context, j video.Job, o pipeline.Options, sink pipeline.Sink) error {
+	s := &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Grace: 200 * time.Millisecond, Run: func(ctx context.Context, j video.Job, o pipeline.Options, sink pipeline.Sink) error {
 		if runs.Add(1) == 1 {
 			return read(ctx, j, o, sink)
 		}
@@ -518,7 +519,7 @@ func TestATakenOverConversionStopsReading(t *testing.T) {
 // ahead of the output, so the manager can label the session with where and
 // how it ran.
 func TestStartedReachesTheRelayBeforeTheOutput(t *testing.T) {
-	c := serve(t, &worker.Server{Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, o pipeline.Options, sink pipeline.Sink) error {
+	c := serve(t, &worker.Server{Logger: slog.New(slog.DiscardHandler), Slots: worker.NewSlots(1), Run: func(_ context.Context, _ video.Job, o pipeline.Options, sink pipeline.Sink) error {
 		o.Started("h264_qsv", "vaapi")
 		return sink.Segment(pipeline.Segment{Data: []byte("ts")})
 	}})

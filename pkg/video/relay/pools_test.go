@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,16 +25,16 @@ func TestThePoolsAreOrderedByTheRuleAndTheJob(t *testing.T) {
 		}
 		return out
 	}
-	r := &Relay{Workers: gpu}
+	r := &Relay{Logger: slog.New(slog.DiscardHandler), Workers: gpu}
 	assert.Equal(t, []string{PoolGPU}, names(r.order(t.Context(), hls)), "no CPU pool")
-	r = &Relay{Workers: gpu, CPU: cpu, CPUFirst: func(context.Context) bool { return true }}
+	r = &Relay{Logger: slog.New(slog.DiscardHandler), Workers: gpu, CPU: cpu, CPUFirst: func(context.Context) bool { return true }}
 	assert.Equal(t, []string{PoolCPU, PoolGPU}, names(r.order(t.Context(), hls)))
 	r.CPUFirst = func(context.Context) bool { return false }
 	assert.Equal(t, []string{PoolGPU, PoolCPU}, names(r.order(t.Context(), hls)), "the CPU pool is the second chance")
 	r.CPUFirst = func(context.Context) bool { return true }
 	assert.Equal(t, []string{PoolGPU}, names(r.order(t.Context(), video.Job{Output: video.OutputFile})), "a whole-file job never asks the CPU pool")
 	assert.Equal(t, []string{PoolGPU}, names(r.order(t.Context(), video.Job{Output: video.OutputHLS, Video: video.VideoOut{ToneMap: true}})), "nor an HDR job")
-	r = &Relay{Workers: gpu, CPU: cpu}
+	r = &Relay{Logger: slog.New(slog.DiscardHandler), Workers: gpu, CPU: cpu}
 	assert.Equal(t, []string{PoolGPU, PoolCPU}, names(r.order(t.Context(), hls)), "nil CPUFirst is never first")
 	assert.Equal(t, "gpu-0", r.order(t.Context(), hls)[0].workers.(listers)[0].Name, "each pool carries its own lister")
 	assert.Equal(t, "cpu-0", r.order(t.Context(), hls)[1].workers.(listers)[0].Name)
