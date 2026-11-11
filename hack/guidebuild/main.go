@@ -19,13 +19,35 @@
 // the next one), which no build can reproduce and PMS would not repeat; two
 // such added_at near the load are the same (loadTime), so a compare alone
 // (-compare-only) needs -now, the load's start, as a build does.
+//
+// -xmltv builds an XMLTV DVR's guide instead, from the XMLTV file PMS
+// loaded (pkg/plex/xmltvguide's reader, guidebuild's XMLTV flavour), the
+// device's lineup.json (-lineup) choosing the channels as the managers'
+// builder does, each by its GuideNumber; without -lineup every channel of
+// the guide is built, its id taken as its number:
+//
+//	go run ./hack/guidebuild -dsn "$(cat dsn)" -xmltv xmltv.xml -lineup lineup.json -ref epg_ref_x1 -out epg_ref_x1_built -now <load start> -additions
+//
+// A build of clustarr's profile writes more than PMS's own reader keeps
+// (clustarr's custom-guides design §2.4, §5.4): the plex guids the guide
+// carries, where PMS keys tv.plex.xmltv://, and the images PMS stores none
+// of (an episode's still and backdrop, a show's or a movie's backdrop, a
+// poster where no icon is). The compare tolerates none of them: they are
+// rows only one side has and columns that differ, unless -additions lines
+// each plex item up with PMS's by the guid PMS's reader keys it by
+// (xmltvguide.PMSGUIDs) and lists them apart, every other column still
+// compared; the run is then exact, exit 0, when nothing else differs.
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha1" //nolint:gosec // PMS's item hash is SHA-1 of the guid; this is not security
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +59,7 @@ import (
 	"github.com/mediactl/clusterplex/pkg/plex/bootstrap"
 	"github.com/mediactl/clusterplex/pkg/plex/epgcloud"
 	"github.com/mediactl/clusterplex/pkg/plex/guidebuild"
+	"github.com/mediactl/clusterplex/pkg/plex/xmltvguide"
 )
 
 func main() { os.Exit(run()) }
@@ -50,9 +73,19 @@ func run() int {
 	examples := flag.Int("examples", 3, "examples per differing column")
 	compareOnly := flag.Bool("compare-only", false, "compare -out with -ref without building")
 	nowFlag := flag.Int64("now", 0, "the build's time, Unix seconds: PMS's load's start, so the same airings are over (default now)")
+	xmltvFile := flag.String("xmltv", "", "build an XMLTV DVR's guide from this XMLTV file, in place of -fixture")
+	lineupFile := flag.String("lineup", "", "with -xmltv: the device's lineup.json, whose GuideNumbers are the channels built (default: every channel of the guide, by its id)")
+	additions := flag.Bool("additions", false, "with -xmltv: list what the build adds to PMS's load (plex guids, images PMS stores none of) apart, and exit 0 when the rest is equal")
 	flag.Parse()
-	if *dsn == "" || *ref == "" || *out == "" || (*fixture == "" && !*compareOnly) {
-		fmt.Fprintln(os.Stderr, "guidebuild: -dsn, -fixture, -ref and -out are required")
+	switch {
+	case *dsn == "" || *ref == "" || *out == "" || (*fixture == "" && *xmltvFile == "" && !*compareOnly):
+		fmt.Fprintln(os.Stderr, "guidebuild: -dsn, -fixture (or -xmltv), -ref and -out are required")
+		return 2
+	case *fixture != "" && *xmltvFile != "":
+		fmt.Fprintln(os.Stderr, "guidebuild: -fixture and -xmltv are two kinds of guide; give one")
+		return 2
+	case (*additions || *lineupFile != "") && *xmltvFile == "":
+		fmt.Fprintln(os.Stderr, "guidebuild: -additions and -lineup read an XMLTV guide (-xmltv)")
 		return 2
 	}
 	ctx := context.Background()
@@ -65,18 +98,44 @@ func run() int {
 	// A compare alone knows the load's time only from -now; without it an
 	// added_at of PMS's own clock is a difference like any other.
 	loadTime = *nowFlag
-	if !*compareOnly {
-		now := time.Now()
-		if *nowFlag > 0 {
-			now = time.Unix(*nowFlag, 0)
+	now := time.Now()
+	if *nowFlag > 0 {
+		now = time.Unix(*nowFlag, 0)
+	}
+	var add *additionSet
+	switch {
+	case *xmltvFile != "":
+		guide, err := os.ReadFile(*xmltvFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "guidebuild:", err)
+			return 2
 		}
+		lineup, err := xmltvLineup(*lineupFile, guide)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "guidebuild:", err)
+			return 2
+		}
+		if !*compareOnly {
+			loadTime = now.Unix()
+			if _, err := buildXMLTV(ctx, conn, os.Stdout, guide, lineup, *ref, *out, *library, now); err != nil {
+				fmt.Fprintln(os.Stderr, "guidebuild:", err)
+				return 2
+			}
+		}
+		if *additions {
+			if add, err = xmltvAdditions(guide, lineup, now); err != nil {
+				fmt.Fprintln(os.Stderr, "guidebuild:", err)
+				return 2
+			}
+		}
+	case !*compareOnly:
 		loadTime = now.Unix()
 		if err := build(ctx, conn, *fixture, *ref, *out, *library, now); err != nil {
 			fmt.Fprintln(os.Stderr, "guidebuild:", err)
 			return 2
 		}
 	}
-	differs, err := compare(ctx, conn, *ref, *out, *examples)
+	differs, err := compare(ctx, conn, os.Stdout, *ref, *out, *examples, add)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "guidebuild:", err)
 		return 2
@@ -164,41 +223,102 @@ func build(ctx context.Context, conn *pgx.Conn, fixture, ref, out, library strin
 	if len(stations) > 0 {
 		lineup, _, _ = strings.Cut(stations[0].ID, "-")
 	}
-	var sec guidebuild.Sections
+	in := guidebuild.Input{
+		Lineup: lineup, Stations: stations, Channels: channels, Grids: grids, Metadata: meta, Now: now, ReadAt: readAt,
+	}
+	_, err = install(ctx, conn, os.Stdout, in, ref, out, library, fmt.Sprintf("%d channels' grids, %d items' metadata", len(grids), len(meta)))
+	return err
+}
+
+// install builds in into out, a fresh clone of the library schema holding
+// ref's sections, which are the build's: Movies, Shows and Sports, and an
+// XMLTV DVR's News.
+func install(ctx context.Context, conn *pgx.Conn, w io.Writer, in guidebuild.Input, ref, out, library, what string) (guidebuild.Stats, error) {
 	if err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT
 		coalesce(max(id) FILTER (WHERE name = 'Movies'), 0), coalesce(max(id) FILTER (WHERE name = 'Shows'), 0),
-		coalesce(max(id) FILTER (WHERE name = 'Sports'), 0) FROM %s.library_sections`, pgx.Identifier{ref}.Sanitize())).Scan(&sec.Movies, &sec.Shows, &sec.Sports); err != nil {
-		return err
+		coalesce(max(id) FILTER (WHERE name = 'Sports'), 0), coalesce(max(id) FILTER (WHERE name = 'News'), 0)
+		FROM %s.library_sections`, pgx.Identifier{ref}.Sanitize())).Scan(&in.Sections.Movies, &in.Sections.Shows, &in.Sections.Sports, &in.Sections.News); err != nil {
+		return guidebuild.Stats{}, err
 	}
-
 	if _, err := conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{out}.Sanitize()+" CASCADE"); err != nil {
-		return err
+		return guidebuild.Stats{}, err
 	}
 	if err := bootstrap.CloneSchema(ctx, conn, library, out); err != nil {
-		return fmt.Errorf("clone %s: %w", library, err)
+		return guidebuild.Stats{}, fmt.Errorf("clone %s: %w", library, err)
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return err
+		return guidebuild.Stats{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %[1]s.library_sections SELECT * FROM %[2]s.library_sections`,
 		pgx.Identifier{out}.Sanitize(), pgx.Identifier{ref}.Sanitize())); err != nil {
-		return fmt.Errorf("copy library_sections: %w", err)
+		return guidebuild.Stats{}, fmt.Errorf("copy library_sections: %w", err)
 	}
 	start := time.Now()
-	st, err := guidebuild.Build(ctx, tx, out, guidebuild.Input{
-		Lineup: lineup, Stations: stations, Channels: channels, Grids: grids, Metadata: meta, Sections: sec, Now: now, ReadAt: readAt,
-	})
+	st, err := guidebuild.Build(ctx, tx, out, in)
 	if err != nil {
-		return err
+		return guidebuild.Stats{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return guidebuild.Stats{}, err
 	}
 	s, _ := json.Marshal(st)
-	_, _ = fmt.Fprintf(os.Stdout, "built %s in %s: %s (%d channels' grids, %d items' metadata)\n", out, time.Since(start).Round(time.Millisecond), s, len(grids), len(meta))
-	return nil
+	_, _ = fmt.Fprintf(w, "built %s in %s: %s (%s)\n", out, time.Since(start).Round(time.Millisecond), s, what)
+	return st, nil
+}
+
+// xmltvLineup is the channels an XMLTV build reads, each id to its number:
+// the GuideNumbers of the device's lineup.json at path, as the managers'
+// builder reads them (each the id of its channel in the guide clustarr
+// renders), else every channel of guide by its id.
+func xmltvLineup(path string, guide []byte) (map[string]string, error) {
+	out := map[string]string{}
+	if path == "" {
+		_, chans, err := xmltvguide.Read(bytes.NewReader(guide), nil, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range chans {
+			out[c.ID] = c.ID
+		}
+		return out, nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []struct {
+		GuideNumber string `json:"GuideNumber"`
+	}
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, e := range entries {
+		if n := strings.TrimSpace(e.GuideNumber); n != "" {
+			out[n] = n
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s lists no channel", path)
+	}
+	return out, nil
+}
+
+// buildXMLTV builds the XMLTV guide's DVR guide into out, as the managers'
+// builder plans it (xmltvguide.Read, guidebuild's XMLTV flavour) at now.
+func buildXMLTV(ctx context.Context, conn *pgx.Conn, w io.Writer, guide []byte, lineup map[string]string, ref, out, library string, now time.Time) (guidebuild.Stats, error) {
+	in, chans, err := xmltvguide.Read(bytes.NewReader(guide), lineup, now)
+	if err != nil {
+		return guidebuild.Stats{}, err
+	}
+	var off []string
+	for _, c := range chans {
+		if c.Number == "" {
+			off = append(off, c.ID)
+		}
+	}
+	return install(ctx, conn, w, in, ref, out, library, fmt.Sprintf("%d channels, %d off the lineup %v", len(in.Stations), len(off), off))
 }
 
 // table is one table's rows keyed as PMS knows them, each row's columns.
@@ -240,8 +360,15 @@ var tables = []table{
 	},
 }
 
-func compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (bool, error) {
+// compare compares guide b with a, the reference, in every row, column
+// and id, and reports to w. add, when not nil, holds a's additions to a
+// reference PMS's XMLTV reader loaded: b's plex items are lined up with
+// a's by add's guids, and the additions are listed apart, no difference.
+func compare(ctx context.Context, conn *pgx.Conn, w io.Writer, a, b string, examples int, add *additionSet) (bool, error) {
 	differs := false
+	if add != nil {
+		add.found = map[string][]string{}
+	}
 	for _, t := range tables {
 		ra, err := load(ctx, conn, t, a)
 		if err != nil {
@@ -250,6 +377,9 @@ func compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (bo
 		rb, err := load(ctx, conn, t, b)
 		if err != nil {
 			return false, fmt.Errorf("%s.%s: %w", b, t.name, err)
+		}
+		if add != nil {
+			rb = add.rekey(t.name, rb)
 		}
 		var onlyA, onlyB []string
 		cols := map[string][]string{}
@@ -266,6 +396,9 @@ func compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (bo
 				if c == "added_at" && loadTime > 0 && nearLoad(x) && nearLoad(vb[c]) {
 					continue
 				}
+				if add != nil && add.allows(t.name, k, c, x, vb[c]) {
+					continue
+				}
 				if y := vb[c]; fmt.Sprint(x) != fmt.Sprint(y) {
 					cols[c] = append(cols[c], fmt.Sprintf("%s: %v / %v", k, short(x), short(y)))
 				}
@@ -276,14 +409,14 @@ func compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (bo
 				onlyB = append(onlyB, k)
 			}
 		}
-		_, _ = fmt.Fprintf(os.Stdout, "\n%s: %d / %d rows, %d only in %s, %d only in %s\n", t.name, len(ra), len(rb), len(onlyA), a, len(onlyB), b)
+		_, _ = fmt.Fprintf(w, "\n%s: %d / %d rows, %d only in %s, %d only in %s\n", t.name, len(ra), len(rb), len(onlyA), a, len(onlyB), b)
 		sort.Strings(onlyA)
 		sort.Strings(onlyB)
 		for i := 0; i < len(onlyA) && i < examples; i++ {
-			_, _ = fmt.Fprintf(os.Stdout, "  only %s: %s\n", a, onlyA[i])
+			_, _ = fmt.Fprintf(w, "  only %s: %s\n", a, onlyA[i])
 		}
 		for i := 0; i < len(onlyB) && i < examples; i++ {
-			_, _ = fmt.Fprintf(os.Stdout, "  only %s: %s\n", b, onlyB[i])
+			_, _ = fmt.Fprintf(w, "  only %s: %s\n", b, onlyB[i])
 		}
 		names := make([]string, 0, len(cols))
 		for c := range cols {
@@ -293,17 +426,128 @@ func compare(ctx context.Context, conn *pgx.Conn, a, b string, examples int) (bo
 		for _, c := range names {
 			ex := cols[c]
 			sort.Strings(ex)
-			_, _ = fmt.Fprintf(os.Stdout, "  %-26s %5d rows differ", c, len(ex))
+			_, _ = fmt.Fprintf(w, "  %-26s %5d rows differ", c, len(ex))
 			for i := 0; i < len(ex) && i < examples; i++ {
-				_, _ = fmt.Fprintf(os.Stdout, "\n      %s", ex[i])
+				_, _ = fmt.Fprintf(w, "\n      %s", ex[i])
 			}
-			_, _ = fmt.Fprintln(os.Stdout)
+			_, _ = fmt.Fprintln(w)
 		}
 		if len(onlyA)+len(onlyB)+len(cols) > 0 {
 			differs = true
 		}
 	}
+	if add != nil {
+		add.report(w, examples)
+	}
 	return differs, nil
+}
+
+// additionSet is what a build of an XMLTV guide adds to PMS's own load of
+// it by design: the plex guid of an item PMS keys tv.plex.xmltv:// (guids,
+// the build's guid to PMS's, xmltvguide.PMSGUIDs), and an image where PMS
+// stores none. found is what a compare met, by kind, each as an example.
+type additionSet struct {
+	guids map[string]string
+	found map[string][]string
+}
+
+// xmltvAdditions is an XMLTV guide's additions: its plex items, each with
+// the guid PMS's reader keys it by.
+func xmltvAdditions(guide []byte, lineup map[string]string, now time.Time) (*additionSet, error) {
+	guids, err := xmltvguide.PMSGUIDs(bytes.NewReader(guide), lineup, now)
+	if err != nil {
+		return nil, err
+	}
+	return &additionSet{guids: guids}, nil
+}
+
+// addedImages are the image columns PMS's XMLTV reader leaves empty where
+// the build may fill them: an episode's thumb (its still) and every art.
+var addedImages = []string{"user_thumb_url", "user_art_url"}
+
+// rekey lines up a built table's rows with the reference's: an item a plex
+// guid keys is keyed, and points and is pointed at, by the guid PMS's
+// reader keys it by, its hash with it; each such item is a "plex guid"
+// addition. A row that would take another's key keeps its own.
+func (s *additionSet) rekey(table string, rows map[string]map[string]any) map[string]map[string]any {
+	pms := func(v any) any {
+		if g, ok := v.(string); ok {
+			if p, ok := s.guids[g]; ok {
+				return p
+			}
+		}
+		return v
+	}
+	out := make(map[string]map[string]any, len(rows))
+	for k, v := range rows {
+		nk := k
+		switch table {
+		case "metadata_items":
+			if p, ok := s.guids[k]; ok {
+				if _, taken := rows[p]; !taken {
+					nk = p
+					s.found["plex guid"] = append(s.found["plex guid"], p+" -> "+k)
+					v["guid"] = p
+					if v["hash"] == itemHash(k) {
+						v["hash"] = itemHash(p)
+					}
+				}
+			}
+			v["parent"] = pms(v["parent"])
+		case "media_items":
+			v["item"] = pms(v["item"])
+		case "taggings":
+			if g, rest, ok := strings.Cut(k, "|"); ok {
+				if p, ok := s.guids[g]; ok {
+					nk = p + "|" + rest
+				}
+			}
+		}
+		if _, taken := out[nk]; taken {
+			nk = k
+		}
+		out[nk] = v
+	}
+	return out
+}
+
+// allows reports whether a built row's column c, y where the reference
+// holds x, is an addition, and records it: an image the reference has none
+// of.
+func (s *additionSet) allows(table, key, c string, x, y any) bool {
+	if table != "metadata_items" || !slicesContains(addedImages, c) {
+		return false
+	}
+	if x != nil && x != "" || y == nil || y == "" {
+		return false
+	}
+	s.found[c] = append(s.found[c], fmt.Sprintf("%s: %v", key, short(y)))
+	return true
+}
+
+// report lists the additions a compare met, kind by kind.
+func (s *additionSet) report(w io.Writer, examples int) {
+	_, _ = fmt.Fprintln(w, "\nadditions (the build's beyond PMS's reader, by design; not differences):")
+	kinds := make([]string, 0, len(s.found))
+	for k := range s.found {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	for _, k := range kinds {
+		ex := s.found[k]
+		sort.Strings(ex)
+		_, _ = fmt.Fprintf(w, "  %-26s %5d rows", k, len(ex))
+		for i := 0; i < len(ex) && i < examples; i++ {
+			_, _ = fmt.Fprintf(w, "\n      %s", ex[i])
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+}
+
+// itemHash is PMS's metadata_items.hash of a guid.
+func itemHash(guid string) string {
+	sum := sha1.Sum([]byte(guid)) //nolint:gosec // PMS's own item hash
+	return hex.EncodeToString(sum[:])
 }
 
 func load(ctx context.Context, conn *pgx.Conn, t table, schema string) (map[string]map[string]any, error) {
