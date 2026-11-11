@@ -389,6 +389,12 @@ type pass struct {
 	deadDevice  bool
 	changed     map[string]Provider
 	restartSelf bool
+	// converging is the providers this pass converges (Ready, Enabled,
+	// with an address): the ones whose blocks a cancel waits for
+	// (mapsPending). A provider left as it is keeps its Leases but is never
+	// converged, so its saved maps are never read back and would read
+	// unsaved for good.
+	converging []Provider
 }
 
 // Run is one idempotent pass over every live provider (Live TV spec §6.1).
@@ -453,6 +459,11 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 			c.record(p, ReasonFailed, what+": "+err.Error(), true)
 		}
 		errs = append(errs, fmt.Errorf("%s %s: %w", p.key(), what, err))
+	}
+	for _, p := range live {
+		if p.Ready && p.Enabled && p.Address != "" {
+			ps.converging = append(ps.converging, p)
+		}
 	}
 	for _, p := range live {
 		if !p.Ready || !p.Enabled || p.Address == "" {
@@ -790,7 +801,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		// whole-guide read out, 2026-11-04) extends it; the lease holder
 		// reloads it whole only once it has run short.
 		if c.CloudGuides != nil {
-			c.cancelBuiltLoads(ctx, p, id, ps)
+			c.cancelBuiltLoads(ctx, id, ps)
 			c.CloudGuides.Want(dvr.UUID, b.Lineup, uri, b.LineupHash)
 		} else if err := c.refreshCloudGuide(ctx, p, b, id, dvr, ps); err != nil {
 			return err
@@ -818,7 +829,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 			}
 			break
 		}
-		c.cancelBuiltLoads(ctx, p, id, ps)
+		c.cancelBuiltLoads(ctx, id, ps)
 		c.xmltvAsked[dvr.UUID] = true
 		c.XMLTVGuides.Want(dvr.UUID, uri+b.GuidePath, b.GuideHash)
 	case b.GuideHash != "" && s.guide != b.GuideHash:
@@ -1059,12 +1070,14 @@ const cancelLoadsFor = 5 * time.Minute
 // is recent. A load writes its own file, which nobody copies in for a built
 // guide (cmd/manager's loadsNotOurs), so it is only half an hour at a core.
 // PMS's activities do not say whose guide a load is, so the cancel takes
-// every load PMS runs: while a block of p this converger holds has a DVR
-// whose channel map is not saved yet (mapsPending), nothing is cancelled,
-// since that DVR's first load is what pairs its map (an XMLTV block's: the
-// 14 category DVRs of the custom guides' cutover are made one after
-// another). Its rename is refused all the same, so only PMS's work is spent.
-func (c *Converger) cancelBuiltLoads(ctx context.Context, p Provider, id string, ps *pass) {
+// every load PMS runs: while a block this converger holds, of any provider
+// the pass converges, has a DVR whose channel map is not saved yet
+// (mapsPending), nothing is cancelled, since that DVR's first load is what
+// pairs its map (an XMLTV block's: the 14 category DVRs of the custom
+// guides' cutover are made one after another, and another provider's DVR
+// may be made inside this one's window). Its rename is refused all the
+// same, so only PMS's work is spent.
+func (c *Converger) cancelBuiltLoads(ctx context.Context, id string, ps *pass) {
 	until, ok := c.cancelLoadsUntil[id]
 	if !ok {
 		return
@@ -1073,7 +1086,7 @@ func (c *Converger) cancelBuiltLoads(ctx context.Context, p Provider, id string,
 		delete(c.cancelLoadsUntil, id)
 		return
 	}
-	if c.mapsPending(p, ps) {
+	if c.mapsPending(ps) {
 		return
 	}
 	acts, err := c.PMS.Activities(ctx)
@@ -1092,17 +1105,20 @@ func (c *Converger) cancelBuiltLoads(ctx context.Context, p Provider, id string,
 	}
 }
 
-// mapsPending reports whether a block of p this converger holds has no DVR
-// in PMS yet, or a channel map not saved for its lineup hash.
-func (c *Converger) mapsPending(p Provider, ps *pass) bool {
-	for _, b := range p.Blocks {
-		id := strings.ToUpper(b.DeviceID)
-		if _, held := c.held[id]; !held {
-			continue
-		}
-		dev, ok := ps.devices[id]
-		if !ok || len(ps.dvrsOf(dev.UUID)) == 0 || c.saved[id].lineup != b.LineupHash {
-			return true
+// mapsPending reports whether a block this converger holds, of a provider
+// the pass converges, has no DVR in PMS yet, or a channel map not saved for
+// its lineup hash.
+func (c *Converger) mapsPending(ps *pass) bool {
+	for _, p := range ps.converging {
+		for _, b := range p.Blocks {
+			id := strings.ToUpper(b.DeviceID)
+			if _, held := c.held[id]; !held {
+				continue
+			}
+			dev, ok := ps.devices[id]
+			if !ok || len(ps.dvrsOf(dev.UUID)) == 0 || c.saved[id].lineup != b.LineupHash {
+				return true
+			}
 		}
 	}
 	return false

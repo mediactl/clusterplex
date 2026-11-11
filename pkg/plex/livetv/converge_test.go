@@ -889,6 +889,84 @@ func TestABlockMadeInAnothersCancelWindowKeepsItsFirstLoad(t *testing.T) {
 	assert.Equal(t, []string{"save " + bKey}, r.pms.takeCancelled(), "with every map saved, B's rebuild is cancelled")
 }
 
+// TestAnotherProvidersBlockMadeInACancelWindowKeepsItsFirstLoad: the
+// cancel takes every load PMS runs, so the blocks it waits for are every
+// converged provider's, not only the provider whose map save opened the
+// window. Provider P saves its map; provider Q makes a DVR in the same pass;
+// on P's next pass Q's first load runs on, and Q's map is saved after it.
+// Cancelling it left Q's map unsaved for good (PMS matched no channel) with
+// nothing to reload its guide.
+func TestAnotherProvidersBlockMadeInACancelWindowKeepsItsFirstLoad(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	r.conv.Now = func() time.Time { return now } // every pass inside P's window
+	a, b := r.block(0), r.block(1)
+	p, q := provider(a), provider(b)
+	p.Name, p.UID = "argon", "uid-p" // sorts, and so converges, before q
+	run := func() {
+		t.Helper()
+		_, err := r.conv.Run(t.Context(), []livetv.Provider{q, p})
+		require.NoError(t, err)
+	}
+
+	run() // P's DVR is made, its first load runs; Q waits for it
+	r.pms.endLoad()
+	for range 4 {
+		run()
+		if r.hasDVR(b) {
+			break
+		}
+		r.pms.endLoad()
+	}
+	require.True(t, r.hasDVR(b), "Q's DVR is made")
+	require.Equal(t, 1, r.pms.saves[string(r.deviceOf(t, a).Key)], "P's map is saved: its window is open")
+	bUUID := "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID
+
+	run() // Q's first load runs, inside P's window
+	assert.Empty(t, r.pms.takeCancelled(), "no load is cancelled while Q's map is not saved")
+	r.pms.mu.Lock()
+	loading, of := r.pms.loading, r.pms.loadOf
+	r.pms.mu.Unlock()
+	assert.True(t, loading, "Q's first load runs on")
+	assert.Equal(t, "create "+bUUID, of)
+
+	r.pms.endLoad()
+	run()
+	bKey := string(r.deviceOf(t, b).Key)
+	assert.Equal(t, 1, r.pms.saves[bKey], "Q's map is saved on its next pass")
+	assert.Equal(t, []string{"save " + bKey}, r.pms.takeCancelled(), "with every map saved, Q's rebuild is cancelled")
+}
+
+// TestAProviderLeftAsItIsHoldsNoCancel: a provider left as it is (not
+// Ready) still has its blocks' Leases kept, but its saved maps are never
+// read back from them, since it is not converged. Its blocks are not the
+// cancel's to wait for: on a fresh converger they would read unsaved for
+// good, and a renumbering's rebuild of a converged provider's built guide
+// would never be cancelled.
+func TestAProviderLeftAsItIsHoldsNoCancel(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	a, b := r.block(0), r.block(1)
+	p, q := provider(a), provider(b)
+	p.Name, p.UID = "argon", "uid-p"
+	r.converge(t, 10, p, q)
+
+	// A new holder, the same PMS and Leases: q is not Ready.
+	r.conv = &livetv.Converger{PMS: r.conv.PMS, Identity: "machine-a", Leases: r.leases, Record: r.ev.record, XMLTVGuides: &fakeXMLTVGuides{}}
+	q.Ready = false
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p, q}) // q's Lease is kept
+	require.NoError(t, err)
+	r.pms.endLoad()
+	p.Blocks[0].LineupHash = "renumbered"
+	r.pms.takeCancelled()
+	_, err = r.conv.Run(t.Context(), []livetv.Provider{p, q})
+	require.NoError(t, err)
+	aKey := string(r.deviceOf(t, a).Key)
+	assert.Equal(t, 2, r.pms.saves[aKey])
+	assert.Equal(t, []string{"save " + aKey}, r.pms.takeCancelled(), "the left provider's block holds no cancel")
+}
+
 // TestWithEveryMapSavedARenumberingsLoadIsCancelled: in the steady state the
 // cancel stays: a renumbering (a lineup-hash move) saves the block's map,
 // and the whole XMLTV load PMS starts for it is cancelled.
