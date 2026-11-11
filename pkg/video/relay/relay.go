@@ -56,10 +56,11 @@ type Relay struct {
 	// the GPU pool (clustarr holds intel work, or the route is always CPU);
 	// nil: never first, the CPU pool is only the GPU pool's second chance.
 	CPUFirst func(ctx context.Context) bool
-	// Routed is told the pool that took each conversion (its first output
-	// or report arrived); PassedOver each pool passed over for one, with
-	// the reason: "full" (every ready pod's slots taken) or "ineligible"
-	// (the pod judged the source beyond its rule). nil tells nothing.
+	// Routed is told the pool that took each conversion (its pod's first
+	// message arrived); PassedOver each pool passed over for one, with the
+	// reason: "full" (every ready pod's slots taken) or "ineligible" (the
+	// pod judged the source beyond its rule). A pool with no ready pod, or
+	// none that could be reached, is passed over untold. nil tells nothing.
 	Routed     func(pool string)
 	PassedOver func(pool, reason string)
 	Dial       func(ctx context.Context, addr string) (videopb.VideoClient, io.Closer, error)
@@ -151,30 +152,38 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 // passed over and the next asked.
 var errNotForPool = errors.New("not for this pool")
 
-// run tries the job on each pool in order (order): a pool with no ready pod
-// or every ready pod full is passed over, as is one whose pod judged the
-// source beyond its rule; a pod that cannot run the shape, cannot be
-// reached or fails refuses for all. A job no pool took is refused full when
-// any pod was full, else no-pool.
+// run tries the job on each pool in order (order): a pool with no ready pod,
+// none that could be reached or opened, or every ready pod full is passed
+// over, as is one whose pod judged the source beyond its rule; a pod that
+// cannot run the shape, or one that fails once it has accepted, refuses for
+// all. A job no pool took is refused full when any pod was full, else with
+// the last pool's reason (no-pool, or the worker-error of its pods).
 func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.Time) error {
 	full := false
-	var noPool error
+	var last error
 	for _, p := range r.order(ctx, job) {
 		ws, err := p.workers.ListReady(ctx)
 		if err != nil {
-			noPool = refuse(video.ReasonNoPool, fmt.Errorf("list the %s pool: %w", p.name, err))
+			last = refuse(video.ReasonNoPool, fmt.Errorf("list the %s pool: %w", p.name, err))
 			continue
 		}
 		if len(ws) == 0 {
-			noPool = refuse(video.ReasonNoPool, fmt.Errorf("no ready %s video transcode pod", p.name))
+			last = refuse(video.ReasonNoPool, fmt.Errorf("no ready %s video transcode pod", p.name))
 			continue
 		}
 		c, err := r.open(ctx, ws, job)
 		if err != nil {
 			var rf *refusal
-			if errors.As(err, &rf) && rf.reason == video.ReasonFull {
+			switch {
+			case errors.As(err, &rf) && rf.reason == video.ReasonFull:
 				full = true
 				r.passedOver(p.name, "full", job)
+				continue
+			case errors.As(err, &rf) && rf.reason == video.ReasonWorkerError:
+				// No pod of the pool could be reached or opened (a rollout's
+				// terminating pod, a crashed one): the next pool's chance.
+				r.log().Warn("video pool unreachable; trying the next", "pool", p.name, "session", job.Session, "error", rf.err)
+				last = err
 				continue
 			}
 			return err
@@ -190,8 +199,8 @@ func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.T
 	if full {
 		return refuse(video.ReasonFull, errors.New("every ready pod's slots are taken"))
 	}
-	if noPool != nil {
-		return noPool
+	if last != nil {
+		return last
 	}
 	return refuse(video.ReasonNoPool, errors.New("no pool takes this conversion"))
 }
@@ -216,7 +225,9 @@ func (r *Relay) serve(ctx context.Context, cwd string, job video.Job, c *convers
 	defer r.Placements.remove(job.Session)
 	log := r.log().With("worker", c.worker, "pool", c.pool, "session", job.Session)
 	log.Info("video conversion started", "output", job.Output, "width", job.Video.Width, "height", job.Video.Height)
-	go c.pump(ctx, r, job)
+	// The pump lives as long as the conversion, not the job: once this pool
+	// is passed over, its reads of Plex's session end with the stream.
+	go c.pump(c.ctx, r, job)
 	err := r.relay(ctx, cwd, job, c, newLister(r.PMS, job), began)
 	if ctx.Err() != nil {
 		return refuse(video.ReasonCancelled, ctx.Err())
@@ -230,6 +241,7 @@ type conversion struct {
 	node   string
 	pool   string
 	stream videopb.Video_ConvertClient
+	ctx    context.Context // the stream's, ended by close
 	cancel context.CancelFunc
 	closer io.Closer
 	sendMu sync.Mutex
@@ -280,7 +292,7 @@ func (r *Relay) open(ctx context.Context, ws []remoteexec.Worker, job video.Job)
 			continue
 		}
 		cctx, cancel := context.WithCancel(ctx)
-		c := &conversion{worker: w.Name, node: w.Node, cancel: cancel, closer: closer}
+		c := &conversion{worker: w.Name, node: w.Node, ctx: cctx, cancel: cancel, closer: closer}
 		c.stream, err = client.Convert(cctx)
 		if err == nil {
 			err = c.send(&videopb.Up{Kind: &videopb.Up_Job{Job: job.Proto()}})

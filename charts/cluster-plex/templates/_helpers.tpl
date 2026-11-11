@@ -85,6 +85,12 @@ advertises another address, which works until a client signs in.
 {{- if and (dig "liveTV" "enabled" false .Values.plex) (not (dig "liveTV" "severalPods" false .Values.plex)) (gt (int .Values.plex.replicas) 1) -}}
 {{- fail (printf "plex.liveTV.enabled needs plex.replicas 1 (it is %v): every PMS refreshes Live TV's guides and records its recording rules on its own, so a second pod refreshes the one shared guide beside the first and records every programme again; set plex.liveTV.severalPods if nothing is recorded (docs/configuration.md, \"Live TV runs on one Plex pod\")" .Values.plex.replicas) -}}
 {{- end -}}
+{{- /* A CPU video pool under the default when, clustarr-busy, reads clustarr's
+       intel-work Lease; with none to read it would never be asked first and
+       say nothing, so the chart says so here. */}}
+{{- if and .Values.videoTranscode.enabled .Values.videoTranscode.cpu.enabled (eq .Values.videoTranscode.cpu.when "clustarr-busy") (not (include "cluster-plex.clustarrWorkLease" .)) -}}
+{{- fail "videoTranscode.cpu.when is clustarr-busy but there is no Lease to read, so the CPU pool would never be asked first: set plex.clustarr.enabled (the Lease is derived as <plex.clustarr.namespace>/clustarr-intel-work), name one in videoTranscode.cpu.clustarrWorkLease, or set videoTranscode.cpu.when to always or never" -}}
+{{- end -}}
 {{- if .Values.httpRoute.enabled -}}
 {{- if not .Values.httpRoute.parentRefs -}}
 {{- fail "httpRoute.enabled needs httpRoute.parentRefs: the Gateway (name, namespace, and sectionName for one listener) the route attaches to; a route with no parent is attached to nothing" -}}

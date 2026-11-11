@@ -541,7 +541,8 @@ videoTranscode:
     when: clustarr-busy
     # The sources a pod takes; a source beyond these is passed over to the
     # GPU pool before any output. An empty list takes every codec, 0 any
-    # size, hdr true an HDR source (tone-mapped on the CPU).
+    # size, hdr true an HDR source Plex did not ask to tone-map (a job Plex
+    # asks to tone-map is the GPU pool's whatever this says).
     sources: [h264, mpeg2video]
     maxSourcePixels: 2073600
     hdr: false

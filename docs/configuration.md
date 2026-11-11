@@ -945,13 +945,17 @@ XMLTV lineup (a block of clustarr's custom guides, whose device serves
   channels is refused as soon as it is fetched, before any build Job, and is
   never built over the guide the DVR has.
 - **No reloads.** The converger posts no `reloadGuide` on a guide-hash
-  move; the load PMS starts at a channel-map save is cancelled; and a load
+  move; the load PMS starts at a channel-map save is cancelled (but not
+  while another of the provider's blocks still waits for its map: PMS does
+  not say whose guide a load is, and a new DVR's first load is what pairs
+  its map, so during a cutover that makes many DVRs PMS loads each); and a load
   PMS makes of the guide anyway is refused at its rename (the shim's swap
   request answers `skip the managers build this guide`), so it is not
   swapped in. Nor is the load it leaves in PMS's own file copied in, by the
   poll or at PMS's next start: once a build has installed a guide, only the
-  next build replaces it (at a start the guides a build installed are known
-  from their schemas, before the converger names them). PMS's later writes
+  next build replaces it (at PMS's start, and when a pod wins the lease,
+  the guides a build installed are known from their schemas, before the
+  converger names them). PMS's later writes
   to the guide are held, as for a built cloud guide.
 - **One writer.** The key turns on the single guide writer
   (`GuideWriter`), as `cloudGuide: manager` and `severalPods` do.
@@ -1270,8 +1274,10 @@ counts the conversions by the pool that took them and
 `clusterplex_video_pool_passed_over_total{pool,reason}` the pass-overs
 (`full`, `ineligible`). Measured on a 2026 NUC's eight cores, a 1080p60
 H.264 stream to 720p30 runs at 8.2x real time on one job and two together at
-3.5x each, with the first segment 1.2 s later than the GPU's and a VMAF the
-viewer cannot tell apart; the design's "Measured" section has the numbers.
+3.5x each, with the first segment about a third of a second later than the
+GPU's (0.55 s against 0.22 s from a cold start; eight segments in 1.8 s
+against 0.62 s) and a VMAF the viewer cannot tell apart; the design's
+"Measured" section has the numbers.
 There is no kustomize component for the CPU pool yet.
 
 ## Applying a change

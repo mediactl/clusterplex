@@ -247,9 +247,10 @@ pool did.
 
 ### 7. What to watch
 
-- `clusterplex_video_jobs_routed{pool}` and the existing refusals by reason,
-  plus `clusterplex_video_pool_passed_over{pool,reason}` for a full pod or an
-  ineligible source.
+- `clusterplex_video_conversions_total{pool}` and the existing refusals by
+  reason, plus `clusterplex_video_pool_passed_over_total{pool,reason}` for a
+  full pod or an ineligible source (as built; the first draft named them
+  without `_total`).
 - The CPU worker's `clusterplex_video_worker_encode_speed`: a histogram
   bucket under 1.0 on a stream is the anti-goal showing.
 - clustarr's `clustarr_transcode_jobs_active{class="intel"}` at two while a
@@ -396,11 +397,16 @@ clustarr the same day.
 - **The relay** (`b181bcc`): `Relay.CPU`, `CPUFirst`, `Routed`,
   `PassedOver`; `order` gives the GPU pool alone for a whole-file or
   tone-mapped job or without a CPU pool, else the two in the rule's order;
-  a pool with no ready pod or every pod full is passed over (`full`), a
+  a pool with every pod full is passed over and counted (`full`), one with
+  no ready pod or none that could be reached or opened is passed over
+  uncounted (the review's fix: the plan had such a pool refuse for all), a
   pod's `FailedPrecondition` before its first message passes it over
-  (`ineligible`) with the placement and the Lease count undone and the
-  next pool's streamed inputs pumped from their first byte again; a shape,
-  dial or worker failure refuses for all. `Routed` fires at the pod's
+  (`ineligible`) with the placement and the Lease count undone, the
+  passed-over pool's pump ended with its conversion, and the next pool's
+  streamed inputs pumped from their first byte again; a shape failure, or
+  a pod that fails once it has accepted, refuses for all; a job no pool
+  took is refused `full` when any pod was full, else with the last pool's
+  reason. `Routed` fires at the pod's
   first message of any kind, so a pool passed over never counts as having
   taken the conversion and the counter never lags a stream's length (the
   plan's "no output and nothing posted" would have counted a pool that
@@ -421,8 +427,16 @@ clustarr the same day.
   `video-cpu-when` and `clustarr-work-lease` keys, the last derived as
   `<plex.clustarr.namespace>/clustarr-intel-work` when `plex.clustarr.enabled`;
   the `clustarr-reader` Role's `get` on that Lease by name, in
-  `plex.clustarr.namespace`; a NOTES line when `cpu.affinity` is unset.
-  There is no kustomize component for the CPU pool.
+  `plex.clustarr.namespace`; a NOTES line when `cpu.affinity` is unset;
+  and the chart refuses `cpu.enabled` under `when: clustarr-busy` with no
+  Lease to read (`cluster-plex.validate`), as the manager warns at start
+  when it is so configured by other means, since such a pool would never
+  be asked first and say nothing (the review's finding). There is no
+  kustomize component for the CPU pool. The metrics are
+  `clusterplex_video_conversions_total{pool}` and
+  `clusterplex_video_pool_passed_over_total{pool,reason}` (§7 named them
+  without `_total`); the shipped Grafana dashboard has no panel for them
+  yet.
 - **Not yet**: the talos proof ("Verifying it" 1-4) waits for a clustarr
   chart that pulls this cluster-plex and the owner's deploy, with
   `cpu.enabled`, `affinity` on `talos-88-ae-dd-75-3d-a0`, `when: always`
