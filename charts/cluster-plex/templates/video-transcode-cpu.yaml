@@ -1,0 +1,80 @@
+{{- if and .Values.videoTranscode.enabled .Values.videoTranscode.cpu.enabled }}
+# The CPU pool: a second pool of libx264 pods on the same image, pinned to a
+# node with cores to spare, which takes Plex's streamed conversions of H.264
+# and MPEG-2 sources at 1080p or less without HDR while clustarr holds work
+# for the Intel GPU (or always, or never: videoTranscode.cpu.when), and is
+# the GPU pool's second chance when it is full, as the GPU pool is its own
+# (docs/superpowers/specs/2026-11-10-cpu-video-route-design.md). Managers
+# find these pods by app=plex-video-transcode-cpu and dial :50053; a pod
+# judges each source it opens against --sources, --max-source-pixels and
+# --no-hdr and passes one beyond them back before any output. No GPU, no
+# render node: it writes nothing to disk, as the GPU pool does not.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cluster-plex.fullname" . }}-video-transcode-cpu
+  labels: {{- include "cluster-plex.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.videoTranscode.cpu.replicas }}
+  selector:
+    matchLabels: {app: plex-video-transcode-cpu, app.kubernetes.io/instance: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app: plex-video-transcode-cpu, app.kubernetes.io/instance: {{ .Release.Name }}}
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      {{- with .Values.videoTranscode.cpu.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.videoTranscode.cpu.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.videoTranscode.cpu.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: video
+          image: {{ .Values.videoTranscode.image.repository }}:{{ .Values.videoTranscode.image.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --max-jobs={{ .Values.videoTranscode.cpu.maxJobs }}
+            - --encoder=libx264
+            - --inputs-dir=/run/video-inputs
+            {{- with .Values.videoTranscode.cpu.sources }}
+            - --sources={{ join "," . }}
+            {{- end }}
+            {{- with .Values.videoTranscode.cpu.maxSourcePixels }}
+            - --max-source-pixels={{ int64 . }}
+            {{- end }}
+            {{- if not .Values.videoTranscode.cpu.hdr }}
+            - --no-hdr
+            {{- end }}
+            {{- with .Values.videoTranscode.cpu.threads }}
+            - --threads={{ . }}
+            {{- end }}
+          ports:
+            - {name: grpc, containerPort: 50053}
+            - {name: probe, containerPort: 8080}
+          readinessProbe: {httpGet: {path: /readyz, port: probe}, periodSeconds: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: probe}}
+          resources:
+            {{- toYaml .Values.videoTranscode.cpu.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: inputs, mountPath: /run/video-inputs}
+            - {name: media, mountPath: /media, readOnly: true{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
+      volumes:
+        - name: inputs
+          emptyDir: {medium: Memory, sizeLimit: {{ .Values.videoTranscode.inputs.sizeLimit }}}
+        - name: media
+          persistentVolumeClaim:
+            claimName: {{ include "cluster-plex.mediaClaim" . }}
+            readOnly: true
+{{- end }}

@@ -94,3 +94,16 @@ advertises another address, which works until a client signs in.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+clustarr's intel-work Lease the CPU video route reads, <namespace>/<name>:
+videoTranscode.cpu.clustarrWorkLease, else the one clustarr's chart names
+in plex.clustarr.namespace when plex.clustarr.enabled, else none.
+*/}}
+{{- define "cluster-plex.clustarrWorkLease" -}}
+{{- if .Values.videoTranscode.cpu.clustarrWorkLease -}}
+{{- .Values.videoTranscode.cpu.clustarrWorkLease -}}
+{{- else if .Values.plex.clustarr.enabled -}}
+{{- include "cluster-plex.clustarrNamespace" . }}/clustarr-intel-work
+{{- end -}}
+{{- end -}}
