@@ -819,8 +819,9 @@ func resolution(v string) (int64, int64) {
 	return 0, 0
 }
 
-// sortTitle is a title as PMS sorts it (the rig's 248-channel load,
-// 48,548 titles, 2026-11-10, and its XMLTV sort probe of 728, 2026-11-11):
+// sortTitle is a title as PMS sorts it (the rig's 248-channel cloud load,
+// 48,548 titles, 2026-11-10, consistent with it, and its XMLTV sort probe of
+// 728, 2026-11-11, which measured the table):
 // its letters folded by PMS's table (foldAccents: "Dónde" sorts as
 // "Donde", "Ünïcødé" as "Unic0de"), without leading quotes, brackets,
 // dots, dashes and the like ("... And a Hearse", "'Tis", "(Don't) Lean on
@@ -856,6 +857,14 @@ var sortArticles = []string{"the ", "a ", "an ", "el ", "la ", "der ", "das "}
 // the classic Latin-1 accent table: Æ and æ as E and e, Ð as D, ð as O, ×
 // as x, Ø and ø as the digit 0, Þ and þ as P and p, ß as s, ÷ as / (the
 // sort probe, every one).
+//
+// The evidence for the table and sortFolds is the probe, PMS's own answer
+// for an XMLTV load. A cloud guide takes them too, on the inference that
+// PMS computes a sort title in one place for both loaders (the guide
+// service's answers carry none). The rig's cloud loads (48,548 and 3,942
+// titles) agree with the table but cannot tell it from the fold it
+// replaced, which stripped every combining mark: no cloud title carried a
+// character on which the two differ.
 const latin1Sort = "AAAAAAECEEEEIIIIDNOOOOOx0UUUUYPsaaaaaaeceeeeiiiiOnooooo/0uuuuypy"
 
 // sortFolds are the letters past Latin-1 PMS's sort title folds, every one
