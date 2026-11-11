@@ -390,16 +390,15 @@ func TestCategoriesAreTheShowsGenresAndFileItsSection(t *testing.T) {
 	show := item(t, rows, soupShow)
 	assert.Equal(t, []any{"Comedy|Drama", int64(2)}, []any{show["tags_genre"], show["library_section_id"]})
 	assert.Equal(t, "", item(t, rows, soupEpisode)["tags_genre"])
-	assert.Equal(t, []string{"1:Comedy/0/", "1:Drama/1/"}, tagsOf(t, rows, soupShow)[:2],
-		"Series, the profile's classifier for an episode, is no genre of the build's")
+	assert.Equal(t, []string{"1:Comedy/0/", "1:Drama/1/", "1:Series/2/"}, tagsOf(t, rows, soupShow)[:3],
+		"every category, Series too, at its place by name (the rig's tags 5-7)")
 	assert.Empty(t, tagsOf(t, rows, soupEpisode))
 	// Sports on an episode files its show in Sports (the rig's item 17).
 	sports := item(t, rows, sportsShow)
 	assert.Equal(t, []any{"Sports|Sports event", int64(3)}, []any{sports["tags_genre"], sports["library_section_id"]})
 	assert.Equal(t, int64(3), item(t, rows, sportsEp)["library_section_id"])
-	// A movie keeps its genres; Movie, the profile's classifier for one,
-	// dropped.
-	assert.Equal(t, []any{"Comedy", int64(1)}, []any{item(t, rows, typical)["tags_genre"], item(t, rows, typical)["library_section_id"]})
+	// A movie keeps its genres, Movie among them (the rig's item 26).
+	assert.Equal(t, []any{"Comedy|Movie", int64(1)}, []any{item(t, rows, typical)["tags_genre"], item(t, rows, typical)["library_section_id"]})
 
 	rows = plannedGuide(t, onOne(
 		`<title>Genres Many</title><episode-num system="xmltv_ns">0.0.</episode-num><category>Action</category><category>Adventure</category><category>Sci-Fi</category><category>News</category><category>Children</category><category>Talk</category><category>Reality</category><category>Documentary</category>`,
@@ -411,7 +410,7 @@ func TestCategoriesAreTheShowsGenresAndFileItsSection(t *testing.T) {
 	live := item(t, rows, "tv.plex.xmltv://movie/Sports%20Live")
 	assert.Equal(t, []any{"Football|Sports", int64(1)}, []any{live["tags_genre"], live["library_section_id"]}, "the rig's item 47: a movie stays in Movies")
 	assert.Equal(t, "Movie", item(t, rows, "tv.plex.xmltv://show/NS%20And%20Movie%20Category")["tags_genre"],
-		"the rig's item 23: an episode's Movie is a genre; only its own kind's classifier is dropped")
+		"the rig's item 23: an episode's Movie is its show's genre")
 }
 
 func TestCreditsAndCountryAreTheShows(t *testing.T) {
@@ -422,7 +421,7 @@ func TestCreditsAndCountryAreTheShows(t *testing.T) {
 	show := item(t, rows, soupShow)
 	assert.Equal(t, []any{"Act Orone|Act Ortwo|Dir Ector", "Wri Ter", "US", ""},
 		[]any{show["tags_star"], show["tags_writer"], show["tags_country"], show["tags_director"]})
-	assert.Equal(t, []string{"1:Comedy/0/", "1:Drama/1/", "5:Wri Ter/0/", "6:Act Orone/0/Lead", "6:Act Ortwo/1/Support", "6:Dir Ector/2/", "7:Pro Ducer/0/", "8:US/0/"},
+	assert.Equal(t, []string{"1:Comedy/0/", "1:Drama/1/", "1:Series/2/", "5:Wri Ter/0/", "6:Act Orone/0/Lead", "6:Act Ortwo/1/Support", "6:Dir Ector/2/", "7:Pro Ducer/0/", "8:US/0/"},
 		tagsOf(t, rows, soupShow))
 	ep := item(t, rows, soupEpisode)
 	assert.Equal(t, []any{"", "", ""}, []any{ep["tags_star"], ep["tags_writer"], ep["tags_country"]})
@@ -543,7 +542,7 @@ func TestPlexGUIDsKeyTheEpisodeSeasonAndShow(t *testing.T) {
 	show := item(t, rows, "plex://show/5fc69a487c6557002ed60976")
 	assert.Equal(t, []any{season["id"], int64(41), "Episode 41"}, []any{ep["parent_id"], ep["index"], ep["title"]})
 	assert.Equal(t, []any{show["id"], int64(7)}, []any{season["parent_id"], season["index"]})
-	assert.Equal(t, []any{"The Drew Barrymore Show", "TV-PG", "Talk", poster, backdrop},
+	assert.Equal(t, []any{"The Drew Barrymore Show", "TV-PG", "Series|Talk", poster, backdrop},
 		[]any{show["title"], show["content_rating"], show["tags_genre"], show["user_thumb_url"], show["user_art_url"]})
 
 	// A plex guid of the other kind is not the item's: it is keyed as PMS

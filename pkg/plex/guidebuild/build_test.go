@@ -744,7 +744,9 @@ func TestXMLTVShowRatingMovieIndexCountsAndSeasonGUIDs(t *testing.T) {
 func TestTheCloudFlavourIsUnchanged(t *testing.T) {
 	// The suite above is the cloud flavour's proof. Beside it: the service's
 	// answers may carry credits and countries, which a cloud guide never
-	// writes, and an empty provider is the cloud's.
+	// writes, and an episode's parentGuid (none of 162 in three captured
+	// grids carried one, 2026-11-10), which never keys a cloud season; and an
+	// empty provider is the cloud's.
 	build := func(provider string, credits bool) *Rows {
 		m := movie("m", slot(at(1), at(3)))
 		m.RatingKey, m.Genre = "m", []epgcloud.Tag{{Tag: "Drama", RatingKey: "genre_d"}}
@@ -755,6 +757,7 @@ func TestTheCloudFlavourIsUnchanged(t *testing.T) {
 				it.Role, it.Director = tagsNamed("An Actor"), tagsNamed("A Director")
 				it.Writer, it.Producer, it.Country = tagsNamed("A Writer"), tagsNamed("A Producer"), tagsNamed("US")
 			}
+			e.ParentGUID = "plex://season/5fc69a487c6557002ed60976"
 		}
 		in := input(map[string][][]epgcloud.Item{"k1": {{m}}, "k2": {{e}}})
 		in.Provider = provider
@@ -765,7 +768,7 @@ func TestTheCloudFlavourIsUnchanged(t *testing.T) {
 	}
 	want := build("", false)
 	assert.Equal(t, want, build(ProviderCloud, false))
-	assert.Equal(t, want, build("", true), "credits and countries are no part of a cloud guide")
+	assert.Equal(t, want, build("", true), "credits, countries and a parentGuid are no part of a cloud guide")
 	assert.Equal(t, int64(2), item(t, want, "plex://episode/e")["library_section_id"], "nor is a News section")
 
 	in := input(map[string][][]epgcloud.Item{"k1": {{movie("m", slot(at(1), at(3)))}}})

@@ -342,7 +342,7 @@ func Plan(in Input) (*Rows, error) {
 						link(show, ch)
 						announce(show)
 					}
-					season = seasonOf(it, show, add)
+					season = seasonOf(it, show, add, xmltv)
 					if season.year == 0 {
 						season.year = it.Year
 					}
@@ -710,15 +710,15 @@ const yearLike = 1900
 // season 7). PMS's, every one of 39,108 episodes of the rig's 248-channel
 // load (2026-11-10), each in its season of the right id.
 //
-// An episode that names its season's guid (ParentGUID, an XMLTV guide's;
-// the service's never do) joins the season of that guid, made at its
-// parent index: PMS's XMLTV reader keys a season apart from its index
-// (DD Progid EP's tv.plex.xmltv://season/DD%20Progid%20EP/1 is index 2026
-// on the rig's DVR 8).
-func seasonOf(it epgcloud.Item, show *row, add func(*row) (*row, bool)) *row {
+// In an XMLTV guide an episode that names its season's guid (ParentGUID,
+// the reader's) joins the season of that guid, made at its parent index:
+// PMS's XMLTV reader keys a season apart from its index (DD Progid EP's
+// tv.plex.xmltv://season/DD%20Progid%20EP/1 is index 2026 on the rig's
+// DVR 8). A cloud guide never reads it, should the service send one.
+func seasonOf(it epgcloud.Item, show *row, add func(*row) (*row, bool), xmltv bool) *row {
 	index := it.ParentIndex
 	guid := "plex://season/" + it.GrandparentRatingKey + "/" + strconv.Itoa(index)
-	if it.ParentGUID != "" {
+	if xmltv && it.ParentGUID != "" {
 		guid = it.ParentGUID
 	} else if it.Index == 0 {
 		if s, ok := show.seasons[index]; ok {

@@ -6,9 +6,9 @@
 // hack/guiderig/xmltv-gen.py's 48 programmes): a show, season and episode,
 // or a movie, by the guids PMS makes of a title and its numbers, or by the
 // plex guids the profile carries. So a guide cluster-plex builds and one PMS
-// loads agree on every programme's identity, and differ in what PMS's reader
-// drops (the images but the first icon, the plex guids, the live flag) and
-// in the classifier categories, which the reader drops.
+// loads agree on every programme's identity, and differ only in what PMS's
+// reader drops (the images but the first icon, the plex guids, the live
+// flag).
 //
 // Where PMS's reader writes a field on an episode's show and never on the
 // episode (its categories, credits, countries and rating), the reader puts
@@ -334,7 +334,10 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 		}
 	}
 	thumb := cmp.Or(icon, images["poster"])
-	kept := tags(genres(p.Categories, num.episode))
+	// Every category is a genre, the profile's classifiers (Series on an
+	// episode, Movie on a movie, design §5.4) too, as PMS keeps them (the
+	// rig's tag "Series" on Element Soup's show; Movie Typical "Comedy|Movie").
+	kept := tags(p.Categories)
 	cast, directors := actors(p.Credits.Actors), tags(p.Credits.Directors)
 	writers, producers, countries := tags(p.Credits.Writers), tags(p.Credits.Producers), tags(p.Countries)
 	rating := ""
@@ -502,24 +505,6 @@ func xmltvTime(v string) (time.Time, bool) {
 // "1900-01-01%2000%3A00%3A00", "%E2%80%9CQuoted%E2%80%9D%20%26%20More").
 func escape(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
-}
-
-// genres are a programme's categories but the classifier clustarr's
-// profile adds for its kind (Series on an episode, Movie on a movie, design
-// §5.4), which PMS's reader would keep as a genre: the build's genres are
-// the source's.
-func genres(categories []string, episode bool) []string {
-	classifier := "Movie"
-	if episode {
-		classifier = "Series"
-	}
-	var out []string
-	for _, c := range categories {
-		if c = strings.TrimSpace(c); c != "" && !strings.EqualFold(c, classifier) {
-			out = append(out, c)
-		}
-	}
-	return out
 }
 
 // tags are names as tags, the blank ones left out.
