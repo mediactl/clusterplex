@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -92,11 +93,8 @@ func pool(t *testing.T, ws map[string]*worker) (remoteexec.WorkerLister, func(co
 	t.Helper()
 	lis := map[string]*bufconn.Listener{}
 	var ready workers
-	for _, name := range []string{"video-0", "video-1", "video-2"} {
-		w, ok := ws[name]
-		if !ok {
-			continue
-		}
+	for _, name := range slices.Sorted(maps.Keys(ws)) {
+		w := ws[name]
 		l := bufconn.Listen(16 << 20)
 		srv := grpc.NewServer()
 		videopb.RegisterVideoServer(srv, w)
@@ -278,6 +276,56 @@ type harness struct {
 	req   *pb.ExecRequest
 	count *counter
 	refs  []video.Reason
+
+	// With a CPU pool (setup2): which pool is asked first, and the pools
+	// routed to and passed over ("cpu:ineligible"), in order.
+	cpuFirst       bool
+	mu             sync.Mutex
+	routed, passed []string
+}
+
+func (h *harness) seen() (routed, passed []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.routed), slices.Clone(h.passed)
+}
+
+// sessionOf is the request's Plex transcode session.
+func sessionOf(t *testing.T, h *harness) string {
+	t.Helper()
+	job, err := video.Parse(h.req.Args, h.req.Env)
+	require.NoError(t, err)
+	return job.Session
+}
+
+// failing is a worker script that ends the stream with a status after the
+// accept header and before any output: how a pod answers a source beyond
+// its rule (FailedPrecondition) or dies (Aborted, Unavailable).
+func failing(code codes.Code, msg string) func(context.Context, func(*videopb.Down) error) error {
+	return func(context.Context, func(*videopb.Down) error) error { return status.Error(code, msg) }
+}
+
+// setup2 is setup with a CPU pool beside the GPU pool, cpuFirst saying
+// which is asked first, recording the pools routed to and passed over and
+// the placements.
+func setup2(t *testing.T, gpu, cpu map[string]*worker, cpuFirst bool) *harness {
+	t.Helper()
+	h := setup(t, gpu)
+	cl, cd := pool(t, cpu)
+	gd := h.relay.Dial
+	h.relay.CPU = cl
+	h.relay.Dial = func(ctx context.Context, addr string) (videopb.VideoClient, io.Closer, error) {
+		if _, ok := cpu[addr]; ok {
+			return cd(ctx, addr)
+		}
+		return gd(ctx, addr)
+	}
+	h.cpuFirst = cpuFirst
+	h.relay.CPUFirst = func(context.Context) bool { return h.cpuFirst }
+	h.relay.Routed = func(p string) { h.mu.Lock(); h.routed = append(h.routed, p); h.mu.Unlock() }
+	h.relay.PassedOver = func(p, why string) { h.mu.Lock(); h.passed = append(h.passed, p+":"+why); h.mu.Unlock() }
+	h.relay.Placements = &relay.Placements{}
+	return h
 }
 
 func setup(t *testing.T, ws map[string]*worker) *harness {
@@ -839,7 +887,191 @@ func TestARunningConversionIsPlacedOnItsWorker(t *testing.T) {
 	require.EqualValues(t, 0, s.exit(), s.stderr())
 
 	require.True(t, placed, "placed while it ran")
-	assert.Equal(t, relay.Placement{Worker: "video-0", Node: "node-of-video-0", Encoder: "h264_qsv", Decoder: "vaapi"}, during)
+	assert.Equal(t, relay.Placement{Worker: "video-0", Node: "node-of-video-0", Pool: relay.PoolGPU, Encoder: "h264_qsv", Decoder: "vaapi"}, during)
 	_, still := placements.Get(job.Session)
 	assert.False(t, still, "gone once it ended")
+}
+
+// The CPU pool (docs/superpowers/specs/2026-11-10-cpu-video-route-design.md):
+// ordered per conversion, each pool the other's second chance, a pod's
+// FailedPrecondition before any output passing it over, only a GPU
+// placement counted in the Lease.
+
+func TestAConversionGoesToTheCPUPoolFirstWhenClustarrIsBusy(t *testing.T) {
+	gpu, cpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}, &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	assert.NotEmpty(t, cpu.job)
+	assert.Empty(t, gpu.job)
+	assert.Zero(t, h.count.begun, "a CPU conversion is not in the GPU Lease")
+	routed, passed := h.seen()
+	assert.Equal(t, []string{relay.PoolCPU}, routed)
+	assert.Empty(t, passed)
+}
+
+func TestAConversionGoesToTheGPUPoolWhenClustarrIsIdle(t *testing.T) {
+	gpu, cpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}, &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, false)
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	assert.NotEmpty(t, gpu.job)
+	assert.Empty(t, cpu.job)
+	assert.Equal(t, 1, h.count.begun)
+	assert.Equal(t, 1, h.count.done)
+	routed, passed := h.seen()
+	assert.Equal(t, []string{relay.PoolGPU}, routed)
+	assert.Empty(t, passed)
+}
+
+func TestAFullGPUPoolFallsBackToTheCPUPool(t *testing.T) {
+	cpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": {refuse: codes.ResourceExhausted}}, map[string]*worker{"cpu-0": cpu}, false)
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	assert.NotEmpty(t, cpu.job)
+	assert.Zero(t, h.count.begun)
+	routed, passed := h.seen()
+	assert.Equal(t, []string{relay.PoolCPU}, routed)
+	assert.Equal(t, []string{"gpu:full"}, passed)
+}
+
+func TestAFullCPUPoolFallsBackToTheGPUPool(t *testing.T) {
+	gpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": {refuse: codes.ResourceExhausted}}, true)
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	assert.NotEmpty(t, gpu.job)
+	assert.Equal(t, 1, h.count.begun)
+	routed, passed := h.seen()
+	assert.Equal(t, []string{relay.PoolGPU}, routed)
+	assert.Equal(t, []string{"cpu:full"}, passed)
+}
+
+func TestASourceTheCPUPoolPassesOverRunsOnTheGPU(t *testing.T) {
+	cpu := &worker{run: failing(codes.FailedPrecondition, "not for this pool: hevc")}
+	gpu := &worker{}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	var placed relay.Placement
+	var ok bool
+	gpu.run = func(_ context.Context, send func(*videopb.Down) error) error {
+		placed, ok = h.relay.Placements.Get(sessionOf(t, h)) // while it runs
+		if err := send(seg(0, 0, 8, false)); err != nil {
+			return err
+		}
+		return send(done("", ""))
+	}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	assert.NotEmpty(t, cpu.job, "the CPU pool was asked")
+	assert.NotEmpty(t, gpu.job, "and the GPU pool ran it")
+	assert.True(t, ok, "placed while running")
+	assert.Equal(t, relay.PoolGPU, placed.Pool)
+	assert.Equal(t, "video-0", placed.Worker)
+	assert.Equal(t, 1, h.count.begun)
+	assert.Equal(t, 1, h.count.done)
+	routed, passed := h.seen()
+	assert.Equal(t, []string{relay.PoolGPU}, routed, "a pool passed over took nothing")
+	assert.Equal(t, []string{"cpu:ineligible"}, passed)
+	assert.Empty(t, h.refs, "no refusal")
+	_, ok = h.relay.Placements.Get(sessionOf(t, h))
+	assert.False(t, ok, "removed at the end")
+}
+
+func TestAWorkerThatDiesAfterAcceptingIsNotPassedOver(t *testing.T) {
+	cpu := &worker{run: failing(codes.Aborted, "the pod is wedged")}
+	gpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	s := &sink{}
+	require.Error(t, h.relay.Execute(t.Context(), h.req, s))
+	assert.Contains(t, s.stderr(), "video: worker-error: ")
+	assert.Empty(t, gpu.job, "only FailedPrecondition is a pass-over")
+	assert.Equal(t, []video.Reason{video.ReasonWorkerError}, h.refs)
+	_, passed := h.seen()
+	assert.Empty(t, passed)
+}
+
+func TestAJobNoPoolTakesIsRefusedOnce(t *testing.T) {
+	cpu := &worker{run: failing(codes.FailedPrecondition, "not for this pool: hevc")}
+	h := setup2(t, map[string]*worker{"video-0": {refuse: codes.ResourceExhausted}}, map[string]*worker{"cpu-0": cpu}, true)
+	s := &sink{}
+	require.Error(t, h.relay.Execute(t.Context(), h.req, s))
+	assert.EqualValues(t, 1, s.exit())
+	assert.Contains(t, s.stderr(), "video: full: ")
+	assert.Equal(t, []video.Reason{video.ReasonFull}, h.refs, "refused once, full since a pod was full")
+	assert.Zero(t, h.count.begun)
+	_, passed := h.seen()
+	assert.Equal(t, []string{"cpu:ineligible", "gpu:full"}, passed)
+
+	// With no GPU pod ready either, the refusal is no-pool.
+	cpu = &worker{run: failing(codes.FailedPrecondition, "not for this pool: hevc")}
+	h = setup2(t, map[string]*worker{}, map[string]*worker{"cpu-0": cpu}, true)
+	s = &sink{}
+	require.Error(t, h.relay.Execute(t.Context(), h.req, s))
+	assert.Contains(t, s.stderr(), "video: no-pool: ")
+	assert.Equal(t, []video.Reason{video.ReasonNoPool}, h.refs)
+}
+
+func TestAStreamedInputIsPumpedAgainForTheSecondPool(t *testing.T) {
+	// A Live TV input the CPU pool read a chunk of before it passed the job
+	// over is streamed to the GPU pool from its first byte again, never
+	// resumed where the CPU pool left it.
+	live := bytes.Repeat([]byte("TS packet bytes."), 64<<10) // 1 MiB
+	cpu := &worker{}
+	cpu.run = func(ctx context.Context, _ func(*videopb.Down) error) error {
+		for {
+			cpu.mu.Lock()
+			n := cpu.input.Len()
+			cpu.mu.Unlock()
+			if n >= 256<<10 {
+				return status.Error(codes.FailedPrecondition, "not for this pool: hevc")
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	gpu := &worker{eof: make(chan struct{})}
+	gpu.run = func(ctx context.Context, send func(*videopb.Down) error) error {
+		select {
+		case <-gpu.eof:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return send(done("", ""))
+	}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	h.pms.serve["/livetv/sessions/abc/index.ts"] = live
+	for i, a := range h.req.Args {
+		if a == "-i" {
+			h.req.Args[i+1] = "http://127.0.0.1:32400/livetv/sessions/abc/index.ts"
+		}
+	}
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, s), s.stderr())
+	cpu.mu.Lock()
+	cpuGot := bytes.Clone(cpu.input.Bytes())
+	cpu.mu.Unlock()
+	gpu.mu.Lock()
+	gpuGot := bytes.Clone(gpu.input.Bytes())
+	gpu.mu.Unlock()
+	require.GreaterOrEqual(t, len(cpuGot), 256<<10, "the CPU pool read a chunk before it passed")
+	assert.True(t, bytes.HasPrefix(live, cpuGot), "the CPU pool read the input from its start")
+	assert.True(t, bytes.Equal(live, gpuGot), "the GPU pool got %d of %d bytes, from the start", len(gpuGot), len(live))
+	_, passed := h.seen()
+	assert.Equal(t, []string{"cpu:ineligible"}, passed)
+}
+
+func TestARestartIsPlacedAfresh(t *testing.T) {
+	// A seek restarts the job: it is routed afresh and may land on the
+	// other pool, its placement replaced, never doubled.
+	gpu, cpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}, &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	h.cpuFirst = false
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, &sink{}))
+	_, ok := h.relay.Placements.Get(sessionOf(t, h))
+	assert.False(t, ok, "no placement outlives its run")
+	routed, _ := h.seen()
+	assert.Equal(t, []string{relay.PoolCPU, relay.PoolGPU}, routed)
+	assert.NotEmpty(t, cpu.job)
+	assert.NotEmpty(t, gpu.job)
+	assert.Equal(t, 1, h.count.begun, "only the GPU run was counted")
 }
