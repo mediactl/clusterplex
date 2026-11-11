@@ -3,6 +3,29 @@
 # chart: "plex").
 fullnameOverride: ""
 
+# --------------------------------------------------------------------------
+# Logging (docs/superpowers/specs/2026-11-10-structured-logging-design.md §5)
+# --------------------------------------------------------------------------
+# The logging: section of config.yaml, which every cluster-plex process reads
+# from the config ConfigMap and re-reads every 10 s: a level set here reaches
+# a running pod without a restart. global.logging is the knob shared with
+# clustarr's chart (a subchart sees only the parent's global); logging, below,
+# overrides it key by key for cluster-plex's pods, its subsystems merged over
+# the global's.
+#   level:      the floor -- trace, debug, info, warn, error, fatal
+#   format:     json or text
+#   addSource:  file:line on every record (costly; off)
+#   subsystems: per-subsystem levels by dotted prefix, e.g.
+#               {pms: warn, "livetv.guide": debug}; the table is
+#               pkg/logging/subsystems.go, Plex's own files are pms, pms.*
+global:
+  logging:
+    level: info
+    format: json
+    addSource: false
+    subsystems: {}
+logging: {}
+
 image:
   repository: ghcr.io/mediactl/cluster-plex
   tag: dev

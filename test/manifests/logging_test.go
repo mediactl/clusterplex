@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // Every pod running a cluster-plex binary mounts the release's config
@@ -83,4 +84,34 @@ func TestPlexLogsIsCapped(t *testing.T) {
 		}
 	}
 	t.Fatal("no StatefulSet with a plex-logs volume")
+}
+
+// loggingSection is the logging: section the chart renders into the config
+// ConfigMap's config.yaml under set.
+func loggingSection(t *testing.T, set ...string) map[string]any {
+	t.Helper()
+	for _, d := range docs(t, renderChartWith(t, set...)) {
+		if str(d, "kind") != "ConfigMap" || !strings.HasSuffix(str(d, "metadata", "name"), "-config") {
+			continue
+		}
+		var cfg struct {
+			Logging map[string]any `yaml:"logging"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(str(d, "data", "config.yaml")), &cfg))
+		return cfg.Logging
+	}
+	t.Fatal("no -config ConfigMap rendered")
+	return nil
+}
+
+// The logging: section of config.yaml is global.logging with the chart's
+// own logging over it key by key, the subsystems merged (the 2026-11-10
+// design §5; global.logging is the owner's one knob under clustarr's chart).
+func TestTheLoggingSectionRenders(t *testing.T) {
+	assert.Equal(t, map[string]any{"level": "info", "format": "json", "addSource": false}, loggingSection(t))
+	assert.Equal(t, "debug", loggingSection(t, "global.logging.level=debug")["level"])
+	both := loggingSection(t, "global.logging.level=debug", "global.logging.subsystems.livetv=debug",
+		"logging.level=error", "logging.subsystems.pms=warn")
+	assert.Equal(t, "error", both["level"], "the chart's own level beats the global's")
+	assert.Equal(t, map[string]any{"livetv": "debug", "pms": "warn"}, both["subsystems"], "the subsystems merge")
 }

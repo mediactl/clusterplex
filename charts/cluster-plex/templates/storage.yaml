@@ -83,6 +83,27 @@ data:
         xmltvGuide: {{ .Values.plex.liveTV.xmltvGuide | default "pms" | quote }}
         cloudGuideBuild: {{ .Values.plex.liveTV.cloudGuideBuild | default "job" | quote }}
         cloudGuideJob: {{ .Values.plex.liveTV.cloudGuideJob | default dict | toJson | quote }}
+    {{- /* The logging knob (the 2026-11-10 structured-logging design §5):
+           global.logging, shared with clustarr's chart, overridden key by key
+           by this chart's logging, the subsystems merged; every process
+           re-reads this section every 10 s. */}}
+    {{- $g := default dict .Values.global.logging }}
+    {{- $l := default dict .Values.logging }}
+    {{- $cfg := dict
+          "level" (default "info" (coalesce $l.level $g.level))
+          "format" (default "json" (coalesce $l.format $g.format)) }}
+    {{- if not (kindIs "invalid" $l.addSource) }}
+    {{- $_ := set $cfg "addSource" $l.addSource }}
+    {{- else if not (kindIs "invalid" $g.addSource) }}
+    {{- $_ := set $cfg "addSource" $g.addSource }}
+    {{- else }}
+    {{- $_ := set $cfg "addSource" false }}
+    {{- end }}
+    {{- $subsystems := merge (deepCopy (default dict $l.subsystems)) (default dict $g.subsystems) }}
+    {{- if $subsystems }}
+    {{- $_ := set $cfg "subsystems" $subsystems }}
+    {{- end }}
+    {{- dict "logging" $cfg | toYaml | nindent 4 }}
     {{- if kindIs "slice" .Values.plex.codecPrefetch }}
     plex-codec-prefetch: {{ join "," .Values.plex.codecPrefetch | default "none" | quote }}
     {{- end }}
