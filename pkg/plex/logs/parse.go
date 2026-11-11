@@ -88,7 +88,7 @@ func (a *Assembler) WithPlugin(plugin string) *Assembler {
 // Line reads one line (without its newline). It returns the record the line
 // completed: the open one when this line starts a new record.
 func (a *Assembler) Line(b []byte) (Record, bool) {
-	line := strings.ToValidUTF8(string(b), "�")
+	line := validUTF8(b)
 	if rec, msg, ok := a.start(line); ok {
 		done, had := a.flush()
 		a.open, a.hasOpen = rec, true
@@ -181,4 +181,24 @@ func (a *Assembler) start(line string) (rec Record, msg string, ok bool) {
 // (the design's Review Focus 1).
 func redact(msg string) string {
 	return token.ReplaceAllString(msg, "X-Plex-Token=REDACTED")
+}
+
+// validUTF8 is b as a string with every invalid byte replaced by U+FFFD,
+// one replacement per byte (strings.ToValidUTF8 folds a run into one).
+func validUTF8(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var sb strings.Builder
+	sb.Grow(len(b))
+	for len(b) > 0 {
+		r, size := utf8.DecodeRune(b)
+		if r == utf8.RuneError && size == 1 {
+			sb.WriteRune(utf8.RuneError)
+		} else {
+			sb.Write(b[:size])
+		}
+		b = b[size:]
+	}
+	return sb.String()
 }
