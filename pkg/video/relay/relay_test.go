@@ -982,7 +982,14 @@ func TestASourceTheCPUPoolPassesOverRunsOnTheGPU(t *testing.T) {
 	var placed relay.Placement
 	var ok bool
 	gpu.run = func(_ context.Context, send func(*videopb.Down) error) error {
-		placed, ok = h.relay.Placements.Get(sessionOf(t, h)) // while it runs
+		// While it runs: the relay places the conversion right after the
+		// accept, on its own goroutine, so wait for it rather than race it.
+		for range 1000 {
+			if placed, ok = h.relay.Placements.Get(sessionOf(t, h)); ok {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
 		if err := send(seg(0, 0, 8, false)); err != nil {
 			return err
 		}
@@ -1193,4 +1200,59 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+func TestAnOverlappingRestartKeepsTheNewPlacement(t *testing.T) {
+	// PMS starts a seek's new transcoder before the old one has let go, so
+	// two runs of one session overlap, now possibly on different pools; the
+	// old run's end must not remove the placement the new run set.
+	release, oldStarted := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	cpu := &worker{run: func(ctx context.Context, send func(*videopb.Down) error) error {
+		if err := send(seg(0, 0, 8, false)); err != nil {
+			return err
+		}
+		once.Do(func() { close(oldStarted) })
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return send(done("", ""))
+	}}
+	gpuStarted, gpuRelease := make(chan struct{}), make(chan struct{})
+	gpu := &worker{run: func(ctx context.Context, send func(*videopb.Down) error) error {
+		if err := send(seg(0, 0, 8, false)); err != nil {
+			return err
+		}
+		close(gpuStarted)
+		select {
+		case <-gpuRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return send(done("", ""))
+	}}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	session := sessionOf(t, h)
+	oldDone := make(chan error, 1)
+	go func() { oldDone <- h.relay.Execute(t.Context(), h.req, &sink{}) }()
+	<-oldStarted
+	placed := func(pool string) bool { p, ok := h.relay.Placements.Get(session); return ok && p.Pool == pool }
+	require.Eventually(t, func() bool { return placed(relay.PoolCPU) }, 5*time.Second, time.Millisecond)
+
+	h.cpuFirst = false // the restart lands on the GPU pool
+	newDone := make(chan error, 1)
+	go func() { newDone <- h.relay.Execute(t.Context(), h.req, &sink{}) }()
+	<-gpuStarted
+	require.Eventually(t, func() bool { return placed(relay.PoolGPU) }, 5*time.Second, time.Millisecond, "the new run's placement replaced the old")
+
+	close(release) // the old run ends while the new one runs
+	require.NoError(t, <-oldDone)
+	assert.True(t, placed(relay.PoolGPU), "the old run's end removed the new run's placement")
+
+	close(gpuRelease)
+	require.NoError(t, <-newDone)
+	_, ok := h.relay.Placements.Get(session)
+	assert.False(t, ok, "removed when its own run ends")
 }
