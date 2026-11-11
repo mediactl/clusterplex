@@ -114,6 +114,100 @@ A run is exact when the compare prints no differing table or column. The
 guide's "What PMS writes" rules were settled this way, one disagreement at a
 time, at 12 channels and then at 248.
 
+## The XMLTV oracle
+
+An XMLTV DVR's built guide (`plex.liveTV.xmltvGuide: manager`) is checked
+the same way: `hack/guidebuild -xmltv` builds from the XMLTV file PMS
+loaded and compares with PMS's own load of it. No capture is needed, since
+the XMLTV is the whole answer. The rig's probe (2026-11-10/11) is DVR 8,
+"clustarr x1", device `CAFE0011`, schema `epg_fde0a670482b45e8941c59cf6c7385c3`:
+
+- **The tuner** is `xmltvprobe`, an nginx serving the ConfigMap
+  `xmltvprobe-x1` at `/hdhr/x1` (`discover.json`, `device.xml`,
+  `lineup.json`, `lineup_status.json`, `xmltv.xml`), and the IPTVProvider
+  `rig-x1` (`spec.type: M3U`) carries one hand-written block pointing at it
+  (`uri: http://<xmltvprobe ClusterIP>/hdhr/x1`, `guidePath: /xmltv.xml`,
+  `guideHash`, `lineupHash`).
+- **The guide** is `hack/guiderig/xmltv-gen.py <dir>/site/hdhr/x1 <base URL>`:
+  48 probe programmes over four channels, an hour each from the next hour,
+  plus the device's JSON; `--profile` appends three listings of clustarr's
+  profile (The Drew Barrymore Show's S07E41 on 9001 without plex guids,
+  again on 9002 with its `plex`, `plex.show` and `plex.season` guids and
+  images, its S07E40 on 9003 without). Serve it with
+  `kubectl -n media create cm xmltvprobe-x1 --from-file=<dir>/site/hdhr/x1 --dry-run=client -o yaml | kubectl apply -f -`
+  and wait until the pod serves it (`kubectl -n media exec deploy/xmltvprobe -- sha256sum /usr/share/nginx/html/hdhr/x1/xmltv.xml`,
+  about a minute).
+- **PMS's load.** Under `xmltvGuide: pms` (the default), PMS loads the guide
+  itself: `POST /livetv/dvrs/8/reloadGuide` through a forward of
+  `plex-0:32400` with the server's `.LocalAdminToken` (read inside the pod by
+  a `kubectl debug --target=plex` container whose log is written to a 0600
+  file, never printed); the manager copies the load into the schema, and its
+  comment (`obj_description`) names the file's new mtime. 48 programmes load
+  in seconds. Check the forward first: `GET /identity` must name the rig's
+  `c493110e…`, since `127.0.0.1:32401` on the workstation is a Docker PMS.
+- **The reference** is that load copied aside, never edited in place:
+  `CREATE TABLE epg_ref_x1.<t> AS TABLE epg_fde0….<t>` for the five guide
+  tables and `library_sections` (PMS's XMLTV load makes a section only when
+  a programme needs it, so the sections come from the reference). The load's
+  time is `min(created_at)` of its non-section items.
+- **The run:**
+  `GUIDEBUILD_DSN=postgres://plex:plex@127.0.0.1:<forwarded plex-postgres>/plex go run ./hack/guidebuild -xmltv <dir>/site/hdhr/x1/xmltv.xml -lineup <dir>/site/hdhr/x1/lineup.json -ref epg_ref_x1 -out epg_ref_x1_built -now <load time> -additions`.
+  Without `-additions` the run lists every plex guid as a row only one side
+  has and every image PMS stores none of as a differing column, and exits 1;
+  with it those are listed apart, under "additions", and a run with no other
+  difference exits 0. On 2026-11-11 both of PMS's loads were exact so:
+  the 48 programmes (110 items, 48 airings, 33 tags, 119 taggings; 1 plex
+  guid, 7 arts, 4 thumbs added) and `--profile` (114, 51, 33, 127; 4 plex
+  guids, 9 arts, 5 thumbs).
+- **What it settled:** PMS sorts a title by a fixed table, not by stripping
+  accents (`Ünïcødé` as `Unic0de`), measured with
+  `hack/guiderig/xmltv-sortprobe.py`, an XMLTV of 728 one-character titles
+  loaded the same way (`pkg/plex/guidebuild/testdata/sortprobe.tsv` keeps
+  PMS's answers); and the reader keys an item by any plex guid the guide
+  lists for it, taking each added image from the first listing that has one.
+
+**The built mode on the rig.** With an image carrying the builder (`kind
+load` it as above), set `xmltvGuide: manager` beside `cloudGuide` in
+`clusterplex-config`, give `clusterplex-sa` the chart's Job verbs (the
+kind overlay's `clusterplex-role` has none, so a build Job fails "cannot
+get resource jobs" and waits its 15-minute retry: the rig carries a Role
+`rig-guide-jobs`, `batch` `jobs` get, list, create, delete, bound to it),
+restart the StatefulSet, and move the block's
+`guideHash` in `rig-x1`'s status
+(`kubectl -n media patch iptvprovider rig-x1 --subresource=status --type=json -p '[{"op":"replace","path":"/status/blocks/0/guideHash","value":"<new>"}]'`).
+The converger asks the builder for DVR 8; a `plex-guide-build-*` Job stages
+the build and the holder swaps it in ("Live TV: built an XMLTV guide in a
+Job"); the schema's comment then reads `clusterplex: built ...`. Check it
+three ways: the oracle against the installed guide at the build's own time
+(copy it aside, then `-xmltv <same file> -ref <copy> -out <check> -now
+<its min(created_at)>`, exact with no `-additions`, both sides being
+builds); PMS's own view, `GET /tv.plex.providers.epg.xmltv:8/grid?type=4`
+(the episodes' `thumb`, `art`, `grandparentArt` and `plex://` guids); and a
+forced `POST /livetv/dvrs/8/reloadGuide`, which PMS loads and the swap hook
+refuses (`GUIDE_SWAP: the manager answered "skip the managers build this
+guide"` in the pod's log), the schema's comment and `guidesum.sh` sums
+unchanged.
+
+Run on 2026-11-11 (image `68e1ab6`, the `--profile` guide): the converger's
+first pass asked for DVR 8 under the moved `guideHash` (the plan at
+`plan/<dvr>` names it), the Job `plex-guide-build-fde0a670-546076f66dd89d53`
+staged 4 channels, 114 items and 51 airings in 9 s, and the holder swapped
+it in 10 s after starting it. The independent build at the install's time
+was exact; the grid showed Element Soup's and Image Elements' stills,
+backdrops and show backdrops, and The Drew Barrymore Show's episode 41 as
+`plex://episode/6aeb5f12ac56869440d7304f` under
+`plex://show/5fc69a487c6557002ed60976`, where PMS's own load had shown
+neither an image beyond the show's poster nor a plex guid; the forced
+reload was refused in 164 µs and the sums stood two minutes later. PMS
+still moves the DVR's `refreshedAt` for the load it was refused, so
+`refreshedAt` says nothing about whose guide is served. The schema's
+comment reads "built from Plex's guide service" for an XMLTV build too
+(the stored text is the cloud build's, parsed by the time). Two traps: a
+port-forward and the server's `.LocalAdminToken` both die with the pod, so
+re-forward and re-read the token after every restart; and the managers'
+timers run on the monotonic clock, which stops while the workstation
+sleeps, so a 15-minute retry after a suspend comes 15 awake minutes later.
+
 ## Checks
 
 - `hack/guiderig/guidesum.sh <schema>`: a count and an md5 of every row of
