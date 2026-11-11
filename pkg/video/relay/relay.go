@@ -221,8 +221,8 @@ func (r *Relay) serve(ctx context.Context, cwd string, job video.Job, c *convers
 	if r.Count != nil && c.pool == PoolGPU {
 		defer r.Count.Begin(ctx)()
 	}
-	r.Placements.set(job.Session, Placement{Worker: c.worker, Node: c.node, Pool: c.pool})
-	defer r.Placements.remove(job.Session)
+	placed := r.Placements.set(job.Session, Placement{Worker: c.worker, Node: c.node, Pool: c.pool})
+	defer r.Placements.remove(job.Session, placed)
 	log := r.log().With("worker", c.worker, "pool", c.pool, "session", job.Session)
 	log.Info("video conversion started", "output", job.Output, "width", job.Video.Width, "height", job.Video.Height)
 	// The pump lives as long as the conversion, not the job: once this pool

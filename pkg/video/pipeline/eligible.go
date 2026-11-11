@@ -11,13 +11,11 @@ import (
 )
 
 // Source is what a pod judges a job's video stream by once the input is
-// open: the codec, the coded size, the bit depth and whether the stream
-// is HDR (PQ or HLG, or 10-bit BT.2020 of no stated transfer, which may
-// be).
+// open: the codec, the coded size and whether the stream is HDR (PQ or
+// HLG, or 10-bit BT.2020 of no stated transfer, which may be).
 type Source struct {
 	Codec         string
 	Width, Height int
-	Bits          int
 	HDR           bool
 }
 
@@ -65,7 +63,7 @@ func sourceOf(in *input) Source {
 	vs := in.video
 	bits := bitsOf(vs)
 	return Source{
-		Codec: vs.Codec, Width: vs.Width, Height: vs.Height, Bits: bits,
+		Codec: vs.Codec, Width: vs.Width, Height: vs.Height,
 		HDR: vs.Color.Transfer == ffgo.ColorTransferSMPTE2084 || vs.Color.Transfer == ffgo.ColorTransferARIB_STD_B67 || mayBeHDR(vs, bits),
 	}
 }

@@ -1909,8 +1909,8 @@
     },
     {
       "type": "timeseries",
-      "title": "GPU pool conversions",
-      "description": "Conversions each GPU pool pod runs, by output.",
+      "title": "Pool conversions running",
+      "description": "Conversions each pool pod runs (the GPU pool's and the CPU pool's), by output.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2120,7 +2120,7 @@
     },
     {
       "type": "timeseries",
-      "title": "GPU pool encode speed (p50)",
+      "title": "Pool encode speed (p50)",
       "description": "A finished conversion's media seconds per second it ran. Below 1 is slower than real time.",
       "datasource": {
         "type": "prometheus",
@@ -2194,6 +2194,138 @@
         "h": 7,
         "w": 24,
         "x": 0,
+        "y": 74
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Conversions by pool",
+      "description": "Video conversions started, by the pool that took them (gpu, cpu): the CPU route (docs/superpowers/specs/2026-11-10-cpu-video-route-design.md) sends them to the CPU pool while clustarr holds work for the Intel GPU.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "opm",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "lineInterpolation": "linear"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pool) (rate(clusterplex_video_conversions_total{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{pool}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "editorMode": "code"
+        }
+      ],
+      "id": 51,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pools passed over",
+      "description": "A pool passed over for a conversion, by pool and reason: full (every ready pod's slots taken) or ineligible (the pod judged the source beyond its rule); the other pool took it or the job was refused.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "opm",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "lineInterpolation": "linear"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pool, reason) (rate(clusterplex_video_pool_passed_over_total{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{pool}} {{reason}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "editorMode": "code"
+        }
+      ],
+      "id": 52,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
         "y": 66
       }
     },
@@ -2206,7 +2338,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 73
+        "y": 81
       },
       "panels": []
     },
@@ -2278,7 +2410,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 74
+        "y": 82
       }
     },
     {
@@ -2356,7 +2488,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 74
+        "y": 82
       }
     },
     {
@@ -2434,7 +2566,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 74
+        "y": 82
       }
     },
     {
@@ -2500,7 +2632,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 83
+        "y": 91
       }
     },
     {
@@ -2566,7 +2698,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 83
+        "y": 91
       }
     },
     {
@@ -2632,7 +2764,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 83
+        "y": 91
       }
     },
     {
@@ -2644,7 +2776,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 99
       },
       "panels": []
     },
@@ -2712,7 +2844,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 92
+        "y": 100
       }
     },
     {
@@ -2778,7 +2910,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 92
+        "y": 100
       }
     },
     {
@@ -2844,7 +2976,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 92
+        "y": 100
       }
     },
     {
@@ -2912,7 +3044,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 92
+        "y": 100
       }
     },
     {
@@ -2924,7 +3056,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 100
+        "y": 108
       },
       "panels": [
         {
@@ -2994,7 +3126,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 101
+            "y": 109
           }
         },
         {
@@ -3065,7 +3197,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 101
+            "y": 109
           }
         },
         {
@@ -3132,7 +3264,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 109
+            "y": 117
           }
         },
         {
@@ -3199,7 +3331,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 109
+            "y": 117
           }
         }
       ]
