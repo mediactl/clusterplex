@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,9 +16,12 @@ import (
 	"testing"
 	"time"
 
+	plexlogs "github.com/mediactl/clusterplex/pkg/plex/logs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 )
 
@@ -391,4 +395,59 @@ func TestSupervisorRefusesToStartWhenPreferencesCannotBeApplied(t *testing.T) {
 	assert.Contains(t, err.Error(), "read-only file system")
 	assert.NoFileExists(t, marker, "Plex must not start")
 	assert.NoError(t, sup.Stop(context.Background()), "a failed start leaves nothing to stop")
+}
+
+// Plex's stdout and stderr are relayed as records under pms.stdout and
+// pms.stderr, and the shim's own lines ([time] [LEVEL] message, [SHIM_INIT]
+// ...) take their level and time under shim (the 2026-11-10 design §4.2).
+func TestShimLinesTakeTheirLevel(t *testing.T) {
+	var out bytes.Buffer
+	root := logging.New(logging.Options{Format: "json", Output: &out, Level: slog.LevelDebug})
+	w := &lineLogger{log: root, subsystem: "pms.stderr"}
+	_, err := w.Write([]byte("[2026-11-10 18:20:17] [ERROR] statement timeout\n[SHIM_INIT] Exception catcher enabled\nhello\n"))
+	require.NoError(t, err)
+	var recs []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n")) {
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(line, &m), "%s", line)
+		recs = append(recs, m)
+	}
+	require.Len(t, recs, 3)
+	assert.Equal(t, "shim", recs[0]["subsystem"])
+	assert.Equal(t, "ERROR", recs[0]["level"])
+	assert.Equal(t, "statement timeout", recs[0]["msg"])
+	assert.Equal(t, "2026-11-10T18:20:17Z", recs[0]["time"])
+	assert.Equal(t, "shim", recs[1]["subsystem"])
+	assert.Equal(t, "INFO", recs[1]["level"])
+	assert.Equal(t, "Exception catcher enabled", recs[1]["msg"])
+	assert.Equal(t, "pms.stderr", recs[2]["subsystem"])
+	assert.Equal(t, "INFO", recs[2]["level"])
+	assert.Equal(t, "hello", recs[2]["msg"])
+}
+
+// Before each Plex start the supervisor drains what the previous process
+// left in Logs and deletes the rotated files (design §4.4).
+func TestTheSupervisorDrainsBeforeEachStart(t *testing.T) {
+	var out bytes.Buffer
+	root := logging.New(logging.Options{Format: "json", Output: &out})
+	state := t.TempDir()
+	logs := filepath.Join(state, "Logs")
+	require.NoError(t, os.MkdirAll(logs, 0o755))
+	rotated := filepath.Join(logs, "Plex Media Server.1.log")
+	require.NoError(t, os.WriteFile(rotated, []byte("Nov 10, 2026 18:20:17.104 [1] INFO - left by the last process\n"), 0o644))
+	var goneAtStart bool
+	s := &Supervisor{
+		Binary: fakePMS(t, gracefulPMS), StateDir: state, Grace: time.Second,
+		Logger: logging.SubsystemLogger(root, "supervisor"),
+		Logs:   &plexlogs.Tailer{Dir: logs, Logger: root, Interval: time.Hour},
+		StartProcess: func(cmd *exec.Cmd) error {
+			_, err := os.Stat(rotated)
+			goneAtStart = os.IsNotExist(err)
+			return cmd.Start()
+		},
+	}
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Stop(context.Background()) })
+	assert.True(t, goneAtStart, "the rotated file is drained and deleted before Plex starts")
+	assert.Contains(t, out.String(), "left by the last process")
 }

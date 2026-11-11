@@ -19,9 +19,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
+
+	plexlogs "github.com/mediactl/clusterplex/pkg/plex/logs"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
@@ -313,12 +316,18 @@ func run() int {
 	}
 
 	m.sup = &Supervisor{
-		Binary:       cfg.PMSBinary,
-		Subreaper:    cfg.SubreaperBinary,
-		StateDir:     cfg.PlexDir,
-		PIDFile:      cfg.PIDFile(),
-		Env:          shimEnv(os.Environ(), cfg),
-		Logger:       logging.SubsystemLogger(logger, "supervisor"),
+		Binary:    cfg.PMSBinary,
+		Subreaper: cfg.SubreaperBinary,
+		StateDir:  cfg.PlexDir,
+		PIDFile:   cfg.PIDFile(),
+		Env:       shimEnv(os.Environ(), cfg),
+		Logger:    logging.SubsystemLogger(logger, "supervisor"),
+		// Plex's own log files, read into the manager's records and deleted
+		// once read (the 2026-11-10 structured-logging design §4).
+		Logs: &plexlogs.Tailer{
+			Dir: filepath.Join(cfg.PlexDir, "Logs"), Logger: logger,
+			Metrics: plexlogs.NewMetrics(prometheus.DefaultRegisterer),
+		},
 		Grace:        defaultGrace,
 		Drain:        cfg.DrainTimeout,
 		StartProcess: m.startInPlexNS,

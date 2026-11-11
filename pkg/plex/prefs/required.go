@@ -24,6 +24,11 @@ const transcoderTempDirectory = "TranscoderTempDirectory"
 // configuration, because each of them has exactly one correct value here and a
 // wrong one fails in a way that looks like something else.
 var required = map[string]string{
+	// One rotated copy of each log file beside the live one: the manager's
+	// tailer reads every line into its own records and deletes a rotated
+	// file once read, so the history lives in the log store, not in Logs
+	// (the 2026-11-10 structured-logging design §4.3).
+	"LogNumFiles": "1",
 	// Remote access publishing. Every pod runs under one server identity, so
 	// each would publish its own address to plex.tv and the last to check in
 	// would win. Clients would then be handed a pod that only sometimes

@@ -230,6 +230,39 @@ func productionFilesWithPositions(t *testing.T) map[string]parsedFile {
 	return out
 }
 
+// literalSource is where a file's non-literal subsystem names come from: a
+// file of string literals and the prefixes the names carry.
+type literalSource struct {
+	file     string
+	prefixes []string
+}
+
+// subsystemLiteralFiles are the files that name a record's subsystem from a
+// variable holding one of a known set of literals: the Plex log tailer,
+// whose subsystem is its file's (FileFor's table in files.go), and the
+// supervisor's stdout relay (pms.stdout, pms.stderr, shim in its own file).
+var subsystemLiteralFiles = map[string]literalSource{
+	"pkg/plex/logs/tailer.go":   {"pkg/plex/logs/files.go", []string{"pms"}},
+	"pkg/plex/logs/parse.go":    {"pkg/plex/logs/files.go", []string{"pms"}},
+	"cmd/manager/supervisor.go": {"cmd/manager/supervisor.go", []string{"pms.", "shim"}},
+}
+
+// stringLiterals is every string literal in the production file at rel.
+func stringLiterals(t *testing.T, rel string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(repoRoot(t), rel), nil, parser.SkipObjectResolution)
+	require.NoError(t, err)
+	var out []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			out = append(out, strings.Trim(lit.Value, `"`))
+		}
+		return true
+	})
+	return out
+}
+
 // TestEverySubsystemIsInTheTable (the contract's §5, §9): every logging.Subsystem and
 // SubsystemLogger call names its subsystem with a string literal (or a
 // package's own `const Subsystem`, or a "remediation."+name concatenation
@@ -293,11 +326,29 @@ func TestEverySubsystemIsInTheTable(t *testing.T) {
 				if !table[name] {
 					problems = append(problems, where+": subsystem "+name+" is not in logging.Subsystems")
 				}
-			case *ast.Ident:
+			case *ast.Ident, *ast.SelectorExpr:
 				if strings.HasPrefix(path, "pkg/logging/") {
 					return true // the package's own plumbing passes the name through
 				}
-				name, ok := consts[v.Name]
+				if src, ok := subsystemLiteralFiles[path]; ok {
+					for _, lit := range stringLiterals(t, src.file) {
+						for _, prefix := range src.prefixes {
+							if strings.HasPrefix(lit, prefix) {
+								used[lit] = true
+								if !table[lit] {
+									problems = append(problems, where+": subsystem "+lit+" is not in logging.Subsystems")
+								}
+							}
+						}
+					}
+					return true
+				}
+				id, isIdent := nameArg.(*ast.Ident)
+				if !isIdent {
+					problems = append(problems, where+": the subsystem is not a literal")
+					return true
+				}
+				name, ok := consts[id.Name]
 				if !ok {
 					problems = append(problems, where+": the subsystem is not a literal or this file's const")
 					return true

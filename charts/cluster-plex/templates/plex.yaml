@@ -212,7 +212,9 @@ spec:
         # once created.
         - name: plex-databases
           emptyDir: {}
+        # The manager's tailer reads these into its own records and deletes
+        # what Plex has rotated; the cap is the hard stop under it.
         - name: plex-logs
-          emptyDir: {}
+          emptyDir: {sizeLimit: 1Gi}
         - name: plex-transcode
           emptyDir: {}

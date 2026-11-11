@@ -204,3 +204,13 @@ func TestLiveTVKeepsTheGuideRefreshTaskOnAndNothingElse(t *testing.T) {
 	assert.Equal(t, "0", Enforced("", "", false)["ButlerTaskRefreshEpgGuides"])
 	assert.Equal(t, "1", Defaults()["DvrIncrementalEpgLoader"], "the refresh is incremental unless the operator says otherwise")
 }
+
+// LogNumFiles is forced to 1 (the 2026-11-10 structured-logging design
+// §4.3): the tailer needs a rotated file only until it has read it, so Plex
+// keeps one rotated copy beside each live file; declaring it is refused.
+func TestLogNumFilesIsForced(t *testing.T) {
+	assert.Equal(t, "1", Required()["LogNumFiles"])
+	err := Validate(map[string]string{"LogNumFiles": "5"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LogNumFiles")
+}

@@ -9,10 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	plexlogs "github.com/mediactl/clusterplex/pkg/plex/logs"
+
+	"github.com/mediactl/clusterplex/pkg/logging"
 	"github.com/mediactl/clusterplex/pkg/proxy"
 )
 
@@ -71,14 +76,20 @@ type Supervisor struct {
 	BeforeStart func(ctx context.Context) error
 	// Proxy, when set, starts before Plex and stops after it.
 	Proxy *proxy.TCP
+	// Logs, when set, reads Plex's own log files into the manager's records
+	// (the 2026-11-10 structured-logging design §4): drained before each
+	// start, for what the previous process left, run from the first start
+	// and stopped after Plex.
+	Logs *plexlogs.Tailer
 	// OnUnexpectedExit is called when Plex exits without Stop having been called.
 	OnUnexpectedExit func(err error)
 
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	stopping bool
-	done     chan struct{}
-	cancel   context.CancelFunc
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	stopping   bool
+	done       chan struct{}
+	cancel     context.CancelFunc
+	logsCancel context.CancelFunc
 }
 
 // Start applies the redirect, starts the proxy and then Plex.
@@ -122,13 +133,29 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 	s.removeStalePIDFile()
 	s.ensureStateDirs()
+	if s.Logs != nil {
+		// What the previous process left: read, and its rotated files gone,
+		// before Plex rotates the live ones at its start (design §4.4).
+		if err := s.Logs.Drain(ctx); err != nil {
+			s.Logger.Warn("drain Plex's log files before the start", "err", err)
+		}
+		if s.logsCancel == nil {
+			lctx, lcancel := context.WithCancel(context.Background())
+			s.logsCancel = lcancel
+			go func() {
+				if err := s.Logs.Run(lctx); err != nil {
+					s.Logger.Error("Plex's log files are not read", "err", err)
+				}
+			}()
+		}
+	}
 	cmd := exec.Command(s.Binary)
 	if s.Subreaper != "" {
 		cmd = exec.Command(s.Subreaper, s.Binary)
 	}
 	cmd.Env = s.Env
-	cmd.Stdout = &lineLogger{log: s.Logger, source: "pms-stdout"}
-	cmd.Stderr = &lineLogger{log: s.Logger, source: "pms-stderr"}
+	cmd.Stdout = &lineLogger{log: s.Logger, subsystem: "pms.stdout"}
+	cmd.Stderr = &lineLogger{log: s.Logger, subsystem: "pms.stderr"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := s.startProcess(cmd); err != nil {
 		cancel()
@@ -260,7 +287,17 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		grace = defaultGrace
 	}
 	s.drain(ctx)
-	return s.stopWithin(ctx, grace)
+	err := s.stopWithin(ctx, grace)
+	// The tailer stops after Plex, with one last drain of what it wrote
+	// on its way out.
+	s.mu.Lock()
+	lcancel := s.logsCancel
+	s.logsCancel = nil
+	s.mu.Unlock()
+	if lcancel != nil {
+		lcancel()
+	}
+	return err
 }
 
 // drain waits for the clients this pod is serving to finish with it.
@@ -327,13 +364,21 @@ func (s *Supervisor) stopWithin(ctx context.Context, grace time.Duration) error 
 	return ctx.Err()
 }
 
-// lineLogger relays a process's output to slog one line at a time.
+// lineLogger relays a process's output one line at a time as records under
+// subsystem (pms.stdout, pms.stderr), each INFO -- except the PostgreSQL
+// shim's own lines, "[time] [LEVEL] message" and "[SHIM_INIT] ...", which
+// are shim's at their level and time (the 2026-11-10 design §4.2).
 type lineLogger struct {
-	log    *slog.Logger
-	source string
-	mu     sync.Mutex
-	buf    []byte
+	log       *slog.Logger
+	subsystem string
+	mu        sync.Mutex
+	buf       []byte
 }
+
+// shimLine is the shim's log line (plex-postgresql's pg_logging.rs).
+var shimLine = regexp.MustCompile(`^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[(DEBUG|INFO|ERROR)\] (.*)$`)
+
+const shimInit = "[SHIM_INIT] "
 
 func (w *lineLogger) Write(p []byte) (int, error) {
 	w.mu.Lock()
@@ -355,8 +400,24 @@ func (w *lineLogger) Write(p []byte) (int, error) {
 }
 
 func (w *lineLogger) emit(line []byte) {
-	if len(bytes.TrimSpace(line)) == 0 {
+	text := string(bytes.TrimSpace(line))
+	if text == "" {
 		return
 	}
-	w.log.Info(string(line), "source", w.source)
+	subsystem, level, at, msg := w.subsystem, slog.LevelInfo, time.Now(), text
+	if m := shimLine.FindStringSubmatch(text); m != nil {
+		subsystem, msg = "shim", m[3]
+		if t, err := time.ParseInLocation("2006-01-02 15:04:05", m[1], time.UTC); err == nil {
+			at = t
+		}
+		level = plexlogs.Level(m[2])
+	} else if rest, ok := strings.CutPrefix(text, shimInit); ok {
+		subsystem, msg = "shim", rest
+	}
+	h := logging.SubsystemLogger(w.log, subsystem).Handler()
+	ctx := context.Background()
+	if !h.Enabled(ctx, level) {
+		return
+	}
+	_ = h.Handle(ctx, slog.NewRecord(at, level, msg, 0))
 }

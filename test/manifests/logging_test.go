@@ -67,3 +67,20 @@ func TestEveryPodMountsTheConfig(t *testing.T) {
 	}
 	assert.Greater(t, seen, 3, "the chart renders fewer containers than it should")
 }
+
+// Plex's Logs emptyDir is capped at 1Gi, the hard stop under the tailer's
+// deletions (design §4.3).
+func TestPlexLogsIsCapped(t *testing.T) {
+	for _, d := range docs(t, renderChart(t)) {
+		if str(d, "kind") != "StatefulSet" {
+			continue
+		}
+		for _, v := range list(d, "spec", "template", "spec", "volumes") {
+			if str(get(v, "name")) == "plex-logs" {
+				assert.Equal(t, "1Gi", str(get(v, "emptyDir", "sizeLimit")), "%s: plex-logs has no 1Gi sizeLimit", str(d, "metadata", "name"))
+				return
+			}
+		}
+	}
+	t.Fatal("no StatefulSet with a plex-logs volume")
+}
