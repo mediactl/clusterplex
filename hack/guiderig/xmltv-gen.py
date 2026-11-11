@@ -1,5 +1,9 @@
-# xmltv-gen.py <out> <base URL>: the rig's 48-programme XMLTV probe (DVR 8, 2026-11-10), whose
+# xmltv-gen.py <out> <base URL> [--profile]: the rig's 48-programme XMLTV probe (DVR 8, 2026-11-10), whose
 # PMS load is the reference hack/guidebuild -xmltv compares with; a verbatim copy of gv/x1/gen.py.
+# --profile appends three listings of clustarr's profile (docs/guide-rig.md, "The XMLTV oracle"):
+# The Drew Barrymore Show's S07E41 on 9001 without plex guids (a channel no Gracenote station pairs),
+# again on 9002 with its plex, plex.show and plex.season guids, poster, backdrop and still, and its
+# S07E40 on 9003 without them; the 48 are unchanged.
 import json, datetime as dt, html, sys, os
 out = sys.argv[1]; base = sys.argv[2]  # e.g. http://10.96.x.y/hdhr/x1
 now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
@@ -60,6 +64,12 @@ T("season-only", '<title>Season Only</title><episode-num system="xmltv_ns">3..</
 T("episode-only", '<title>Episode Only</title><episode-num system="xmltv_ns">.7.</episode-num>')
 T("empty-ns", '<title>Empty NS</title><episode-num system="xmltv_ns">..</episode-num>')
 T("unicode", '<title>Ünïcødé — “Quoted” &amp; More</title><sub-title>Ep: ½ &lt;tag&gt;</sub-title><episode-num system="xmltv_ns">0.0.</episode-num>')
+
+if "--profile" in sys.argv[3:]:
+    DB = '<title>The Drew Barrymore Show</title><sub-title>Episode %d</sub-title><desc>Drew talks with a guest.</desc><category>Talk</category><category>Series</category><icon src="' + PO + '"/><episode-num system="xmltv_ns">6.%d.</episode-num><episode-num system="onscreen">S07E%d</episode-num><previously-shown/><rating system="VCHIP"><value>TV-PG</value></rating>'
+    T("drew-unpaired", DB % (41, 40, 41))
+    T("drew-paired", (DB % (41, 40, 41)) + f'<episode-num system="plex">plex://episode/6aeb5f12ac56869440d7304f</episode-num><episode-num system="plex.show">plex://show/5fc69a487c6557002ed60976</episode-num><episode-num system="plex.season">plex://season/5fc69a487c6557002ed60976/7</episode-num><image type="poster" size="3" orient="P">{PO}</image><image type="backdrop" size="3" orient="L">{BG}</image><image type="still" size="3" orient="L">{ST}</image>')
+    T("drew-other", DB % (40, 39, 40))
 
 slots = []
 i = 0
