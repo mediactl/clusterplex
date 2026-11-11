@@ -16,8 +16,10 @@ func renderChartWith(t *testing.T, set ...string) string {
 		t.Skip("helm not on PATH")
 	}
 	trackInputs(t)
-	args := []string{"template", "cp", "../../charts/cluster-plex", "--namespace", "media",
-		"--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg"}
+	args := []string{
+		"template", "cp", "../../charts/cluster-plex", "--namespace", "media",
+		"--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg",
+	}
 	for _, s := range set {
 		args = append(args, "--set", s)
 	}
