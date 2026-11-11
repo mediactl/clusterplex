@@ -68,8 +68,9 @@ func localTranscoder(t *testing.T) *Executor {
 func TestAVideoConversionNeverRunsLocally(t *testing.T) {
 	w := &countingWorkers{}
 	var refused []string
-	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
-		Local: localTranscoder(t), Workers: w, Dial: noDial(t), PMSAddr: "pms:32400",
+	d := &Dispatcher{
+		Logger: slog.New(slog.DiscardHandler),
+		Local:  localTranscoder(t), Workers: w, Dial: noDial(t), PMSAddr: "pms:32400",
 		OnRefused: func(reason string) { refused = append(refused, reason) },
 	}
 	sink := &collectSink{}
@@ -87,8 +88,9 @@ func TestAVideoConversionNeverRunsLocally(t *testing.T) {
 func TestAVideoConversionTakesTheVideoRoute(t *testing.T) {
 	v := &fakeVideo{}
 	var routes [][2]string
-	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
-		Local: localTranscoder(t), Video: v, Dial: noDial(t),
+	d := &Dispatcher{
+		Logger: slog.New(slog.DiscardHandler),
+		Local:  localTranscoder(t), Video: v, Dial: noDial(t),
 		OnRoute: func(target, mode string) { routes = append(routes, [2]string{target, mode}) },
 	}
 	sink := &collectSink{}
