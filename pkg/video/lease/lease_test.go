@@ -8,9 +8,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 const ns, name = "clustarr-system", "cluster-plex-video-transcodes"
@@ -108,4 +111,69 @@ func TestCountReadsZeroWhenStale(t *testing.T) {
 	require.Equal(t, 0, Count(lease("two", time.Second), now))
 	require.Equal(t, 0, Count(&coordinationv1.Lease{}, now))
 	require.Equal(t, 0, Count(nil, now))
+}
+
+// put writes the Lease name in ns with the annotations, renewed at renewed.
+func put(t *testing.T, cs kubernetes.Interface, ns, name string, ann map[string]string, renewed time.Time) {
+	t.Helper()
+	rt := metav1.NewMicroTime(renewed)
+	l := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Annotations: ann},
+		Spec:       coordinationv1.LeaseSpec{RenewTime: &rt},
+	}
+	leases := cs.CoordinationV1().Leases(ns)
+	_, err := leases.Get(context.Background(), name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = leases.Create(context.Background(), l, metav1.CreateOptions{})
+	} else if err == nil {
+		_, err = leases.Update(context.Background(), l, metav1.UpdateOptions{})
+	}
+	require.NoError(t, err)
+}
+
+func TestClustarrsWorkIsReadByOurRule(t *testing.T) {
+	// clustarr publishes its intel work as we publish our conversions: an
+	// annotation on a Lease renewed every 10 s, stale after 30 s.
+	cs, c := fake.NewSimpleClientset(), newClock()
+	const wns, wname = "clustarr-system", "clustarr-intel-work"
+	w := &Work{Client: cs, Namespace: wns, Name: wname, Annotation: WorkAnnotation, Now: c.now}
+	busy, err := w.Busy(t.Context())
+	require.NoError(t, err)
+	require.False(t, busy, "no Lease is no work")
+	put(t, cs, wns, wname, map[string]string{WorkAnnotation: "3"}, c.t.Add(-5*time.Second))
+	busy, err = w.Busy(t.Context())
+	require.NoError(t, err)
+	require.True(t, busy)
+	put(t, cs, wns, wname, map[string]string{WorkAnnotation: "3"}, c.t.Add(-31*time.Second))
+	busy, _ = w.Busy(t.Context())
+	require.False(t, busy, "stale after 30 s")
+	put(t, cs, wns, wname, map[string]string{WorkAnnotation: "0"}, c.t)
+	busy, _ = w.Busy(t.Context())
+	require.False(t, busy, "zero is idle")
+	put(t, cs, wns, wname, map[string]string{WorkAnnotation: "2"}, c.t)
+	require.Equal(t, "clustarr.io/intel-work", WorkAnnotation)
+	busy, _ = (&Work{Client: cs, Namespace: wns, Name: wname, Now: c.now}).Busy(t.Context())
+	require.True(t, busy, "the annotation defaults to clustarr's")
+
+	// A Lease the manager may not read is an error, which the caller reads
+	// as not busy; it is never a NotFound's quiet false.
+	cs.PrependReactor("get", "leases", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(coordinationv1.Resource("leases"), wname, nil)
+	})
+	busy, err = w.Busy(t.Context())
+	require.Error(t, err)
+	require.False(t, busy)
+}
+
+func TestCountOfReadsAnyAnnotationByTheOneRule(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	rt := metav1.NewMicroTime(now.Add(-10 * time.Second))
+	l := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{Annotation: "1", WorkAnnotation: "7"}},
+		Spec:       coordinationv1.LeaseSpec{RenewTime: &rt},
+	}
+	require.Equal(t, 1, Count(l, now))
+	require.Equal(t, 7, CountOf(l, WorkAnnotation, now))
+	require.Equal(t, 0, CountOf(l, WorkAnnotation, now.Add(21*time.Second)), "stale")
+	require.Equal(t, 0, CountOf(l, "other", now), "unset")
 }
