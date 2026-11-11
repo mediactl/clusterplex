@@ -1,0 +1,10 @@
+Nov 10, 2026 18:20:17.104 [281472998296928] INFO - Plex Media Server v1.43.5.11079-9cf01f8dc - Docker Docker Container (Debian) aarch64 - build: linux-aarch64 debian - GMT 00:00
+Nov 10, 2026 18:20:17.104 [281472998296928] INFO - Linux version: 7.2.3-talos, language: en-US
+Nov 10, 2026 18:20:17.105 [281472998296928] DEBUG - Opening 20 database sessions to library (com.plexapp.plugins.library), SQLite 3.46.0
+Nov 10, 2026 18:20:19.221 [281472660344544] ERROR - [Req#b5] Error issuing curl_easy_perform(handle): 28 (Timeout was reached) (SSL handshake)
+Nov 10, 2026 18:20:19.300 [281472660344544] WARN - [Req#b5/Transcode] Codec h264 (h264) not available
+Nov 10, 2026 18:20:20.001 [281472998296928] VERBOSE - Running a long query:
+SELECT metadata_items.id, metadata_items.title
+  FROM metadata_items
+  WHERE metadata_items.library_section_id = 2
+Nov 10, 2026 18:20:20.002 [281472998296928] INFO - Query done in 128ms

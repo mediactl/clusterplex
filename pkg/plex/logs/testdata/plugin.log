@@ -1,0 +1,3 @@
+2026-11-10 18:20:21,343 (ffff893ef890) :  DEBUG (core:349) - Starting framework core
+2026-11-10 18:20:21,400 (ffff893ef890) :  WARNING (runtime:1200) - Slow response from http://127.0.0.1:32400/?X-Plex-Token=abc123def&x=1
+2026-11-10 18:20:21,500 (ffff893ef890) :  CRITICAL (core:12) - Plugin failed to start
