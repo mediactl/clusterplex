@@ -709,6 +709,38 @@ func TestXMLTVChannelTitleAndIdentifier(t *testing.T) {
 	assert.Equal(t, []string{"9999"}, rows.Stats.Unmatched)
 }
 
+func TestXMLTVShowRatingMovieIndexCountsAndSeasonGUIDs(t *testing.T) {
+	// The rig's DVR 8: an episode's rating is its show's alone, which the
+	// reader carries in the show's metadata (Element Soup's show PG-13, its
+	// episode ""); a movie's index is -1 (every movie); media_item_count is
+	// an item's airings, a movie's and an episode's alike (Repeat Twice's
+	// episode and Same Title No Id's movie 2, every other 1); and a season's
+	// guid is the reader's, its index apart from it (DD Progid EP's season
+	// tv.plex.xmltv://season/DD%20Progid%20EP/1, index 2026).
+	ep := episode("ep", "s", "Show", 2026, 3, slot(at(1), at(2)))
+	ep.ContentRating, ep.Year, ep.ParentGUID = "", 0, "tv.plex.xmltv://season/Show/1"
+	again := ep
+	again.Media = []epgcloud.Airing{slot(at(3), at(4))}
+	film := movie("film", slot(at(5), at(6)), slot(at(7), at(8)))
+	once := movie("once", slot(at(2), at(3)))
+	in := xmltvInput(map[string][][]epgcloud.Item{"9001": {{ep, film}}, "9002": {{again, once}}})
+	in.Metadata["s"] = epgcloud.Item{ContentRating: "PG-13"}
+	rows := plan(t, in)
+
+	show := item(t, rows, "plex://show/s")
+	assert.Equal(t, "PG-13", show["content_rating"], "the show's rating is its metadata's")
+	season := item(t, rows, "tv.plex.xmltv://season/Show/1")
+	assert.Equal(t, []any{int64(2026), show["id"], nil}, []any{season["index"], season["parent_id"], season["year"]},
+		"the reader's season guid, its index the episode's parent index, no year")
+	e := item(t, rows, "plex://episode/ep")
+	assert.Equal(t, []any{season["id"], "", int64(2), int64(3), nil}, []any{e["parent_id"], e["content_rating"], e["media_item_count"], e["index"], e["year"]},
+		"an episode met twice counts its two airings")
+	f := item(t, rows, "plex://movie/film")
+	assert.Equal(t, []any{int64(-1), int64(2)}, []any{f["index"], f["media_item_count"]})
+	assert.Equal(t, int64(1), item(t, rows, "plex://movie/once")["media_item_count"], "one airing is 1, not the cloud's 0")
+	assert.Len(t, byColumn(ItemColumns, rows.Items), 5, "one season of the reader's guid, no plex://season/s/2026 beside it")
+}
+
 func TestTheCloudFlavourIsUnchanged(t *testing.T) {
 	// The suite above is the cloud flavour's proof. Beside it: the service's
 	// answers may carry credits and countries, which a cloud guide never

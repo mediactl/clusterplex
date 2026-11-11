@@ -249,6 +249,7 @@ type Item struct {
 	Year                  int      `json:"year"`
 	Index                 int      `json:"index"`
 	ParentIndex           int      `json:"parentIndex"`
+	ParentGUID            string   `json:"parentGuid"` // an episode's season's: an XMLTV reader's; the service's grids carry none
 	OriginallyAvailableAt string   `json:"originallyAvailableAt"`
 	AddedAt               int64    `json:"addedAt"`
 	ContentRating         string   `json:"contentRating"`

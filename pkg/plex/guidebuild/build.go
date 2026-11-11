@@ -309,6 +309,9 @@ func Plan(in Input) (*Rows, error) {
 				}
 				if xmltv {
 					r.credit(it)
+					if r.typ == TypeMovie {
+						r.index = -1 // every movie of the rig's DVR 8
+					}
 				}
 				// A new episode's show and season are made before it, as
 				// PMS makes them, so its ids follow theirs.
@@ -326,6 +329,12 @@ func Plan(in Input) (*Rows, error) {
 						show = showRow(it, in)
 						show.section = section
 						show.contentRating = it.ContentRating
+						if xmltv {
+							// PMS's XMLTV reader writes an episode's rating
+							// on its show alone, which the reader carries in
+							// the show's metadata (the rig's DVR 8).
+							show.contentRating = in.Metadata[it.GrandparentRatingKey].ContentRating
+						}
 						show.seasons = map[int]*row{}
 						shows[showKey] = show
 						items[show.guid] = show
@@ -495,7 +504,7 @@ func Plan(in Input) (*Rows, error) {
 			duration = r.duration
 		}
 		itemRows = append(itemRows, []any{
-			r.id, r.section, parent, int64(r.typ), r.guid, mediaItemCount(r),
+			r.id, r.section, parent, int64(r.typ), r.guid, mediaItemCount(r, xmltv),
 			r.title, sortTitle(r.title), r.summary, r.contentRating,
 			int64(r.index), duration, r.thumb, r.art, joinTags(r.genres),
 			nullInt(r.available), nullInt(int64(r.year)), cmp.Or(r.addedAt, now), now, hash(r.guid), int64(0),
@@ -700,9 +709,18 @@ const yearLike = 1900
 // Pig's "season 7" episodes of 2021 join "2021" until one of 2022 makes
 // season 7). PMS's, every one of 39,108 episodes of the rig's 248-channel
 // load (2026-11-10), each in its season of the right id.
+//
+// An episode that names its season's guid (ParentGUID, an XMLTV guide's;
+// the service's never do) joins the season of that guid, made at its
+// parent index: PMS's XMLTV reader keys a season apart from its index
+// (DD Progid EP's tv.plex.xmltv://season/DD%20Progid%20EP/1 is index 2026
+// on the rig's DVR 8).
 func seasonOf(it epgcloud.Item, show *row, add func(*row) (*row, bool)) *row {
 	index := it.ParentIndex
-	if it.Index == 0 {
+	guid := "plex://season/" + it.GrandparentRatingKey + "/" + strconv.Itoa(index)
+	if it.ParentGUID != "" {
+		guid = it.ParentGUID
+	} else if it.Index == 0 {
 		if s, ok := show.seasons[index]; ok {
 			return s
 		}
@@ -719,10 +737,7 @@ func seasonOf(it epgcloud.Item, show *row, add func(*row) (*row, bool)) *row {
 			}
 		}
 	}
-	s, fresh := add(&row{
-		typ: TypeSeason, guid: "plex://season/" + it.GrandparentRatingKey + "/" + strconv.Itoa(index),
-		index: index, parent: show, year: it.Year,
-	})
+	s, fresh := add(&row{typ: TypeSeason, guid: guid, index: index, parent: show, year: it.Year})
 	if fresh {
 		if _, ok := show.seasons[index]; !ok {
 			show.seasons[index] = s // the first made of an index, of any id
@@ -963,12 +978,16 @@ func mergeTags(lists ...[]epgcloud.Tag) []indexedTag {
 // airings listed by the answer it was made from, ended and repeated ones
 // included, plus every airing written for it, less one; a movie's is the
 // airings written for it, less one; a show's and a season's are 0 (3,018 of
-// 3,018 episodes and 155 of 155 movies on the kind rig, 2026-11-10).
-func mediaItemCount(r *row) int64 {
-	switch r.typ {
-	case TypeEpisode:
+// 3,018 episodes and 155 of 155 movies on the kind rig, 2026-11-10). In an
+// XMLTV guide a movie's and an episode's are their airings written (the
+// rig's DVR 8: 1 for one airing, 2 for two, of either kind).
+func mediaItemCount(r *row, xmltv bool) int64 {
+	switch {
+	case xmltv && (r.typ == TypeEpisode || r.typ == TypeMovie):
+		return int64(r.written)
+	case r.typ == TypeEpisode:
 		return int64(r.listed + r.written - 1)
-	case TypeMovie:
+	case r.typ == TypeMovie:
 		return int64(r.written - 1)
 	}
 	return 0
