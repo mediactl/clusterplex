@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/netip"
 	"net/url"
@@ -18,11 +20,13 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"k8s.io/client-go/kubernetes"
 
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
+	"github.com/mediactl/clusterplex/pkg/video/lease"
 )
 
 const (
@@ -156,6 +160,16 @@ type Config struct {
 	// VideoLeaseName is the Lease, in this pod's namespace, that counts the
 	// conversions the pool runs for clustarr's transcode admission.
 	VideoLeaseName string
+	// VideoCPUSelector picks the CPU pool's pods (libx264, PoolCPU), the
+	// GPU pool's second chance and, while VideoCPUWhen says so, the pool
+	// asked first; empty leaves no CPU pool.
+	VideoCPUSelector string
+	// VideoCPUWhen is when the CPU pool is asked first: clustarr-busy (while
+	// clustarr's intel-work Lease is fresh and above zero), always, never.
+	VideoCPUWhen string
+	// ClustarrWorkLease is clustarr's intel-work Lease, <namespace>/<name>,
+	// which clustarr-busy reads; empty under clustarr-busy is never first.
+	ClustarrWorkLease string
 	// ProbePort serves the health probes and metrics.
 	ProbePort int
 	// DrainTimeout is how long a stopping pod lets the client connections it
@@ -214,6 +228,9 @@ func newFlagSet() *pflag.FlagSet {
 	fs.String("video-selector", "app=plex-video-transcode", "label selector of the GPU pool's pods; empty refuses every video conversion")
 	fs.Int("video-port", 50053, "gRPC port of the GPU pool's pods")
 	fs.String("video-lease-name", "cluster-plex-video-transcodes", "Lease counting the GPU pool's conversions, which clustarr's transcode admission yields to")
+	fs.String("video-cpu-selector", "", "label selector of the CPU pool's pods (libx264): the GPU pool's second chance, or the first pool asked per --video-cpu-when; empty leaves no CPU pool")
+	fs.String("video-cpu-when", "clustarr-busy", "when the CPU pool is asked first: clustarr-busy (clustarr's intel-work Lease is fresh and above zero), always, never")
+	fs.String("clustarr-work-lease", "", "clustarr's intel-work Lease as <namespace>/<name>, read under --video-cpu-when=clustarr-busy; empty is never first")
 	fs.String("scan-route", "", "URL a library scan of a provisioned section is sent to instead of Plex, normally this pod's http://127.0.0.1:<probe-port>/api/v1/scan; empty leaves every scan to Plex")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
 	fs.Duration("drain-timeout", 2*time.Minute, "how long a stopping pod lets the client connections it holds finish before Plex is stopped; the pod's termination grace period must cover it plus Plex's own 30s")
@@ -279,34 +296,37 @@ func loadConfig(args []string) (Config, error) {
 	}
 
 	c := Config{
-		PodName:          v.GetString("pod-name"),
-		Namespace:        v.GetString("pod-namespace"),
-		PMSBinary:        v.GetString("pms-binary"),
-		BinDir:           v.GetString("bin-dir"),
-		PlexDir:          v.GetString("plex-dir"),
-		Socket:           v.GetString("socket"),
-		LeaseName:        v.GetString("lease-name"),
-		WorkersService:   v.GetString("workers-service"),
-		PMSPort:          port("pms-port"),
-		WorkerPort:       port("worker-port"),
-		RemuxSelector:    strings.TrimSpace(v.GetString("remux-selector")),
-		RemuxPort:        port("remux-port"),
-		VideoSelector:    strings.TrimSpace(v.GetString("video-selector")),
-		VideoPort:        port("video-port"),
-		VideoLeaseName:   strings.TrimSpace(v.GetString("video-lease-name")),
-		ScanRoute:        strings.TrimSpace(v.GetString("scan-route")),
-		ProbePort:        port("probe-port"),
-		DrainTimeout:     v.GetDuration("drain-timeout"),
-		BlockPlexTV:      v.GetBool("block-plex-tv"),
-		ExternalURL:      normalizeExternalURL(v.GetString("plex-external-url")),
-		ExternalService:  strings.TrimSpace(v.GetString("plex-external-service")),
-		TranscodeDir:     strings.TrimSpace(v.GetString("plex-transcode-dir")),
-		ShimLibrary:      v.GetString("shim-library"),
-		SubreaperBinary:  v.GetString("plex-subreaper"),
-		SchemaDir:        v.GetString("schema-dir"),
-		GuideSocket:      v.GetString("guide-socket"),
-		ShadowSyncTables: v.GetString("shadow-sync-tables"),
-		Claim:            strings.TrimSpace(v.GetString(claimKey)),
+		PodName:           v.GetString("pod-name"),
+		Namespace:         v.GetString("pod-namespace"),
+		PMSBinary:         v.GetString("pms-binary"),
+		BinDir:            v.GetString("bin-dir"),
+		PlexDir:           v.GetString("plex-dir"),
+		Socket:            v.GetString("socket"),
+		LeaseName:         v.GetString("lease-name"),
+		WorkersService:    v.GetString("workers-service"),
+		PMSPort:           port("pms-port"),
+		WorkerPort:        port("worker-port"),
+		RemuxSelector:     strings.TrimSpace(v.GetString("remux-selector")),
+		RemuxPort:         port("remux-port"),
+		VideoSelector:     strings.TrimSpace(v.GetString("video-selector")),
+		VideoPort:         port("video-port"),
+		VideoLeaseName:    strings.TrimSpace(v.GetString("video-lease-name")),
+		VideoCPUSelector:  strings.TrimSpace(v.GetString("video-cpu-selector")),
+		VideoCPUWhen:      strings.TrimSpace(v.GetString("video-cpu-when")),
+		ClustarrWorkLease: strings.TrimSpace(v.GetString("clustarr-work-lease")),
+		ScanRoute:         strings.TrimSpace(v.GetString("scan-route")),
+		ProbePort:         port("probe-port"),
+		DrainTimeout:      v.GetDuration("drain-timeout"),
+		BlockPlexTV:       v.GetBool("block-plex-tv"),
+		ExternalURL:       normalizeExternalURL(v.GetString("plex-external-url")),
+		ExternalService:   strings.TrimSpace(v.GetString("plex-external-service")),
+		TranscodeDir:      strings.TrimSpace(v.GetString("plex-transcode-dir")),
+		ShimLibrary:       v.GetString("shim-library"),
+		SubreaperBinary:   v.GetString("plex-subreaper"),
+		SchemaDir:         v.GetString("schema-dir"),
+		GuideSocket:       v.GetString("guide-socket"),
+		ShadowSyncTables:  v.GetString("shadow-sync-tables"),
+		Claim:             strings.TrimSpace(v.GetString(claimKey)),
 		Postgres: plexdb.Config{
 			Host:     v.GetString("postgres-host"),
 			Port:     port("postgres-port"),
@@ -324,6 +344,16 @@ func loadConfig(args []string) (Config, error) {
 	}
 	if err := c.Postgres.Validate(); err != nil {
 		errs = append(errs, err)
+	}
+	switch c.VideoCPUWhen {
+	case CPUWhenClustarrBusy, CPUWhenAlways, CPUWhenNever:
+	default:
+		errs = append(errs, fmt.Errorf("video-cpu-when: %q is not one of %s, %s, %s", c.VideoCPUWhen, CPUWhenClustarrBusy, CPUWhenAlways, CPUWhenNever))
+	}
+	if c.ClustarrWorkLease != "" {
+		if ns, name, ok := strings.Cut(c.ClustarrWorkLease, "/"); !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			errs = append(errs, fmt.Errorf("clustarr-work-lease: %q is not <namespace>/<name>", c.ClustarrWorkLease))
+		}
 	}
 
 	if subnet, perr := netip.ParsePrefix(v.GetString("plex-subnet")); perr != nil {
@@ -564,4 +594,39 @@ func codecList(raw any) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// The values of --video-cpu-when: when the CPU pool is asked for a
+// conversion before the GPU pool.
+const (
+	CPUWhenClustarrBusy = "clustarr-busy" // while clustarr's intel-work Lease is fresh and above zero
+	CPUWhenAlways       = "always"
+	CPUWhenNever        = "never" // the CPU pool is only the GPU pool's second chance
+)
+
+// cpuFirst is the video relay's CPUFirst for this configuration: always
+// or never by value, else clustarr's intel-work Lease read per conversion
+// (lease.Work.Busy), a Lease that cannot be read logged and read as not
+// busy, so the GPU pool is asked first and nothing is refused; no Lease
+// named under clustarr-busy is never first.
+func (c Config) cpuFirst(k kubernetes.Interface, log *slog.Logger) func(context.Context) bool {
+	switch c.VideoCPUWhen {
+	case CPUWhenAlways:
+		return func(context.Context) bool { return true }
+	case CPUWhenNever:
+		return func(context.Context) bool { return false }
+	}
+	ns, name, ok := strings.Cut(c.ClustarrWorkLease, "/")
+	if !ok || ns == "" || name == "" {
+		return func(context.Context) bool { return false }
+	}
+	w := &lease.Work{Client: k, Namespace: ns, Name: name}
+	return func(ctx context.Context) bool {
+		busy, err := w.Busy(ctx)
+		if err != nil {
+			log.Warn("read clustarr's intel-work lease; the GPU pool is asked first", "lease", c.ClustarrWorkLease, "error", err)
+			return false
+		}
+		return busy
+	}
 }

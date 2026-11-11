@@ -159,20 +159,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 			}
 		}
 		placements := &videorelay.Placements{}
-		dispatcher.Video = &videorelay.Relay{
-			Workers: &remoteexec.PodWorkerLister{
-				Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,
-				Selector: cfg.VideoSelector, Port: cfg.VideoPort,
-			},
-			Dial:       videorelay.GRPCDialer,
-			PMS:        m.relayPMS(),
-			Live:       m.plexLive,
-			Count:      m.videoCount,
-			Refused:    func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
-			Startup:    func(d time.Duration) { m.Metrics.VideoStartup.Observe(d.Seconds()) },
-			Placements: placements,
-			Logger:     m.Logger.With("component", "video"),
-		}
+		dispatcher.Video = m.videoRelay(cfg, placements)
 		// Plex reports every conversion as its own software transcode on
 		// this node; the activity monitor labels it with where it ran.
 		if m.Metrics.Activity != nil {
@@ -185,6 +172,38 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 	active := func(delta int) { m.Metrics.ActiveJobs.Add(float64(delta)) }
 	return &remoteexec.Service{Execute: dispatcher.Execute, OnActive: active},
 		&remoteexec.Service{Execute: local.Run, OnActive: active}, nil
+}
+
+// videoRelay is the video route: the GPU pool (VideoSelector), and with
+// VideoCPUSelector the CPU pool beside it, asked first per VideoCPUWhen
+// (Config.cpuFirst) and each the other's second chance; conversions and
+// pass-overs counted by pool.
+func (m *Manager) videoRelay(cfg Config, placements *videorelay.Placements) *videorelay.Relay {
+	log := m.Logger.With("component", "video")
+	r := &videorelay.Relay{
+		Workers: &remoteexec.PodWorkerLister{
+			Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,
+			Selector: cfg.VideoSelector, Port: cfg.VideoPort,
+		},
+		Dial:       videorelay.GRPCDialer,
+		PMS:        m.relayPMS(),
+		Live:       m.plexLive,
+		Count:      m.videoCount,
+		Refused:    func(r video.Reason) { m.Metrics.VideoRefusals.WithLabelValues(string(r)).Inc() },
+		Startup:    func(d time.Duration) { m.Metrics.VideoStartup.Observe(d.Seconds()) },
+		Routed:     func(pool string) { m.Metrics.VideoConversions.WithLabelValues(pool).Inc() },
+		PassedOver: func(pool, reason string) { m.Metrics.VideoPassedOver.WithLabelValues(pool, reason).Inc() },
+		Placements: placements,
+		Logger:     log,
+	}
+	if cfg.VideoCPUSelector != "" {
+		r.CPU = &remoteexec.PodWorkerLister{
+			Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,
+			Selector: cfg.VideoCPUSelector, Port: cfg.VideoPort,
+		}
+		r.CPUFirst = cfg.cpuFirst(m.K8sClient, log)
+	}
+	return r
 }
 
 // relayPMS is Plex as the video relay reaches it for a conversion's
