@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
+	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	"github.com/mediactl/clusterplex/pkg/plex/epgcloud"
 	"github.com/mediactl/clusterplex/pkg/plex/guidebuild"
 )
@@ -227,9 +228,7 @@ func TestAnEmptyGuideIsNeverBuilt(t *testing.T) {
 		conn := guideConn(t, db.DSN())
 		// The DVR, which the builder keeps its want to, and the guide PMS's
 		// first load filled.
-		_, err := conn.Exec(t.Context(), `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
-			(2, NULL, 1, 'tv.plex.harvesters.dvr', $1), (3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`, testDVR)
-		require.NoError(t, err)
+		addXMLTVDVR(t, conn, testDVR)
 		_, err = plexbootstrap.EnsureGuideSchema(t.Context(), conn, "plex", xmltvGuide)
 		require.NoError(t, err)
 		_, err = conn.Exec(t.Context(), "INSERT INTO "+pgx.Identifier{xmltvGuide.Schema(), "media_items"}.Sanitize()+" (metadata_item_id) VALUES (1), (1)")
@@ -534,9 +533,7 @@ func TestABuiltGuideIsTheManagersFromTheStart(t *testing.T) {
 		m.guideWriter.markElected()
 		conn := guideConn(t, db.DSN())
 		ctx := t.Context()
-		_, err := conn.Exec(ctx, `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
-			(2, NULL, 1, 'tv.plex.harvesters.dvr', $1), (3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`, testDVR)
-		require.NoError(t, err)
+		addXMLTVDVR(t, conn, testDVR)
 		require.NoError(t, plexbootstrap.InstallBuilt(ctx, m.Logger, conn, "plex", xmltvGuide, func(ctx context.Context, tx pgx.Tx, staging string) error {
 			_, err := tx.Exec(ctx, "INSERT INTO "+pgx.Identifier{staging, "media_items"}.Sanitize()+" (metadata_item_id) VALUES (1), (1)")
 			return err
@@ -680,11 +677,56 @@ func TestAWantWhoseDVRIsGoneIsDropped(t *testing.T) {
 		assert.Empty(t, dvrs)
 		// A DVR's rows, as PMS writes them when it creates one, before its
 		// guide's first load: no schema of its own yet.
-		_, err = conn.Exec(t.Context(), `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
-			(2, NULL, 1, 'tv.plex.harvesters.dvr', $1), (3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`, liveDVR)
-		require.NoError(t, err)
+		addXMLTVDVR(t, conn, liveDVR)
 		dvrs, err = m.libraryDVRs(t.Context())
 		require.NoError(t, err)
 		assert.Equal(t, map[string]bool{strings.ToLower(liveDVR): true}, dvrs)
 	})
+}
+
+// TestALeaseWinnerThatCannotListTheBuiltGuidesTakesEveryXMLTVGuide: a pod
+// that wins the lease and cannot list the guides a build installed treats
+// every XMLTV guide as the managers', as prepareGuides does at a start it
+// cannot list them, so its poll copies no load PMS left over a built guide
+// before the converger names its DVR; a later listing, which the builder
+// tries at each pass, makes each guide its own again (that leg needs
+// CLUSTERPLEX_TEST_POSTGRES_DSN).
+func TestALeaseWinnerThatCannotListTheBuiltGuidesTakesEveryXMLTVGuide(t *testing.T) {
+	m := xmltvHolder(t)
+	m.Config.Postgres = plexdb.Config{Host: "127.0.0.1", Port: 1, Database: "plex", User: "plex", Schema: "plex"} // refuses
+	assert.Empty(t, m.loadsNotOurs(xmltvGuide), "neither named nor known")
+
+	m.learnBuiltOnLease(t.Context())
+	assert.Equal(t, "the managers build this guide", m.loadsNotOurs(xmltvGuide), "every XMLTV guide, unlisted")
+	assert.Equal(t, "the managers build this guide", m.loadsNotOurs(plexbootstrap.Guide{Provider: guidebuild.ProviderXMLTV, DVR: liveDVR}))
+	assert.Empty(t, m.loadsNotOurs(plexbootstrap.Guide{Provider: cloudGuideProvider, DVR: testDVR}), "no cloud guide")
+
+	m.xmltv.relearn(t.Context())
+	assert.Equal(t, "the managers build this guide", m.loadsNotOurs(plexbootstrap.Guide{Provider: guidebuild.ProviderXMLTV, DVR: liveDVR}),
+		"until a listing succeeds")
+
+	t.Run("a later listing", func(t *testing.T) {
+		db := libraryDatabase(t)
+		m.Config.Postgres = db
+		addXMLTVDVR(t, guideConn(t, db.DSN()), testDVR)
+		m.xmltv.lastBuild = func(context.Context, string) (cloudBuilt, error) { return cloudBuilt{}, errors.New("builds nothing") }
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() { m.xmltv.runBuilder(ctx); close(done) }()
+		defer func() { cancel(); <-done }()
+		m.xmltv.Want(testDVR, "http://tuner/hdhr/A/xmltv.xml", "h1")
+		other := plexbootstrap.Guide{Provider: guidebuild.ProviderXMLTV, DVR: liveDVR}
+		assert.Eventually(t, func() bool { return m.loadsNotOurs(other) == "" }, 10*time.Second, 20*time.Millisecond,
+			"the builder's pass lists them: a guide neither named nor built is PMS's again")
+		assert.Equal(t, "the managers build this guide", m.loadsNotOurs(xmltvGuide), "a named one stays the managers'")
+	})
+}
+
+// addXMLTVDVR writes an XMLTV DVR's rows into the library, as PMS does when
+// it creates one, before its guide's first load.
+func addXMLTVDVR(t *testing.T, conn *pgx.Conn, dvr string) {
+	t.Helper()
+	_, err := conn.Exec(t.Context(), `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
+		(2, NULL, 1, 'tv.plex.harvesters.dvr', $1), (3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`, dvr)
+	require.NoError(t, err)
 }

@@ -83,17 +83,14 @@ const learnBuiltTimeout = 30 * time.Second
 
 // learnBuiltOnLease has the XMLTV builder learn the guides a build
 // installed, as a PMS start does (prepareGuides), for a pod that wins the
-// lease after its PMS started.
+// lease after its PMS started. As there, a listing that fails makes every
+// XMLTV guide the managers' until a later one succeeds, which the builder
+// tries at each pass.
 func (m *Manager) learnBuiltOnLease(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, learnBuiltTimeout)
 	defer cancel()
-	conn, err := m.connectGuides(ctx)
-	if err == nil {
-		err = m.xmltv.learnBuilt(ctx, conn)
-		_ = conn.Close(context.Background())
-	}
-	if err != nil {
-		m.Logger.Warn("Live TV: list the guides the managers built at the lease's win", "error", err)
+	if err := m.xmltv.learnBuilt(ctx, m.connectGuides); err != nil {
+		m.Logger.Warn("Live TV: list the guides the managers built at the lease's win; every XMLTV guide is theirs until a listing succeeds", "error", err)
 	}
 }
 

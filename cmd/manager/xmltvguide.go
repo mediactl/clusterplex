@@ -110,7 +110,11 @@ type xmltvGuides struct {
 	// the start, before the converger names them, so no load PMS left in a
 	// guide's file is copied over one.
 	known map[string]bool
-	kick  chan struct{}
+	// unlearnt is the last listing of them having failed: until one
+	// succeeds, every XMLTV guide is the managers', as prepareGuides skips
+	// every XMLTV guide's load at a start it could not list them.
+	unlearnt bool
+	kick     chan struct{}
 	// lastBuild reads when dvr's guide was last built and from which hash
 	// (storedBuild); a variable for the tests.
 	lastBuild func(ctx context.Context, dvr string) (cloudBuilt, error)
@@ -160,8 +164,8 @@ func (x *xmltvGuides) wanted(dvr string) bool {
 }
 
 // ours reports whether g's guide is the managers': an XMLTV DVR's the
-// converger has named (wanted), or one a build installed (known). Nil has
-// none.
+// converger has named (wanted), one a build installed (known), or any
+// XMLTV DVR's while those cannot be listed (unlearnt). Nil has none.
 func (x *xmltvGuides) ours(g plexbootstrap.Guide) bool {
 	if x == nil || g.Provider != guidebuild.ProviderXMLTV {
 		return false
@@ -171,22 +175,56 @@ func (x *xmltvGuides) ours(g plexbootstrap.Guide) bool {
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	return x.known[g.Schema()]
+	return x.unlearnt || x.known[g.Schema()]
 }
 
 // learnBuilt adds every guide a build installed (plexbootstrap's
-// BuiltGuideSchemas) to known.
-func (x *xmltvGuides) learnBuilt(ctx context.Context, conn *pgx.Conn) error {
-	schemas, err := plexbootstrap.BuiltGuideSchemas(ctx, conn)
+// BuiltGuideSchemas) to known, through a connection connect makes: at each
+// PMS start, at the lease's win, and at each builder pass while the last
+// listing failed (relearn). A listing that fails makes every XMLTV guide
+// the managers' until one succeeds (unlearnt): without it, the poll could
+// copy a load PMS left in a built guide's file over it until the converger
+// names the DVR.
+func (x *xmltvGuides) learnBuilt(ctx context.Context, connect func(context.Context) (*pgx.Conn, error)) error {
+	schemas, err := builtSchemas(ctx, connect)
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.unlearnt = err != nil
 	if err != nil {
 		return err
 	}
-	x.mu.Lock()
-	defer x.mu.Unlock()
 	for _, s := range schemas {
 		x.known[s] = true
 	}
 	return nil
+}
+
+// builtSchemas lists the guides a build installed, through a connection
+// connect makes.
+func builtSchemas(ctx context.Context, connect func(context.Context) (*pgx.Conn, error)) ([]string, error) {
+	conn, err := connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return plexbootstrap.BuiltGuideSchemas(ctx, conn)
+}
+
+// relearn lists the guides a build installed again while the last listing
+// failed, so the guides stop being the managers' wholesale once it
+// succeeds.
+func (x *xmltvGuides) relearn(ctx context.Context) {
+	x.mu.Lock()
+	unlearnt := x.unlearnt
+	x.mu.Unlock()
+	if !unlearnt {
+		return
+	}
+	if err := x.learnBuilt(ctx, x.m.connectGuides); err != nil {
+		x.log().Debug("Live TV: list the guides the managers built; every XMLTV guide stays theirs", "error", err)
+		return
+	}
+	x.log().Info("Live TV: listed the guides the managers built; an XMLTV guide neither named nor built is PMS's again")
 }
 
 func (x *xmltvGuides) log() *slog.Logger { return x.m.Logger.With("component", "livetv-xmltv-guide") }
@@ -195,6 +233,7 @@ func (x *xmltvGuides) log() *slog.Logger { return x.m.Logger.With("component", "
 // when it is due, until ctx ends.
 func (x *xmltvGuides) runBuilder(ctx context.Context) {
 	for {
+		x.relearn(ctx)
 		x.prune(ctx)
 		x.mu.Lock()
 		wants := make([]xmltvWant, 0, len(x.wants))
