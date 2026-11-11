@@ -177,6 +177,13 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 		log.Error("conversion abandoned", "error", err, "abandoned", s.Abandoned())
 		return status.Error(codes.Aborted, err.Error())
 	}
+	if errors.Is(err, video.ErrNotForPool) {
+		// The source is beyond this pod's rule, judged as the input opened
+		// and before any output: no Done, so the relay passes the pool over
+		// and asks the other.
+		log.Info("conversion is not for this pool", "reason", err)
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
 	if n := skipped.Load(); n > 0 {
 		log.Warn("the decoders refused packets and the conversion carried on", "skipped", n, "first", firstSkip.Load())
 	}

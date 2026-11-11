@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -104,6 +105,23 @@ func TestAJobBeyondTheSlotsIsResourceExhausted(t *testing.T) {
 	defer func() { _ = first.CloseSend() }()
 	_, err = open(t, c, job("B", false))
 	require.Equal(t, codes.ResourceExhausted, status.Code(err), "%v", err)
+}
+
+func TestASourceBeyondThePoolIsFailedPrecondition(t *testing.T) {
+	// A source the pod's eligibility rule refuses (Task 1's ErrNotForPool,
+	// judged as the input opens): the stream ends FailedPrecondition with
+	// no Done, so the relay passes this pool over and asks the other.
+	slots := worker.NewSlots(1)
+	c := serve(t, &worker.Server{Slots: slots, Run: func(context.Context, video.Job, pipeline.Options, pipeline.Sink) error {
+		return fmt.Errorf("%w: hevc", video.ErrNotForPool)
+	}})
+	s, err := open(t, c, job("A", false))
+	require.NoError(t, err, "the job is accepted before its input opens")
+	m, err := s.Recv()
+	require.Nil(t, m, "no Done")
+	require.Equal(t, codes.FailedPrecondition, status.Code(err), "%v", err)
+	assert.Contains(t, status.Convert(err).Message(), "not for this pool: hevc")
+	assert.Eventually(t, func() bool { return slots.Free() == 1 }, time.Second, 10*time.Millisecond, "the slot is released")
 }
 
 func TestStreamedInputChunksReachThePipeline(t *testing.T) {
