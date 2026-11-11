@@ -46,12 +46,24 @@ var (
 // inputChunk is how much of a streamed input one Chunk carries.
 const inputChunk = 256 << 10
 
-// Relay routes Plex's video conversions to the pool.
+// Relay routes Plex's video conversions to the pools.
 type Relay struct {
-	// Workers are the pool's ready pods.
+	// Workers are the GPU pool's ready pods.
 	Workers remoteexec.WorkerLister
-	Dial    func(ctx context.Context, addr string) (videopb.VideoClient, io.Closer, error)
-	PMS     plexsession.PMS
+	// CPU is the CPU pool's ready pods (PoolCPU); nil: no CPU pool.
+	CPU remoteexec.WorkerLister
+	// CPUFirst says, per conversion, whether the CPU pool is asked before
+	// the GPU pool (clustarr holds intel work, or the route is always CPU);
+	// nil: never first, the CPU pool is only the GPU pool's second chance.
+	CPUFirst func(ctx context.Context) bool
+	// Routed is told the pool that took each conversion (its first output
+	// or report arrived); PassedOver each pool passed over for one, with
+	// the reason: "full" (every ready pod's slots taken) or "ineligible"
+	// (the pod judged the source beyond its rule). nil tells nothing.
+	Routed     func(pool string)
+	PassedOver func(pool, reason string)
+	Dial       func(ctx context.Context, addr string) (videopb.VideoClient, io.Closer, error)
+	PMS        plexsession.PMS
 	// Live is Plex as its own transcoder reaches it: on loopback inside
 	// Plex's network namespace, the only requests Plex serves a Live TV
 	// session to; from PMS's address it is direct play, which a session
@@ -134,28 +146,78 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 	return r.finish(sink, job, r.run(ctx, req.GetCwd(), job, began))
 }
 
+// errNotForPool is a pod's FailedPrecondition before any output: the pod
+// judged the source beyond its rule (video.ErrNotForPool), so the pool is
+// passed over and the next asked.
+var errNotForPool = errors.New("not for this pool")
+
+// run tries the job on each pool in order (order): a pool with no ready pod
+// or every ready pod full is passed over, as is one whose pod judged the
+// source beyond its rule; a pod that cannot run the shape, cannot be
+// reached or fails refuses for all. A job no pool took is refused full when
+// any pod was full, else no-pool.
 func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.Time) error {
-	ws, err := r.Workers.ListReady(ctx)
-	if err != nil {
-		return refuse(video.ReasonNoPool, fmt.Errorf("list the pool: %w", err))
-	}
-	if len(ws) == 0 {
-		return refuse(video.ReasonNoPool, errors.New("no ready video transcode pod"))
-	}
-	c, err := r.open(ctx, ws, job)
-	if err != nil {
+	full := false
+	var noPool error
+	for _, p := range r.order(ctx, job) {
+		ws, err := p.workers.ListReady(ctx)
+		if err != nil {
+			noPool = refuse(video.ReasonNoPool, fmt.Errorf("list the %s pool: %w", p.name, err))
+			continue
+		}
+		if len(ws) == 0 {
+			noPool = refuse(video.ReasonNoPool, fmt.Errorf("no ready %s video transcode pod", p.name))
+			continue
+		}
+		c, err := r.open(ctx, ws, job)
+		if err != nil {
+			var rf *refusal
+			if errors.As(err, &rf) && rf.reason == video.ReasonFull {
+				full = true
+				r.passedOver(p.name, "full", job)
+				continue
+			}
+			return err
+		}
+		c.pool = p.name
+		err = r.serve(ctx, cwd, job, c, began)
+		if errors.Is(err, errNotForPool) {
+			r.passedOver(p.name, "ineligible", job)
+			continue
+		}
 		return err
 	}
+	if full {
+		return refuse(video.ReasonFull, errors.New("every ready pod's slots are taken"))
+	}
+	if noPool != nil {
+		return noPool
+	}
+	return refuse(video.ReasonNoPool, errors.New("no pool takes this conversion"))
+}
+
+func (r *Relay) passedOver(pool, reason string, job video.Job) {
+	r.log().Info("video pool passed over", "pool", pool, "reason", reason, "session", job.Session)
+	if r.PassedOver != nil {
+		r.PassedOver(pool, reason)
+	}
+}
+
+// serve runs the accepted conversion on its pool to its end: placed,
+// counted in the Lease while it is the GPU pool's, its inputs pumped, its
+// output relayed. errNotForPool is the pod passing the job over before
+// any output, with the placement and the count already undone.
+func (r *Relay) serve(ctx context.Context, cwd string, job video.Job, c *conversion, began time.Time) error {
 	defer c.close()
-	if r.Count != nil {
+	if r.Count != nil && c.pool == PoolGPU {
 		defer r.Count.Begin(ctx)()
 	}
-	r.Placements.set(job.Session, Placement{Worker: c.worker, Node: c.node})
+	r.Placements.set(job.Session, Placement{Worker: c.worker, Node: c.node, Pool: c.pool})
 	defer r.Placements.remove(job.Session)
-	log := r.log().With("worker", c.worker, "session", job.Session)
+	log := r.log().With("worker", c.worker, "pool", c.pool, "session", job.Session)
 	log.Info("video conversion started", "output", job.Output, "width", job.Video.Width, "height", job.Video.Height)
 	go c.pump(ctx, r, job)
-	err = r.relay(ctx, cwd, job, c, newLister(r.PMS, job), began)
+	err := r.relay(ctx, cwd, job, c, newLister(r.PMS, job), began)
 	if ctx.Err() != nil {
 		return refuse(video.ReasonCancelled, ctx.Err())
 	}
@@ -166,6 +228,7 @@ func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.T
 type conversion struct {
 	worker string
 	node   string
+	pool   string
 	stream videopb.Video_ConvertClient
 	cancel context.CancelFunc
 	closer io.Closer
@@ -333,13 +396,26 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 		r.log().Info("Plex released the conversion", "session", job.Session, "held", time.Since(held))
 		return nil
 	}
+	// routed is whether the pod took the job: its first message of any kind
+	// arrived. A FailedPrecondition before that is the pod passing the job
+	// over (video.ErrNotForPool); after it, a worker error like any other.
+	routed := false
 	for {
 		down, err := c.stream.Recv()
 		if err != nil {
+			if status.Code(err) == codes.FailedPrecondition && !routed {
+				return fmt.Errorf("%w: %s", errNotForPool, status.Convert(err).Message())
+			}
 			if errors.Is(err, io.EOF) {
 				err = errors.New("the worker ended the stream without Done")
 			}
 			return refuse(video.ReasonWorkerError, err)
+		}
+		if !routed {
+			routed = true
+			if r.Routed != nil {
+				r.Routed(c.pool)
+			}
 		}
 		if err := hold(); err != nil {
 			return err

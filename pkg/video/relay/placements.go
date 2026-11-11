@@ -7,6 +7,8 @@ import "sync"
 // (videopb.Started; empty until it has, and from a worker that predates it).
 type Placement struct {
 	Worker, Node string
+	// Pool is the pool the conversion runs on: PoolGPU or PoolCPU.
+	Pool string
 	// Encoder is FFmpeg's ("h264_qsv"); Decoder the device the video
 	// decodes on ("vaapi"), empty for the CPU.
 	Encoder, Decoder string
