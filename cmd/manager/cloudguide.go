@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mediactl/clusterplex/pkg/hashring"
@@ -147,7 +149,7 @@ type cloudGuides struct {
 func newCloudGuides(m *Manager) *cloudGuides {
 	return &cloudGuides{
 		m: m, wants: map[string]cloudWant{}, built: map[string]cloudBuilt{}, kick: make(chan struct{}, 1),
-		libraryDVRs: m.libraryDVRs,
+		libraryDVRs: m.libraryDVRs, logger: logging.SubsystemLogger(m.Logger, "livetv.guide.cloud"),
 	}
 }
 
@@ -167,13 +169,6 @@ func (c *cloudGuides) Want(dvrUUID, lineup, mapURI, lineupHash string) {
 		default:
 		}
 	}
-}
-
-func (c *cloudGuides) log() *slog.Logger {
-	if c.logger != nil {
-		return c.logger
-	}
-	return c.m.Logger.With("component", "livetv-cloud-guide")
 }
 
 // budget is the guide service's one budget, claimed through q.
@@ -202,7 +197,7 @@ func (c *cloudGuides) share(ctx context.Context) *hashring.Ring {
 func (c *cloudGuides) runFetcher(ctx context.Context) {
 	for {
 		if err := c.fetchPlans(ctx, false); err != nil && ctx.Err() == nil {
-			c.log().Warn("Live TV: fetch the cloud guides' answers", "error", err)
+			c.logger.Warn("Live TV: fetch the cloud guides' answers", "err", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -311,7 +306,7 @@ type fetchProgress struct {
 
 func (c *cloudGuides) progress(dvr string) *fetchProgress {
 	now := time.Now()
-	return &fetchProgress{log: c.log().With("dvr", dvr), began: now, said: now}
+	return &fetchProgress{log: c.logger.With("dvr", dvr), began: now, said: now}
 }
 
 func (f *fetchProgress) say(done bool) {
@@ -391,7 +386,7 @@ func (c *cloudGuides) runBuilder(ctx context.Context) {
 				continue
 			}
 			if err := c.build(ctx, w); err != nil && ctx.Err() == nil {
-				c.log().Warn("Live TV: build a cloud guide", "dvr", w.dvr, "error", err,
+				c.logger.Warn("Live TV: build a cloud guide", "dvr", w.dvr, "err", err,
 					"retryIn", cloudRetryAfter.String())
 				c.failed(w.dvr, time.Now())
 			}
@@ -407,9 +402,9 @@ func (c *cloudGuides) runBuilder(ctx context.Context) {
 
 // prune drops the wants whose DVR the library no longer lists (pruneWants).
 func (c *cloudGuides) prune(ctx context.Context) {
-	gone := pruneWants(ctx, &c.mu, c.wants, c.built, c.libraryDVRs, c.log())
+	gone := pruneWants(ctx, &c.mu, c.wants, c.built, c.libraryDVRs, c.logger)
 	for _, d := range gone {
-		c.log().Info("Live TV: the library lists no DVR "+d+" any more; its cloud guide is no longer built", "dvr", d)
+		c.logger.Info("Live TV: the library lists no DVR "+d+" any more; its cloud guide is no longer built", "dvr", d)
 	}
 }
 
@@ -483,7 +478,7 @@ func (c *cloudGuides) builtAt(ctx context.Context, dvr string) (time.Time, error
 
 // build plans w's guide, has the pods fetch it, and builds and installs it.
 func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
-	log := c.log().With("dvr", w.dvr)
+	log := c.logger.With("dvr", w.dvr)
 	channels, err := c.mapChannels(ctx, w)
 	if err != nil {
 		return err
@@ -514,7 +509,7 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 	// This pod's share first, then the other pods' while they fetch, then
 	// whatever is left.
 	if err := c.fetchPlans(ctx, false); err != nil {
-		log.Warn("Live TV: fetch this pod's share of a cloud guide", "error", err)
+		log.Warn("Live TV: fetch this pod's share of a cloud guide", "err", err)
 	}
 	deadline := time.Now().Add(cloudFetchWait)
 	var meta []string
@@ -564,14 +559,14 @@ func (c *cloudGuides) build(ctx context.Context, w cloudWant) error {
 	}
 	if err := plexbootstrap.MarkGuideRefreshed(ctx, conn, c.m.Config.Postgres.Schema, w.dvr,
 		start.AddDate(0, 0, 7*cloudWeeks), time.Now()); err != nil {
-		log.Warn("Live TV: write a built guide's provider row", "error", err)
+		log.Warn("Live TV: write a built guide's provider row", "err", err)
 	}
 	c.mu.Lock()
 	c.built[w.dvr] = cloudBuilt{hash: w.hash, at: time.Now()}
 	c.mu.Unlock()
 	// Weeks before this build's are no longer asked for.
 	if err := epgcloud.CachePrune(ctx, conn, "grid/", start.AddDate(0, 0, -2)); err != nil {
-		log.Warn("Live TV: prune the cloud guides' cache", "error", err)
+		log.Warn("Live TV: prune the cloud guides' cache", "err", err)
 	}
 	if inJob {
 		log.Info("Live TV: built a cloud guide from Plex's guide service in a Job", "took", time.Since(began).Round(time.Second).String())

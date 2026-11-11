@@ -646,7 +646,7 @@ func (c Config) cpuFirst(k kubernetes.Interface, log *slog.Logger) func(context.
 	return func(ctx context.Context) bool {
 		busy, err := w.Busy(ctx)
 		if err != nil {
-			log.Warn("read clustarr's intel-work lease; the GPU pool is asked first", "lease", c.ClustarrWorkLease, "error", err)
+			log.Warn("read clustarr's intel-work lease; the GPU pool is asked first", "lease", c.ClustarrWorkLease, "err", err)
 			return false
 		}
 		return busy

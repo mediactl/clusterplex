@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"github.com/jackc/pgx/v5"
 
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
@@ -28,7 +30,7 @@ func (m *Manager) prepareDatabases(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("postgres settings: %w", err)
 	}
-	return plexbootstrap.Run(ctx, m.Logger.With("component", "plex-postgresql-init"), plexbootstrap.Options{
+	return plexbootstrap.Run(ctx, logging.SubsystemLogger(m.Logger, "db"), plexbootstrap.Options{
 		Connect:      plexbootstrap.ConnectWith(cfg),
 		Schema:       m.Config.Postgres.Schema,
 		SchemaDir:    m.Config.SchemaDir,

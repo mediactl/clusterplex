@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -118,7 +120,7 @@ func (m *Manager) runLiveTVRestarts(ctx context.Context, r *liveTVRestarts, ever
 		gen := strconv.FormatInt(last.UnixNano(), 10)
 		pods, err := m.otherServingPods(ctx)
 		if err != nil {
-			log.Warn("Live TV: list the other Plex pods; their PMS keeps its old DVRs until it restarts", "error", err)
+			log.Warn("Live TV: list the other Plex pods; their PMS keeps its old DVRs until it restarts", "err", err)
 			continue
 		}
 		var restarted, missed []string
@@ -127,7 +129,7 @@ func (m *Manager) runLiveTVRestarts(ctx context.Context, r *liveTVRestarts, ever
 				if ctx.Err() != nil {
 					return
 				}
-				log.Warn("Live TV: a pod's PMS did not restart", "pod", pod, "error", err)
+				log.Warn("Live TV: a pod's PMS did not restart", "pod", pod, "err", err)
 				missed = append(missed, pod)
 				continue
 			}
@@ -207,7 +209,7 @@ func (m *Manager) restartPodPMS(ctx context.Context, pod, gen string) error {
 // restart annotation it restarts PMS in place -- withdrawn, drained,
 // started again as at boot -- and answers once Plex serves its library.
 func (m *Manager) watchLiveTVRestart(ctx context.Context) {
-	log := m.Logger.With("component", "livetv-restart")
+	log := logging.SubsystemLogger(m.Logger, "livetv.restart")
 	pods := m.K8sClient.CoreV1().Pods(m.Config.Namespace)
 	handled := ""
 	for {
@@ -230,13 +232,13 @@ func (m *Manager) watchLiveTVRestart(ctx context.Context) {
 		} else {
 			log.Info("Live TV: restarting PMS so it lists the new or removed DVRs", "generation", gen)
 			if err := m.restartPMSInPlace(ctx); err != nil {
-				log.Error("Live TV: restart PMS", "error", err)
+				log.Error("Live TV: restart PMS", "err", err)
 				continue
 			}
 		}
 		payload := fmt.Appendf(nil, `{"metadata":{"annotations":{%q:%q}}}`, liveTVRestartedAnnotation, gen)
 		if _, err := m.patchPod(ctx, payload); err != nil {
-			log.Warn("Live TV: answer the restart", "error", err)
+			log.Warn("Live TV: answer the restart", "err", err)
 		}
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"github.com/mediactl/clusterplex/pkg/plex/claim"
 	"github.com/mediactl/clusterplex/pkg/plex/servertoken"
 )
@@ -36,7 +38,7 @@ func (m *Manager) settleServerToken(ctx context.Context) error {
 		Prefs:    m.Config.PreferencesFile(),
 		Claim:    m.Config.Claim,
 		Exchange: exchange,
-		Logger:   m.Logger.With("component", "server-token"),
+		Logger:   logging.SubsystemLogger(m.Logger, "token"),
 	}
 	if store := m.tokenStore(); store != nil {
 		s.Store = store
@@ -49,7 +51,7 @@ func (m *Manager) settleServerToken(ctx context.Context) error {
 // file's account into a Secret that has none, and after that the Secret's
 // is put back into a file that drifts (servertoken.Keeper).
 func (m *Manager) keepServerToken(ctx context.Context, store servertoken.Store) {
-	log := m.Logger.With("component", "server-token")
+	log := logging.SubsystemLogger(m.Logger, "token")
 	keeper := servertoken.Keeper{Prefs: m.Config.PreferencesFile(), Store: store, Logger: log}
 	every := m.tokenSyncEvery
 	if every <= 0 {
@@ -57,7 +59,7 @@ func (m *Manager) keepServerToken(ctx context.Context, store servertoken.Store) 
 	}
 	for {
 		if err := keeper.Sync(ctx); err != nil && ctx.Err() == nil {
-			log.Warn("hold the server's account to its Secret", "error", err)
+			log.Warn("hold the server's account to its Secret", "err", err)
 		}
 		select {
 		case <-ctx.Done():

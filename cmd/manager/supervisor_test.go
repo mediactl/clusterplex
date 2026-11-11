@@ -88,7 +88,7 @@ func TestSupervisorStopLetsHeldConnectionsFinishFirst(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		Grace:  5 * time.Second,
 		Drain:  5 * time.Second,
-		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t), Logger: slog.New(slog.DiscardHandler)},
 	}
 	require.NoError(t, sup.Start(context.Background()))
 	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
@@ -123,7 +123,7 @@ func TestProxiedConnectionsOutliveTheStartContext(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		Grace:  5 * time.Second,
 		Drain:  5 * time.Second,
-		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t), Logger: slog.New(slog.DiscardHandler)},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	require.NoError(t, sup.Start(ctx))
@@ -151,7 +151,7 @@ func TestSupervisorStopGivesUpDrainingAtTheDeadline(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		Grace:  5 * time.Second,
 		Drain:  300 * time.Millisecond,
-		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t), Logger: slog.New(slog.DiscardHandler)},
 	}
 	require.NoError(t, sup.Start(context.Background()))
 	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)
@@ -174,7 +174,7 @@ func TestSupervisorRestartDoesNotDrain(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		Grace:  5 * time.Second,
 		Drain:  10 * time.Second,
-		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t)},
+		Proxy:  &proxy.TCP{Listen: "127.0.0.1:0", Target: echoUpstream(t), Logger: slog.New(slog.DiscardHandler)},
 	}
 	require.NoError(t, sup.Start(context.Background()))
 	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), "pms-ready") }, 3*time.Second, 20*time.Millisecond)

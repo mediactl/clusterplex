@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
 )
@@ -191,7 +193,7 @@ func (m *Manager) keepGuideWriter(ctx context.Context) {
 	if !m.Config.LiveTV.GuideWriter() {
 		return
 	}
-	log := m.Logger.With("component", "livetv-guides")
+	log := logging.SubsystemLogger(m.Logger, "livetv.guide")
 	poll, waitMax := guideWriterPoll, guideWriterWaitMax
 	claimed := false
 	start := time.Now()
@@ -200,7 +202,7 @@ func (m *Manager) keepGuideWriter(ctx context.Context) {
 			busy, err := m.pmsWritesAGuide(ctx)
 			switch {
 			case err != nil:
-				log.Warn("Live TV: read PMS's activities before writing the guides", "error", err)
+				log.Warn("Live TV: read PMS's activities before writing the guides", "err", err)
 			case busy && time.Since(start) >= waitMax:
 				log.Warn("Live TV: PMS's guide activity outlived any load or refresh; taking the guides as if it were stuck",
 					"waited", time.Since(start).Round(time.Second))
@@ -213,7 +215,7 @@ func (m *Manager) keepGuideWriter(ctx context.Context) {
 		}
 		if claimed {
 			if err := m.writeGuideWriter(ctx, true); err != nil {
-				log.Warn("Live TV: the guides' writer file", "error", err)
+				log.Warn("Live TV: the guides' writer file", "err", err)
 			}
 		}
 		select {

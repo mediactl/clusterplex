@@ -116,7 +116,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	if s.BeforeStart != nil {
 		if err := s.BeforeStart(ctx); err != nil {
-			s.Logger.Warn("prepare before Plex starts", "error", err)
+			s.Logger.Warn("prepare before Plex starts", "err", err)
 		}
 	}
 
@@ -173,7 +173,7 @@ func (s *Supervisor) ensureStateDirs() {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			// Not fatal here: Plex reports the one it actually wanted, which is
 			// more useful than guessing which of these mattered.
-			s.Logger.Error("create Plex state directory", "path", path, "error", err)
+			s.Logger.Error("create Plex state directory", "path", path, "err", err)
 		}
 	}
 }
@@ -187,7 +187,7 @@ func (s *Supervisor) removeStalePIDFile() {
 	case err == nil:
 		s.Logger.Info("removed stale Plex pid file", "path", s.PIDFile)
 	case !errors.Is(err, os.ErrNotExist):
-		s.Logger.Warn("remove Plex pid file", "path", s.PIDFile, "error", err)
+		s.Logger.Warn("remove Plex pid file", "path", s.PIDFile, "err", err)
 	}
 }
 
@@ -199,13 +199,13 @@ func (s *Supervisor) wait(cmd *exec.Cmd) {
 	close(done)
 
 	if stopping {
-		s.Logger.Info("Plex Media Server stopped", "error", err)
+		s.Logger.Info("Plex Media Server stopped", "err", err)
 		return
 	}
 	if err == nil {
 		err = errors.New("exited with status 0")
 	}
-	s.Logger.Error("Plex Media Server exited unexpectedly", "error", err)
+	s.Logger.Error("Plex Media Server exited unexpectedly", "err", err)
 	if s.OnUnexpectedExit != nil {
 		s.OnUnexpectedExit(err)
 	}

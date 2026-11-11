@@ -253,7 +253,7 @@ func (c *cloudGuides) inFlight(ctx context.Context, dvr string) bool {
 		LabelSelector: "app.kubernetes.io/component=" + cloudJobComponent + "," + labelGuideDVR + "=" + dvrShort(dvr),
 	})
 	if err != nil {
-		c.log().Warn("Live TV: list a guide's build Jobs", "dvr", dvr, "error", err)
+		c.logger.Warn("Live TV: list a guide's build Jobs", "dvr", dvr, "err", err)
 		return false
 	}
 	for i := range list.Items {
@@ -316,7 +316,7 @@ func (c *cloudGuides) ensureCloudJob(ctx context.Context, dvr, stamp string) (*b
 	if err != nil {
 		return nil, fmt.Errorf("start the build Job %s: %w", name, err)
 	}
-	c.log().Info("Live TV: started a guide's build Job", "dvr", dvr, "job", name)
+	c.logger.Info("Live TV: started a guide's build Job", "dvr", dvr, "job", name)
 	return created, nil
 }
 
@@ -379,7 +379,7 @@ func (c *cloudGuides) stageInJob(ctx context.Context, log *slog.Logger, conn *pg
 		case apierrors.IsNotFound(err):
 			return fmt.Errorf("the build Job %s is gone and staged nothing", cloudJobName(g.DVR, stamp))
 		case err != nil:
-			log.Warn("Live TV: read a guide's build Job", "job", cloudJobName(g.DVR, stamp), "error", err)
+			log.Warn("Live TV: read a guide's build Job", "job", cloudJobName(g.DVR, stamp), "err", err)
 		default:
 			if done, failed, why := jobFinished(j); failed {
 				return fmt.Errorf("the build Job %s failed: %s", j.Name, why)
@@ -443,34 +443,34 @@ func runGuideBuild(args []string) int {
 	log = log.With("dvr", dvr, "stamp", stamp)
 	cfg, err := pgx.ParseConfig(pg.DSN())
 	if err != nil {
-		log.Error("postgres settings", "error", err)
+		log.Error("postgres settings", "err", err)
 		return 2
 	}
 	conn, err := plexbootstrap.ConnectWith(cfg)(ctx)
 	if err != nil {
-		log.Error("connect to the library database", "error", err)
+		log.Error("connect to the library database", "err", err)
 		return 1
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	began := time.Now()
 	body, err := readStampedPlan(ctx, conn, dvr, stamp)
 	if errors.Is(err, errPlanMoved) {
-		log.Warn("the plan this build was started for is no longer the cached one; nothing built", "error", err)
+		log.Warn("the plan this build was started for is no longer the cached one; nothing built", "err", err)
 		return exitPlanMoved
 	} else if err != nil {
-		log.Error("read the build's plan", "error", err)
+		log.Error("read the build's plan", "err", err)
 		return 1
 	}
 	provider := planProvider(body)
 	in, lineup, err := planInput(ctx, conn, provider, body)
 	if err != nil {
-		log.Error("read the build's answers from the cache", "provider", provider, "error", err)
+		log.Error("read the build's answers from the cache", "provider", provider, "err", err)
 		return 1
 	}
 	var stats guidebuild.Stats
 	g := plexbootstrap.Guide{Provider: provider, DVR: dvr}
 	if err := plexbootstrap.StageBuilt(ctx, log, conn, pg.Schema, g, stamp, cloudBuildFunc(&in, &stats)); err != nil {
-		log.Error("stage the guide", "error", err)
+		log.Error("stage the guide", "err", err)
 		return 1
 	}
 	if provider == guidebuild.ProviderXMLTV {

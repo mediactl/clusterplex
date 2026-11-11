@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"github.com/jackc/pgx/v5"
 
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
@@ -101,10 +103,12 @@ type xmltvWant struct {
 
 // xmltvGuides is the manager's builder of XMLTV guides.
 type xmltvGuides struct {
-	m     *Manager
-	mu    sync.Mutex
-	wants map[string]xmltvWant // by DVR uuid, lower case
-	built map[string]cloudBuilt
+	// logger is this builder's, the livetv.guide.xmltv subsystem of the manager's.
+	logger *slog.Logger
+	m      *Manager
+	mu     sync.Mutex
+	wants  map[string]xmltvWant // by DVR uuid, lower case
+	built  map[string]cloudBuilt
 	// known is the schemas of the guides a build installed, by this holder
 	// or one before it (learnBuilt, at each PMS start): the managers' from
 	// the start, before the converger names them, so no load PMS left in a
@@ -127,6 +131,7 @@ func newXMLTVGuides(m *Manager) *xmltvGuides {
 	x := &xmltvGuides{
 		m: m, wants: map[string]xmltvWant{}, built: map[string]cloudBuilt{}, known: map[string]bool{},
 		kick: make(chan struct{}, 1), libraryDVRs: m.libraryDVRs,
+		logger: logging.SubsystemLogger(m.Logger, "livetv.guide.xmltv"),
 	}
 	x.lastBuild = x.storedBuild
 	return x
@@ -221,13 +226,11 @@ func (x *xmltvGuides) relearn(ctx context.Context) {
 		return
 	}
 	if err := x.learnBuilt(ctx, x.m.connectGuides); err != nil {
-		x.log().Debug("Live TV: list the guides the managers built; every XMLTV guide stays theirs", "error", err)
+		x.logger.Debug("Live TV: list the guides the managers built; every XMLTV guide stays theirs", "err", err)
 		return
 	}
-	x.log().Info("Live TV: listed the guides the managers built; an XMLTV guide neither named nor built is PMS's again")
+	x.logger.Info("Live TV: listed the guides the managers built; an XMLTV guide neither named nor built is PMS's again")
 }
-
-func (x *xmltvGuides) log() *slog.Logger { return x.m.Logger.With("component", "livetv-xmltv-guide") }
 
 // runBuilder runs on the lease holder: it builds each named block's guide
 // when it is due, until ctx ends.
@@ -247,7 +250,7 @@ func (x *xmltvGuides) runBuilder(ctx context.Context) {
 				continue
 			}
 			if err := x.build(ctx, w); err != nil && ctx.Err() == nil {
-				x.log().Warn("Live TV: build an XMLTV guide", "dvr", w.dvr, "error", err, "retryIn", cloudRetryAfter.String())
+				x.logger.Warn("Live TV: build an XMLTV guide", "dvr", w.dvr, "err", err, "retryIn", cloudRetryAfter.String())
 				x.failed(w.dvr, time.Now())
 			}
 		}
@@ -262,8 +265,8 @@ func (x *xmltvGuides) runBuilder(ctx context.Context) {
 
 // prune drops the wants whose DVR the library no longer lists (pruneWants).
 func (x *xmltvGuides) prune(ctx context.Context) {
-	for _, d := range pruneWants(ctx, &x.mu, x.wants, x.built, x.libraryDVRs, x.log()) {
-		x.log().Info("Live TV: the library lists no DVR "+d+" any more; its XMLTV guide is no longer built", "dvr", d)
+	for _, d := range pruneWants(ctx, &x.mu, x.wants, x.built, x.libraryDVRs, x.logger) {
+		x.logger.Info("Live TV: the library lists no DVR "+d+" any more; its XMLTV guide is no longer built", "dvr", d)
 	}
 }
 
@@ -290,7 +293,7 @@ func pruneWants[W any](ctx context.Context, mu *sync.Mutex, wants map[string]W, 
 	}
 	dvrs, err := list(ctx)
 	if err != nil {
-		log.Debug("Live TV: list the library's DVRs; no want is dropped", "error", err)
+		log.Debug("Live TV: list the library's DVRs; no want is dropped", "err", err)
 		return nil
 	}
 	mu.Lock()
@@ -322,7 +325,7 @@ func (x *xmltvGuides) due(ctx context.Context, w xmltvWant, now time.Time) bool 
 	if !ok {
 		last, err := x.lastBuild(ctx, w.dvr)
 		if err != nil {
-			x.log().Warn("Live TV: read when an XMLTV guide was last built", "dvr", w.dvr, "error", err)
+			x.logger.Warn("Live TV: read when an XMLTV guide was last built", "dvr", w.dvr, "err", err)
 			return false
 		}
 		if last.at.IsZero() {
@@ -372,7 +375,7 @@ func (x *xmltvGuides) storedBuild(ctx context.Context, dvr string) (cloudBuilt, 
 	if err != nil || at.IsZero() {
 		return cloudBuilt{}, err
 	}
-	if (&cloudGuides{m: x.m, logger: x.log()}).inFlight(ctx, dvr) {
+	if (&cloudGuides{m: x.m, logger: x.logger}).inFlight(ctx, dvr) {
 		return cloudBuilt{}, nil
 	}
 	if err := epgcloud.EnsureCache(ctx, conn); err != nil {
@@ -394,7 +397,7 @@ func (x *xmltvGuides) storedBuild(ctx context.Context, dvr string) (cloudBuilt, 
 // and installs the guide. An XMLTV with nothing to air is refused here,
 // before anything is cached or a Job started (the Job refuses it too).
 func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
-	log := x.log().With("dvr", w.dvr)
+	log := x.logger.With("dvr", w.dvr)
 	began := time.Now()
 	lineup, err := fetchXMLTVLineup(ctx, w.url)
 	if err != nil {
@@ -437,7 +440,7 @@ func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 		stamp := cloudPlanStamp(planBody)
 		// The cloud guides' Job machinery, which reads nothing of a cloud
 		// builder but the manager, logging as this builder.
-		jobs := &cloudGuides{m: x.m, logger: x.log()}
+		jobs := &cloudGuides{m: x.m, logger: x.logger}
 		if err := jobs.stageInJob(ctx, log, conn, g, stamp); err != nil {
 			return err
 		}
@@ -455,7 +458,7 @@ func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 	}
 	now := time.Now()
 	if err := plexbootstrap.MarkGuideRefreshed(ctx, conn, library, w.dvr, builtHorizon(ctx, conn, g, now), now); err != nil {
-		log.Warn("Live TV: write a built guide's provider row", "error", err)
+		log.Warn("Live TV: write a built guide's provider row", "err", err)
 	}
 	x.mu.Lock()
 	x.built[strings.ToLower(w.dvr)] = cloudBuilt{hash: w.hash, at: now}
@@ -463,7 +466,7 @@ func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 	x.mu.Unlock()
 	// The DVR's older XMLTV bodies are read by no plan any more.
 	if err := epgcloud.CachePrune(ctx, conn, xmltvPrefix+w.dvr+"/", fetched); err != nil {
-		log.Warn("Live TV: prune the XMLTV guides' cache", "error", err)
+		log.Warn("Live TV: prune the XMLTV guides' cache", "err", err)
 	}
 	took := time.Since(began).Round(time.Second).String()
 	if inJob {

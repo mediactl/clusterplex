@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/plex/activity"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
@@ -90,7 +92,7 @@ func (m *Manager) learnBuiltOnLease(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, learnBuiltTimeout)
 	defer cancel()
 	if err := m.xmltv.learnBuilt(ctx, m.connectGuides); err != nil {
-		m.Logger.Warn("Live TV: list the guides the managers built at the lease's win; every XMLTV guide is theirs until a listing succeeds", "error", err)
+		m.Logger.Warn("Live TV: list the guides the managers built at the lease's win; every XMLTV guide is theirs until a listing succeeds", "err", err)
 	}
 }
 
@@ -120,7 +122,7 @@ func (m *Manager) countLibrary(ctx context.Context) {
 		}
 		wait := libraryCountEvery
 		if err != nil {
-			m.Logger.Debug("count the library", "error", err)
+			m.Logger.Debug("count the library", "err", err)
 			wait = libraryCountRetry
 		}
 		if err == nil || len(counts) > 0 {
@@ -135,7 +137,7 @@ func (m *Manager) countLibrary(ctx context.Context) {
 }
 
 func (m *Manager) provisionLoop(ctx context.Context) {
-	log := m.Logger.With("component", "provision")
+	log := logging.SubsystemLogger(m.Logger, "provision")
 	p := &plexprovision.Provisioner{
 		PMS: m.pms(), Config: m.Config.Provision, Logger: log,
 		Drift: func(lib string, drifted bool) {
@@ -164,7 +166,7 @@ func (m *Manager) provisionLoop(ctx context.Context) {
 		switch {
 		case err != nil:
 			// Plex not up yet after the Lease was won lands here too.
-			log.Warn("provisioning failed; retrying", "error", err, "in", backoff)
+			log.Warn("provisioning failed; retrying", "err", err, "in", backoff)
 			wait, backoff = backoff, min(backoff*2, every)
 		case res == plexprovision.Pending:
 			wait, backoff = backoff, min(backoff*2, every)
@@ -188,7 +190,7 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		ItemID:        m.plexItemID,
 		MovieProvider: m.Config.Provision.ProviderFor("movie"),
 		TVProvider:    m.Config.Provision.ProviderFor("show"),
-		Logger:        m.Logger.With("component", "clustarr"),
+		Logger:        logging.SubsystemLogger(m.Logger, "clustarr.watch"),
 		Counters: clustarrwatch.Counters{
 			Scans:      func(scope string) { m.Metrics.ClustarrScans.WithLabelValues(scope).Inc() },
 			Refreshes:  m.Metrics.ClustarrRefreshes.Inc,
@@ -213,7 +215,7 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		// Files is the library as this pod mounts it, where Plex reads it:
 		// the sweep takes a file Plex scanned that is gone off its item.
 		w.Projection = &plexproject.Projector{
-			DB: m.pool, Seeder: seeder, Refresh: w, Logger: m.Logger.With("component", "projection"),
+			DB: m.pool, Seeder: seeder, Refresh: w, Logger: logging.SubsystemLogger(m.Logger, "projection"),
 			Files: &plexproject.DiskFiles{},
 		}
 		if len(m.Config.Provision.Libraries) > 0 {
@@ -234,7 +236,7 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 	m.watcher = w
 	m.mu.Unlock()
 	if err := w.Run(ctx); err != nil && ctx.Err() == nil {
-		m.Logger.Error("clustarr watch stopped", "error", err)
+		m.Logger.Error("clustarr watch stopped", "err", err)
 	}
 }
 

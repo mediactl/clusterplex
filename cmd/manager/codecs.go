@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	plexcodecs "github.com/mediactl/clusterplex/pkg/plex/codecs"
 )
 
@@ -25,7 +27,7 @@ const (
 // The holder's job: Plex downloads codecs from plex.tv, which only the
 // holder reaches, into the Codecs folder every pod shares.
 func (m *Manager) prefetchCodecs(ctx context.Context) {
-	log := m.Logger.With("component", "codecs")
+	log := logging.SubsystemLogger(m.Logger, "codecs")
 	p := &plexcodecs.Prefetcher{
 		PMS:      m.pms(),
 		Items:    plexcodecs.LibraryItems(m.pool),
@@ -60,7 +62,7 @@ func runCodecPrefetch(ctx context.Context, prefetch func(context.Context) (plexc
 			}
 			return
 		case err != nil:
-			log.Warn("codec prefetch stopped; retrying", "error", err, "in", retry)
+			log.Warn("codec prefetch stopped; retrying", "err", err, "in", retry)
 		default:
 			log.Warn("some decoders were not fetched; retrying", "failed", res.Failed, "fetched", res.Fetched, "in", retry)
 		}

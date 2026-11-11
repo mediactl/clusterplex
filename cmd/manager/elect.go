@@ -87,7 +87,7 @@ func (h *plexHealth) record(err error) (serving, giveUp bool) {
 // everyone else's is dropped. See ADR-0004.
 func (m *Manager) runPlex(ctx context.Context) {
 	if err := m.updatePodRole(ctx, RoleStarting); err != nil {
-		m.Logger.Error("update pod role label", "error", err)
+		m.Logger.Error("update pod role label", "err", err)
 	}
 
 	elector := &lease.Elector{
@@ -135,7 +135,7 @@ func (m *Manager) releasePlexTV(ctx context.Context) {
 	m.stopLeaderWork()
 	// Another pod may write the guides from now on.
 	if err := m.writeGuideWriter(ctx, false); err != nil {
-		m.Logger.Warn("Live TV: the guides' writer file", "error", err)
+		m.Logger.Warn("Live TV: the guides' writer file", "err", err)
 	}
 	m.Metrics.LeaderStatus.Set(0)
 	m.markReady(ctx, RoleWorker)
@@ -153,7 +153,7 @@ func (m *Manager) applyEgress(ctx context.Context, holdsLease bool) {
 		return
 	}
 	if err := m.egress.Apply(ctx, holdsLease); err != nil {
-		m.Logger.Error("apply egress policy", "holds_lease", holdsLease, "error", err)
+		m.Logger.Error("apply egress policy", "holds_lease", holdsLease, "err", err)
 	}
 }
 
@@ -168,7 +168,7 @@ func (m *Manager) holdUntilLost(ctx context.Context, elector *lease.Elector) {
 		case <-ticker.C:
 		}
 		if err := elector.Renew(ctx); err != nil {
-			m.Logger.Warn("lease renewal failed", "error", err)
+			m.Logger.Warn("lease renewal failed", "err", err)
 			return
 		}
 	}
@@ -220,11 +220,11 @@ func (m *Manager) start(ctx context.Context) {
 	if err := m.prepareDatabases(ctx); err != nil {
 		// Fatal: Plex against a half-prepared database fails much later and
 		// much less clearly, part way through its own migrations.
-		m.Logger.Error("prepare the library and shadow databases", "error", err)
+		m.Logger.Error("prepare the library and shadow databases", "err", err)
 		return
 	}
 	if err := m.sup.Start(ctx); err != nil {
-		m.Logger.Error("start Plex Media Server", "error", err)
+		m.Logger.Error("start Plex Media Server", "err", err)
 		return
 	}
 	m.mu.Lock()
@@ -248,7 +248,7 @@ func (m *Manager) markReady(ctx context.Context, role string) {
 		return
 	}
 	if err := m.updatePodRole(ctx, role); err != nil {
-		m.Logger.Error("update pod role label", "error", err)
+		m.Logger.Error("update pod role label", "err", err)
 	}
 }
 
@@ -262,7 +262,7 @@ func (m *Manager) markReady(ctx context.Context, role string) {
 // that will never answer them.
 func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 	if err := plexroute.WaitServing(ctx, m.plexURL(), pmsStartTimeout); err != nil {
-		m.Logger.Error("Plex never started serving; not advertising this pod", "error", err)
+		m.Logger.Error("Plex never started serving; not advertising this pod", "err", err)
 		return
 	}
 	manager := net.JoinHostPort(m.Config.PodDNS(), strconv.Itoa(m.Config.ProbePort))
@@ -274,13 +274,13 @@ func (m *Manager) advertiseWhenAccepting(ctx context.Context) {
 		// watch, which is what restarts Plex when it dies. One failed write
 		// cost the whole pod, and losing a race with the lease holder was
 		// enough to cause it.
-		m.Logger.Error("advertise Plex availability; carrying on without it", "error", err)
+		m.Logger.Error("advertise Plex availability; carrying on without it", "err", err)
 	}
 	// Also record it on the pod itself. The maintenance fan-out needs the set
 	// of pods that can do work, which the Lease cannot express: it names one
 	// holder, and in active mode every pod is serving.
 	if err := m.markServingPlex(ctx, true); err != nil {
-		m.Logger.Error("mark this pod as serving Plex", "error", err)
+		m.Logger.Error("mark this pod as serving Plex", "err", err)
 	}
 	m.Logger.Info("advertised this pod as a routable Plex", "address", m.Config.PMSAddr())
 	m.startHealthWatch(ctx, healthInterval)
@@ -382,7 +382,7 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Du
 				// its database. Not a miss -- but say so once, so a pod
 				// whose library check never arms is visible.
 				if !libraryWaiting {
-					m.Logger.Info("Plex is up but not yet answering for its library; not counting that until it has", "error", err)
+					m.Logger.Info("Plex is up but not yet answering for its library; not counting that until it has", "err", err)
 					libraryWaiting = true
 				}
 				continue
@@ -398,10 +398,10 @@ func (m *Manager) watchPlexHealth(ctx context.Context, interval, timeout time.Du
 			m.recordSessions(ctx)
 			continue
 		}
-		m.Logger.Error("Plex is no longer serving; withdrawing this pod", "error", err)
+		m.Logger.Error("Plex is no longer serving; withdrawing this pod", "err", err)
 		if giveUp {
 			m.Logger.Error("Plex has not answered since; giving up on this pod",
-				"checks", unhealthyRestartAfter, "error", err)
+				"checks", unhealthyRestartAfter, "err", err)
 			libraryAnswered, libraryWaiting = false, false
 			m.plexLost(err)
 		}
@@ -427,7 +427,7 @@ func (m *Manager) recordSessions(ctx context.Context) {
 	streams, err := activity.ReadSessions(ctx, pms)
 	if err != nil {
 		if ctx.Err() == nil {
-			m.Logger.Debug("read Plex sessions", "error", err)
+			m.Logger.Debug("read Plex sessions", "err", err)
 		}
 		return
 	}
@@ -479,7 +479,7 @@ func (m *Manager) setPlexServing(ctx context.Context, serving bool) {
 		return
 	}
 	if err := m.markServingPlex(ctx, serving); err != nil {
-		m.Logger.Error("update the serving annotation", "serving", serving, "error", err)
+		m.Logger.Error("update the serving annotation", "serving", serving, "err", err)
 	}
 }
 
@@ -489,10 +489,10 @@ func (m *Manager) withdraw(ctx context.Context) {
 		return
 	}
 	if err := m.publisher.Clear(ctx); err != nil {
-		m.Logger.Error("withdraw Plex availability", "error", err)
+		m.Logger.Error("withdraw Plex availability", "err", err)
 	}
 	if err := m.markServingPlex(ctx, false); err != nil {
-		m.Logger.Error("mark this pod as no longer serving Plex", "error", err)
+		m.Logger.Error("mark this pod as no longer serving Plex", "err", err)
 	}
 }
 
@@ -506,11 +506,11 @@ func (m *Manager) shutdown(ctx context.Context) {
 	m.stopLeaderWork()
 	m.withdraw(ctx)
 	if err := m.sup.Stop(ctx); err != nil {
-		m.Logger.Error("stop Plex Media Server", "error", err)
+		m.Logger.Error("stop Plex Media Server", "err", err)
 	}
 	if m.elector != nil {
 		if err := m.elector.Release(ctx); err != nil {
-			m.Logger.Error("release lease", "error", err)
+			m.Logger.Error("release lease", "err", err)
 		}
 	}
 	m.Metrics.LeaderStatus.Set(0)

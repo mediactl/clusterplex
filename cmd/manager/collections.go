@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,7 +27,7 @@ const pmsRestartPoll = 30 * time.Second
 // finalizer written by cluster-plex (clustarr's 2026-11-10
 // plex-collections design, option A), Events recorded on them.
 func (m *Manager) collectionsLoop(ctx context.Context) {
-	log := m.Logger.With("component", "collections")
+	log := logging.SubsystemLogger(m.Logger, "collections")
 	broadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: m.K8sClient.EventsV1()})
 	broadcaster.StartRecordingToSink(ctx.Done())
 	defer broadcaster.Shutdown()
@@ -39,7 +41,7 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 			machine = id
 			break
 		}
-		log.Info("collections wait for Plex's identity", "error", err, "retry", backoff)
+		log.Info("collections wait for Plex's identity", "err", err, "retry", backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -62,7 +64,7 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 	}
 	go m.notePMSRestarts(ctx, ctrl.PMSRestarted)
 	if err := ctrl.Run(ctx); err != nil {
-		log.Error("reconcile Plex collections", "error", err)
+		log.Error("reconcile Plex collections", "err", err)
 	}
 }
 

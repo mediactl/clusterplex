@@ -20,6 +20,9 @@ import (
 // second registration, so it cannot be called per test.
 var testMetrics = sync.OnceValue(func() *telemetry.Metrics {
 	_, metrics := telemetry.InitTelemetry()
+	// run sets the activity monitor's logger right after the root exists;
+	// the tests give it the same, since a Monitor refuses to invent one.
+	metrics.Activity.Logger = slog.New(slog.DiscardHandler)
 	return metrics
 })
 

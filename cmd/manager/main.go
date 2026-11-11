@@ -194,7 +194,7 @@ func run() int {
 	}
 	bridgeKlog(logger)
 	tracer, metrics := telemetry.InitTelemetry()
-	metrics.Activity.Logger = logger.With("component", "activity")
+	metrics.Activity.Logger = logging.SubsystemLogger(logger, "activity")
 	otelShutdown, signals, err := telemetry.OTel{
 		ServiceName: "manager", PodName: cfg.PodName, Namespace: cfg.Namespace,
 		Gatherer: prometheus.DefaultGatherer, Logger: logger,
@@ -202,7 +202,7 @@ func run() int {
 	switch {
 	case err != nil:
 		// Plex serves without it: an exporter is not worth an outage.
-		logger.Error("OpenTelemetry export is off", "error", err)
+		logger.Error("OpenTelemetry export is off", "err", err)
 	case signals.Traces || signals.Metrics:
 		logger.Info("exporting OpenTelemetry over OTLP", "traces", signals.Traces, "metrics", signals.Metrics)
 	}
@@ -210,32 +210,32 @@ func run() int {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := otelShutdown(ctx); err != nil {
-			logger.Warn("flush OpenTelemetry", "error", err)
+			logger.Warn("flush OpenTelemetry", "err", err)
 		}
 	}()
 
 	restCfg, err := newRestConfig()
 	if err != nil {
-		logger.Error("load kubernetes config", "error", err)
+		logger.Error("load kubernetes config", "err", err)
 		return 1
 	}
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		logger.Error("build kubernetes client", "error", err)
+		logger.Error("build kubernetes client", "err", err)
 		return 1
 	}
 
 	// Plex's own transcodes run on this pod's node, which the activity
 	// monitor labels them with; a pool conversion takes its pod's.
 	if pod, err := k8sClient.CoreV1().Pods(cfg.Namespace).Get(ctx, cfg.PodName, metav1.GetOptions{}); err != nil {
-		logger.Warn("read this pod's node", "error", err)
+		logger.Warn("read this pod's node", "err", err)
 	} else {
 		metrics.Activity.SetNode(pod.Spec.NodeName)
 	}
 
 	pool, err := plexdb.Open(ctx, cfg.Postgres)
 	if err != nil {
-		logger.Error("connect to the library database", "database", cfg.Postgres.String(), "error", err)
+		logger.Error("connect to the library database", "database", cfg.Postgres.String(), "err", err)
 		return 1
 	}
 	defer pool.Close()
@@ -244,7 +244,7 @@ func run() int {
 	if err := checkShim(cfg); err != nil {
 		// Without it Plex quietly uses its own SQLite file, which would look
 		// like an empty library rather than a failure.
-		logger.Error("the PostgreSQL shim is not available", "error", err)
+		logger.Error("the PostgreSQL shim is not available", "err", err)
 		return 1
 	}
 
@@ -260,7 +260,7 @@ func run() int {
 	}
 	if cfg.Clustarr.Enabled || cfg.LiveTV.Enabled {
 		if m.Dynamic, err = dynamic.NewForConfig(restCfg); err != nil {
-			logger.Error("build the clustarr client", "error", err)
+			logger.Error("build the clustarr client", "err", err)
 			return 1
 		}
 	}
@@ -281,17 +281,17 @@ func run() int {
 		// namespace outlives the container inside it. Without this the pod
 		// crash-loops for ever after its first restart, whatever caused it.
 		ReclaimStaleLink: true,
-	}, logger.With("component", "plexnet"))
+	}, logging.SubsystemLogger(logger, "net"))
 	if err != nil {
 		// Fatal, unlike the port redirect it replaces. Starting Plex without
 		// its namespace would have it bind the proxy's port and die with the
 		// reason recorded only in its own log.
-		logger.Error("provision Plex network namespace", "error", err)
+		logger.Error("provision Plex network namespace", "err", err)
 		return 1
 	}
 	defer func() {
 		if err := plexNet.Close(); err != nil {
-			logger.Error("tear down Plex network namespace", "error", err)
+			logger.Error("tear down Plex network namespace", "err", err)
 		}
 	}()
 	// Everything that needs to reach Plex directly, rather than through the
@@ -309,7 +309,7 @@ func run() int {
 	m.egress = &plexnet.EgressGuard{
 		Blocklist: plexNet.Blocklist(),
 		BlockAll:  cfg.BlockPlexTV,
-		Logger:    logger.With("component", "egress"),
+		Logger:    logging.SubsystemLogger(logger, "net.egress"),
 	}
 
 	m.sup = &Supervisor{
@@ -318,7 +318,7 @@ func run() int {
 		StateDir:     cfg.PlexDir,
 		PIDFile:      cfg.PIDFile(),
 		Env:          shimEnv(os.Environ(), cfg),
-		Logger:       logger.With("component", "supervisor"),
+		Logger:       logging.SubsystemLogger(logger, "supervisor"),
 		Grace:        defaultGrace,
 		Drain:        cfg.DrainTimeout,
 		StartProcess: m.startInPlexNS,
@@ -343,7 +343,7 @@ func run() int {
 			// with no redirect rule to install and nothing to bypass.
 			Listen:       fmt.Sprintf(":%d", cfg.PMSPort),
 			Target:       plexNet.PlexAddrPort().String(),
-			Logger:       logger.With("component", "proxy"),
+			Logger:       logging.SubsystemLogger(logger, "proxy"),
 			OnConnChange: func(delta int) { metrics.ProxyConnections.Add(float64(delta)) },
 			// A library scan of a provisioned section is a reconcile of
 			// clustarr's projection, not Plex's walk (spec 2026-10-15 §5):
@@ -373,18 +373,18 @@ func run() int {
 		if restarts.record(time.Now()) {
 			giveUp.Do(func() {
 				logger.Error("Plex keeps dying; exiting so the pod restarts",
-					"restarts", plexRestartLimit, "within", plexRestartWindow, "error", err)
+					"restarts", plexRestartLimit, "within", plexRestartWindow, "err", err)
 				m.shutdown(context.Background())
 				os.Exit(1)
 			})
 			return
 		}
-		logger.Error("Plex stopped serving; restarting it", "error", err)
+		logger.Error("Plex stopped serving; restarting it", "err", err)
 		if err := m.sup.Restart(ctx); err != nil {
 			// Nothing else is going to fix this, and a pod that cannot start
 			// Plex should not stay up pretending otherwise.
 			giveUp.Do(func() {
-				logger.Error("cannot restart Plex; exiting so the pod restarts", "error", err)
+				logger.Error("cannot restart Plex; exiting so the pod restarts", "err", err)
 				m.shutdown(context.Background())
 				os.Exit(1)
 			})
@@ -393,7 +393,7 @@ func run() int {
 
 	go m.serveProbes()
 	if err := m.startExecServers(ctx); err != nil {
-		logger.Error("start job listeners", "error", err)
+		logger.Error("start job listeners", "err", err)
 		return 1
 	}
 	if m.videoCount != nil {
@@ -414,7 +414,7 @@ func run() int {
 	// asks for the copy at PMS's rename over the guide socket, which listens
 	// before PMS starts; the poll is the fallback for a rename it never sees.
 	if ln, err := m.listenGuideSocket(); err != nil {
-		logger.Warn("Live TV: the guide socket; loads are copied on the poll alone", "error", err)
+		logger.Warn("Live TV: the guide socket; loads are copied on the poll alone", "err", err)
 	} else {
 		go m.serveGuideSocket(ctx, ln)
 	}
@@ -456,7 +456,7 @@ func (m *Manager) serveProbes() {
 	m.Logger.Info("probe and metrics server listening", "addr", addr)
 	srv := &http.Server{Addr: addr, Handler: m.probeHandler(), ReadHeaderTimeout: 5 * time.Second}
 	if err := srv.ListenAndServe(); err != nil {
-		m.Logger.Error("probe server stopped", "error", err)
+		m.Logger.Error("probe server stopped", "err", err)
 	}
 }
 

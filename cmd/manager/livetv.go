@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -23,7 +25,7 @@ const liveTVTimeout = 2 * time.Minute
 // every change the pod's watch (startLiveTV) reports and every
 // provisionEvery, recording Events on the providers.
 func (m *Manager) liveTVLoop(ctx context.Context) {
-	log := m.Logger.With("component", "livetv")
+	log := logging.SubsystemLogger(m.Logger, "livetv")
 	if m.liveTV == nil {
 		return
 	}
@@ -91,7 +93,7 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 				return
 			}
 			if err != nil {
-				log.Warn("Live TV waits for the server's identity", "error", err, "in", backoff)
+				log.Warn("Live TV waits for the server's identity", "err", err, "in", backoff)
 				m.Metrics.ProvisionRuns.WithLabelValues("livetv-" + string(plexlivetv.Errored)).Inc()
 				wait, backoff = backoff, min(backoff*2, every)
 			} else {
@@ -109,11 +111,11 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 			}
 			if res.RestartSelf {
 				if err := m.restartOwnPMS(ctx); err != nil {
-					log.Warn("Live TV: ask this pod's PMS to restart so it lists every DVR", "error", err)
+					log.Warn("Live TV: ask this pod's PMS to restart so it lists every DVR", "err", err)
 				}
 			}
 			if res.Status == plexlivetv.Pending || res.Status == plexlivetv.Errored {
-				log.Warn("Live TV did not converge; retrying", "error", err, "in", backoff)
+				log.Warn("Live TV did not converge; retrying", "err", err, "in", backoff)
 			}
 			wait, backoff = nextLiveTVPass(res.Status, backoff, every)
 		}
@@ -157,7 +159,7 @@ const liveTVSyncWait = 30 * time.Second
 // reaches each block at its URI on clustarr's livetv Service (the
 // direct-tuners design 2026-10-27), so nothing in the pod serves Live TV.
 func (m *Manager) startLiveTV(ctx context.Context) {
-	log := m.Logger.With("component", "livetv")
+	log := logging.SubsystemLogger(m.Logger, "livetv")
 	m.liveTV = &liveTVFeed{}
 	first, unsubscribe := m.liveTV.subscribe()
 
@@ -167,7 +169,7 @@ func (m *Manager) startLiveTV(ctx context.Context) {
 	}
 	go func() {
 		if err := w.Run(ctx); err != nil {
-			log.Error("the IPTVProvider watch ended", "error", err)
+			log.Error("the IPTVProvider watch ended", "err", err)
 		}
 	}()
 

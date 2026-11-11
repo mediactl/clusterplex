@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"google.golang.org/grpc"
 
 	"github.com/mediactl/clusterplex/pkg/plex/activity"
@@ -61,7 +63,7 @@ func (m *Manager) startExecServers(ctx context.Context) error {
 
 func (m *Manager) serve(name string, srv *grpc.Server, lis net.Listener) {
 	if err := srv.Serve(lis); err != nil {
-		m.Logger.Error("gRPC server stopped", "listener", name, "error", err)
+		m.Logger.Error("gRPC server stopped", "listener", name, "err", err)
 	}
 }
 
@@ -113,14 +115,14 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 		BinDir: cfg.BinDir,
 		Env:    shimEnv(nil, cfg),
 		Start:  m.startInPlexNS,
-		Logger: m.Logger.With("component", "executor"),
+		Logger: logging.SubsystemLogger(m.Logger, "remoteexec.executor"),
 	}
 	dispatcher := &remoteexec.Dispatcher{
 		Local:     local,
 		Workers:   &remoteexec.PodWorkerLister{Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName, Port: cfg.WorkerPort},
 		Dial:      remoteexec.GRPCDialer,
 		PMSAddr:   cfg.PMSAddr(),
-		Logger:    m.Logger.With("component", "dispatcher"),
+		Logger:    logging.SubsystemLogger(m.Logger, "remoteexec.dispatcher"),
 		OnRoute:   func(target, mode string) { m.Metrics.JobsRouted.WithLabelValues(target, mode).Inc() },
 		OnRefused: func(reason string) { m.Metrics.VideoRefusals.WithLabelValues(reason).Inc() },
 	}
@@ -130,7 +132,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 	if cfg.Clustarr.Enabled && m.pool != nil {
 		dispatcher.Scan = &plexscan.AnalyzeRoute{
 			Projected: m.projectedItem,
-			Logger:    m.Logger.With("component", "scanner"),
+			Logger:    logging.SubsystemLogger(m.Logger, "scanner"),
 		}
 	}
 	// Plex Web's DASH streams go to the remux pool (pkg/remux), which
@@ -145,7 +147,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 			},
 			Dial:   relay.GRPCDialer,
 			PMS:    "http://" + m.plexAddr,
-			Logger: m.Logger.With("component", "remux"),
+			Logger: logging.SubsystemLogger(m.Logger, "remux"),
 		}
 	}
 	// Every video conversion goes to the GPU pool (pkg/video/relay) or is
@@ -155,7 +157,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 		if m.videoCount == nil {
 			m.videoCount = &lease.Counter{
 				Client: m.K8sClient, Namespace: cfg.Namespace, Name: cfg.VideoLeaseName, Identity: cfg.PodName,
-				Logger: m.Logger.With("component", "video-lease"),
+				Logger: logging.SubsystemLogger(m.Logger, "video.lease"),
 			}
 		}
 		placements := &videorelay.Placements{}
@@ -179,7 +181,7 @@ func (m *Manager) execServices() (shim, worker *remoteexec.Service, err error) {
 // (Config.cpuFirst) and each the other's second chance; conversions and
 // pass-overs counted by pool.
 func (m *Manager) videoRelay(cfg Config, placements *videorelay.Placements) *videorelay.Relay {
-	log := m.Logger.With("component", "video")
+	log := logging.SubsystemLogger(m.Logger, "video")
 	r := &videorelay.Relay{
 		Workers: &remoteexec.PodWorkerLister{
 			Client: m.K8sClient, Namespace: cfg.Namespace, Self: cfg.PodName,

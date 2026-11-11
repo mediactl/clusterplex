@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	plexlivetv "github.com/mediactl/clusterplex/pkg/plex/livetv"
 )
 
@@ -16,7 +18,7 @@ const staleGrabEvery = 30 * time.Second
 // runs it: each PMS holds its own grabs, and a grab its client abandoned
 // holds one of the device's tuners until PMS restarts (StaleGrabs).
 func (m *Manager) endStaleGrabs(ctx context.Context) {
-	log := m.Logger.With("component", "livetv-grabs")
+	log := logging.SubsystemLogger(m.Logger, "livetv.grabs")
 	w := &plexlivetv.StaleGrabs{PMS: m.pms(), Grace: m.Config.LiveTV.StaleGrabAfter, Logger: log}
 	tick := time.NewTicker(staleGrabEvery)
 	defer tick.Stop()
@@ -32,7 +34,7 @@ func (m *Manager) endStaleGrabs(ctx context.Context) {
 		ended, err := w.Pass(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Debug("Live TV: read PMS's grabs", "error", err)
+				log.Debug("Live TV: read PMS's grabs", "err", err)
 			}
 			continue
 		}

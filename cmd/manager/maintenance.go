@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -56,7 +58,7 @@ func (m *Manager) handleMaintenance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The caller is a Job. Failing loudly is the point: it retries, and
 		// the failure is visible as a failed Job rather than lost in a log.
-		m.Logger.Error("maintenance fan-out failed", "task", name, "error", err)
+		m.Logger.Error("maintenance fan-out failed", "task", name, "err", err)
 		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"task": name, "error": err.Error(),
@@ -77,7 +79,7 @@ func (m *Manager) fanout() *maintenance.Fanout {
 		Libraries: m.plexLibraries,
 		Members:   m.podsServingPlex,
 		Dispatch:  m.dispatchToPlex,
-		Logger:    m.Logger.With("component", "maintenance"),
+		Logger:    logging.SubsystemLogger(m.Logger, "maintenance"),
 	}
 }
 
@@ -184,7 +186,7 @@ func (m *Manager) authenticate(req *http.Request) {
 // answer, so silently.
 func (m *Manager) plexToken() string {
 	if token, err := plexprefs.Value(m.Config.PreferencesFile(), "PlexOnlineToken"); err != nil {
-		m.Logger.Warn("read the server token from Preferences.xml", "error", err)
+		m.Logger.Warn("read the server token from Preferences.xml", "err", err)
 	} else if token != "" {
 		return token
 	}

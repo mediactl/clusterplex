@@ -22,7 +22,7 @@ func (m *Manager) recordSections(byName map[string]string, locations func(key st
 		}
 		locs, err := locations(key)
 		if err != nil || len(locs) == 0 {
-			m.Logger.Warn("provisioned section has no location yet", "library", name, "key", key, "error", err)
+			m.Logger.Warn("provisioned section has no location yet", "library", name, "key", key, "err", err)
 			continue
 		}
 		out[key] = clustarrwatch.SectionIDs{Section: id, Location: locs[0].ID, Locations: locs}

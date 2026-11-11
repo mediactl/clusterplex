@@ -33,7 +33,7 @@ func (m *Manager) externalURL(ctx context.Context) string {
 		Get(ctx, m.Config.ExternalService, metav1.GetOptions{})
 	if err != nil {
 		m.Logger.Warn("cannot read the Service Plex advertises; leaving the advertisement as it is",
-			"service", m.Config.ExternalService, "error", err)
+			"service", m.Config.ExternalService, "err", err)
 		return ""
 	}
 

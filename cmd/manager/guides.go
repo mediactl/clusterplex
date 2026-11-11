@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/jackc/pgx/v5"
 
@@ -95,7 +97,7 @@ func (m *Manager) copyGuideLoads(ctx context.Context) {
 // changed since it was last looked at, or only the DVR dvrUUID's when it is
 // not empty. ImportGuide decides whether a file holds a load to copy.
 func (m *Manager) copyGuides(ctx context.Context, dvrUUID string) {
-	log := m.Logger.With("component", "livetv-guides")
+	log := logging.SubsystemLogger(m.Logger, "livetv.guide")
 	m.guides.mu.Lock()
 	defer m.guides.mu.Unlock()
 	m.guides.init()
@@ -114,7 +116,7 @@ func (m *Manager) copyGuides(ctx context.Context, dvrUUID string) {
 			return true
 		}
 		if conn, err = m.connectGuides(ctx); err != nil {
-			log.Warn("Live TV: connect to copy a guide", "error", err)
+			log.Warn("Live TV: connect to copy a guide", "err", err)
 			return false
 		}
 		return true
@@ -150,7 +152,7 @@ func (m *Manager) copyGuides(ctx context.Context, dvrUUID string) {
 		m.guides.seen[file] = state
 		if _, err := plexbootstrap.ImportGuide(ctx, log, conn, m.Config.Postgres.Schema, g, file); err != nil {
 			m.guides.failed[file] = time.Now()
-			log.Warn("Live TV: copy a guide PMS loaded into its schema", "guide", g.File(), "error", err)
+			log.Warn("Live TV: copy a guide PMS loaded into its schema", "guide", g.File(), "err", err)
 			continue
 		}
 		delete(m.guides.failed, file)
@@ -174,7 +176,7 @@ func (m *Manager) stageGuide(ctx context.Context, conn *pgx.Conn, g plexbootstra
 	}
 	made, err := plexbootstrap.PrepareStaging(ctx, conn, m.Config.Postgres.Schema, g)
 	if err != nil {
-		m.Logger.Warn("Live TV: make a loading guide's staging schema", "guide", g.File(), "error", err)
+		m.Logger.Warn("Live TV: make a loading guide's staging schema", "guide", g.File(), "err", err)
 	} else if made {
 		m.Logger.Info("Live TV: made a loading guide's staging schema", "guide", g.File(), "schema", g.Staging())
 	}
@@ -183,15 +185,15 @@ func (m *Manager) stageGuide(ctx context.Context, conn *pgx.Conn, g plexbootstra
 // watchGuideLoads makes a guide's staging schema as soon as PMS begins a
 // load (the -loading.db appears), until ctx ends. The poll backs it up.
 func (m *Manager) watchGuideLoads(ctx context.Context) {
-	log := m.Logger.With("component", "livetv-guides")
+	log := logging.SubsystemLogger(m.Logger, "livetv.guide")
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Warn("Live TV: watch for guide loads", "error", err)
+		log.Warn("Live TV: watch for guide loads", "err", err)
 		return
 	}
 	defer func() { _ = w.Close() }()
 	if err := w.Add(m.guideDir()); err != nil {
-		log.Warn("Live TV: watch for guide loads", "dir", m.guideDir(), "error", err)
+		log.Warn("Live TV: watch for guide loads", "dir", m.guideDir(), "err", err)
 		return
 	}
 	for {
@@ -199,7 +201,7 @@ func (m *Manager) watchGuideLoads(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case err := <-w.Errors:
-			log.Warn("Live TV: the guide load watch", "error", err)
+			log.Warn("Live TV: the guide load watch", "err", err)
 		case ev := <-w.Events:
 			if !ev.Has(fsnotify.Create) {
 				continue
@@ -210,7 +212,7 @@ func (m *Manager) watchGuideLoads(ctx context.Context) {
 			}
 			m.guides.mu.Lock()
 			if conn, err := m.connectGuides(ctx); err != nil {
-				log.Warn("Live TV: connect to stage a guide", "error", err)
+				log.Warn("Live TV: connect to stage a guide", "err", err)
 			} else {
 				m.stageGuide(ctx, conn, g)
 				_ = conn.Close(context.Background())
@@ -262,7 +264,7 @@ func (m *Manager) serveGuideSocket(ctx context.Context, ln net.Listener) {
 			if ctx.Err() != nil {
 				return
 			}
-			m.Logger.Warn("Live TV: the guide socket", "error", err)
+			m.Logger.Warn("Live TV: the guide socket", "err", err)
 			continue
 		}
 		go func() {
@@ -348,7 +350,7 @@ const guideStageDeadline = 45 * time.Second
 // stageLoad answers "stage <path>": the load's staging schema marked
 // loading and the shadow written over PMS's template, under guides.mu.
 func (m *Manager) stageLoad(ctx context.Context, g plexbootstrap.Guide, path string) string {
-	log := m.Logger.With("component", "livetv-guides")
+	log := logging.SubsystemLogger(m.Logger, "livetv.guide")
 	ctx, cancel := context.WithTimeout(ctx, guideStageDeadline)
 	defer cancel()
 	m.guides.mu.Lock()
@@ -360,13 +362,13 @@ func (m *Manager) stageLoad(ctx context.Context, g plexbootstrap.Guide, path str
 	}
 	conn, err := m.connectGuides(ctx)
 	if err != nil {
-		log.Warn("Live TV: connect to stage a guide load", "error", err)
+		log.Warn("Live TV: connect to stage a guide load", "err", err)
 		return "fail " + err.Error()
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	staged, err := plexbootstrap.StageLoad(ctx, log, conn, m.Config.Postgres.Schema, g, path, template)
 	if err != nil {
-		log.Warn("Live TV: stage a guide load in PostgreSQL", "guide", g.File(), "error", err)
+		log.Warn("Live TV: stage a guide load in PostgreSQL", "guide", g.File(), "err", err)
 		return "fail " + err.Error()
 	}
 	if staged.Fresh {
@@ -378,7 +380,7 @@ func (m *Manager) stageLoad(ctx context.Context, g plexbootstrap.Guide, path str
 
 // swapLoad answers "swap <path>".
 func (m *Manager) swapLoad(ctx context.Context, g plexbootstrap.Guide, path string) string {
-	log := m.Logger.With("component", "livetv-guides")
+	log := logging.SubsystemLogger(m.Logger, "livetv.guide")
 	m.guides.mu.Lock()
 	defer m.guides.mu.Unlock()
 	m.guides.init()
@@ -392,7 +394,7 @@ func (m *Manager) swapLoad(ctx context.Context, g plexbootstrap.Guide, path stri
 	}
 	conn, err := m.connectGuides(ctx)
 	if err != nil {
-		log.Warn("Live TV: connect to swap a guide at its rename", "error", err)
+		log.Warn("Live TV: connect to swap a guide at its rename", "err", err)
 		return "fail " + err.Error()
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
@@ -402,7 +404,7 @@ func (m *Manager) swapLoad(ctx context.Context, g plexbootstrap.Guide, path stri
 		log.Info("Live TV: the shim asks for a guide load's swap before its rename", "guide", g.File())
 		swapped, err := plexbootstrap.SwapLoaded(ctx, log, conn, g)
 		if err != nil {
-			log.Warn("Live TV: swap in a guide loaded in PostgreSQL", "guide", g.File(), "error", err)
+			log.Warn("Live TV: swap in a guide loaded in PostgreSQL", "guide", g.File(), "err", err)
 			return "fail " + err.Error()
 		}
 		m.guides.hooked[guide] = state
@@ -420,7 +422,7 @@ func (m *Manager) swapLoad(ctx context.Context, g plexbootstrap.Guide, path stri
 	log.Info("Live TV: the shim asks for a guide load's copy before its rename", "guide", g.File())
 	copied, err := plexbootstrap.ImportGuide(ctx, log, conn, m.Config.Postgres.Schema, g, path)
 	if err != nil {
-		log.Warn("Live TV: copy a guide at its rename", "guide", g.File(), "error", err)
+		log.Warn("Live TV: copy a guide at its rename", "guide", g.File(), "err", err)
 		return "fail " + err.Error()
 	}
 	m.guides.hooked[guide] = state
@@ -437,7 +439,7 @@ func (m *Manager) stageAhead(ctx context.Context, g plexbootstrap.Guide) {
 	defer m.guides.mu.Unlock()
 	conn, err := m.connectGuides(ctx)
 	if err != nil {
-		m.Logger.Warn("Live TV: connect to stage a guide ahead", "error", err)
+		m.Logger.Warn("Live TV: connect to stage a guide ahead", "err", err)
 		return
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
@@ -447,9 +449,9 @@ func (m *Manager) stageAhead(ctx context.Context, g plexbootstrap.Guide) {
 // recoverLoads settles a staged load whose rename the manager did not
 // answer, by the guide file's inode (plexbootstrap.RecoverLoads).
 func (m *Manager) recoverLoads(ctx context.Context, conn *pgx.Conn) {
-	log := m.Logger.With("component", "livetv-guides")
+	log := logging.SubsystemLogger(m.Logger, "livetv.guide")
 	if _, err := plexbootstrap.RecoverLoads(ctx, log, conn, m.Config.Postgres.Schema, m.guideDir()); err != nil {
-		log.Warn("Live TV: recover a guide load whose rename went unanswered", "error", err)
+		log.Warn("Live TV: recover a guide load whose rename went unanswered", "err", err)
 	}
 }
 
@@ -503,13 +505,13 @@ func (m *Manager) prepareGuides(ctx context.Context) error {
 	skip := func(g plexbootstrap.Guide) bool { return m.loadsNotOurs(g) != "" }
 	if writer && m.xmltv != nil {
 		if err := m.xmltv.learnBuilt(ctx, plexbootstrap.ConnectWith(cfg)); err != nil {
-			m.Logger.Warn("Live TV: list the guides the managers built; no XMLTV guide's load is copied in at this start", "error", err)
+			m.Logger.Warn("Live TV: list the guides the managers built; no XMLTV guide's load is copied in at this start", "err", err)
 			skip = func(g plexbootstrap.Guide) bool {
 				return g.Provider == guidebuild.ProviderXMLTV || m.loadsNotOurs(g) != ""
 			}
 		}
 	}
-	return plexbootstrap.PrepareGuides(ctx, m.Logger.With("component", "plex-postgresql-init"),
+	return plexbootstrap.PrepareGuides(ctx, logging.SubsystemLogger(m.Logger, "db"),
 		plexbootstrap.ConnectWith(cfg), m.Config.Postgres.Schema, m.Config.SchemaDir, m.Config.PlexDir, writer, skip)
 }
 
