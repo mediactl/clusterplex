@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -153,4 +154,81 @@ func TestTheStartSweepKeepsABuildsStagingSchema(t *testing.T) {
 	require.NoError(t, SweepGuides(ctx, quiet, conn, []Guide{staged, building, testGuide}, t.TempDir()))
 	assert.NotContains(t, schemasLike(t, conn, "epg_"), building.Staging(), "once the build lets go it is an idle staging schema")
 	assert.Contains(t, schemasLike(t, conn, "epg_"), staged.Staging(), "a staged build waits for its swap")
+}
+
+// sectionNames is staging's library sections, "<id> <name>", by id.
+func sectionNames(t *testing.T, conn *pgx.Conn, schema string) []string {
+	t.Helper()
+	return names(t, conn, "SELECT id || ' ' || name FROM "+pgx.Identifier{schema, "library_sections"}.Sanitize()+
+		" WHERE $1 <> '' ORDER BY id", schema)
+}
+
+// TestAnXMLTVBuildHasPMSsFourSections: PMS's XMLTV load files an episode of
+// the genre News in a fourth section (custom guides design §2.3). A build
+// carries the live guide's sections and makes the one it lacks under PMS's
+// id; a guide whose first load never landed gets PMS's sections for its
+// provider, a cloud guide's three as before.
+func TestAnXMLTVBuildHasPMSsFourSections(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	xmltv := testGuide
+	cloud := Guide{Provider: "tv.plex.providers.epg.cloud", DVR: "7f4d37cb-fada-46d8-8fcb-fe1b0cff2d85"}
+
+	require.NoError(t, StageBuilt(ctx, quiet, conn, "plex", xmltv, "a", buildItems(1)))
+	assert.Equal(t, []string{"1 Movies", "2 Shows", "3 Sports", "4 News"}, sectionNames(t, conn, xmltv.Staging()), "no live guide: PMS's four")
+	require.NoError(t, StageBuilt(ctx, quiet, conn, "plex", cloud, "a", buildItems(1)))
+	assert.Equal(t, []string{"1 Movies", "2 Shows", "3 Sports"}, sectionNames(t, conn, cloud.Staging()), "a cloud guide has no News")
+
+	// A live guide with the cloud load's three sections: carried, News made.
+	require.NoError(t, SwapStaged(ctx, quiet, conn, "plex", cloud, "a"))
+	other := Guide{Provider: xmltvProvider, DVR: cloud.DVR}
+	_, err := conn.Exec(ctx, "UPDATE "+pgx.Identifier{other.Schema(), "library_sections"}.Sanitize()+" SET uuid = 'live-' || id")
+	require.NoError(t, err)
+	require.NoError(t, StageBuilt(ctx, quiet, conn, "plex", other, "b", buildItems(1)))
+	assert.Equal(t, []string{"1 Movies", "2 Shows", "3 Sports", "4 News"}, sectionNames(t, conn, other.Staging()))
+	assert.Equal(t, "live-2", one[string](t, conn, "SELECT uuid FROM "+pgx.Identifier{other.Staging(), "library_sections"}.Sanitize()+" WHERE id = 2"),
+		"the live guide's sections are carried as they are")
+}
+
+// TestAnOlderLoadNeverReplacesABuiltGuide: a built guide is ordered with
+// the loads by its swap time, so a SQLite load PMS made before the build (a
+// pod's file, copied at its PMS's start) never replaces it, and a newer one
+// does, as it would any guide.
+func TestAnOlderLoadNeverReplacesABuiltGuide(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	g := testGuide
+	require.NoError(t, InstallBuilt(ctx, quiet, conn, "plex", g, buildItems(2)))
+	at, err := guideLoadedAt(ctx, conn, g.Schema())
+	require.NoError(t, err)
+	require.Positive(t, at, "a built guide's comment orders the loads")
+
+	file := filepath.Join(t.TempDir(), g.File())
+	loadedGuide(t, conn, file, 5)
+	touch(t, file, time.Unix(0, at).Add(-time.Hour))
+	imported, err := ImportGuide(ctx, quiet, conn, "plex", g, file)
+	require.NoError(t, err)
+	assert.False(t, imported, "a load older than the build")
+	assert.Equal(t, 2, count(t, conn, g.Schema(), "metadata_items"))
+
+	touch(t, file, time.Unix(0, at).Add(time.Hour))
+	imported, err = ImportGuide(ctx, quiet, conn, "plex", g, file)
+	require.NoError(t, err)
+	assert.True(t, imported, "a load newer than the build")
+}
+
+// TestBuiltGuideSchemasAreTheLiveBuiltGuidesOfEveryProvider.
+func TestBuiltGuideSchemasAreTheLiveBuiltGuidesOfEveryProvider(t *testing.T) {
+	ctx := context.Background()
+	_, conn := libraryDB(t)
+	cloud := Guide{Provider: "tv.plex.providers.epg.cloud", DVR: "7f4d37cb-fada-46d8-8fcb-fe1b0cff2d85"}
+	loaded := Guide{Provider: xmltvProvider, DVR: "16cac8a1-0746-4e63-9a32-c9d0fd96a0c1"}
+	require.NoError(t, InstallBuilt(ctx, quiet, conn, "plex", testGuide, buildItems(1)))
+	require.NoError(t, InstallBuilt(ctx, quiet, conn, "plex", cloud, buildItems(1)))
+	require.NoError(t, StageBuilt(ctx, quiet, conn, "plex", cloud, "staged", buildItems(1)))
+	_, err := EnsureGuideSchema(ctx, conn, "plex", loaded)
+	require.NoError(t, err)
+	got, err := BuiltGuideSchemas(ctx, conn)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{testGuide.Schema(), cloud.Schema()}, got, "an XMLTV and a cloud build; no staging schema, no guide PMS loaded")
 }

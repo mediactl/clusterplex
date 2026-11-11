@@ -277,6 +277,9 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/reloadGuide"):
 		f.loading = true
+	case r.Method == http.MethodDelete && path == "/activities/a1":
+		// Cancelling the guide load ends it.
+		f.loading = false
 	case r.Method == http.MethodGet && path == "/livetv/epg/channelmap":
 		f.epgMapReads++
 		m := make([]plexapi.ChannelMapping, f.channels)
@@ -306,10 +309,10 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 
 // guideWrite is a request the recorded rule forbids during a guide load:
 // deleting a DVR or device, saving a map, reloading a guide, or creating a
-// DVR (which starts a second load).
+// DVR (which starts a second load). Cancelling the load is none.
 func guideWrite(method, path string) bool {
 	switch {
-	case method == http.MethodDelete:
+	case method == http.MethodDelete && !strings.HasPrefix(path, "/activities/"):
 		return true
 	case method == http.MethodPut && strings.HasSuffix(path, "/channelmap"):
 		return true

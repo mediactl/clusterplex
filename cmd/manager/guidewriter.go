@@ -137,10 +137,12 @@ func (m *Manager) writeGuideWriter(ctx context.Context, holder bool) error {
 	return nil
 }
 
-// builtGuides is the schemas of the guides the managers build: every Plex
-// cloud lineup's guide while plex.liveTV.cloudGuide is "manager".
+// builtGuides is the schemas of the guides the managers build, while they
+// build any: every Plex cloud lineup's guide while plex.liveTV.cloudGuide is
+// "manager", and every guide a build installed, whatever its provider (an
+// XMLTV DVR's under xmltvGuide "manager", from its first build on).
 func (m *Manager) builtGuides(ctx context.Context) ([]string, error) {
-	if m.Config.LiveTV.CloudGuide != CloudGuideManager {
+	if !m.Config.LiveTV.BuildsGuides() {
 		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -150,17 +152,23 @@ func (m *Manager) builtGuides(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	guides, err := plexbootstrap.ListGuides(ctx, conn, m.Config.Postgres.Schema)
+	var out []string
+	if m.Config.LiveTV.CloudGuide == CloudGuideManager {
+		guides, err := plexbootstrap.ListGuides(ctx, conn, m.Config.Postgres.Schema)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range guides {
+			if g.Provider == cloudGuideProvider {
+				out = append(out, g.Schema())
+			}
+		}
+	}
+	built, err := plexbootstrap.BuiltGuideSchemas(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
-	var out []string
-	for _, g := range guides {
-		if g.Provider == cloudGuideProvider {
-			out = append(out, g.Schema())
-		}
-	}
-	return out, nil
+	return append(out, built...), nil
 }
 
 // guideWriterPoll is how often the holder looks again: for a guide refresh

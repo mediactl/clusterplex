@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
+	"github.com/mediactl/clusterplex/pkg/plex/guidebuild"
 )
 
 // Each Live TV guide is served from a schema of its own
@@ -318,7 +319,11 @@ func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 // "" when it does. With the guides' writer on (guidewriter.go) only the
 // plex.tv Lease holder does, and nobody for a guide the managers build: a
 // load PMS makes there stays in its own file, and its PMS reopens the guide
-// by name, which the shim serves from the shared schema.
+// by name, which the shim serves from the shared schema. The managers build
+// every cloud guide under cloudGuide "manager", and under xmltvGuide
+// "manager" an XMLTV DVR's once the converger has named it (xmltvguide.go):
+// never before, so PMS's first load of a new DVR's guide, which pairs its
+// channel map, is swapped in.
 func (m *Manager) loadsNotOurs(g plexbootstrap.Guide) string {
 	switch {
 	case !m.Config.LiveTV.GuideWriter():
@@ -326,6 +331,8 @@ func (m *Manager) loadsNotOurs(g plexbootstrap.Guide) string {
 	case !m.holdsLease():
 		return "this pod does not write the guides"
 	case m.Config.LiveTV.CloudGuide == CloudGuideManager && g.Provider == cloudGuideProvider:
+		return "the managers build this guide"
+	case g.Provider == guidebuild.ProviderXMLTV && m.xmltv.wanted(g.DVR):
 		return "the managers build this guide"
 	}
 	return ""

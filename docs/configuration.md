@@ -927,15 +927,29 @@ XMLTV lineup (a block of clustarr's custom guides, whose device serves
 (`docs/superpowers/specs/2026-11-10-livetv-custom-guides-design.md` §5.8).
 
 - **PMS's own load is the DVR's first fill.** A new DVR's first guide is
-  the load PMS makes from the device's XMLTV; the converger lets it finish.
-- **The manager builds the rest.** Each later guide is built from the same
-  XMLTV by the managers and installed by the lease holder, in the way and
-  the place a built cloud guide is (`cloudGuideBuild` chooses the Job or the
-  holder, and the Job's RBAC is granted when either guide mode is
-  `manager`).
-- **No reloads.** PMS's later writes to the guide are held, as for a built
-  cloud guide, so neither its refreshes nor `reloadGuide` rewrite it; the
-  guide changes only when the managers build it.
+  the load PMS makes from the device's XMLTV; the converger lets it finish,
+  since it is what pairs the device's numbers with the XMLTV's channels for
+  the channel map.
+- **The manager builds the rest.** Once the map is saved, the lease holder
+  reads the device's `lineup.json` and its `xmltv.xml` from the tuner (the
+  URL PMS loads), keeps the XMLTV in `clusterplex.epg_cache`, and builds the
+  guide in the way and the place a built cloud guide is (`cloudGuideBuild`
+  chooses the Job or the holder, and the Job's RBAC is granted when either
+  guide mode is `manager`). It builds at once the first time it is asked
+  for a DVR (and after each manager restart), again when clustarr's guide
+  hash for the block moves, but no sooner than 30 minutes after the last
+  build (clustarr renders a block's XMLTV again on every guide-source
+  change), and once a day otherwise. A build that fails is tried again 15
+  minutes later, and an XMLTV with nothing left to air is never built over
+  the guide the DVR has.
+- **No reloads.** The converger posts no `reloadGuide` on a guide-hash
+  move; the load PMS starts at a channel-map save is cancelled; and a load
+  PMS makes of the guide anyway is refused at its rename (the shim's swap
+  request answers `skip the managers build this guide`), so it is not
+  swapped in. It stays in PMS's own file, which is copied in at that PMS's
+  next start only when it is newer than the last build, as for a built
+  cloud guide; a load older than the build never replaces it. PMS's later
+  writes to the guide are held, as for a built cloud guide.
 - **One writer.** The key turns on the single guide writer
   (`GuideWriter`), as `cloudGuide: manager` and `severalPods` do.
 

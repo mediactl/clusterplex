@@ -352,8 +352,8 @@ func readPlans(ctx context.Context, conn *pgx.Conn) ([]cloudPlan, error) {
 			continue // a DVR nobody builds any more
 		}
 		body, _, ok, err := epgcloud.CacheGet(ctx, conn, k)
-		if err != nil || !ok {
-			continue
+		if err != nil || !ok || planProvider(body) != cloudGuideProvider {
+			continue // an XMLTV plan (xmltvguide.go) has nothing to fetch
 		}
 		var p cloudPlan
 		if json.Unmarshal(body, &p) == nil && p.Lineup != "" {

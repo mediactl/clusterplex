@@ -164,6 +164,16 @@ type CloudGuideBuilder interface {
 	Want(dvrUUID, lineup, mapURI, lineupHash string)
 }
 
+// XMLTVGuideBuilder builds the guides of blocks on clustarr's XMLTV in place
+// of PMS's reloads (cmd/manager's xmltvGuides; clustarr's
+// docs/superpowers/specs/2026-11-10-livetv-custom-guides-design.md §5.8).
+type XMLTVGuideBuilder interface {
+	// Want is called each pass for an XMLTV block whose channel map is
+	// saved: its DVR's uuid, the guide's URL (the one PMS loads) and the
+	// guide's hash.
+	Want(dvrUUID, guideURL, guideHash string)
+}
+
 // Converger runs passes. It is used from one goroutine at a time.
 type Converger struct {
 	PMS *plexapi.Client
@@ -202,6 +212,13 @@ type Converger struct {
 	// at a map save is cancelled -- a load writes its own file, so the
 	// cancel leaves the live guide as it was.
 	CloudGuides CloudGuideBuilder
+	// XMLTVGuides builds an XMLTV block's guide in place of PMS's reloads,
+	// when set (plex.liveTV.xmltvGuide "manager"): PMS's own load is the
+	// DVR's first fill, which pairs the channel map; once the map is saved
+	// each pass tells the builder the block's DVR, guide URL and guide hash,
+	// the load a map save starts is cancelled, and a guide-hash move is the
+	// builder's, never a reloadGuide.
+	XMLTVGuides XMLTVGuideBuilder
 	// HTTP fetches a Plex block's channel map from the tuner; nil is a
 	// client with a 10 s timeout.
 	HTTP *http.Client
@@ -235,6 +252,11 @@ type Converger struct {
 	// cancelLoadsUntil is, by block, until when PMS's loads of a guide the
 	// managers build are cancelled after a map save (cancelBuiltLoads).
 	cancelLoadsUntil map[string]time.Time
+	// xmltvAsked is, by DVR uuid, the XMLTV guides this converger has asked
+	// XMLTVGuides for: from then on the builder fills the guide, so an empty
+	// one is no longer PMS's to reload (a load of a guide the managers build
+	// is refused at its rename).
+	xmltvAsked map[string]bool
 	// addresses is every livetv Service address a live provider has named
 	// since this converger started, so a deleted provider's devices and
 	// DVRs, still under its Service, are found and removed.
@@ -379,7 +401,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		c.saved, c.told, c.held, c.stale = map[string]savedHashes{}, map[string]string{}, map[string]heldLease{}, map[string]staleDVR{}
 		c.emptyReloaded, c.addresses, c.registered = map[string]time.Time{}, map[string]bool{}, map[string]registeredNote{}
 		c.revived, c.cloudReloaded = map[string]time.Time{}, map[string]time.Time{}
-		c.cancelLoadsUntil = map[string]time.Time{}
+		c.cancelLoadsUntil, c.xmltvAsked = map[string]time.Time{}, map[string]bool{}
 		c.mapChecked, c.mapRestored = map[string]mapCheck{}, map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
@@ -751,7 +773,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		// guide as it is now: no reload follows it. A guide the managers
 		// build is theirs: the load PMS starts is cancelled.
 		ps.guideBusy = true
-		if b.Lineup != "" && c.CloudGuides != nil {
+		if c.built(b) {
 			c.cancelLoadsUntil[id] = c.now().Add(cancelLoadsFor)
 			ps.guideBusy = false
 		}
@@ -776,6 +798,22 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		if err := c.restoreMap(ctx, p, b, id, dev, dvr, uri, ps); err != nil {
 			return err
 		}
+	case c.XMLTVGuides != nil:
+		// clustarr's XMLTV, built by the managers (design §5.8). An empty
+		// guide not yet asked for is PMS's to fill, as without the builder:
+		// its first load is what pairs the channel map. Once asked, the
+		// builder fills it, rebuilds it when its hash moves, and PMS's
+		// loads of it are cancelled after a map save and refused at their
+		// rename.
+		if !c.xmltvAsked[dvr.UUID] && c.emptyGuide(ctx, id, dvr) {
+			if err := c.reloadEmpty(ctx, p, b, id, dvr, ps); err != nil {
+				return err
+			}
+			break
+		}
+		c.cancelBuiltLoads(ctx, id)
+		c.xmltvAsked[dvr.UUID] = true
+		c.XMLTVGuides.Want(dvr.UUID, uri+b.GuidePath, b.GuideHash)
 	case b.GuideHash != "" && s.guide != b.GuideHash:
 		if err := c.idle(ctx, ps); err != nil {
 			return c.wait(p, b, "reload the guide", err)
@@ -788,17 +826,36 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		c.saved[id] = s
 		c.note(ctx, p, id, dvr.Key, s)
 	case c.emptyGuide(ctx, id, dvr):
-		if err := c.idle(ctx, ps); err != nil {
-			return c.wait(p, b, "reload the empty guide", err)
+		if err := c.reloadEmpty(ctx, p, b, id, dvr, ps); err != nil {
+			return err
 		}
-		if err := c.PMS.ReloadGuide(ctx, string(dvr.Key)); err != nil {
-			return fmt.Errorf("reload the empty guide: %w", err)
-		}
-		ps.guideBusy = true
-		c.emptyReloaded[id] = c.now()
-		c.log("Live TV: reloaded a guide that held no airings", "block", b.Start, "dvr", dvr.Key)
 	}
 	delete(c.told, "wait/"+id)
+	return nil
+}
+
+// built is whether b's guide is built by the managers rather than loaded by
+// PMS: a cloud block's under CloudGuides, an XMLTV block's under
+// XMLTVGuides.
+func (c *Converger) built(b Block) bool {
+	if b.Lineup != "" {
+		return c.CloudGuides != nil
+	}
+	return c.XMLTVGuides != nil
+}
+
+// reloadEmpty has PMS reload a guide that holds no airings, once an
+// emptyGuideRetry.
+func (c *Converger) reloadEmpty(ctx context.Context, p Provider, b Block, id string, dvr plexapi.DVR, ps *pass) error {
+	if err := c.idle(ctx, ps); err != nil {
+		return c.wait(p, b, "reload the empty guide", err)
+	}
+	if err := c.PMS.ReloadGuide(ctx, string(dvr.Key)); err != nil {
+		return fmt.Errorf("reload the empty guide: %w", err)
+	}
+	ps.guideBusy = true
+	c.emptyReloaded[id] = c.now()
+	c.log("Live TV: reloaded a guide that held no airings", "block", b.Start, "dvr", dvr.Key)
 	return nil
 }
 

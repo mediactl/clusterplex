@@ -122,6 +122,9 @@ type Manager struct {
 	// cloud builds the Plex cloud guides when the managers build them
 	// (plex.liveTV.cloudGuide "manager"; cloudguide.go), nil otherwise.
 	cloud *cloudGuides
+	// xmltv builds the XMLTV DVRs' guides when the managers build them
+	// (plex.liveTV.xmltvGuide "manager"; xmltvguide.go), nil otherwise.
+	xmltv *xmltvGuides
 
 	mu         sync.RWMutex
 	isReady    bool
@@ -374,6 +377,12 @@ func run() int {
 	if cfg.LiveTV.Enabled && m.Dynamic != nil {
 		// Before Plex: PMS asks its devices for their lineups at start.
 		m.startLiveTV(ctx)
+	}
+	if m.Config.LiveTV.Enabled && m.Config.LiveTV.XMLTVGuide == XMLTVGuideManager {
+		// Made before the election, whose win starts the builder, and
+		// before the guide socket, which asks it whose loads are refused.
+		// No pod fetches for it: the holder caches each XMLTV as it builds.
+		m.xmltv = newXMLTVGuides(m)
 	}
 	// Every pod, Live TV managed or not: any DVR's guide is served from
 	// PostgreSQL, and PMS loads it into a SQLite file of its own. The shim

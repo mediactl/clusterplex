@@ -60,6 +60,9 @@ func (m *Manager) liveTVLoop(ctx context.Context) {
 	if m.cloud != nil {
 		conv.CloudGuides = m.cloud // never a typed nil: the converger tests for nil
 	}
+	if m.xmltv != nil {
+		conv.XMLTVGuides = m.xmltv // nor here
+	}
 	changes, unsubscribe := m.liveTV.subscribe()
 	defer unsubscribe()
 	restarts := newLiveTVRestarts()

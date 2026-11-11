@@ -60,6 +60,9 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 	if m.cloud != nil {
 		go m.cloud.runBuilder(ctx)
 	}
+	if m.xmltv != nil {
+		go m.xmltv.runBuilder(ctx)
+	}
 	if store != nil {
 		go m.keepServerToken(ctx, store)
 	}

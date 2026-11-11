@@ -401,14 +401,16 @@ func (c *cloudGuides) stageInJob(ctx context.Context, log *slog.Logger, conn *pg
 }
 
 // cloudBuildFunc writes in's guide into a staging schema: the sections the
-// staging schema holds (the live guide's, or PMS's three) and the build's
-// clock are set here, and the build's counts land in *stats.
+// staging schema holds (the live guide's, and those of PMS's it lacks: a
+// cloud load's three, an XMLTV load's News besides) and the build's clock
+// are set here, and the build's counts land in *stats.
 func cloudBuildFunc(in *guidebuild.Input, stats *guidebuild.Stats) plexbootstrap.BuildFunc {
 	return func(ctx context.Context, tx pgx.Tx, staging string) error {
 		if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT
 			coalesce(max(id) FILTER (WHERE name = 'Movies'), 1), coalesce(max(id) FILTER (WHERE name = 'Shows'), 2),
-			coalesce(max(id) FILTER (WHERE name = 'Sports'), 3) FROM %s.library_sections`, pgx.Identifier{staging}.Sanitize())).
-			Scan(&in.Sections.Movies, &in.Sections.Shows, &in.Sections.Sports); err != nil {
+			coalesce(max(id) FILTER (WHERE name = 'Sports'), 3), coalesce(max(id) FILTER (WHERE name = 'News'), 4)
+			FROM %s.library_sections`, pgx.Identifier{staging}.Sanitize())).
+			Scan(&in.Sections.Movies, &in.Sections.Shows, &in.Sections.Sports, &in.Sections.News); err != nil {
 			return err
 		}
 		in.Now = time.Now()
@@ -420,8 +422,9 @@ func cloudBuildFunc(in *guidebuild.Input, stats *guidebuild.Stats) plexbootstrap
 
 // runGuideBuild is `manager guide-build --dvr <uuid> --stamp <stamp>`, a
 // build Job's process: it reads the plan the holder cached for dvr, checks
-// it is still the stamped one, reads its answers from the cache and stages
-// the guide. It returns the exit code.
+// it is still the stamped one, reads its answers from the cache -- a cloud
+// plan's from Plex's guide service, an XMLTV plan's XMLTV (planProvider) --
+// and stages the guide. It returns the exit code.
 func runGuideBuild(args []string) int {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("component", "livetv-guide-build")
 	dvr, stamp, pg, err := guideBuildConfig(args)
@@ -444,7 +447,7 @@ func runGuideBuild(args []string) int {
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	began := time.Now()
-	p, err := readStampedPlan(ctx, conn, dvr, stamp)
+	body, err := readStampedPlan(ctx, conn, dvr, stamp)
 	if errors.Is(err, errPlanMoved) {
 		log.Warn("the plan this build was started for is no longer the cached one; nothing built", "error", err)
 		return exitPlanMoved
@@ -452,53 +455,78 @@ func runGuideBuild(args []string) int {
 		log.Error("read the build's plan", "error", err)
 		return 1
 	}
-	in, err := cloudInput(ctx, conn, p)
+	provider := planProvider(body)
+	in, lineup, err := planInput(ctx, conn, provider, body)
 	if err != nil {
-		log.Error("read the build's answers from the cache", "error", err)
+		log.Error("read the build's answers from the cache", "provider", provider, "error", err)
 		return 1
 	}
 	var stats guidebuild.Stats
-	g := plexbootstrap.Guide{Provider: cloudGuideProvider, DVR: dvr}
+	g := plexbootstrap.Guide{Provider: provider, DVR: dvr}
 	if err := plexbootstrap.StageBuilt(ctx, log, conn, pg.Schema, g, stamp, cloudBuildFunc(&in, &stats)); err != nil {
 		log.Error("stage the guide", "error", err)
 		return 1
+	}
+	if provider == guidebuild.ProviderXMLTV {
+		log.Info("Live TV: staged an XMLTV guide", "channels", stats.Channels,
+			"items", stats.Items, "airings", stats.Airings, "took", time.Since(began).Round(time.Second))
+		return 0
 	}
 	log.Info("Live TV: staged a cloud guide built from Plex's guide service", "channels", stats.Channels,
 		"items", stats.Items, "airings", stats.Airings, "took", time.Since(began).Round(time.Second))
 	if len(stats.Unmatched) > 0 {
 		log.Warn("Live TV: mapped channels the cloud lineup lists no station for were left out of its guide",
-			"lineup", p.Lineup, "gridKeys", stats.Unmatched)
+			"lineup", lineup, "gridKeys", stats.Unmatched)
 	}
 	return 0
+}
+
+// planInput reads a stamped plan's answers from the cache: an XMLTV plan's
+// XMLTV (xmltvInput), any other a cloud plan's grids and metadata
+// (cloudInput), whose lineup it returns too.
+func planInput(ctx context.Context, conn *pgx.Conn, provider string, body []byte) (guidebuild.Input, string, error) {
+	switch provider {
+	case guidebuild.ProviderXMLTV:
+		var p xmltvPlan
+		if err := json.Unmarshal(body, &p); err != nil {
+			return guidebuild.Input{}, "", fmt.Errorf("read the plan: %w", err)
+		}
+		in, err := xmltvInput(ctx, conn, p)
+		return in, "", err
+	case cloudGuideProvider:
+		var p cloudPlan
+		if err := json.Unmarshal(body, &p); err != nil {
+			return guidebuild.Input{}, "", fmt.Errorf("read the plan: %w", err)
+		}
+		in, err := cloudInput(ctx, conn, p)
+		return in, p.Lineup, err
+	}
+	return guidebuild.Input{}, "", fmt.Errorf("a plan for provider %q, which no build reads", provider)
 }
 
 // errPlanMoved is a cached plan that is not the stamped one, or none.
 var errPlanMoved = errors.New("the cached plan moved")
 
 // readStampedPlan reads dvr's cached plan and checks it is the stamped one.
-func readStampedPlan(ctx context.Context, conn *pgx.Conn, dvr, stamp string) (cloudPlan, error) {
-	var p cloudPlan
+func readStampedPlan(ctx context.Context, conn *pgx.Conn, dvr, stamp string) ([]byte, error) {
 	body, _, ok, err := cachedPlan(ctx, conn, dvr)
 	if err != nil {
-		return p, err
+		return nil, err
 	}
 	if !ok {
-		return p, fmt.Errorf("%w: no plan is cached for DVR %s", errPlanMoved, dvr)
+		return nil, fmt.Errorf("%w: no plan is cached for DVR %s", errPlanMoved, dvr)
 	}
 	if got := cloudPlanStamp(body); got != stamp {
-		return p, fmt.Errorf("%w: the cached plan is %s", errPlanMoved, got)
+		return nil, fmt.Errorf("%w: the cached plan is %s", errPlanMoved, got)
 	}
-	if err := json.Unmarshal(body, &p); err != nil {
-		return p, fmt.Errorf("read the plan: %w", err)
-	}
-	return p, nil
+	return body, nil
 }
 
 // guideBuildConfig reads guide-build's flags and the library database's
 // settings, which the Job's pod has from the Plex pod's environment.
 func guideBuildConfig(args []string) (dvr, stamp string, pg plexdb.Config, err error) {
 	fs := newFlagSet()
-	fs.String("dvr", "", "the DVR whose cloud guide to build")
+	fs.String("dvr", "", "the DVR whose guide to build")
 	fs.String("stamp", "", "the stamp of the plan to build")
 	if err := fs.Parse(args); err != nil {
 		return "", "", pg, err

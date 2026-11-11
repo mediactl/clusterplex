@@ -1,6 +1,7 @@
 package livetv_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -702,4 +703,114 @@ func TestANewLeaderSkipsTheSavesTheOldOneMade(t *testing.T) {
 		}
 		assert.Equal(t, 1, count(r.pms.takeWrites(), "PUT "), "a takeover drops the note")
 	})
+}
+
+// fakeXMLTVGuides records what the converger asks the XMLTV guide builder.
+type fakeXMLTVGuides struct {
+	mu    sync.Mutex
+	wants []string // "<dvr> <url> <hash>"
+}
+
+func (f *fakeXMLTVGuides) Want(dvrUUID, guideURL, guideHash string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wants = append(f.wants, dvrUUID+" "+guideURL+" "+guideHash)
+}
+
+func (f *fakeXMLTVGuides) take() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w := f.wants
+	f.wants = nil
+	return w
+}
+
+// TestAnXMLTVBlockIsWantedAfterItsMapSaveAndNeverReloaded: with the XMLTV
+// guides built by the managers (custom guides design §5.8), PMS's first
+// load at the DVR's creation pairs the channel map; once the map is saved
+// the rebuild the save starts is cancelled, the builder is asked for the
+// block's guide on every pass, and a guide-hash move is the builder's, never
+// a reloadGuide. Without the builder the move is a reloadGuide, as before.
+func TestAnXMLTVBlockIsWantedAfterItsMapSaveAndNeverReloaded(t *testing.T) {
+	r := newRig(t)
+	built := &fakeXMLTVGuides{}
+	r.conv.XMLTVGuides = built
+	b := r.block(0)
+	p := provider(b)
+
+	// The DVR's creation loads the guide (PMS's first fill): the builder is
+	// not asked before the map is saved.
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.NotEqual(t, livetv.Converged, res.Status, "the map waits for the creation's load")
+	assert.Empty(t, built.take(), "no build before the map is saved")
+	r.pms.endLoad()
+
+	res, err = r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, livetv.Converged, res.Status, "the save's rebuild is cancelled, so nothing waits on it")
+	_, dvrs := r.pms.state()
+	require.Len(t, dvrs, 1)
+	url := b.URI + "/xmltv.xml"
+	assert.Equal(t, []string{dvrs[0].UUID + " " + url + " g1000"}, built.take())
+	writes := r.pms.takeWrites()
+	assert.Equal(t, 1, count(writes, "PUT /media/grabbers/devices/"), "the map is saved")
+	assert.Equal(t, 1, count(writes, "DELETE /activities/"), "the rebuild the save started is cancelled")
+	assert.Zero(t, count(writes, "POST /livetv/dvrs/"), "no reloadGuide")
+
+	p.Blocks[0].GuideHash = "g-moved"
+	res, err = r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, livetv.Converged, res.Status)
+	assert.Equal(t, []string{dvrs[0].UUID + " " + url + " g-moved"}, built.take(), "the moved hash is the builder's")
+	assert.Zero(t, count(r.pms.takeWrites(), "POST /livetv/dvrs/"), "a guide-hash move posts no reloadGuide")
+
+	t.Run("without the builder a guide-hash move reloads the guide", func(t *testing.T) {
+		r := newRig(t)
+		p := provider(r.block(0))
+		r.converge(t, 6, p)
+		r.pms.takeWrites()
+		p.Blocks[0].GuideHash = "g-moved"
+		_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		_, dvrs := r.pms.state()
+		require.Len(t, dvrs, 1)
+		assert.Equal(t, []string{"POST /livetv/dvrs/" + string(dvrs[0].Key) + "/reloadGuide"}, r.pms.takeWrites())
+	})
+}
+
+// TestAnEmptyXMLTVGuideIsPMSsToFillUntilTheBuilderIsAsked: an XMLTV block's
+// empty guide is reloaded by PMS, as without the builder, until the
+// converger has asked the builder for it; from then on the builder fills
+// it, and a load PMS made would be refused at its rename anyway.
+func TestAnEmptyXMLTVGuideIsPMSsToFillUntilTheBuilderIsAsked(t *testing.T) {
+	r := newRig(t)
+	built := &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	empty := true
+	r.conv.XMLTVGuides = built
+	r.conv.Now = func() time.Time { return now }
+	r.conv.GuideEmpty = func(context.Context, string) (bool, error) { return empty, nil }
+	p := provider(r.block(0))
+	run := func() {
+		t.Helper()
+		_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		r.pms.endLoad()
+	}
+
+	run() // the DVR is created, its load runs
+	run() // the map is saved; the empty guide waits for the load the save started
+	assert.Empty(t, built.take())
+	r.pms.takeWrites()
+	run()
+	assert.Equal(t, 1, reloads(r.pms.takeWrites()), "PMS fills the empty guide")
+	assert.Empty(t, built.take(), "the builder is not asked meanwhile")
+
+	run()
+	assert.Len(t, built.take(), 1, "asked once PMS's reload is under way")
+	now = now.Add(2 * time.Hour)
+	run()
+	assert.Zero(t, reloads(r.pms.takeWrites()), "an empty guide once asked for is the builder's")
+	assert.Len(t, built.take(), 1)
 }

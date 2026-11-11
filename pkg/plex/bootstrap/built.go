@@ -107,7 +107,7 @@ func StageBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 	}
 	live, err := schemaExists(ctx, conn, schema)
 	if err == nil {
-		err = fillBuilt(ctx, conn, schema, staging, live, stamp, build)
+		err = fillBuilt(ctx, conn, g, staging, live, stamp, build)
 	}
 	if err != nil {
 		if dropErr := dropSchema(context.Background(), conn, staging); dropErr != nil {
@@ -193,12 +193,13 @@ func SwapStaged(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 
 // fillBuilt writes staging's sections and build's rows, and records the
 // build under stamp, in one transaction.
-func fillBuilt(ctx context.Context, conn *pgx.Conn, schema, staging string, live bool, stamp string, build BuildFunc) error {
+func fillBuilt(ctx context.Context, conn *pgx.Conn, g Guide, staging string, live bool, stamp string, build BuildFunc) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	schema := g.Schema()
 	s, l := pgx.Identifier{staging}.Sanitize(), pgx.Identifier{schema}.Sanitize()
 	var sections int
 	if live {
@@ -210,7 +211,8 @@ func fillBuilt(ctx context.Context, conn *pgx.Conn, schema, staging string, live
 		if _, err := tx.Exec(ctx, "INSERT INTO "+s+".library_sections SELECT * FROM "+l+".library_sections"); err != nil {
 			return fmt.Errorf("carry the sections over: %w", err)
 		}
-	} else if err := seedSections(ctx, tx, staging); err != nil {
+	}
+	if err := seedSections(ctx, tx, staging, g.Provider); err != nil {
 		return err
 	}
 	if err := build(ctx, tx, staging); err != nil {
@@ -250,20 +252,43 @@ func carryLive(ctx context.Context, conn *pgx.Conn, schema, staging string) erro
 	return tx.Commit(ctx)
 }
 
-// seedSections writes the three sections PMS's cloud load makes, as it
-// wrote them on the rig (2026-11-10): Movies, then Shows and Sports with
-// seasons flattened.
-func seedSections(ctx context.Context, tx pgx.Tx, staging string) error {
+// xmltvProvider is an XMLTV DVR's guide provider (guidebuild.ProviderXMLTV,
+// which imports this package).
+const xmltvProvider = "tv.plex.providers.epg.xmltv"
+
+// seedSections makes each section PMS's load of a provider's guide makes
+// that staging lacks by name, under PMS's id for it when that is free and
+// past the highest otherwise: a cloud load's Movies, then Shows and Sports
+// with seasons flattened, as PMS wrote them on the rig (2026-11-10); an
+// XMLTV load's News besides, its fourth (custom guides design §2.3), seeded
+// as Shows and Sports are. The sections a live guide holds are copied
+// before, so this makes all of them only for a guide whose first load
+// never landed.
+func seedSections(ctx context.Context, tx pgx.Tx, staging, provider string) error {
 	now := time.Now().Unix()
 	flatten := extradata.Encode(map[string]string{"pr:flattenSeasons": "1"})
-	for i, s := range []struct {
+	type section struct {
 		name   string
 		typ    int
 		fields string
-	}{{"Movies", 1, ""}, {"Shows", 2, flatten}, {"Sports", 2, flatten}} {
-		if _, err := tx.Exec(ctx, "INSERT INTO "+pgx.Identifier{staging, "library_sections"}.Sanitize()+
+	}
+	sections := []section{{"Movies", 1, ""}, {"Shows", 2, flatten}, {"Sports", 2, flatten}}
+	if provider == xmltvProvider {
+		sections = append(sections, section{"News", 2, flatten})
+	}
+	table := pgx.Identifier{staging, "library_sections"}.Sanitize()
+	for i, s := range sections {
+		var have bool
+		if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM "+table+" WHERE name = $1)", s.name).Scan(&have); err != nil {
+			return err
+		}
+		if have {
+			continue
+		}
+		if _, err := tx.Exec(ctx, "INSERT INTO "+table+
 			` (id, name, section_type, created_at, updated_at, user_fields, uuid, changed_at, content_changed_at)
-			VALUES ($1, $2, $3, $4, $4, $5, gen_random_uuid()::text, 0, 0)`, i+1, s.name, s.typ, now, s.fields); err != nil {
+			VALUES (CASE WHEN EXISTS (SELECT 1 FROM `+table+` WHERE id = $1) THEN (SELECT max(id) + 1 FROM `+table+`) ELSE $1 END,
+				$2, $3, $4, $4, $5, gen_random_uuid()::text, 0, 0)`, i+1, s.name, s.typ, now, s.fields); err != nil {
 			return fmt.Errorf("make the %s section: %w", s.name, err)
 		}
 	}
@@ -340,6 +365,36 @@ func guideBuiltAt(comment string) int64 {
 		return 0
 	}
 	return ns
+}
+
+// BuiltGuideSchemas is the schemas of the live guides the managers built
+// (their comment is builtComment), whatever their provider: a Plex cloud
+// lineup's or an XMLTV DVR's. A staging or a replaced schema is none.
+func BuiltGuideSchemas(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	rows, err := conn.Query(ctx, `SELECT nspname::text, obj_description(oid, 'pg_namespace') FROM pg_namespace
+		WHERE nspname LIKE 'epg\_%' AND nspname NOT LIKE '%\_next' AND nspname NOT LIKE '%\_old' ORDER BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	type schema struct {
+		name    string
+		comment *string
+	}
+	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (schema, error) {
+		var s schema
+		err := r.Scan(&s.name, &s.comment)
+		return s, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, s := range all {
+		if s.comment != nil && guideBuiltAt(*s.comment) > 0 {
+			out = append(out, s.name)
+		}
+	}
+	return out, nil
 }
 
 // GuideBuiltAt is when g's guide was last built from Plex's guide service,
