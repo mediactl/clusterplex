@@ -56,7 +56,8 @@ func localScanner(t *testing.T) *Executor {
 
 func TestDispatcherForwardsTranscoderToWorkerWithRewrittenArgs(t *testing.T) {
 	rec := &recordingServer{}
-	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
+	d := &Dispatcher{
+		Logger:  slog.New(slog.DiscardHandler),
 		Local:   localScanner(t),
 		Workers: staticWorkers{{Name: "plex-1", Addr: "10.0.0.2:50051"}},
 		Dial:    unixDialer(startServer(t, rec)),
@@ -99,7 +100,8 @@ func TestDispatcherRunsLocallyWhenNoWorkerIsReady(t *testing.T) {
 }
 
 func TestDispatcherFallsBackToLocalWhenDialFails(t *testing.T) {
-	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
+	d := &Dispatcher{
+		Logger:  slog.New(slog.DiscardHandler),
 		Local:   localScanner(t),
 		Workers: staticWorkers{{Name: "plex-1", Addr: "x"}},
 		Dial: func(context.Context, string) (pb.ManagerClient, io.Closer, error) {
@@ -113,7 +115,8 @@ func TestDispatcherFallsBackToLocalWhenDialFails(t *testing.T) {
 }
 
 func TestDispatcherFallsBackToLocalWhenWorkerRejectsBeforeOutput(t *testing.T) {
-	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
+	d := &Dispatcher{
+		Logger:  slog.New(slog.DiscardHandler),
 		Local:   localScanner(t),
 		Workers: staticWorkers{{Name: "plex-1", Addr: "x"}},
 		Dial:    unixDialer(startServer(t, failingServer{})),

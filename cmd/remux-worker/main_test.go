@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mediactl/clusterplex/pkg/logging"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/mediactl/clusterplex/pkg/logging"
 
 	"github.com/stretchr/testify/require"
 )
