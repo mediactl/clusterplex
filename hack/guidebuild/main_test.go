@@ -158,3 +158,54 @@ func count(t *testing.T, conn *pgx.Conn, sql string) int {
 	require.NoError(t, conn.QueryRow(context.Background(), sql).Scan(&n))
 	return n
 }
+
+// rekey moves a built plex item onto PMS's key only when no built row holds
+// that key already, the first in key order when two plex items would take
+// one; it moves an item's taggings, parent references and airings only with
+// the item; and it counts a plex guid addition only for an item it moved:
+// the same rows give the same answer every time, whatever Go's map order.
+func TestRekeyMovesOnlyWhatItCanAndCountsWhatItMoved(t *testing.T) {
+	const (
+		ep      = "plex://episode/a"
+		twin    = "plex://episode/b" // PMS keys it as ep's PMS key too
+		blocked = "plex://episode/c" // PMS's key is a built row already
+		pmsEp   = "tv.plex.xmltv://episode/Show/1/1"
+		pmsC    = "tv.plex.xmltv://episode/Other/1/1"
+	)
+	guids := map[string]string{ep: pmsEp, twin: pmsEp, blocked: pmsC}
+	items := func() map[string]map[string]any {
+		return map[string]map[string]any{
+			ep:      {"guid": ep, "hash": itemHash(ep)},
+			twin:    {"guid": twin, "hash": itemHash(twin)},
+			blocked: {"guid": blocked, "hash": itemHash(blocked)},
+			pmsC:    {"guid": pmsC, "hash": itemHash(pmsC)},
+			"child": {"guid": "child", "parent": ep},
+		}
+	}
+	taggings := func() map[string]map[string]any {
+		return map[string]map[string]any{
+			ep + "|310|9001 X1 One||0":        {"id": 1.0},
+			twin + "|310|9002 X1 Two||0":      {"id": 2.0},
+			blocked + "|310|9003 X1 Three||0": {"id": 3.0},
+		}
+	}
+	for range 50 {
+		s := &additionSet{guids: guids, found: map[string][]string{}}
+		got := s.rekey("metadata_items", items())
+		require.Contains(t, got, pmsEp)
+		assert.Equal(t, pmsEp, got[pmsEp]["guid"], "the first plex item in key order moves")
+		assert.Equal(t, itemHash(pmsEp), got[pmsEp]["hash"])
+		assert.Contains(t, got, twin, "a second plex item for one PMS key keeps its own")
+		assert.Contains(t, got, blocked, "a plex item whose PMS key a built row holds keeps its own")
+		assert.Equal(t, pmsEp, got["child"]["parent"])
+		assert.Equal(t, []string{pmsEp + " -> " + ep}, s.found["plex guid"], "only what moved is an addition")
+
+		tg := s.rekey("taggings", taggings())
+		assert.Contains(t, tg, pmsEp+"|310|9001 X1 One||0")
+		assert.Contains(t, tg, twin+"|310|9002 X1 Two||0", "a tagging moves only with its item")
+		assert.Contains(t, tg, blocked+"|310|9003 X1 Three||0")
+		mi := s.rekey("media_items", map[string]map[string]any{"1|100": {"item": ep}, "2|100": {"item": twin}})
+		assert.Equal(t, pmsEp, mi["1|100"]["item"])
+		assert.Equal(t, twin, mi["2|100"]["item"])
+	}
+}

@@ -48,8 +48,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -367,7 +369,7 @@ var tables = []table{
 func compare(ctx context.Context, conn *pgx.Conn, w io.Writer, a, b string, examples int, add *additionSet) (bool, error) {
 	differs := false
 	if add != nil {
-		add.found = map[string][]string{}
+		add.found, add.moved = map[string][]string{}, nil
 	}
 	for _, t := range tables {
 		ra, err := load(ctx, conn, t, a)
@@ -449,6 +451,9 @@ func compare(ctx context.Context, conn *pgx.Conn, w io.Writer, a, b string, exam
 type additionSet struct {
 	guids map[string]string
 	found map[string][]string
+	// moved is the plex items a compare's rekey of metadata_items moved,
+	// each to its PMS guid.
+	moved map[string]string
 }
 
 // xmltvAdditions is an XMLTV guide's additions: its plex items, each with
@@ -461,50 +466,69 @@ func xmltvAdditions(guide []byte, lineup map[string]string, now time.Time) (*add
 	return &additionSet{guids: guids}, nil
 }
 
-// addedImages are the image columns PMS's XMLTV reader leaves empty where
-// the build may fill them: an episode's thumb (its still) and every art.
+// addedImages are the image columns a build may fill where PMS's XMLTV
+// reader stores none: user_thumb_url (an episode's still; a show's or a
+// movie's poster when its first listing has no icon, or the first image a
+// later listing carries when its first carries none) and user_art_url
+// (every backdrop). allows takes either only where the reference row holds
+// none; one PMS filled is compared like any column.
 var addedImages = []string{"user_thumb_url", "user_art_url"}
 
-// rekey lines up a built table's rows with the reference's: an item a plex
-// guid keys is keyed, and points and is pointed at, by the guid PMS's
-// reader keys it by, its hash with it; each such item is a "plex guid"
-// addition. A row that would take another's key keeps its own.
+// rekey lines up a built table's rows with the reference's. Over
+// metadata_items, which compare reads first, it decides which plex items
+// move: in key order, an item moves to the guid PMS's reader keys it by
+// unless a built row holds that key already or an earlier item took it,
+// and each item that moves, and only those, is a "plex guid" addition.
+// Its row then takes that key and guid, and its hash with them; a parent
+// reference, an airing's item and a tagging's key follow it, and nothing
+// else moves.
 func (s *additionSet) rekey(table string, rows map[string]map[string]any) map[string]map[string]any {
-	pms := func(v any) any {
+	keys := slices.Sorted(maps.Keys(rows))
+	if table == "metadata_items" {
+		s.moved = map[string]string{}
+		taken := map[string]bool{}
+		for _, k := range keys {
+			taken[k] = true
+		}
+		for _, k := range keys {
+			p, ok := s.guids[k]
+			if !ok || taken[p] {
+				continue
+			}
+			taken[p] = true
+			s.moved[k] = p
+			s.found["plex guid"] = append(s.found["plex guid"], p+" -> "+k)
+		}
+	}
+	moved := func(v any) any {
 		if g, ok := v.(string); ok {
-			if p, ok := s.guids[g]; ok {
+			if p, ok := s.moved[g]; ok {
 				return p
 			}
 		}
 		return v
 	}
 	out := make(map[string]map[string]any, len(rows))
-	for k, v := range rows {
-		nk := k
+	for _, k := range keys {
+		v, nk := rows[k], k
 		switch table {
 		case "metadata_items":
-			if p, ok := s.guids[k]; ok {
-				if _, taken := rows[p]; !taken {
-					nk = p
-					s.found["plex guid"] = append(s.found["plex guid"], p+" -> "+k)
-					v["guid"] = p
-					if v["hash"] == itemHash(k) {
-						v["hash"] = itemHash(p)
-					}
+			if p, ok := s.moved[k]; ok {
+				nk = p
+				v["guid"] = p
+				if v["hash"] == itemHash(k) {
+					v["hash"] = itemHash(p)
 				}
 			}
-			v["parent"] = pms(v["parent"])
+			v["parent"] = moved(v["parent"])
 		case "media_items":
-			v["item"] = pms(v["item"])
+			v["item"] = moved(v["item"])
 		case "taggings":
 			if g, rest, ok := strings.Cut(k, "|"); ok {
-				if p, ok := s.guids[g]; ok {
+				if p, ok := s.moved[g]; ok {
 					nk = p + "|" + rest
 				}
 			}
-		}
-		if _, taken := out[nk]; taken {
-			nk = k
 		}
 		out[nk] = v
 	}
