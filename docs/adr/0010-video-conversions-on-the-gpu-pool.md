@@ -68,3 +68,20 @@ in process with ffgo
 - The pool is off by default (chart `videoTranscode.enabled`, kustomize
   component `k8s/components/video-transcode`). Its pods schedule only on a
   node with Intel's GPU plugin and NFD's Intel rules.
+
+## Amended 2026-11-10: a CPU pool beside the GPU pool
+
+Plex's conversions took the Intel GPU's video engines from clustarr's
+transcodes (one encode left beside one to four streams, none beside five
+or more), so a second pool of the same worker image runs libx264 on a node
+with cores to spare (`videoTranscode.cpu`,
+`docs/superpowers/specs/2026-11-10-cpu-video-route-design.md`). The manager
+orders the two pools per conversion -- the CPU pool first while clustarr's
+intel-work Lease says clustarr has work for the GPU (`--video-cpu-when
+clustarr-busy`; `always` and `never` by value), the GPU pool first
+otherwise -- and each pool is the other's second chance when full. The CPU
+pod judges the source it opens (H.264 and MPEG-2 at 1080p or less, no HDR)
+and passes one beyond its rule back before any output; whole-file and
+tone-mapped jobs are the GPU pool's alone; only a GPU conversion is counted
+in the Lease clustarr yields to. The decision stands: no conversion runs on
+Plex's node, and a job no pool takes is refused as before.

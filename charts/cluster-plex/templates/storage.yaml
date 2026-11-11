@@ -95,6 +95,15 @@ data:
     video-selector: "app=plex-video-transcode"
     video-port: 50053
     video-lease-name: {{ .Values.videoTranscode.leaseName | quote }}
+    {{- if .Values.videoTranscode.cpu.enabled }}
+    # The CPU pool: asked first per video-cpu-when, else the GPU pool's
+    # second chance; clustarr-busy reads clustarr's intel-work Lease.
+    video-cpu-selector: "app=plex-video-transcode-cpu"
+    video-cpu-when: {{ .Values.videoTranscode.cpu.when | quote }}
+    {{- with include "cluster-plex.clustarrWorkLease" . }}
+    clustarr-work-lease: {{ . | quote }}
+    {{- end }}
+    {{- end }}
     {{- else }}
     # No GPU pool: every video conversion is refused, never run on Plex's node.
     video-selector: ""

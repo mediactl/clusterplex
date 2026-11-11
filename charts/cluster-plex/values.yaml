@@ -513,3 +513,42 @@ videoTranscode:
   # The Lease the managers count the pool's conversions in, which clustarr's
   # transcode admission yields the Intel GPU to.
   leaseName: cluster-plex-video-transcodes
+  # The CPU pool (docs/superpowers/specs/2026-11-10-cpu-video-route-design.md):
+  # a second pool of libx264 pods on the same image, pinned to a node with
+  # cores to spare, that takes Plex's streamed conversions of H.264 and
+  # MPEG-2 sources at 1080p or less without HDR while clustarr holds work
+  # for the GPU (or always, or never, by `when`), and is the GPU pool's
+  # second chance when it is full, as the GPU pool is its own. Plex's node
+  # still runs nothing. Needs the GPU pool (videoTranscode.enabled).
+  cpu:
+    enabled: false
+    replicas: 1
+    # Conversions per pod: two saturate eight cores at about 3x real time
+    # each (the design's measurements on a 2026 NUC).
+    maxJobs: 2
+    resources:
+      requests: {cpu: "3", memory: 2Gi}
+      limits: {cpu: "8", memory: 4Gi}
+    nodeSelector: {}
+    # Pin the pool to the node with the cores: a required
+    # kubernetes.io/hostname term. Empty renders no affinity, and NOTES
+    # says so.
+    affinity: {}
+    tolerations: []
+    # When the CPU pool is asked first: clustarr-busy (clustarr's
+    # intel-work Lease is fresh and above zero), always, never. Either way
+    # each pool is the other's second chance when full.
+    when: clustarr-busy
+    # The sources a pod takes; a source beyond these is passed over to the
+    # GPU pool before any output. An empty list takes every codec, 0 any
+    # size, hdr true an HDR source (tone-mapped on the CPU).
+    sources: [h264, mpeg2video]
+    maxSourcePixels: 2073600
+    hdr: false
+    # libx264's threads: the CPU limit.
+    threads: 8
+    # clustarr's intel-work Lease, <namespace>/<name>, read under
+    # clustarr-busy. Empty derives <plex.clustarr.namespace>/clustarr-intel-work
+    # when plex.clustarr.enabled, else names none (never first). The
+    # clustarr-reader Role grants its read in plex.clustarr.namespace.
+    clustarrWorkLease: ""

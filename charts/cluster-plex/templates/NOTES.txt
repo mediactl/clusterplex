@@ -45,3 +45,9 @@ plex.machineIdentifier is unset, so Plex will generate an identity on first
 start. Pin it if you want a rebuilt cluster to keep the identity clients
 already know. Setting it on a server that already has one changes it.
 {{- end }}
+{{- if and .Values.videoTranscode.enabled .Values.videoTranscode.cpu.enabled (not .Values.videoTranscode.cpu.affinity) }}
+
+videoTranscode.cpu.affinity is unset, so the CPU video pool may schedule on
+any node. Pin it to the node with the cores (a required kubernetes.io/hostname
+term): each conversion it runs takes up to {{ .Values.videoTranscode.cpu.resources.limits.cpu }} of them.
+{{- end }}

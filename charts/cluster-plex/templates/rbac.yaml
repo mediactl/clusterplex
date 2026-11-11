@@ -116,6 +116,16 @@ rules:
     resources: ["plexcollections/status"]
     verbs: ["patch"]
   {{- end }}
+  {{- if and .Values.videoTranscode.enabled .Values.videoTranscode.cpu.enabled }}
+  {{- with include "cluster-plex.clustarrWorkLease" . }}
+  # The CPU video route reads clustarr's intel-work Lease (by name; a Lease
+  # outside plex.clustarr.namespace needs a grant of your own).
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get"]
+    resourceNames: [{{ (splitList "/" .) | last | quote }}]
+  {{- end }}
+  {{- end }}
   # The Events the lease holder records on PlexCollections and
   # IPTVProviders.
   - apiGroups: ["events.k8s.io"]

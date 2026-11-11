@@ -366,3 +366,65 @@ On talos (there is no GPU on the rig):
   CPU request from what the NUC shows.
 - Whether the manager's pre-check is worth its code once the pass-over is
   measured.
+
+## As built (2026-11-10)
+
+Built the same day in six commits on `main`, by the plan
+`docs/superpowers/plans/2026-11-10-cpu-video-route.md` (its ledger's rulings
+are these), with the clustarr half (`PassResult.IntelWork`, the
+`clustarr-intel-work` Lease, chart `manager.intelWorkLease`) landed in
+clustarr the same day.
+
+- **Eligibility in the pipeline** (`27d4b73`): `pipeline.Eligibility{Sources,
+  MaxPixels, NoHDR}.Check(Source)` runs right after the input opens, before
+  any device, burner or output, and answers `video.ErrNotForPool` naming the
+  field ("not for this pool: hevc", "3840x2160", "HDR"). The field is
+  `NoHDR`, not the design's `hdr: true` allows, so the zero value takes
+  everything and the flag `--no-hdr` maps onto it; a height on a 16-line
+  boundary is judged 16 lines short (`displayHeight`), since 1088 coded
+  lines are 1080p. HDR is PQ, HLG or 10-bit BT.2020 of no stated transfer,
+  the expression `newVideoPath` already used (now `mayBeHDR`).
+  `Options.Threads` bounds libx264.
+- **The worker** (`d2effe4`): a run ending `ErrNotForPool` ends the stream
+  `FailedPrecondition` with the reason and no `Done`, its slot released;
+  flags `--sources`, `--max-source-pixels`, `--no-hdr`, `--threads` (a pod
+  with none set judges nothing).
+- **The Lease reader** (`30ed5e6`): `lease.Work.Busy` reads
+  `clustarr.io/intel-work` by the rule clustarr reads ours (`CountOf`: fresh
+  within 30 s and above zero); absent is not busy, unreadable is an error
+  the caller logs and reads as not busy.
+- **The relay** (`b181bcc`): `Relay.CPU`, `CPUFirst`, `Routed`,
+  `PassedOver`; `order` gives the GPU pool alone for a whole-file or
+  tone-mapped job or without a CPU pool, else the two in the rule's order;
+  a pool with no ready pod or every pod full is passed over (`full`), a
+  pod's `FailedPrecondition` before its first message passes it over
+  (`ineligible`) with the placement and the Lease count undone and the
+  next pool's streamed inputs pumped from their first byte again; a shape,
+  dial or worker failure refuses for all. `Routed` fires at the pod's
+  first message of any kind, so a pool passed over never counts as having
+  taken the conversion and the counter never lags a stream's length (the
+  plan's "no output and nothing posted" would have counted a pool that
+  sent only `Started`). `Placement.Pool` names the pool.
+- **The manager** (`d8f4b00`): `--video-cpu-selector`, `--video-cpu-when`
+  (`clustarr-busy` | `always` | `never`, validated) and
+  `--clustarr-work-lease` (`<namespace>/<name>`, validated); `Config.cpuFirst`;
+  `Manager.videoRelay` builds the route (the seam the wiring test reads);
+  `clusterplex_video_conversions_total{pool}` and
+  `clusterplex_video_pool_passed_over_total{pool,reason}`. The no-pool
+  refusal now names the pool it last asked ("no ready gpu video transcode
+  pod").
+- **The chart** (this commit, 0.6.9): `videoTranscode.cpu.*` and the
+  Deployment `<fullname>-video-transcode-cpu` (`app=plex-video-transcode-cpu`,
+  the GPU pool's security context, probes and mounts, no GPU resource or
+  render node), rendered only with `videoTranscode.enabled` as well, since
+  the route exists only with a GPU pool; the manager's `video-cpu-selector`,
+  `video-cpu-when` and `clustarr-work-lease` keys, the last derived as
+  `<plex.clustarr.namespace>/clustarr-intel-work` when `plex.clustarr.enabled`;
+  the `clustarr-reader` Role's `get` on that Lease by name, in
+  `plex.clustarr.namespace`; a NOTES line when `cpu.affinity` is unset.
+  There is no kustomize component for the CPU pool.
+- **Not yet**: the talos proof ("Verifying it" 1-4) waits for a clustarr
+  chart that pulls this cluster-plex and the owner's deploy, with
+  `cpu.enabled`, `affinity` on `talos-88-ae-dd-75-3d-a0`, `when: always`
+  first, then `clustarr-busy` once clustarr publishes its Lease. Its
+  readings go here.

@@ -1193,17 +1193,20 @@ runs the stream as before.
 ## The GPU pool
 
 Every video conversion Plex is asked for runs on the GPU pool: an Intel GPU,
-encoding with QSV in process (ADR-0010). That covers Live TV and library
-playback from any client, downloads, Optimize and the DVR's
-convert-while-recording. There is no fallback. A conversion the pool cannot
-take is refused and never runs on Plex's node, so the player shows a
-playback error.
+encoding with QSV in process (ADR-0010), or on the CPU pool beside it (below,
+amended 2026-11-10). That covers Live TV and library playback from any
+client, downloads, Optimize and the DVR's convert-while-recording. There is
+no fallback to Plex's node. A conversion no pool can take is refused and
+never runs there, so the player shows a playback error.
 
 | Flag | Default | |
 | --- | --- | --- |
 | `--video-selector` | `app=plex-video-transcode` | Label selector of the pool's pods. Empty turns the pool off, and every video conversion is refused. The chart renders it empty when `videoTranscode.enabled` is false. |
 | `--video-port` | `50053` | The pool's gRPC port. |
 | `--video-lease-name` | `cluster-plex-video-transcodes` | The Lease, in the manager's namespace, that counts live conversions. clustarr's transcode admission admits nothing to its Intel class while the count is above zero (clustarr's `manager.videoTranscodeLease`, `<namespace>/<name>`). |
+| `--video-cpu-selector` | (empty) | Label selector of the CPU pool's pods (libx264). Empty leaves no CPU pool. The chart renders `app=plex-video-transcode-cpu` with `videoTranscode.cpu.enabled`. |
+| `--video-cpu-when` | `clustarr-busy` | When the CPU pool is asked before the GPU pool: `clustarr-busy` (clustarr's intel-work Lease is fresh and above zero), `always`, `never`. Either way each pool is the other's second chance when full. |
+| `--clustarr-work-lease` | (empty) | clustarr's intel-work Lease, `<namespace>/<name>`, read under `clustarr-busy` for every conversion. Empty is never first. A Lease that cannot be read (RBAC, absent, stale) is not busy: the GPU pool is asked first, and the failure is logged, never a refusal. |
 
 The chart's values:
 
@@ -1221,6 +1224,17 @@ The chart's values:
 | `videoTranscode.resources` | 2 CPU, 2Gi requested; 4Gi limit | Outputs are muxed in memory. |
 | `videoTranscode.inputs.sizeLimit` | `64Mi` | The memory-backed `emptyDir` that holds a subtitle streamed for burn-in. |
 | `videoTranscode.leaseName` | `cluster-plex-video-transcodes` | Rendered into `--video-lease-name`. |
+| `videoTranscode.cpu.enabled` | `false` | Run the CPU pool beside the GPU pool (it needs `videoTranscode.enabled`). |
+| `videoTranscode.cpu.replicas` | `1` | Pods. |
+| `videoTranscode.cpu.maxJobs` | `2` | Conversions per pod: two saturate eight cores at about 3x real time each (the design's measurements on a 2026 NUC). |
+| `videoTranscode.cpu.resources` | 3 CPU, 2Gi requested; 8 CPU, 4Gi limit | A conversion runs on every core the limit allows. |
+| `videoTranscode.cpu.affinity` | `{}` | Pin the pool to the node with the cores: a required `kubernetes.io/hostname` term. Empty renders no affinity, and NOTES says so. `nodeSelector` and `tolerations` are also available. |
+| `videoTranscode.cpu.when` | `clustarr-busy` | Rendered into `--video-cpu-when`. |
+| `videoTranscode.cpu.sources` | `[h264, mpeg2video]` | The codecs a pod takes (`--sources`); a source beyond them is passed over to the GPU pool before any output. Empty takes every codec. |
+| `videoTranscode.cpu.maxSourcePixels` | `2073600` | The most pixels a source frame may carry (`--max-source-pixels`; 1080p, with 1088 coded lines allowed). `0` takes any size. |
+| `videoTranscode.cpu.hdr` | `false` | Take an HDR source (renders `--no-hdr` when false). |
+| `videoTranscode.cpu.threads` | `8` | libx264's threads (`--threads`): the CPU limit. |
+| `videoTranscode.cpu.clustarrWorkLease` | (empty) | clustarr's intel-work Lease, `<namespace>/<name>`, rendered into `--clustarr-work-lease`. Empty derives `<plex.clustarr.namespace>/clustarr-intel-work` when `plex.clustarr.enabled`, else names none. The `clustarr-reader` Role grants its `get` by name in `plex.clustarr.namespace`; a Lease elsewhere needs a grant of your own. |
 
 A pod is ready only once its device has passed the start-up measure (an
 h264_qsv encode through vpp_qsv, plus a VA-API decode of each format), and
@@ -1231,6 +1245,34 @@ restarts it with backoff. A conversion that outlives its stream by 5 s (a
 GPU call that never returns) is abandoned and its slot freed; four still
 running fail `/healthz`, and the kubelet restarts the pod. With kustomize, add the component
 `k8s/components/video-transcode`.
+
+### The CPU pool
+
+The CPU pool (`videoTranscode.cpu`, `docs/superpowers/specs/2026-11-10-cpu-video-route-design.md`)
+is a second pool of the same image running libx264, pinned to a node with
+cores to spare, so Plex's conversions leave the Intel GPU's video engines to
+clustarr's transcodes while clustarr has work for them. For each conversion
+the manager orders the two pools: the CPU pool first while
+`--video-cpu-when` says so (`clustarr-busy` reads clustarr's intel-work Lease,
+which clustarr's admission renews every 10 s while its Intel class has
+files running, queued or waiting; `always`; `never`), the GPU pool first
+otherwise, and each is the other's second chance when every pod of the first
+is full. A whole-file job (a download, Optimize, a DVR conversion) and a job
+Plex asks to tone-map are the GPU pool's alone. The manager never probes the
+file: the CPU pod judges the source as it opens it, against `--sources`,
+`--max-source-pixels` and `--no-hdr`, and passes a source beyond them back
+(gRPC `FailedPrecondition`, before any output), so the next pool runs it with
+its streamed input pumped again from its first byte. A job no pool takes is
+refused `full` when any pod was full, else `no-pool`; a pod that dies after
+accepting is `worker-error`, never a pass-over. Only a GPU conversion is
+counted in the `--video-lease-name` Lease. `clusterplex_video_conversions_total{pool}`
+counts the conversions by the pool that took them and
+`clusterplex_video_pool_passed_over_total{pool,reason}` the pass-overs
+(`full`, `ineligible`). Measured on a 2026 NUC's eight cores, a 1080p60
+H.264 stream to 720p30 runs at 8.2x real time on one job and two together at
+3.5x each, with the first segment 1.2 s later than the GPU's and a VMAF the
+viewer cannot tell apart; the design's "Measured" section has the numbers.
+There is no kustomize component for the CPU pool yet.
 
 ## Applying a change
 
