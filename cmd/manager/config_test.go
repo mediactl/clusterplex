@@ -591,6 +591,24 @@ func TestTheVideoPoolDefaults(t *testing.T) {
 	assert.Empty(t, c.VideoSelector)
 }
 
+func TestTheCPUPoolFlagsHaveTheirDefaultsAndBounds(t *testing.T) {
+	podIdentity(t)
+	c, err := loadConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "", c.VideoCPUSelector, "no CPU pool by default")
+	assert.Equal(t, "clustarr-busy", c.VideoCPUWhen)
+	assert.Equal(t, "", c.ClustarrWorkLease)
+	_, err = loadConfig([]string{"--video-cpu-when=sometimes"})
+	require.ErrorContains(t, err, "video-cpu-when")
+	_, err = loadConfig([]string{"--clustarr-work-lease=clustarr-intel-work"})
+	require.ErrorContains(t, err, "clustarr-work-lease")
+	c, err = loadConfig([]string{"--video-cpu-selector=app=plex-video-transcode-cpu", "--video-cpu-when=always", "--clustarr-work-lease=clustarr-system/clustarr-intel-work"})
+	require.NoError(t, err)
+	assert.Equal(t, "app=plex-video-transcode-cpu", c.VideoCPUSelector)
+	assert.Equal(t, "always", c.VideoCPUWhen)
+	assert.Equal(t, "clustarr-system/clustarr-intel-work", c.ClustarrWorkLease)
+}
+
 // Two names reach the server, one from the LAN and one from the internet
 // (talos, 2026-11-03), and Plex advertises every address in the list, in the
 // order given, as the comma-separated customConnections Plex itself reads.

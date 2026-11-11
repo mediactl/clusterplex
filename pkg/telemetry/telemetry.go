@@ -19,6 +19,11 @@ type Metrics struct {
 	// VideoRefusals counts the video conversions refused, by reason: no-pool,
 	// full, shape, worker-error or cancelled (pkg/video.Reason).
 	VideoRefusals *prometheus.CounterVec
+	// VideoConversions counts the conversions by the pool that took them
+	// (gpu, cpu); VideoPassedOver each pool passed over for one, by pool
+	// and reason (full, ineligible).
+	VideoConversions *prometheus.CounterVec
+	VideoPassedOver  *prometheus.CounterVec
 	// VideoStartup is each conversion's start-up overhead: its first
 	// segment's arrival less the input time that segment covers (the
 	// owner's target: about 2 s at most).
@@ -80,6 +85,14 @@ func InitTelemetry() (trace.Tracer, *Metrics) {
 			Name: "clusterplex_video_refusals_total",
 			Help: "Video conversions refused rather than run on the GPU pool, by reason (no-pool, full, shape, worker-error, cancelled)",
 		}, []string{"reason"}),
+		VideoConversions: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_video_conversions_total",
+			Help: "Video conversions started, by the pool that took them (gpu, cpu)",
+		}, []string{"pool"}),
+		VideoPassedOver: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "clusterplex_video_pool_passed_over_total",
+			Help: "A pool passed over for a conversion, by pool and reason (full, ineligible)",
+		}, []string{"pool", "reason"}),
 		VideoStartup: promauto.NewHistogram(prometheus.HistogramOpts{
 			Name:    "clusterplex_video_startup_overhead_seconds",
 			Help:    "A video conversion's first segment's arrival less the input time it covers",
