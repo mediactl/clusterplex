@@ -1,0 +1,24 @@
+# The build Jobs of the guides the managers build, in the Plex pods'
+# namespace, for the Plex pods' ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clusterplex-guide-build-jobs
+  namespace: media
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clusterplex-guide-build-jobs
+  namespace: media
+subjects:
+  - kind: ServiceAccount
+    name: clusterplex-sa
+roleRef:
+  kind: Role
+  name: clusterplex-guide-build-jobs
+  apiGroup: rbac.authorization.k8s.io

@@ -4,6 +4,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
+# The rig builds Live TV guides in Jobs (docs/guide-rig.md), which the base's
+# Role does not grant.
+components:
+  - ../../components/guide-build-jobs
 patches:
   # kind is a throwaway test cluster, so it pins a fixed server identity: the
   # cluster stays reproducible and rebuilding it does not present a new server

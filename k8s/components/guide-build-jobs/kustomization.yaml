@@ -1,0 +1,13 @@
+# A built Live TV guide's build Job (plex.liveTV.cloudGuide or xmltvGuide
+# "manager" with cloudGuideBuild "job", the default): the lease holder starts
+# one per plan, waits on it, and deletes a finished one before it starts the
+# next under the same name; a new holder lists a guide's Jobs to find a build
+# its predecessor left running. The chart grants the same verbs under the
+# same settings (charts/cluster-plex/templates/rbac.yaml); test/manifests
+# holds the two together. A component, not part of the base, since the base
+# runs Live TV off; include it in an overlay whose config.yaml has the
+# managers build a guide in a Job.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - rbac.yaml
