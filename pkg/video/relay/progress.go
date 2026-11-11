@@ -109,7 +109,7 @@ func (p *reporter) run() {
 		p.busy = false
 		if err != nil && p.ctx.Err() == nil && !p.failed {
 			p.failed = true
-			p.r.log().Warn("a progress report failed", "session", p.job.Session, "path", path, "error", err)
+			p.r.Logger.Warn("a progress report failed", "session", p.job.Session, "path", path, "err", err)
 		}
 		if err == nil && path == "" && canThrottle(answer) {
 			p.throttle = query

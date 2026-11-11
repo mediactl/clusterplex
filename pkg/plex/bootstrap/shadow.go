@@ -83,7 +83,7 @@ func BuildShadow(ctx context.Context, log *slog.Logger, pg *pgx.Conn, dbFile, sc
 	}
 
 	if err := syncMigrations(ctx, log, pg, db, schema); err != nil {
-		log.Warn("sync schema_migrations into the shadow", "db", name, "error", err)
+		log.Warn("sync schema_migrations into the shadow", "db", name, "err", err)
 	}
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id = %d", ShadowMark)); err != nil {
 		return fmt.Errorf("mark the shadow %s: %w", name, err)
@@ -94,7 +94,7 @@ func BuildShadow(ctx context.Context, log *slog.Logger, pg *pgx.Conn, dbFile, sc
 	for _, table := range seed {
 		attempted, inserted, err := SeedTable(ctx, pg, db, schema, table)
 		if err != nil {
-			log.Warn("seed shadow table from PostgreSQL", "db", name, "table", table, "error", err)
+			log.Warn("seed shadow table from PostgreSQL", "db", name, "table", table, "err", err)
 			continue
 		}
 		log.Info("seeded shadow table", "db", name, "table", table, "attempted", attempted, "inserted", inserted)
@@ -144,7 +144,7 @@ func runSQLiteFile(ctx context.Context, log *slog.Logger, db *sql.DB, path strin
 				return failed, ctx.Err()
 			}
 			failed++
-			log.Info("shadow schema statement failed", "file", filepath.Base(path), "line", stmt.Line, "error", err)
+			log.Info("shadow schema statement failed", "file", filepath.Base(path), "line", stmt.Line, "err", err)
 		}
 	}
 	return failed, nil

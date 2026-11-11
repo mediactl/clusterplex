@@ -523,7 +523,7 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1))", "clusterplex-guide-"+schema)
 	}()
 	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "err", err)
 	}
 	copiedFrom, err := guideLoadedAt(ctx, conn, schema)
 	if err != nil {
@@ -552,18 +552,18 @@ func ImportGuide(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library 
 		if aerr := analyzeSchema(ctx, conn, staging); aerr != nil {
 			// Statistics are not the guide: swap it in without them, and
 			// autovacuum gathers them later.
-			log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
+			log.Warn("analyze a guide's staging schema", "schema", staging, "err", aerr)
 		}
 		err = swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(importedComment, modified))
 	}
 	if err != nil {
 		if dropErr := dropSchema(context.Background(), conn, staging); dropErr != nil {
-			log.Warn("drop a guide's staging schema", "schema", staging, "error", dropErr)
+			log.Warn("drop a guide's staging schema", "schema", staging, "err", dropErr)
 		}
 		return false, fmt.Errorf("copy %s into %s: %w", filepath.Base(file), schema, err)
 	}
 	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "err", err)
 	}
 	log.Info("copied a Live TV guide PMS loaded into its schema", "guide", g.File(), "schema", schema,
 		"rows", rows, "staged", staged, "took", time.Since(start).Round(time.Millisecond))
@@ -1180,18 +1180,18 @@ func SwapLoaded(ctx context.Context, log *slog.Logger, conn *pgx.Conn, g Guide) 
 	}
 	start := time.Now()
 	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "err", err)
 	}
 	if err := analyzeSchema(ctx, conn, staging); err != nil {
 		// Statistics are not the guide: swap it in without them, and
 		// autovacuum gathers them later.
-		log.Warn("analyze a guide's staging schema", "schema", staging, "error", err)
+		log.Warn("analyze a guide's staging schema", "schema", staging, "err", err)
 	}
 	if err := swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(loadedComment, time.Now().UnixNano())); err != nil {
 		return false, fmt.Errorf("swap %s in as %s: %w", staging, schema, err)
 	}
 	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "err", err)
 	}
 	log.Info("swapped in a Live TV guide PMS loaded in PostgreSQL", "guide", g.File(), "schema", schema,
 		"took", time.Since(start).Round(time.Millisecond))

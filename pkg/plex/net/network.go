@@ -38,12 +38,12 @@ type Network struct {
 // It fails rather than half-succeeding: anything it created is removed before
 // it returns an error, so a retry does not trip over its own debris.
 func Provision(_ context.Context, cfg Config, log *slog.Logger) (*Network, error) {
+	if log == nil {
+		return nil, errNoLogger
+	}
 	cfg = cfg.withDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("plexnet configuration: %w", err)
-	}
-	if log == nil {
-		log = slog.Default()
 	}
 
 	var handle netns.NsHandle

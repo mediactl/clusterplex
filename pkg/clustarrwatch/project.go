@@ -117,7 +117,7 @@ func (w *Watcher) flushRemovals(ctx context.Context) {
 		for _, uid := range r.uids {
 			if err := w.Projection.Delete(ctx, ids.Section, uid); err != nil {
 				inc(w.Counters.SeedErrors)
-				w.log().Warn("projection: remove", "file", name, "row", uid, "error", err)
+				w.Logger.Warn("projection: remove", "file", name, "row", uid, "err", err)
 			}
 		}
 		lock.Unlock()
@@ -253,7 +253,7 @@ func (w *Watcher) ReconcileSection(ctx context.Context, key, folder string) (ple
 	if err != nil {
 		return out, true, fmt.Errorf("reconcile section %s: %w", key, err)
 	}
-	w.log().Info("projection: reconciled", "section", key, "folder", folder,
+	w.Logger.Info("projection: reconciled", "section", key, "folder", folder,
 		"applied", out.Applied, "deleted", out.Deleted, "adopted", out.Adopted, "unknown", out.Unknown, "failed", out.Failed)
 	// Then the files that are gone, as Plex's own scanner took them off
 	// before the projection replaced it. A sweep that fails is logged: the
@@ -267,7 +267,7 @@ func (w *Watcher) ReconcileSection(ctx context.Context, key, folder string) (ple
 func (w *Watcher) sweep(ctx context.Context, key string, section int64, scope plexproject.SweepScope) {
 	out, err := w.Projection.Sweep(ctx, section, scope)
 	if err != nil {
-		w.log().Warn("projection: sweep", "section", key, "folder", scope.Folder, "item", scope.Item, "error", err)
+		w.Logger.Warn("projection: sweep", "section", key, "folder", scope.Folder, "item", scope.Item, "err", err)
 	}
 	if w.Counters.Missing != nil {
 		w.Counters.Missing("removed", out.Removed)
@@ -275,7 +275,7 @@ func (w *Watcher) sweep(ctx context.Context, key string, section int64, scope pl
 		w.Counters.Missing("projected", len(out.ProjectedMissing))
 	}
 	if out.Removed > 0 || out.Revived > 0 || len(out.ProjectedMissing) > 0 {
-		w.log().Info("projection: swept gone files", "section", key, "folder", scope.Folder, "item", scope.Item,
+		w.Logger.Info("projection: swept gone files", "section", key, "folder", scope.Folder, "item", scope.Item,
 			"checked", out.Checked, "removed", out.Removed, "revived", out.Revived, "skipped", out.Skipped,
 			"clustarrNamesGoneFiles", len(out.ProjectedMissing), "firstGone", first(out.ProjectedMissing, 5))
 	}
@@ -337,7 +337,7 @@ func (w *Watcher) resyncProjection(ctx context.Context) bool {
 	for key := range w.Sections() {
 		if _, _, err := w.ReconcileSection(ctx, key, ""); err != nil {
 			inc(w.Counters.SeedErrors)
-			w.log().Warn("projection: resync", "section", key, "error", err)
+			w.Logger.Warn("projection: resync", "section", key, "err", err)
 		}
 	}
 	return true

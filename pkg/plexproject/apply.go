@@ -145,7 +145,7 @@ func (p *Projector) Apply(ctx context.Context, section, location int64, c Change
 		// of one was a remux on the Raspberry Pi). A file that does not
 		// answer leaves the column as it is.
 		if fast, err := p.Files.FastStart(ctx, c.PlexPath); err != nil {
-			p.log().Warn("plexproject: mp4 layout unread; the streaming flag stays", "path", c.PlexPath, "error", err)
+			p.Logger.Warn("plexproject: mp4 layout unread; the streaming flag stays", "path", c.PlexPath, "err", err)
 		} else {
 			c.Input.FastStart = &fast
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,7 +105,7 @@ func setup(t *testing.T, evs []*remuxpb.Event, streamErr error) (*Relay, *pms, *
 	p := &pms{dir: dir}
 	srv := httptest.NewServer(p)
 	t.Cleanup(srv.Close)
-	r := &Relay{
+	r := &Relay{Logger: slog.New(slog.DiscardHandler),
 		Players: players{}, Workers: workers{{Name: "remux-0", Addr: "10.0.0.1:50052"}},
 		Dial: func(context.Context, string) (remuxpb.RemuxClient, io.Closer, error) {
 			return client{&events{evs: evs, err: streamErr}}, io.NopCloser(nil), nil

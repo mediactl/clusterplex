@@ -36,6 +36,10 @@ import (
 	"github.com/mediactl/clusterplex/proto/videopb"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("relay: Logger is required")
+
 // hlsName is the only segment name a worker may write for an HLS job:
 // Plex's pattern; dashName a DASH job's, the remux pool's names.
 var (
@@ -95,13 +99,6 @@ type Relay struct {
 // DefaultThrottlePoll is Plex's own sloth-mode cadence (finding P).
 const DefaultThrottlePoll = 500 * time.Millisecond
 
-func (r *Relay) log() *slog.Logger {
-	if r.Logger == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return r.Logger
-}
-
 func (r *Relay) now() time.Time {
 	if r.Now == nil {
 		return time.Now()
@@ -133,12 +130,15 @@ func (r *Relay) finish(sink remoteexec.Sink, job video.Job, err error) error {
 	if r.Refused != nil {
 		r.Refused(rf.reason)
 	}
-	r.log().Warn("video conversion refused", "reason", rf.reason, "session", job.Session, "error", rf.err)
+	r.Logger.Warn("video conversion refused", "reason", rf.reason, "session", job.Session, "err", rf.err)
 	return remoteexec.Finish(sink, "video", rf)
 }
 
 // Execute runs one conversion, start to end, and always answers the shim.
 func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexec.Sink) error {
+	if r.Logger == nil {
+		return errNoLogger
+	}
 	began := r.now()
 	job, err := video.Parse(req.GetArgs(), req.GetEnv())
 	if err != nil {
@@ -182,7 +182,7 @@ func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.T
 			case errors.As(err, &rf) && rf.reason == video.ReasonWorkerError:
 				// No pod of the pool could be reached or opened (a rollout's
 				// terminating pod, a crashed one): the next pool's chance.
-				r.log().Warn("video pool unreachable; trying the next", "pool", p.name, "session", job.Session, "error", rf.err)
+				r.Logger.Warn("video pool unreachable; trying the next", "pool", p.name, "session", job.Session, "err", rf.err)
 				last = err
 				continue
 			}
@@ -206,7 +206,7 @@ func (r *Relay) run(ctx context.Context, cwd string, job video.Job, began time.T
 }
 
 func (r *Relay) passedOver(pool, reason string, job video.Job) {
-	r.log().Info("video pool passed over", "pool", pool, "reason", reason, "session", job.Session)
+	r.Logger.Info("video pool passed over", "pool", pool, "reason", reason, "session", job.Session)
 	if r.PassedOver != nil {
 		r.PassedOver(pool, reason)
 	}
@@ -223,7 +223,7 @@ func (r *Relay) serve(ctx context.Context, cwd string, job video.Job, c *convers
 	}
 	placed := r.Placements.set(job.Session, Placement{Worker: c.worker, Node: c.node, Pool: c.pool})
 	defer r.Placements.remove(job.Session, placed)
-	log := r.log().With("worker", c.worker, "pool", c.pool, "session", job.Session)
+	log := r.Logger.With("worker", c.worker, "pool", c.pool, "session", job.Session)
 	log.Info("video conversion started", "output", job.Output, "width", job.Video.Width, "height", job.Video.Height)
 	// The pump lives as long as the conversion, not the job: once this pool
 	// is passed over, its reads of Plex's session end with the stream.
@@ -287,7 +287,7 @@ func (r *Relay) open(ctx context.Context, ws []remoteexec.Worker, job video.Job)
 	for _, w := range order(ws, job.RingKey()) {
 		client, closer, err := r.Dial(ctx, w.Addr)
 		if err != nil {
-			r.log().Warn("dial a video transcode pod", "worker", w.Name, "error", err)
+			r.Logger.Warn("dial a video transcode pod", "worker", w.Name, "err", err)
 			last = refuse(video.ReasonWorkerError, fmt.Errorf("dial %s: %w", w.Name, err))
 			continue
 		}
@@ -335,7 +335,7 @@ func (c *conversion) pump(ctx context.Context, r *Relay, job video.Job) {
 		}
 		wg.Go(func() {
 			if err := c.stream1(ctx, r, job, int32(i), in); err != nil && ctx.Err() == nil {
-				r.log().Warn("stream an input to the pool", "session", job.Session, "input", i, "error", err)
+				r.Logger.Warn("stream an input to the pool", "session", job.Session, "input", i, "err", err)
 				_ = c.send(&videopb.Up{Kind: &videopb.Up_Input{Input: &videopb.Chunk{Input: int32(i), Error: err.Error()}}})
 			}
 		})
@@ -401,11 +401,11 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			return nil
 		}
 		held := time.Now()
-		r.log().Info("Plex throttles the conversion", "session", job.Session, "after", held.Sub(wall), "progress", query)
+		r.Logger.Info("Plex throttles the conversion", "session", job.Session, "after", held.Sub(wall), "progress", query)
 		if err := r.sloth(ctx, job, query); err != nil {
 			return refuse(video.ReasonCancelled, err)
 		}
-		r.log().Info("Plex released the conversion", "session", job.Session, "held", time.Since(held))
+		r.Logger.Info("Plex released the conversion", "session", job.Session, "held", time.Since(held))
 		return nil
 	}
 	// routed is whether the pod took the job: its first message of any kind
@@ -437,7 +437,7 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 		case *videopb.Down_File:
 			if !output {
 				output = true
-				r.log().Info("first output from the pool", "session", job.Session, "after", time.Since(wall))
+				r.Logger.Info("first output from the pool", "session", job.Session, "after", time.Since(wall))
 			}
 			if !dash {
 				return refuse(video.ReasonWorkerError, errors.New("a file for an HLS job"))
@@ -462,7 +462,7 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			}
 			if !posted {
 				posted = true
-				r.log().Info("first manifest posted", "session", job.Session, "after", time.Since(wall), "took", time.Since(sent))
+				r.Logger.Info("first manifest posted", "session", job.Session, "after", time.Since(wall), "took", time.Since(sent))
 			}
 		case *videopb.Down_Segment:
 			if dash {
@@ -471,7 +471,7 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			s := k.Segment
 			if !output {
 				output = true
-				r.log().Info("first output from the pool", "session", job.Session, "after", time.Since(wall))
+				r.Logger.Info("first output from the pool", "session", job.Session, "after", time.Since(wall))
 			}
 			if err := plexsession.WriteFile(cwd, s.GetName(), s.GetData(), hlsName); err != nil {
 				return refuse(video.ReasonWorkerError, err)
@@ -494,12 +494,12 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			}
 			if !posted {
 				posted = true
-				r.log().Info("first segment listed", "session", job.Session, "after", time.Since(wall), "took", time.Since(sent))
+				r.Logger.Info("first segment listed", "session", job.Session, "after", time.Since(wall), "took", time.Since(sent))
 			}
 		case *videopb.Down_Progress:
 			p := k.Progress
 			if !progressAllowed(p.GetPath(), p.GetQuery()) {
-				r.log().Warn("dropped a progress report outside Plex's", "path", p.GetPath())
+				r.Logger.Warn("dropped a progress report outside Plex's", "path", p.GetPath())
 				continue
 			}
 			// Reported on the reporter's goroutine; an answer that comes
@@ -517,7 +517,7 @@ func (r *Relay) relay(ctx context.Context, cwd string, job video.Job, c *convers
 			}
 		case *videopb.Down_Started:
 			r.Placements.started(job.Session, k.Started.GetEncoder(), k.Started.GetDecoder())
-			r.log().Info("video conversion running", "session", job.Session, "worker", c.worker,
+			r.Logger.Info("video conversion running", "session", job.Session, "worker", c.worker,
 				"encoder", k.Started.GetEncoder(), "decoder", k.Started.GetDecoder())
 		case *videopb.Down_Done:
 			if msg := k.Done.GetError(); msg != "" {

@@ -2,12 +2,17 @@ package livetv
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
 
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 )
+
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("livetv: Logger is required")
 
 // DefaultStaleGrabAfter is how long a Live TV grab may go unwatched before
 // StaleGrabs ends it: past PMS's own 300 s wait for a tuner, and long
@@ -60,6 +65,9 @@ type StaleGrabs struct {
 // nothing is cancelled on a partial view. A cancel that fails is tried
 // again by the next pass.
 func (w *StaleGrabs) Pass(ctx context.Context) ([]string, error) {
+	if w.Logger == nil {
+		return nil, errNoLogger
+	}
 	acts, err := w.PMS.Activities(ctx)
 	if err != nil {
 		return nil, err
@@ -113,11 +121,11 @@ func (w *StaleGrabs) Pass(ctx context.Context) ([]string, error) {
 			continue
 		}
 		if err := w.PMS.CancelActivity(ctx, a.UUID); err != nil {
-			w.logger().Warn("Live TV: could not end a grab no player watches", "session", key, "error", err)
+			w.Logger.Warn("Live TV: could not end a grab no player watches", "session", key, "err", err)
 			continue
 		}
 		delete(w.unwatched, a.UUID)
-		w.logger().Info("Live TV: ended a grab no player watched; it held a tuner",
+		w.Logger.Info("Live TV: ended a grab no player watched; it held a tuner",
 			"session", key, "unwatched", now.Sub(since).Round(time.Second))
 		ended = append(ended, key)
 	}
@@ -134,11 +142,4 @@ func (w *StaleGrabs) now() time.Time {
 		return time.Now()
 	}
 	return w.Now()
-}
-
-func (w *StaleGrabs) logger() *slog.Logger {
-	if w.Logger == nil {
-		return slog.Default()
-	}
-	return w.Logger
 }

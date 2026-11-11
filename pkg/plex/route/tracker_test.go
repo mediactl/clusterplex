@@ -2,6 +2,7 @@ package route
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func lease(t *testing.T, holder string, age time.Duration, avail string) *coordi
 }
 
 func newTracker(cs kubernetes.Interface) *Tracker {
-	return &Tracker{Client: cs, Namespace: ns, LeaseName: name}
+	return &Tracker{Logger: slog.New(slog.DiscardHandler), Client: cs, Namespace: ns, LeaseName: name}
 }
 
 func TestCurrentReportsTheLeaderOnceItsPlexIsAccepting(t *testing.T) {

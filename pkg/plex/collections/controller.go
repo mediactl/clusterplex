@@ -176,7 +176,7 @@ func (c *Controller) allowed(ctx context.Context) bool {
 	}
 	ok, err := c.Allowed(ctx)
 	if err != nil {
-		c.Logger.Warn("ask whether this pod may reconcile plexcollections", "error", err)
+		c.Logger.Warn("ask whether this pod may reconcile plexcollections", "err", err)
 		return false
 	}
 	return ok
@@ -186,7 +186,7 @@ func (c *Controller) installed() bool {
 	rl, err := c.Discovery.ServerResourcesForGroupVersion(GVR.GroupVersion().String())
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
-			c.Logger.Warn("look for plexcollections.catalog.clustarr.io", "error", err)
+			c.Logger.Warn("look for plexcollections.catalog.clustarr.io", "err", err)
 		}
 		return false
 	}
@@ -281,7 +281,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 	u, err := res.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.Warn("read the collection", "error", err)
+			log.Warn("read the collection", "err", err)
 		}
 		return
 	}
@@ -296,7 +296,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 			// Another resource holds it too: release this one's claim and
 			// leave the collection to it.
 			if err := c.applyFinalizers(ctx, u, nil); err != nil {
-				log.Warn("release the finalizer", "error", err)
+				log.Warn("release the finalizer", "err", err)
 				return
 			}
 			log.Info("deleted; the Plex collection stays with another resource", "ratingKey", rk, "holder", holder)
@@ -304,12 +304,12 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 			return
 		}
 		if err := c.Syncer.Delete(ctx, rk); err != nil {
-			log.Warn("delete the Plex collection; the finalizer stays", "ratingKey", rk, "error", err)
+			log.Warn("delete the Plex collection; the finalizer stays", "ratingKey", rk, "err", err)
 			c.record(u, true, ReasonPlexUnavailable, fmt.Sprintf("could not delete Plex's collection (ratingKey %s): %v", rk, err))
 			return
 		}
 		if err := c.applyFinalizers(ctx, u, nil); err != nil {
-			log.Warn("release the finalizer", "error", err)
+			log.Warn("release the finalizer", "err", err)
 			return
 		}
 		if rk != "" {
@@ -320,7 +320,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 	}
 	if !finalized {
 		if err := c.applyFinalizers(ctx, u, []string{Finalizer}); err != nil {
-			log.Warn("add the finalizer", "error", err)
+			log.Warn("add the finalizer", "err", err)
 			return
 		}
 	}
@@ -358,7 +358,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 		held[out.RatingKey] = name
 	}
 	if err := c.writeStatus(ctx, u, out, prevCond); err != nil {
-		log.Warn("write the collection's status", "error", err)
+		log.Warn("write the collection's status", "err", err)
 	}
 	c.recordOutcome(log, u, out, prevCond)
 }

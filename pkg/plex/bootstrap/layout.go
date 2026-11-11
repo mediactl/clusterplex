@@ -167,7 +167,7 @@ func checkWritable(log *slog.Logger, dir string) {
 	f, err := os.CreateTemp(dir, ".write_test_*")
 	if err != nil {
 		log.Warn("Plex's state directory is not writable; Plex will fail with 'attempt to write a readonly database'",
-			"dir", dir, "error", err)
+			"dir", dir, "err", err)
 		return
 	}
 	_ = f.Close()

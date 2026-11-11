@@ -22,6 +22,10 @@ import (
 	"github.com/mediactl/clusterplex/pkg/plexseed"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("clustarrwatch: Logger is required")
+
 // Counters are the watcher's metrics, injected so this package does not
 // register any.
 type Counters struct {
@@ -142,19 +146,15 @@ type seedRetry struct {
 	attempts int
 }
 
-func (w *Watcher) log() *slog.Logger {
-	if w.Logger != nil {
-		return w.Logger
-	}
-	return slog.Default()
-}
-
 // Run watches until ctx is done.
 func (w *Watcher) Run(ctx context.Context) error {
+	if w.Logger == nil {
+		return errNoLogger
+	}
 	w.ctx = ctx
 	w.sched = &Scheduler{
 		Scan: w.scan, Refresh: w.refresh, RefreshID: w.refreshID,
-		ScanDelay: w.ScanDelay, RefreshDelay: w.RefreshDelay, Logger: w.log(),
+		ScanDelay: w.ScanDelay, RefreshDelay: w.RefreshDelay, Logger: w.Logger,
 	}
 	// One kind at a time: the next kind is listed once this one is in its
 	// cache. The caches cost the same in the end, and a WatchList (client-go
@@ -214,7 +214,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		}
 		w.items[it.gvr] = inf.GetStore()
 	}
-	w.log().Info("the clustarr watch has synced", "namespace", w.Namespace)
+	w.Logger.Info("the clustarr watch has synced", "namespace", w.Namespace)
 	report(w.Counters.Synced, true)
 	w.synced.Store(true)
 	if w.Projection != nil && w.PMS != nil {
@@ -294,7 +294,7 @@ func (w *Watcher) waitForSync(ctx context.Context, resource string, synced cache
 		if ctx.Err() != nil {
 			return false
 		}
-		w.log().Error("the clustarr watch has not synced; check that the catalog.clustarr.io CRDs exist "+
+		w.Logger.Error("the clustarr watch has not synced; check that the catalog.clustarr.io CRDs exist "+
 			"and that this pod may list them in the namespace", "namespace", w.Namespace, "resource", resource, "after", timeout)
 		report(w.Counters.Synced, false)
 		if !cache.WaitForCacheSync(ctx.Done(), synced) {
@@ -751,7 +751,7 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 				inc(w.Counters.SeedUnmatched)
 			default:
 				inc(w.Counters.SeedErrors)
-				w.log().Warn("projection: apply", "file", o.Name, "error", err)
+				w.Logger.Warn("projection: apply", "file", o.Name, "err", err)
 			}
 			if ctx.Err() == nil {
 				w.retrySeed(o, attempts[i])
@@ -778,7 +778,7 @@ func (w *Watcher) flushSeeds(ctx context.Context) {
 			inc(w.Counters.SeedUnmatched)
 		default:
 			inc(w.Counters.SeedErrors)
-			w.log().Warn("seed Plex", "path", mapped, "error", err)
+			w.Logger.Warn("seed Plex", "path", mapped, "err", err)
 		}
 		if ctx.Err() == nil {
 			w.retrySeed(o, attempts[i])

@@ -98,7 +98,7 @@ func (h *Handler) serveMedia(ctx context.Context, w http.ResponseWriter, r *http
 		w.WriteHeader(http.StatusUnauthorized)
 		return true
 	case err != nil:
-		h.log().Warn("cannot resolve media locally, letting Plex serve it", "part", partID, "error", err)
+		h.Logger.Warn("cannot resolve media locally, letting Plex serve it", "part", partID, "err", err)
 		return false
 	case file == "":
 		return false
@@ -106,7 +106,7 @@ func (h *Handler) serveMedia(ctx context.Context, w http.ResponseWriter, r *http
 
 	f, err := os.Open(file)
 	if err != nil {
-		h.log().Warn("cannot open media, letting Plex serve it", "file", file, "error", err)
+		h.Logger.Warn("cannot open media, letting Plex serve it", "file", file, "err", err)
 		return false
 	}
 	defer func() { _ = f.Close() }()
@@ -129,7 +129,7 @@ func (h *Handler) serveMedia(ctx context.Context, w http.ResponseWriter, r *http
 func (h *Handler) forward(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	base, err := h.Upstream(ctx, SessionKey(r))
 	if err != nil || base == "" {
-		h.log().Warn("no Plex available for request", "path", r.URL.Path, "error", err)
+		h.Logger.Warn("no Plex available for request", "path", r.URL.Path, "err", err)
 		http.Error(w, "Plex Media Server is not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -141,17 +141,10 @@ func (h *Handler) forward(ctx context.Context, w http.ResponseWriter, r *http.Re
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		h.log().Warn("forwarding to Plex failed", "path", r.URL.Path, "error", err)
+		h.Logger.Warn("forwarding to Plex failed", "path", r.URL.Path, "err", err)
 		http.Error(w, "Plex Media Server is not reachable", http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(w, r.WithContext(ctx))
-}
-
-func (h *Handler) log() *slog.Logger {
-	if h.Logger != nil {
-		return h.Logger
-	}
-	return slog.Default()
 }
 
 // countingWriter records how many bytes were written to the client.

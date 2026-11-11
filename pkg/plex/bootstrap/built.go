@@ -127,12 +127,12 @@ func StageBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 	}
 	if err != nil {
 		if dropErr := dropSchema(context.Background(), conn, staging); dropErr != nil {
-			log.Warn("drop a guide's staging schema", "schema", staging, "error", dropErr)
+			log.Warn("drop a guide's staging schema", "schema", staging, "err", dropErr)
 		}
 		return fmt.Errorf("build %s: %w", schema, err)
 	}
 	if aerr := analyzeSchema(ctx, conn, staging); aerr != nil {
-		log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
+		log.Warn("analyze a guide's staging schema", "schema", staging, "err", aerr)
 	}
 	log.Info("staged a Live TV guide built from "+builtFrom(g), "guide", g.File(), "schema", staging,
 		"stamp", stamp, "took", time.Since(start).Round(time.Millisecond))
@@ -185,7 +185,7 @@ func SwapStaged(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 		return fmt.Errorf("%s: %w (the schema is gone)", staging, ErrNotStaged)
 	}
 	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "err", err)
 	}
 	live, err := schemaExists(ctx, conn, schema)
 	if err == nil && live {
@@ -198,10 +198,10 @@ func SwapStaged(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 		return fmt.Errorf("install %s: %w", schema, err)
 	}
 	if _, err := conn.Exec(ctx, "DELETE FROM "+buildsTable+" WHERE schema = $1", schema); err != nil {
-		log.Warn("clear an installed build's record", "schema", schema, "error", err)
+		log.Warn("clear an installed build's record", "schema", schema, "err", err)
 	}
 	if err := dropSchema(ctx, conn, old); err != nil {
-		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
+		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "err", err)
 	}
 	log.Info("built a Live TV guide from "+builtFrom(g), "guide", g.File(), "schema", schema, "stamp", stamp)
 	return nil

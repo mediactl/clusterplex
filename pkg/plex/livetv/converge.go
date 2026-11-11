@@ -595,7 +595,7 @@ func (c *Converger) renewHeld(ctx context.Context) {
 	for id, h := range c.held {
 		lease, err := c.Leases.Acquire(ctx, h.namespace, LeaseName(id), c.Identity, h.labels)
 		if err != nil {
-			c.log("renew a block's Lease while PMS cannot be read", "lease", LeaseName(id), "error", err)
+			c.log("renew a block's Lease while PMS cannot be read", "lease", LeaseName(id), "err", err)
 			continue
 		}
 		if !lease.Held {
@@ -995,7 +995,7 @@ func (c *Converger) refreshCloudGuide(ctx context.Context, p Provider, b Block, 
 	}
 	horizon, err := c.GuideHorizon(ctx, dvr.UUID)
 	if err != nil {
-		c.log("Live TV: could not read how far a guide reaches", "dvr", dvr.Key, "error", err)
+		c.log("Live TV: could not read how far a guide reaches", "dvr", dvr.Key, "err", err)
 		return nil
 	}
 	if horizon.Sub(now) >= cloudHorizonFloor {
@@ -1098,7 +1098,7 @@ func (c *Converger) cancelBuiltLoads(ctx context.Context, id string, ps *pass) {
 			continue
 		}
 		if err := c.PMS.CancelActivity(ctx, a.UUID); err != nil {
-			c.log("Live TV: cancel PMS's load of a guide the managers build", "activity", a.UUID, "error", err)
+			c.log("Live TV: cancel PMS's load of a guide the managers build", "activity", a.UUID, "err", err)
 			continue
 		}
 		c.log("Live TV: cancelled PMS's load of a guide the managers build", "activity", a.UUID)
@@ -1164,7 +1164,7 @@ func (c *Converger) emptyGuide(ctx context.Context, id string, dvr plexapi.DVR) 
 	}
 	empty, err := c.GuideEmpty(ctx, dvr.UUID)
 	if err != nil {
-		c.log("Live TV: could not tell whether a guide is empty", "dvr", dvr.Key, "error", err)
+		c.log("Live TV: could not tell whether a guide is empty", "dvr", dvr.Key, "err", err)
 		return false
 	}
 	return empty
@@ -1202,7 +1202,7 @@ func (c *Converger) staleList(p Provider, b Block, dev plexapi.Device, ps *pass)
 func (c *Converger) note(ctx context.Context, p Provider, id string, dvr plexapi.Str, s savedHashes) {
 	v, _ := json.Marshal(savedNote{DVR: string(dvr), Lineup: s.lineup, Guide: s.guide})
 	if err := c.Leases.Annotate(ctx, p.Namespace, LeaseName(id), c.Identity, map[string]string{AnnotationSaved: string(v)}); err != nil {
-		c.log("note the saved channel map on the block's Lease; the next holder saves it again", "lease", LeaseName(id), "error", err)
+		c.log("note the saved channel map on the block's Lease; the next holder saves it again", "lease", LeaseName(id), "err", err)
 	}
 }
 
@@ -1224,7 +1224,7 @@ func (c *Converger) noteRegistered(ctx context.Context, p Provider, id string, n
 	c.registered[id] = n
 	v, _ := json.Marshal(n)
 	if err := c.Leases.Annotate(ctx, p.Namespace, LeaseName(id), c.Identity, map[string]string{AnnotationRegistered: string(v)}); err != nil {
-		c.log("note the registered device on the block's Lease", "lease", LeaseName(id), "error", err)
+		c.log("note the registered device on the block's Lease", "lease", LeaseName(id), "err", err)
 	}
 }
 

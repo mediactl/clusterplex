@@ -58,7 +58,7 @@ func waitFor(ctx context.Context, log *slog.Logger, connect Connect, attempts in
 			log.Info("PostgreSQL is ready")
 			return nil
 		}
-		log.Info("PostgreSQL not ready, waiting", "attempt", attempt, "of", attempts, "error", last)
+		log.Info("PostgreSQL not ready, waiting", "attempt", attempt, "of", attempts, "err", last)
 		if attempt == attempts {
 			break
 		}
@@ -106,7 +106,7 @@ func InitSchema(ctx context.Context, log *slog.Logger, connect Connect, schema, 
 		"CREATE EXTENSION IF NOT EXISTS pg_trgm",
 	} {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
-			log.Warn("statement failed", "sql", stmt, "error", err)
+			log.Warn("statement failed", "sql", stmt, "err", err)
 		}
 	}
 
@@ -120,7 +120,7 @@ func InitSchema(ctx context.Context, log *slog.Logger, connect Connect, schema, 
 	if tables > 0 {
 		log.Info("PostgreSQL schema ready", "schema", schema, "tables", tables)
 		if exists, err := tableExists(ctx, conn, schema, "sqlite_column_types"); err != nil {
-			log.Warn("check for sqlite_column_types", "error", err)
+			log.Warn("check for sqlite_column_types", "err", err)
 		} else if !exists {
 			loadOptional(ctx, log, connect, filepath.Join(dir, ColumnTypesFile))
 		}
@@ -178,7 +178,7 @@ func loadOptional(ctx context.Context, log *slog.Logger, connect Connect, path s
 	}
 	log.Info("loading", "file", filepath.Base(path))
 	if _, err := RunFile(ctx, log, connect, path); err != nil {
-		log.Warn("load failed", "file", filepath.Base(path), "error", err)
+		log.Warn("load failed", "file", filepath.Base(path), "err", err)
 	}
 }
 
@@ -215,7 +215,7 @@ func RunFile(ctx context.Context, log *slog.Logger, connect Connect, path string
 				return failed, ctx.Err()
 			}
 			failed++
-			log.Warn("statement failed", "file", name, "line", cmd.Line, "error", err)
+			log.Warn("statement failed", "file", name, "line", cmd.Line, "err", err)
 		}
 	}
 	if failed > 0 {

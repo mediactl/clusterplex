@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 )
+
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("plexproject: Logger is required")
 
 // ErrEmptyWant is a reconcile asked to empty a section that has stamped
 // rows: an empty want list is what a watch that has not synced looks
@@ -33,6 +36,9 @@ type rowState struct {
 // not know, counted and left. A MediaFile whose item the caller could not
 // resolve yet is wanted but not applied, so its row stays.
 func (p *Projector) Reconcile(ctx context.Context, section, location int64, folder string, want []Change) (Outcome, error) {
+	if p.Logger == nil {
+		return Outcome{}, errNoLogger
+	}
 	var out Outcome
 	have, byPath, err := p.liveRows(ctx, section, folder)
 	if err != nil {
@@ -64,7 +70,7 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 		}
 		if err := p.Apply(ctx, section, location, c); err != nil {
 			out.Failed++
-			p.log().WarnContext(ctx, "plexproject: apply during reconcile", "file", c.UID, "path", c.PlexPath, "error", err)
+			p.Logger.WarnContext(ctx, "plexproject: apply during reconcile", "file", c.UID, "path", c.PlexPath, "err", err)
 			continue
 		}
 		out.Applied++
@@ -75,7 +81,7 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 		}
 		if err := p.Delete(ctx, section, uid); err != nil {
 			out.Failed++
-			p.log().WarnContext(ctx, "plexproject: delete during reconcile", "file", uid, "error", err)
+			p.Logger.WarnContext(ctx, "plexproject: delete during reconcile", "file", uid, "err", err)
 			continue
 		}
 		out.Deleted++
@@ -113,11 +119,4 @@ func (p *Projector) liveRows(ctx context.Context, section int64, folder string) 
 
 func underFolder(path, folder string) bool {
 	return folder == "" || strings.HasPrefix(path, folder+"/")
-}
-
-func (p *Projector) log() *slog.Logger {
-	if p.Logger != nil {
-		return p.Logger
-	}
-	return slog.Default()
 }

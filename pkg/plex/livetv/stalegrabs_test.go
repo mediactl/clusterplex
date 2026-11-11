@@ -3,6 +3,7 @@ package livetv_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ type clock struct{ now time.Time }
 func (c *clock) Now() time.Time      { return c.now }
 func (c *clock) add(d time.Duration) { c.now = c.now.Add(d) }
 func watchdog(pms *grabPMS, c *clock) *plexlivetv.StaleGrabs {
-	return &plexlivetv.StaleGrabs{PMS: pms, Grace: 5 * time.Minute, Now: c.Now}
+	return &plexlivetv.StaleGrabs{Logger: slog.New(slog.DiscardHandler), PMS: pms, Grace: 5 * time.Minute, Now: c.Now}
 }
 
 func TestALiveTVGrabNoPlayerWatchesIsCancelledAfterTheGrace(t *testing.T) {

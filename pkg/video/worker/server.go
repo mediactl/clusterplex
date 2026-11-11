@@ -21,6 +21,10 @@ import (
 	"github.com/mediactl/clusterplex/proto/videopb"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("worker: Logger is required")
+
 // ServerOptions are the pool's gRPC server options: fixed windows for what
 // the relay streams in, small messages in and whole segments out, and
 // keepalive: Plex's node losing power resets no connection, and a
@@ -105,13 +109,6 @@ func (s *Server) Abandoned() int {
 	return s.abandoned
 }
 
-func (s *Server) log() *slog.Logger {
-	if s.Logger == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return s.Logger
-}
-
 // Ready is /readyz: the device measured. A full pod stays ready: a seek's
 // restart takes its session's slot, and the relay passes over a pod that
 // answers a new session ResourceExhausted.
@@ -122,6 +119,9 @@ func (s *Server) Ready() bool {
 // Convert runs one job: a slot, the header that accepts it, its streamed
 // inputs piped into the pipeline, its output sent back, and one Done.
 func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
+	if s.Logger == nil {
+		return errNoLogger
+	}
 	up, err := stream.Recv()
 	if err != nil {
 		return err
@@ -150,7 +150,7 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 		s.Active(job.Output, 1)
 		defer s.Active(job.Output, -1)
 	}
-	log := s.log().With("session", job.Session, "output", job.Output)
+	log := s.Logger.With("session", job.Session, "output", job.Output)
 	log.Info("conversion started")
 
 	in := newInputs(ctx, job, s.inputStall(), cancel)
@@ -174,7 +174,7 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	err = s.run(ctx, job, o, out)
 	if errors.Is(err, errAbandoned) {
 		// The call may still be sending: no Done; the stream ends with this.
-		log.Error("conversion abandoned", "error", err, "abandoned", s.Abandoned())
+		log.Error("conversion abandoned", "err", err, "abandoned", s.Abandoned())
 		return status.Error(codes.Aborted, err.Error())
 	}
 	if errors.Is(err, video.ErrNotForPool) {
@@ -196,7 +196,7 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 	done := &videopb.Done{}
 	if err != nil {
 		done.Error, done.Reason = err.Error(), string(reasonOf(ctx, err))
-		log.Warn("conversion failed", "reason", done.Reason, "error", err)
+		log.Warn("conversion failed", "reason", done.Reason, "err", err)
 	} else {
 		log.Info("conversion done")
 	}

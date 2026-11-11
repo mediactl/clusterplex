@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -41,7 +42,7 @@ func (r *recorder) sorted() []call {
 }
 
 func fanout(rec *recorder, libraries, members []string) *Fanout {
-	return &Fanout{
+	return &Fanout{Logger: slog.New(slog.DiscardHandler),
 		Libraries: func(context.Context) ([]string, error) { return libraries, nil },
 		Members:   func(context.Context) ([]string, error) { return members, nil },
 		Dispatch:  rec.dispatch,
@@ -208,7 +209,7 @@ func deadlineOf(t *testing.T, task Task) time.Duration {
 	t.Helper()
 	var got time.Duration
 	var mu sync.Mutex
-	f := &Fanout{
+	f := &Fanout{Logger: slog.New(slog.DiscardHandler),
 		Libraries: func(context.Context) ([]string, error) { return []string{"1"}, nil },
 		Members:   func(context.Context) ([]string, error) { return []string{"a"}, nil },
 		Dispatch: func(ctx context.Context, _, _, _ string) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ type sink struct {
 func newScheduler() (*clustarrwatch.Scheduler, *clock, *sink) {
 	c := &clock{t: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)}
 	s := &sink{}
-	return &clustarrwatch.Scheduler{
+	return &clustarrwatch.Scheduler{Logger: slog.New(slog.DiscardHandler),
 		Scan: func(_ context.Context, section, folder string) error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
@@ -147,7 +148,7 @@ func TestARefreshQueuedDuringItsSendIsNotLost(t *testing.T) {
 // I11: a refresh by id that keeps failing is given up, not retried for ever.
 func TestARefreshByIDIsGivenUpAfterRepeatedFailures(t *testing.T) {
 	calls := 0
-	s := &clustarrwatch.Scheduler{RefreshID: func(context.Context, int64) error { calls++; return errors.New("gone") }, RefreshDelay: time.Nanosecond}
+	s := &clustarrwatch.Scheduler{Logger: slog.New(slog.DiscardHandler), RefreshID: func(context.Context, int64) error { calls++; return errors.New("gone") }, RefreshDelay: time.Nanosecond}
 	s.EnqueueRefreshID(7)
 	for range 20 {
 		time.Sleep(time.Millisecond)

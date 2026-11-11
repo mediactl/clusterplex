@@ -23,6 +23,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("route: Logger is required")
+
 // AvailabilityAnnotation names the Lease annotation the leader writes once its
 // Plex is accepting connections, and clears when it stops.
 const AvailabilityAnnotation = "clusterplex.io/pms-availability"
@@ -111,7 +115,7 @@ func (t *Tracker) Run(ctx context.Context) {
 	}
 
 	if err := t.Refresh(ctx); err != nil {
-		t.log().Warn("read lease", "error", err)
+		t.Logger.Warn("read lease", "err", err)
 	}
 	go t.watch(ctx)
 
@@ -123,7 +127,7 @@ func (t *Tracker) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := t.Refresh(ctx); err != nil {
-				t.log().Warn("read lease", "error", err)
+				t.Logger.Warn("read lease", "err", err)
 			}
 		}
 	}
@@ -137,7 +141,7 @@ func (t *Tracker) watch(ctx context.Context) {
 			FieldSelector: "metadata.name=" + t.LeaseName,
 		})
 		if err != nil {
-			t.log().Warn("watch lease", "error", err)
+			t.Logger.Warn("watch lease", "err", err)
 			sleep(ctx, time.Second)
 			continue
 		}
@@ -154,6 +158,9 @@ func (t *Tracker) watch(ctx context.Context) {
 
 // Refresh reads the Lease once and updates the tracked target.
 func (t *Tracker) Refresh(ctx context.Context) error {
+	if t.Logger == nil {
+		return errNoLogger
+	}
 	lease, err := t.Client.CoordinationV1().Leases(t.Namespace).Get(ctx, t.LeaseName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		t.set(Target{}, false)
@@ -210,18 +217,11 @@ func (t *Tracker) set(target Target, ok bool) {
 	}
 	if changed {
 		if ok {
-			t.log().Info("Plex is available", "pod", target.Pod, "address", target.Address)
+			t.Logger.Info("Plex is available", "pod", target.Pod, "address", target.Address)
 		} else {
-			t.log().Warn("no Plex is available; requests will wait")
+			t.Logger.Warn("no Plex is available; requests will wait")
 		}
 	}
-}
-
-func (t *Tracker) log() *slog.Logger {
-	if t.Logger != nil {
-		return t.Logger
-	}
-	return slog.Default()
 }
 
 func sleep(ctx context.Context, d time.Duration) {

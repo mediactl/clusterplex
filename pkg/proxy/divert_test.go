@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -35,7 +36,7 @@ func startDiverting(t *testing.T, divert Divert) net.Addr {
 
 func startDivertingTo(t *testing.T, divert Divert, target string) net.Addr {
 	t.Helper()
-	p := &TCP{Listen: "127.0.0.1:0", Target: target, Divert: divert}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: target, Divert: divert}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	addr, err := p.Start(ctx)

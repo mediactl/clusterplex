@@ -185,7 +185,7 @@ func (p *Projector) Sweep(ctx context.Context, section int64, scope SweepScope) 
 				return out, err
 			}
 			if ok = err == nil; !ok {
-				p.log().WarnContext(ctx, "plexproject: sweep: not judging files under an untrusted root", "section", section, "root", root, "error", err)
+				p.Logger.WarnContext(ctx, "plexproject: sweep: not judging files under an untrusted root", "section", section, "root", root, "err", err)
 			}
 			trusted[root] = ok
 		}
@@ -199,7 +199,7 @@ func (p *Projector) Sweep(ctx context.Context, section int64, scope SweepScope) 
 		}
 		if err != nil {
 			out.Skipped++
-			p.log().WarnContext(ctx, "plexproject: sweep: cannot tell whether a file is there", "file", r.files[0], "error", err)
+			p.Logger.WarnContext(ctx, "plexproject: sweep: cannot tell whether a file is there", "file", r.files[0], "err", err)
 			continue
 		}
 		out.Checked++

@@ -2,6 +2,7 @@ package provision_test
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,7 +50,7 @@ func config(base string, switchAgent bool) plexprovision.Config {
 
 func TestAnEmptyServerGetsOneWriteOfEachAndThenNone(t *testing.T) {
 	pms := &fakePMS{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, nil), false)}
 
 	res, err := p.Run(t.Context())
 	require.NoError(t, err)
@@ -89,7 +90,7 @@ func TestTheLiveShapeIsAdoptedAndItsDriftOnlyReported(t *testing.T) {
 		}},
 	}
 	drift := map[string]bool{}
-	p := &plexprovision.Provisioner{
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler),
 		PMS: pms.server(t), Config: config(base, false),
 		Drift: func(lib string, d bool) { drift[lib] = d },
 	}
@@ -107,7 +108,7 @@ func TestSwitchAgentMovesTheLibraryAndForcesARefresh(t *testing.T) {
 	base := roots(t, nil)
 	pms := &fakePMS{sections: []plexapi.Section{{Key: "1", Type: "movie", Title: "Movies", Agent: "tv.plex.agents.movie"}}}
 	drift := map[string]bool{}
-	p := &plexprovision.Provisioner{
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler),
 		PMS: pms.server(t), Config: config(base, true),
 		Drift: func(lib string, d bool) { drift[lib] = d },
 	}
@@ -122,7 +123,7 @@ func TestSwitchAgentMovesTheLibraryAndForcesARefresh(t *testing.T) {
 func TestAnUnavailableProviderLeavesItsLibrariesAlone(t *testing.T) {
 	unavailable := true
 	pms := &fakePMS{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, &unavailable), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, &unavailable), false)}
 
 	res, err := p.Run(t.Context())
 	require.NoError(t, err, "a provider that is not up yet is pending, not an error")
@@ -137,7 +138,7 @@ func TestAnUnavailableProviderLeavesItsLibrariesAlone(t *testing.T) {
 
 func TestPlexNotAnsweringIsAnErrorRun(t *testing.T) {
 	pms := &fakePMS{down: true}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, nil), false)}
 	res, err := p.Run(t.Context())
 	require.Error(t, err)
 	assert.Equal(t, plexprovision.Result("error"), res)
@@ -149,7 +150,7 @@ func TestAProviderAtANewURIIsUpdatedNotAddedAgain(t *testing.T) {
 		providers: []plexapi.Provider{{ID: 9, Identifier: "tv.plex.agents.custom.clustarr.movies", URI: "http://old/plex/movies"}},
 		groups:    []plexapi.Group{{ID: 7, PrimaryIdentifier: "tv.plex.agents.custom.clustarr.movies"}},
 	}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: plexprovision.Config{
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: plexprovision.Config{
 		Providers: []plexprovision.ProviderRef{{URI: base + "/plex/movies"}},
 	}}
 	_, err := p.Run(t.Context())
@@ -161,7 +162,7 @@ func TestALibraryNamingAnUndeclaredProviderIsAnError(t *testing.T) {
 	pms := &fakePMS{}
 	cfg := config(roots(t, nil), false)
 	cfg.Libraries[0].Provider = "tv.plex.agents.custom.nobody"
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: cfg}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: cfg}
 	res, err := p.Run(t.Context())
 	require.ErrorContains(t, err, "tv.plex.agents.custom.nobody")
 	assert.Equal(t, plexprovision.Result("error"), res)
@@ -217,7 +218,7 @@ func TestLibraryNamesAreTheProvisionedLibraries(t *testing.T) {
 // are left alone.
 func TestALibraryAnalysesNothingButServesMarkers(t *testing.T) {
 	pms := &fakePMS{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, nil), false)}
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
@@ -240,7 +241,7 @@ func TestALibraryAnalysesNothingButServesMarkers(t *testing.T) {
 // every one was from 2026-10-01, has them turned back on, in one write.
 func TestALibraryWhoseMarkerSwitchesAreOffHasThemTurnedOn(t *testing.T) {
 	pms := &fakePMS{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, nil), false)}
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
 	pms.prefs["1"]["enableCreditsMarkerGeneration"] = "false"
@@ -262,7 +263,7 @@ func TestALibraryWhoseMarkerSwitchesAreOffHasThemTurnedOn(t *testing.T) {
 // not sent it.
 func TestAShowLibraryUsesSeasonTitles(t *testing.T) {
 	pms := &fakePMS{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, nil), false)}
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
@@ -287,7 +288,7 @@ func TestALibrarysPreferencesOverrideTheDefaults(t *testing.T) {
 		{Name: "enableCinemaTrailers", Value: "0"},
 		{Name: "noSuchSetting", Value: "1"},
 	}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: cfg}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: cfg}
 
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)
@@ -306,7 +307,7 @@ func TestALibrarysPreferencesOverrideTheDefaults(t *testing.T) {
 // them, so the projection can own the sections by id rather than by name.
 func TestRunReportsEveryProvisionedSectionsKey(t *testing.T) {
 	pms := &fakePMS{}
-	p := &plexprovision.Provisioner{PMS: pms.server(t), Config: config(roots(t, nil), false)}
+	p := &plexprovision.Provisioner{Logger: slog.New(slog.DiscardHandler), PMS: pms.server(t), Config: config(roots(t, nil), false)}
 	require.Nil(t, p.Keys(), "nothing before a run")
 	_, err := p.Run(t.Context())
 	require.NoError(t, err)

@@ -3,6 +3,7 @@ package mediaproxy
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,7 +48,7 @@ func (s *stubResolver) Resolve(_ context.Context, partID, _ string, _ http.Heade
 
 func newProxy(t *testing.T, upstream string, r Resolver) *Handler {
 	t.Helper()
-	return &Handler{
+	return &Handler{Logger: slog.New(slog.DiscardHandler),
 		Upstream: func(context.Context, string) (string, error) { return upstream, nil },
 		Resolver: r,
 		Timeout:  2 * time.Second,
@@ -142,7 +143,7 @@ func TestRequestsWaitForPlexInsteadOfFailingDuringAFailover(t *testing.T) {
 	defer plex.Close()
 
 	ready := make(chan struct{})
-	h := &Handler{
+	h := &Handler{Logger: slog.New(slog.DiscardHandler),
 		Upstream: func(ctx context.Context, _ string) (string, error) {
 			<-ready
 			return plex.URL, nil
@@ -169,7 +170,7 @@ func TestRequestsWaitForPlexInsteadOfFailingDuringAFailover(t *testing.T) {
 }
 
 func TestRequestsGiveUpWithServiceUnavailableWhenNoPlexAppears(t *testing.T) {
-	h := &Handler{
+	h := &Handler{Logger: slog.New(slog.DiscardHandler),
 		Upstream: func(context.Context, string) (string, error) { return "", ErrNoUpstream },
 		Resolver: &stubResolver{},
 		Timeout:  100 * time.Millisecond,

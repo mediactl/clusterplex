@@ -12,6 +12,10 @@ import (
 	"sync"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("net: Logger is required")
+
 // DefaultBlockedHosts are the Plex services only one pod may talk to.
 //
 // Every pod shares one server identity. If several hold the connection to
@@ -73,6 +77,9 @@ type EgressGuard struct {
 // Apply blocks or unblocks the hosts according to whether this pod holds the
 // lease. It is safe to call repeatedly: an unchanged set is not rewritten.
 func (g *EgressGuard) Apply(ctx context.Context, holdsLease bool) error {
+	if g.Logger == nil {
+		return errNoLogger
+	}
 	want, err := g.wanted(ctx, holdsLease)
 	if err != nil {
 		return err
@@ -95,12 +102,12 @@ func (g *EgressGuard) Apply(ctx context.Context, holdsLease bool) error {
 
 	switch {
 	case len(want) == 0:
-		g.log().Info("this pod holds the plex.tv lease; egress is open")
+		g.Logger.Info("this pod holds the plex.tv lease; egress is open")
 	case g.BlockAll:
-		g.log().Info("no pod may reach Plex's own services; blocking them here too",
+		g.Logger.Info("no pod may reach Plex's own services; blocking them here too",
 			"addresses", len(want))
 	default:
-		g.log().Info("this pod does not hold the plex.tv lease; blocking Plex's own services",
+		g.Logger.Info("this pod does not hold the plex.tv lease; blocking Plex's own services",
 			"addresses", len(want))
 	}
 	return nil
@@ -131,12 +138,12 @@ func (g *EgressGuard) wanted(ctx context.Context, holdsLease bool) ([]netip.Addr
 			// A name with no address is nothing to block, not a failure:
 			// metrics.plex.tv has no IPv4 record (2026-11-03), and every
 			// apply warned about it.
-			g.log().Debug("a host to block has no address", "host", host)
+			g.Logger.Debug("a host to block has no address", "host", host)
 			continue
 		case err != nil:
 			// Blocking what did resolve beats blocking nothing, so one name
 			// failing is not fatal on its own.
-			g.log().Warn("cannot resolve a host to block", "host", host, "error", err)
+			g.Logger.Warn("cannot resolve a host to block", "host", host, "err", err)
 			continue
 		}
 		addrs = append(addrs, found...)
@@ -164,11 +171,4 @@ func lookup(ctx context.Context, host string) ([]netip.Addr, error) {
 		out = append(out, a.Unmap())
 	}
 	return out, nil
-}
-
-func (g *EgressGuard) log() *slog.Logger {
-	if g.Logger != nil {
-		return g.Logger
-	}
-	return slog.Default()
 }

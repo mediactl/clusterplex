@@ -13,6 +13,7 @@ package maintenance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -23,6 +24,10 @@ import (
 
 	"github.com/mediactl/clusterplex/pkg/hashring"
 )
+
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("maintenance: Logger is required")
 
 // DefaultTimeout bounds a task Plex only queues: it answers an analyze, a
 // refresh or a butler task once the work is scheduled, so a pod that has not
@@ -163,6 +168,9 @@ type Fanout struct {
 // them: the caller is a Job, and a partial failure should be visible rather
 // than swallowed.
 func (f *Fanout) Run(ctx context.Context, task Task) (Result, error) {
+	if f.Logger == nil {
+		return Result{}, errNoLogger
+	}
 	ctx, cancel := context.WithTimeout(ctx, task.Deadline())
 	defer cancel()
 	result := Result{Task: task.Name}
@@ -191,8 +199,8 @@ func (f *Fanout) Run(ctx context.Context, task Task) (Result, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				f.log().Error("maintenance task failed",
-					"task", task.Name, "pod", item.Member, "path", item.Path, "error", err)
+				f.Logger.Error("maintenance task failed",
+					"task", task.Name, "pod", item.Member, "path", item.Path, "err", err)
 				result.Failed = append(result.Failed, item)
 				return
 			}
@@ -228,11 +236,4 @@ func (f *Fanout) plan(ctx context.Context, task Task, ring *hashring.Ring) ([]As
 		})
 	}
 	return work, nil
-}
-
-func (f *Fanout) log() *slog.Logger {
-	if f.Logger != nil {
-		return f.Logger
-	}
-	return slog.Default()
 }

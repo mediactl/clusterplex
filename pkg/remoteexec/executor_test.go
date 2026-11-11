@@ -2,6 +2,7 @@ package remoteexec
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -19,7 +20,7 @@ func TestExecutorRunsRealBinaryWithArgsEnvAndCwd(t *testing.T) {
 	work := t.TempDir()
 	writeScript(t, bin, "Plex Transcoder.real", `echo "out:$1"; echo "err:$2" >&2; echo "cwd:$(pwd)"; echo "env:$FOO"; exit 3`)
 
-	ex := &Executor{BinDir: bin}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin}
 	sink := &collectSink{}
 	err := ex.Run(context.Background(), &pb.ExecRequest{
 		TargetBinary: "Plex Transcoder",
@@ -48,7 +49,7 @@ func TestExecutorAddsItsOwnEnvironmentToEveryJob(t *testing.T) {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Media Scanner.real", `echo "preload:$LD_PRELOAD"`)
 
-	ex := &Executor{BinDir: bin, Env: []string{"LD_PRELOAD=/lib/shim.so"}}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin, Env: []string{"LD_PRELOAD=/lib/shim.so"}}
 	sink := &collectSink{}
 	err := ex.Run(context.Background(), &pb.ExecRequest{
 		TargetBinary: "Plex Media Scanner",
@@ -67,7 +68,7 @@ func TestExecutorEnvironmentBeatsTheRequestRatherThanDuplicatingIt(t *testing.T)
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Media Scanner.real", `echo "preload:$LD_PRELOAD"`)
 
-	ex := &Executor{BinDir: bin, Env: []string{"LD_PRELOAD=/lib/right.so"}}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin, Env: []string{"LD_PRELOAD=/lib/right.so"}}
 	sink := &collectSink{}
 	err := ex.Run(context.Background(), &pb.ExecRequest{
 		TargetBinary: "Plex Media Scanner",
@@ -83,7 +84,7 @@ func TestExecutorKillsProcessGroupWhenContextCancelled(t *testing.T) {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Transcoder.real", `sleep 30`)
 
-	ex := &Executor{BinDir: bin}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sink := &collectSink{}
@@ -104,13 +105,13 @@ func TestExecutorKillsProcessGroupWhenContextCancelled(t *testing.T) {
 }
 
 func TestExecutorRejectsPathTraversal(t *testing.T) {
-	ex := &Executor{BinDir: t.TempDir()}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: t.TempDir()}
 	err := ex.Run(context.Background(), &pb.ExecRequest{TargetBinary: "../../bin/sh"}, &collectSink{})
 	require.Error(t, err)
 }
 
 func TestExecutorReportsMissingBinary(t *testing.T) {
-	ex := &Executor{BinDir: t.TempDir()}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: t.TempDir()}
 	err := ex.Run(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Transcoder"}, &collectSink{})
 	require.Error(t, err)
 }
@@ -123,7 +124,7 @@ func TestExecutorStartsEveryJobThroughItsStarter(t *testing.T) {
 	writeScript(t, bin, "Plex Media Scanner.real", `echo ran`)
 
 	var started []*exec.Cmd
-	ex := &Executor{BinDir: bin, Start: func(cmd *exec.Cmd) error {
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin, Start: func(cmd *exec.Cmd) error {
 		started = append(started, cmd)
 		return cmd.Start()
 	}}
@@ -143,7 +144,7 @@ func TestExecutorReportsAStarterThatFails(t *testing.T) {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Media Scanner.real", `echo ran`)
 
-	ex := &Executor{BinDir: bin, Start: func(*exec.Cmd) error { return assert.AnError }}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin, Start: func(*exec.Cmd) error { return assert.AnError }}
 	err := ex.Run(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner"}, &collectSink{})
 	require.ErrorIs(t, err, assert.AnError)
 }
@@ -155,7 +156,7 @@ func TestExecutorKillsTheGroupOfAJobStartedOnAThreadThatHasSinceGone(t *testing.
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Transcoder.real", `sleep 30 & wait`)
 
-	ex := &Executor{BinDir: bin, Start: func(cmd *exec.Cmd) error {
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin, Start: func(cmd *exec.Cmd) error {
 		errc := make(chan error, 1)
 		go func() {
 			runtime.LockOSThread()

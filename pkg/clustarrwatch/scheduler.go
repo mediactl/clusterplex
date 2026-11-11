@@ -137,7 +137,7 @@ func (s *Scheduler) Flush(ctx context.Context) {
 
 	for _, sc := range scans {
 		if err := s.Scan(ctx, sc.section, sc.folder); err != nil {
-			s.logger().Warn("scan failed; will retry", "section", sc.section, "error", err)
+			s.Logger.Warn("scan failed; will retry", "section", sc.section, "err", err)
 			continue
 		}
 		s.mu.Lock()
@@ -153,7 +153,7 @@ func (s *Scheduler) Flush(ctx context.Context) {
 	}
 	for g, due := range refreshes {
 		if err := s.Refresh(ctx, g); err != nil {
-			s.logger().Warn("refresh failed; will retry", "error", err)
+			s.Logger.Warn("refresh failed; will retry", "err", err)
 			continue
 		}
 		s.mu.Lock()
@@ -176,11 +176,11 @@ func (s *Scheduler) Flush(ctx context.Context) {
 				delete(s.byID, id)
 				delete(s.idFails, id)
 				s.mu.Unlock()
-				s.logger().Warn("refresh by id given up", "id", id, "attempts", MaxRefreshAttempts, "error", err)
+				s.Logger.Warn("refresh by id given up", "id", id, "attempts", MaxRefreshAttempts, "err", err)
 				continue
 			}
 			s.mu.Unlock()
-			s.logger().Warn("refresh by id failed; will retry", "id", id, "error", err)
+			s.Logger.Warn("refresh by id failed; will retry", "id", id, "err", err)
 			continue
 		}
 		s.mu.Lock()
@@ -190,11 +190,4 @@ func (s *Scheduler) Flush(ctx context.Context) {
 		delete(s.idFails, id)
 		s.mu.Unlock()
 	}
-}
-
-func (s *Scheduler) logger() *slog.Logger {
-	if s.Logger != nil {
-		return s.Logger
-	}
-	return slog.Default()
 }

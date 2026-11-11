@@ -3,6 +3,7 @@ package clustarrwatch_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -145,7 +146,7 @@ func startWith(t *testing.T, p *pms, tweak func(*clustarrwatch.Watcher), objs ..
 	t.Helper()
 	dyn := fakeDynamic(objs...)
 	cs := &counts{m: map[string]int{}}
-	w := &clustarrwatch.Watcher{
+	w := &clustarrwatch.Watcher{Logger: slog.New(slog.DiscardHandler),
 		Dynamic: dyn, Namespace: ns, PMS: p.client(t),
 		Mapper:        clustarrwatch.NewMapper([]clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}}),
 		MovieProvider: "tv.plex.agents.custom.clustarr.movies",
@@ -308,7 +309,7 @@ func TestAWatchThatCannotSyncSaysSo(t *testing.T) {
 	})
 	p := &pms{}
 	var unsynced atomic.Int32
-	w := &clustarrwatch.Watcher{
+	w := &clustarrwatch.Watcher{Logger: slog.New(slog.DiscardHandler),
 		Dynamic: dyn, Namespace: ns, PMS: p.client(t),
 		Mapper:      clustarrwatch.NewMapper([]clustarrwatch.Mapping{{Clustarr: "/data/media", Plex: "/media"}}),
 		SyncTimeout: 50 * time.Millisecond,

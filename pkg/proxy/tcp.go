@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -12,6 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("proxy: Logger is required")
 
 const defaultDialTimeout = 5 * time.Second
 
@@ -118,6 +123,9 @@ const (
 // Start binds Listen and serves until ctx is cancelled. It returns the bound
 // address so callers may pass port 0.
 func (p *TCP) Start(ctx context.Context) (net.Addr, error) {
+	if p.Logger == nil {
+		return nil, errNoLogger
+	}
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", p.Listen)
 	if err != nil {
@@ -144,7 +152,7 @@ func (p *TCP) serve(ctx context.Context) {
 		c, err := p.lis.Accept()
 		if err != nil {
 			if ctx.Err() == nil {
-				p.log().Error("proxy accept failed", "error", err)
+				p.Logger.Error("proxy accept failed", "err", err)
 			}
 			break
 		}
@@ -238,12 +246,12 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 		// dials it -- every client, every health poll -- arrives here. Report
 		// the outage, not each connection that notices it.
 		if !p.down.Swap(true) {
-			p.log().Warn("proxy upstream is unreachable", "target", p.Target, "error", err)
+			p.Logger.Warn("proxy upstream is unreachable", "target", p.Target, "err", err)
 		}
 		return
 	}
 	if p.down.Swap(false) {
-		p.log().Info("proxy upstream is reachable again", "target", p.Target)
+		p.Logger.Info("proxy upstream is reachable again", "target", p.Target)
 	}
 	defer func() { _ = upstream.Close() }()
 
@@ -329,11 +337,4 @@ func awaitDelivery(ctx context.Context, c net.Conn, act *activity) {
 		case <-time.After(deliveryPoll):
 		}
 	}
-}
-
-func (p *TCP) log() *slog.Logger {
-	if p.Logger != nil {
-		return p.Logger
-	}
-	return slog.Default()
 }

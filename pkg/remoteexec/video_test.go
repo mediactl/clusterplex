@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"testing"
 
@@ -61,13 +62,13 @@ func (f *fakeRemux) Execute(_ context.Context, _ *pb.ExecRequest, sink Sink) (bo
 func localTranscoder(t *testing.T) *Executor {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Transcoder.real", `echo ran-locally`)
-	return &Executor{BinDir: bin}
+	return &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin}
 }
 
 func TestAVideoConversionNeverRunsLocally(t *testing.T) {
 	w := &countingWorkers{}
 	var refused []string
-	d := &Dispatcher{
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
 		Local: localTranscoder(t), Workers: w, Dial: noDial(t), PMSAddr: "pms:32400",
 		OnRefused: func(reason string) { refused = append(refused, reason) },
 	}
@@ -86,7 +87,7 @@ func TestAVideoConversionNeverRunsLocally(t *testing.T) {
 func TestAVideoConversionTakesTheVideoRoute(t *testing.T) {
 	v := &fakeVideo{}
 	var routes [][2]string
-	d := &Dispatcher{
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
 		Local: localTranscoder(t), Video: v, Dial: noDial(t),
 		OnRoute: func(target, mode string) { routes = append(routes, [2]string{target, mode}) },
 	}
@@ -99,7 +100,7 @@ func TestAVideoConversionTakesTheVideoRoute(t *testing.T) {
 
 func TestABrowserRemuxStillTakesTheRemuxPool(t *testing.T) {
 	v, r := &fakeVideo{}, &fakeRemux{}
-	d := &Dispatcher{Local: localTranscoder(t), Video: v, Remux: r, Dial: noDial(t)}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Local: localTranscoder(t), Video: v, Remux: r, Dial: noDial(t)}
 	req := &pb.ExecRequest{TargetBinary: Transcoder, Args: []string{
 		"-codec:0", "hevc", "-i", "/library/x.mkv", "-map", "0:0", "-codec:0", "copy",
 		"-map", "0:1", "-codec:1", "aac", "-f", "dash", "dash",
@@ -111,7 +112,7 @@ func TestABrowserRemuxStillTakesTheRemuxPool(t *testing.T) {
 
 func TestAnAudioOnlyConversionStillRunsWhereItDid(t *testing.T) {
 	v := &fakeVideo{}
-	d := &Dispatcher{Local: localTranscoder(t), Video: v, Dial: noDial(t)}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Local: localTranscoder(t), Video: v, Dial: noDial(t)}
 	req := &pb.ExecRequest{TargetBinary: Transcoder, Env: map[string]string{"EAE_ROOT": "/tmp/eae"}, Args: []string{
 		"-i", "/media/x.mkv", "-map", "0:0", "-codec:0", "copy",
 		"-map", "0:1", "-codec:1", "aac", "-b:1", "256k", "-f", "ssegment", "media-%05d.ts",

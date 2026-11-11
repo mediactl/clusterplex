@@ -54,7 +54,7 @@ func resolver(byHost map[string][]string) func(context.Context, string) ([]netip
 }
 
 func guard(list *fakeBlocklist, hosts ...string) *EgressGuard {
-	return &EgressGuard{
+	return &EgressGuard{Logger: slog.New(slog.DiscardHandler),
 		Hosts:     hosts,
 		Blocklist: list,
 		Resolve: resolver(map[string][]string{
@@ -170,7 +170,7 @@ func TestEgressGuardBlocksTheLeaderTooWhenNobodyMayReachPlexTV(t *testing.T) {
 	// This is a deliberate degradation -- no claiming, no remote access -- so
 	// it is off unless asked for.
 	spy := &fakeBlocklist{}
-	g := &EgressGuard{
+	g := &EgressGuard{Logger: slog.New(slog.DiscardHandler),
 		Blocklist: spy,
 		BlockAll:  true,
 		Resolve: func(context.Context, string) ([]netip.Addr, error) {

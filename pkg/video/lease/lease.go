@@ -11,6 +11,7 @@ package lease
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -24,6 +25,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 )
+
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("lease: Logger is required")
 
 const (
 	// Annotation is the number of conversions running across the pool, the
@@ -60,13 +65,6 @@ func (c *Counter) now() time.Time {
 	return c.Now()
 }
 
-func (c *Counter) log() *slog.Logger {
-	if c.Logger == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return c.Logger
-}
-
 // Begin counts one more conversion and publishes the count at once; end,
 // which only its first call does anything, counts it out and publishes
 // again. A failed write is logged, not returned: the conversion runs
@@ -84,7 +82,7 @@ func (c *Counter) add(ctx context.Context, d int) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := c.Renew(ctx); err != nil {
-		c.log().Warn("publish the video conversion count", "lease", c.Name, "error", err)
+		c.Logger.Warn("publish the video conversion count", "lease", c.Name, "err", err)
 	}
 }
 
@@ -105,7 +103,7 @@ func (c *Counter) Run(ctx context.Context) {
 				continue
 			}
 			if err := c.Renew(ctx); err != nil {
-				c.log().Warn("renew the video conversion count", "lease", c.Name, "error", err)
+				c.Logger.Warn("renew the video conversion count", "lease", c.Name, "err", err)
 			}
 		}
 	}
@@ -115,6 +113,9 @@ func (c *Counter) Run(ctx context.Context) {
 // annotation to the sum of the fresh: the Lease is created if missing, and
 // this manager becomes its holder.
 func (c *Counter) Renew(ctx context.Context) error {
+	if c.Logger == nil {
+		return errNoLogger
+	}
 	c.mu.Lock()
 	n := c.n
 	c.mu.Unlock()

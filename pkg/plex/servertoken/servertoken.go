@@ -137,7 +137,7 @@ func (s Starter) decide(ctx context.Context, current map[string]string) map[stri
 	if haveStore {
 		var err error
 		if stored, err = s.Store.Get(ctx); err != nil {
-			s.Logger.Warn("read the server token Secret; neither claiming over a token nor forcing its account", "error", err)
+			s.Logger.Warn("read the server token Secret; neither claiming over a token nor forcing its account", "err", err)
 			haveStore = false
 		}
 	}
@@ -150,7 +150,7 @@ func (s Starter) decide(ctx context.Context, current map[string]string) map[stri
 					// one's username and email go: the new ones fill in
 					// from the file once Plex has written them.
 					if err := s.Store.Put(ctx, Stored{Token: fresh, ClaimHash: hash}); err != nil {
-						s.Logger.Warn("record the claim in the server token Secret", "error", err)
+						s.Logger.Warn("record the claim in the server token Secret", "err", err)
 					}
 				}
 				out := map[string]string{tokenPref: fresh}
@@ -184,7 +184,7 @@ func (s Starter) claim(ctx context.Context, clientID string) (string, bool) {
 	defer cancel()
 	token, err := s.Exchange(ctx, s.Claim, clientID)
 	if err != nil {
-		s.Logger.Warn("claim the server: exchange failed; Plex starts with the token it has", "error", err)
+		s.Logger.Warn("claim the server: exchange failed; Plex starts with the token it has", "err", err)
 		return "", false
 	}
 	s.Logger.Info("claimed the server with plex.tv")

@@ -63,7 +63,7 @@ func (s *Server) Remux(p *remuxpb.Job, out remuxpb.Remux_RemuxServer) error {
 	if err != nil {
 		msg = err.Error()
 		if s.Logger != nil {
-			s.Logger.Warn("remux failed", "input", j.Input, "segment", j.SkipToSegment, "error", err)
+			s.Logger.Warn("remux failed", "input", j.Input, "segment", j.SkipToSegment, "err", err)
 		}
 	}
 	return out.Send(&remuxpb.Event{Kind: &remuxpb.Event_Done{Done: &remuxpb.Done{Error: msg}}})
@@ -189,7 +189,7 @@ func (ss *session) Segment(s remux.Segment) error {
 // disk error, must not fail playback.
 func (ss *session) stopCaching(err error) {
 	if !ss.uncached && ss.srv.Logger != nil {
-		ss.srv.Logger.Warn("remux stops caching this job", "input", ss.job.Input, "error", err)
+		ss.srv.Logger.Warn("remux stops caching this job", "input", ss.job.Input, "err", err)
 	}
 	ss.uncached = true
 }

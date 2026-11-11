@@ -26,6 +26,10 @@ import (
 	"github.com/mediactl/clusterplex/proto/remuxpb"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("relay: Logger is required")
+
 // segmentName is the only file a worker may name.
 var segmentName = regexp.MustCompile(`^(init-stream[01]|chunk-stream[01]-\d{5,})\.m4s$`)
 
@@ -38,16 +42,12 @@ type Relay struct {
 	Logger  *slog.Logger
 }
 
-func (r *Relay) log() *slog.Logger {
-	if r.Logger == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return r.Logger
-}
-
 func (r *Relay) pms() plexsession.PMS { return plexsession.PMS{Addr: r.PMS, HTTP: r.HTTP} }
 
 func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexec.Sink) (bool, error) {
+	if r.Logger == nil {
+		return false, errNoLogger
+	}
 	job, ok := remux.Classify(ctx, req, r.Players)
 	if !ok {
 		return false, nil
@@ -62,17 +62,17 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 		names[i], addr[w.Name] = w.Name, w.Addr
 	}
 	pick := hashring.New(names...).Locate(job.RingKey())
-	log := r.log().With("worker", pick, "session", job.SessionID(), "segment", job.SkipToSegment)
+	log := r.Logger.With("worker", pick, "session", job.SessionID(), "segment", job.SkipToSegment)
 
 	c, closer, err := r.Dial(ctx, addr[pick])
 	if err != nil {
-		log.Warn("dial remux worker failed; Plex runs the job", "error", err)
+		log.Warn("dial remux worker failed; Plex runs the job", "err", err)
 		return false, nil
 	}
 	defer func() { _ = closer.Close() }()
 	stream, err := c.Remux(ctx, job.Proto())
 	if err != nil {
-		log.Warn("remux worker refused the job; Plex runs it", "error", err)
+		log.Warn("remux worker refused the job; Plex runs it", "err", err)
 		return false, nil
 	}
 	first := true
@@ -80,7 +80,7 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 		ev, err := stream.Recv()
 		if err != nil {
 			if first {
-				log.Warn("remux worker failed before writing a file; Plex runs the job", "error", err)
+				log.Warn("remux worker failed before writing a file; Plex runs the job", "err", err)
 				return false, nil
 			}
 			if errors.Is(err, io.EOF) {
@@ -112,7 +112,7 @@ func (r *Relay) Execute(ctx context.Context, req *pb.ExecRequest, sink remoteexe
 			if msg := k.Done.GetError(); msg != "" {
 				err = errors.New(msg)
 				if first {
-					log.Warn("remux worker refused the job before writing a file; Plex runs the job", "error", err)
+					log.Warn("remux worker refused the job before writing a file; Plex runs the job", "err", err)
 					return false, nil
 				}
 			}

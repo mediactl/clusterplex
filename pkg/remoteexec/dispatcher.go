@@ -15,6 +15,10 @@ import (
 	pb "github.com/mediactl/clusterplex/proto"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("remoteexec: Logger is required")
+
 // Transcoder is the only helper worth moving off the leader: it is CPU-bound
 // and self-contained. The scanner, relay and commercial skipper need the
 // server's own filesystem and sockets.
@@ -101,6 +105,9 @@ func RemoteEligible(req *pb.ExecRequest) bool {
 
 // Execute runs the job remotely when it can, locally otherwise.
 func (d *Dispatcher) Execute(ctx context.Context, req *pb.ExecRequest, sink Sink) error {
+	if d.Logger == nil {
+		return errNoLogger
+	}
 	if d.Scan != nil && req.GetTargetBinary() == Scanner {
 		if done, err := d.Scan.Execute(ctx, req, sink); done {
 			d.route(req.GetTargetBinary(), "projected")
@@ -139,23 +146,23 @@ func (d *Dispatcher) tryRemote(ctx context.Context, req *pb.ExecRequest, sink Si
 		return false, nil
 	}
 	if d.PMSAddr == "" {
-		d.log().Warn("remote execution disabled: PMSAddr is empty")
+		d.Logger.Warn("remote execution disabled: PMSAddr is empty")
 		return false, nil
 	}
 	workers, err := d.Workers.ListReady(ctx)
 	if err != nil {
-		d.log().Warn("list workers failed, running locally", "error", err)
+		d.Logger.Warn("list workers failed, running locally", "err", err)
 		return false, nil
 	}
 	if len(workers) == 0 {
 		return false, nil
 	}
 	w := d.pick(workers)
-	log := d.log().With("worker", w.Name, "target", req.GetTargetBinary())
+	log := d.Logger.With("worker", w.Name, "target", req.GetTargetBinary())
 
 	client, closer, err := d.Dial(ctx, w.Addr)
 	if err != nil {
-		log.Warn("dial worker failed, running locally", "error", err)
+		log.Warn("dial worker failed, running locally", "err", err)
 		return false, nil
 	}
 	defer func() { _ = closer.Close() }()
@@ -168,7 +175,7 @@ func (d *Dispatcher) tryRemote(ctx context.Context, req *pb.ExecRequest, sink Si
 		Cwd:          req.GetCwd(),
 	})
 	if err != nil {
-		log.Warn("worker refused job, running locally", "error", err)
+		log.Warn("worker refused job, running locally", "err", err)
 		return false, nil
 	}
 
@@ -177,7 +184,7 @@ func (d *Dispatcher) tryRemote(ctx context.Context, req *pb.ExecRequest, sink Si
 		m, err := stream.Recv()
 		if err != nil {
 			if first {
-				log.Warn("worker rejected job before output, running locally", "error", err)
+				log.Warn("worker rejected job before output, running locally", "err", err)
 				return false, nil
 			}
 			if errors.Is(err, io.EOF) {
@@ -207,11 +214,4 @@ func (d *Dispatcher) route(target, mode string) {
 	if d.OnRoute != nil {
 		d.OnRoute(target, mode)
 	}
-}
-
-func (d *Dispatcher) log() *slog.Logger {
-	if d.Logger != nil {
-		return d.Logger
-	}
-	return slog.Default()
 }

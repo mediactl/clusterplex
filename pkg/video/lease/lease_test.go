@@ -2,6 +2,7 @@ package lease
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func (c *clock) now() time.Time      { return c.t }
 func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
 func newClock() *clock               { return &clock{t: time.Unix(1_790_000_000, 0)} }
 func counter(cs kubernetes.Interface, c *clock, pod string) *Counter {
-	return &Counter{Client: cs, Namespace: ns, Name: name, Identity: pod, Now: c.now}
+	return &Counter{Logger: slog.New(slog.DiscardHandler), Client: cs, Namespace: ns, Name: name, Identity: pod, Now: c.now}
 }
 
 func get(t *testing.T, cs kubernetes.Interface) *coordinationv1.Lease {

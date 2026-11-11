@@ -37,6 +37,10 @@ import (
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("codecs: Logger is required")
+
 const (
 	// RecordName is the file in the Codecs folder that records what was
 	// fetched, per platform and for which PMS version. It lives with the
@@ -139,6 +143,9 @@ type platformRecord struct {
 // An error is one the whole run stopped on (PMS not answering); a codec
 // that failed is in Result.Failed.
 func (p *Prefetcher) Run(ctx context.Context) (Result, error) {
+	if p.Logger == nil {
+		return Result{}, errNoLogger
+	}
 	var res Result
 	version, err := p.PMS.ServerVersion(ctx)
 	if err != nil {
@@ -147,7 +154,7 @@ func (p *Prefetcher) Run(ctx context.Context) (Result, error) {
 	rec, err := readRecord(p.recordPath())
 	if err != nil {
 		// Costs only fetching again.
-		p.logger().Warn("ignoring an unreadable codec prefetch record", "file", p.recordPath(), "error", err)
+		p.Logger.Warn("ignoring an unreadable codec prefetch record", "file", p.recordPath(), "err", err)
 		rec = record{}
 	}
 	pr := rec[p.Platform]
@@ -171,7 +178,7 @@ func (p *Prefetcher) Run(ctx context.Context) (Result, error) {
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
-			p.logger().Warn("could not have Plex fetch a decoder", "codec", codec, "platform", p.Platform, "error", err)
+			p.Logger.Warn("could not have Plex fetch a decoder", "codec", codec, "platform", p.Platform, "err", err)
 			res.Failed = append(res.Failed, codec)
 			continue
 		}
@@ -180,7 +187,7 @@ func (p *Prefetcher) Run(ctx context.Context) (Result, error) {
 		if err := writeRecord(p.recordPath(), rec); err != nil {
 			return res, fmt.Errorf("record the fetched %s decoder: %w", codec, err)
 		}
-		p.logger().Info("Plex has the decoder", "codec", codec, "platform", p.Platform, "version", version)
+		p.Logger.Info("Plex has the decoder", "codec", codec, "platform", p.Platform, "version", version)
 		res.Fetched = append(res.Fetched, codec)
 	}
 	return res, nil
@@ -218,7 +225,7 @@ func (p *Prefetcher) transcode(ctx context.Context, item int64) error {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopTimeout)
 		defer cancel()
 		if err := p.PMS.StopTranscode(sctx, t); err != nil {
-			p.logger().Debug("stop the codec prefetch transcode", "session", t.Session, "error", err)
+			p.Logger.Debug("stop the codec prefetch transcode", "session", t.Session, "err", err)
 		}
 	}()
 	variant, err := p.PMS.StartTranscode(ctx, t)
@@ -235,13 +242,6 @@ func (p *Prefetcher) transcode(ctx context.Context, item int64) error {
 }
 
 func (p *Prefetcher) recordPath() string { return filepath.Join(p.Dir, RecordName) }
-
-func (p *Prefetcher) logger() *slog.Logger {
-	if p.Logger == nil {
-		return slog.Default()
-	}
-	return p.Logger
-}
 
 func readRecord(path string) (record, error) {
 	b, err := os.ReadFile(path)

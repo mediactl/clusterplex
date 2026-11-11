@@ -268,7 +268,7 @@ func (m *Monitor) end(ctx context.Context, p *play) {
 		trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
 	span.End(trace.WithTimestamp(p.lastSeen))
 
-	m.logger().InfoContext(ctx, "play ended",
+	m.Logger.InfoContext(ctx, "play ended",
 		"user", s.User, "title", s.FullTitle(), "media_type", s.MediaType,
 		"player", s.Player, "platform", s.Platform, "decision", s.Decision(),
 		"location", s.Location, "watched", p.watched.Round(time.Second).String(),
@@ -423,11 +423,4 @@ func (m *Monitor) tracer() trace.Tracer {
 		return m.Tracer
 	}
 	return otel.Tracer("clusterplex/activity")
-}
-
-func (m *Monitor) logger() *slog.Logger {
-	if m.Logger != nil {
-		return m.Logger
-	}
-	return slog.Default()
 }

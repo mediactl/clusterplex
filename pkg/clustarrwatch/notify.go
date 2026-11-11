@@ -89,7 +89,7 @@ func (w *Watcher) followRefreshes(ctx context.Context) {
 		if connected {
 			backoff = time.Second
 		}
-		w.log().Debug("Plex's notification stream ended; reconnecting", "error", err, "in", backoff)
+		w.Logger.Debug("Plex's notification stream ended; reconnecting", "err", err, "in", backoff)
 		select {
 		case <-ctx.Done():
 			return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -98,7 +99,7 @@ func library(items map[string][]int64) plexcodecs.Items {
 
 func prefetcher(t *testing.T, pms *fakePMS, items map[string][]int64, codecs ...string) *plexcodecs.Prefetcher {
 	t.Helper()
-	return &plexcodecs.Prefetcher{
+	return &plexcodecs.Prefetcher{Logger: slog.New(slog.DiscardHandler),
 		PMS: pms, Items: library(items), Dir: t.TempDir(), Platform: "linux-aarch64", Codecs: codecs,
 		FirstSegment: time.Second,
 	}

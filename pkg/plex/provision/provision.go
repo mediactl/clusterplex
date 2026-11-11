@@ -15,6 +15,10 @@ import (
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 )
 
+// errNoLogger is what a type nobody handed a Logger answers where its work
+// starts (the 2026-11-10 structured-logging design §5): it invents none.
+var errNoLogger = errors.New("provision: Logger is required")
+
 // ProviderRef is a provider to register, by its root.
 type ProviderRef struct {
 	URI string `mapstructure:"uri"`
@@ -175,10 +179,11 @@ func (p *Provisioner) recordKeys(sections []plexapi.Section) {
 // Run makes one idempotent pass. Pending means a provider root did not
 // answer yet, so its libraries were skipped; the caller retries sooner.
 func (p *Provisioner) Run(ctx context.Context) (Result, error) {
-	log := p.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
+	if p.Logger == nil {
+		var zero Result
+		return zero, errNoLogger
 	}
+	log := p.Logger
 	pending := false
 
 	roots := map[string]Root{}  // identifier -> root
@@ -186,7 +191,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 	for _, ref := range p.Config.Providers {
 		root, err := FetchRoot(ctx, p.HTTP, ref.URI)
 		if err != nil {
-			log.Info("metadata provider not answering yet", "uri", ref.URI, "error", err)
+			log.Info("metadata provider not answering yet", "uri", ref.URI, "err", err)
 			pending = true
 			continue
 		}

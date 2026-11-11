@@ -34,7 +34,7 @@ func echoServer(t *testing.T) string {
 }
 
 func TestTCPProxyForwardsBytesBothWays(t *testing.T) {
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -53,7 +53,7 @@ func TestTCPProxyForwardsBytesBothWays(t *testing.T) {
 }
 
 func TestTCPProxyStopsAcceptingAfterCancel(t *testing.T) {
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	addr, err := p.Start(ctx)
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestTCPProxyStopsAcceptingAfterCancel(t *testing.T) {
 
 func TestTCPProxyTracksActiveConnections(t *testing.T) {
 	var active atomic.Int64
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t), OnConnChange: func(d int) { active.Add(int64(d)) }}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t), OnConnChange: func(d int) { active.Add(int64(d)) }}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -120,7 +120,7 @@ func TestTCPProxyDrainWaitsForHeldConnectionsToFinish(t *testing.T) {
 	// A rollout used to cut every stream on the pod the instant it began. The
 	// pod has already left its Service by then, so nothing new arrives; what
 	// it holds is what its clients cannot get back from another pod.
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -147,7 +147,7 @@ func TestTCPProxyDrainWaitsForHeldConnectionsToFinish(t *testing.T) {
 }
 
 func TestTCPProxyDrainGivesUpAtTheDeadline(t *testing.T) {
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -183,7 +183,7 @@ func TestTCPProxyHoldsAConnectionUntilItsBytesAreDelivered(t *testing.T) {
 			go func() { _, _ = c.Write(payload); _ = c.Close() }()
 		}
 	}()
-	p := &TCP{Listen: "127.0.0.1:0", Target: lis.Addr().String()}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: lis.Addr().String()}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -223,7 +223,7 @@ func TestTCPProxyDrainDoesNotWaitForIdleOrPollingConnections(t *testing.T) {
 	// bytes. A drain that waited for either kept that client on a pod about
 	// to go, its next playback starting there, and made every rollout take
 	// the full drain per pod. Neither is a stream; both are closed with Plex.
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -281,7 +281,7 @@ func TestTCPProxyLetsGoOfAClientThatVanished(t *testing.T) {
 			go func() { _, _ = c.Write(payload); _ = c.Close() }()
 		}
 	}()
-	p := &TCP{Listen: "127.0.0.1:0", Target: lis.Addr().String()}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: lis.Addr().String()}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr, err := p.Start(ctx)
@@ -306,7 +306,7 @@ func TestTCPProxyLetsGoOfAClientThatVanished(t *testing.T) {
 }
 
 func TestTCPProxyDrainWithNothingOpenReturnsAtOnce(t *testing.T) {
-	p := &TCP{Listen: "127.0.0.1:0", Target: echoServer(t)}
+	p := &TCP{Logger: slog.New(slog.DiscardHandler), Listen: "127.0.0.1:0", Target: echoServer(t)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := p.Start(ctx)

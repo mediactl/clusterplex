@@ -87,6 +87,9 @@ func (e *Executor) Binary(target string) (string, error) {
 // terminates the child's whole process group, so helpers it spawned die too.
 // Run only returns an error when the process cannot start or the sink fails.
 func (e *Executor) Run(ctx context.Context, req *pb.ExecRequest, sink Sink) error {
+	if e.Logger == nil {
+		return errNoLogger
+	}
 	bin, err := e.Binary(req.GetTargetBinary())
 	if err != nil {
 		return err
@@ -107,13 +110,13 @@ func (e *Executor) Run(ctx context.Context, req *pb.ExecRequest, sink Sink) erro
 	if err := e.start(cmd); err != nil {
 		return fmt.Errorf("start %q: %w", bin, err)
 	}
-	e.log().Info("job started", "target", req.GetTargetBinary(), "pid", cmd.Process.Pid)
+	e.Logger.Info("job started", "target", req.GetTargetBinary(), "pid", cmd.Process.Pid)
 
 	waitErr := cmd.Wait()
 	_ = signalGroup(cmd, syscall.SIGKILL) // reap helpers that outlived their parent
 
 	code := exitCode(waitErr)
-	e.log().Info("job finished", "target", req.GetTargetBinary(), "exit_code", code)
+	e.Logger.Info("job finished", "target", req.GetTargetBinary(), "exit_code", code)
 	out.sink.send(&pb.TranscodeLog{IsFinished: true, ExitCode: code})
 	if err := out.sink.err(); err != nil {
 		return fmt.Errorf("stream output: %w", err)
@@ -126,13 +129,6 @@ func (e *Executor) start(cmd *exec.Cmd) error {
 		return e.Start(cmd)
 	}
 	return cmd.Start()
-}
-
-func (e *Executor) log() *slog.Logger {
-	if e.Logger != nil {
-		return e.Logger
-	}
-	return slog.Default()
 }
 
 // envList turns the request environment into KEY=VALUE pairs, with extra

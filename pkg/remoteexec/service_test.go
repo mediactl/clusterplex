@@ -2,6 +2,7 @@ package remoteexec
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,7 @@ import (
 func TestServiceStreamsExecutorOutputOverGRPC(t *testing.T) {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Media Scanner.real", `echo hello; exit 0`)
-	ex := &Executor{BinDir: bin}
+	ex := &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin}
 
 	sock := startServer(t, &Service{Execute: ex.Run})
 	conn, err := grpc.NewClient("unix://"+sock, grpc.WithTransportCredentials(insecure.NewCredentials()))

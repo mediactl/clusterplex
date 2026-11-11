@@ -104,7 +104,7 @@ func (w *Watcher) installed() bool {
 	rl, err := w.Discovery.ServerResourcesForGroupVersion(GVR.GroupVersion().String())
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
-			w.Logger.Warn("look for iptvproviders.clustarr.io", "error", err)
+			w.Logger.Warn("look for iptvproviders.clustarr.io", "err", err)
 		}
 		return false
 	}

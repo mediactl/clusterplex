@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"testing"
 
@@ -50,12 +51,12 @@ func localScanner(t *testing.T) *Executor {
 	bin := t.TempDir()
 	writeScript(t, bin, "Plex Media Scanner.real", `echo local`)
 	writeScript(t, bin, "Plex Transcoder.real", `echo local`)
-	return &Executor{BinDir: bin}
+	return &Executor{Logger: slog.New(slog.DiscardHandler), BinDir: bin}
 }
 
 func TestDispatcherForwardsTranscoderToWorkerWithRewrittenArgs(t *testing.T) {
 	rec := &recordingServer{}
-	d := &Dispatcher{
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
 		Local:   localScanner(t),
 		Workers: staticWorkers{{Name: "plex-1", Addr: "10.0.0.2:50051"}},
 		Dial:    unixDialer(startServer(t, rec)),
@@ -76,14 +77,14 @@ func TestDispatcherForwardsTranscoderToWorkerWithRewrittenArgs(t *testing.T) {
 }
 
 func TestDispatcherRunsScannerLocallyEvenWithWorkers(t *testing.T) {
-	d := &Dispatcher{Local: localScanner(t), Workers: staticWorkers{{Name: "plex-1", Addr: "x"}}, Dial: noDial(t)}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Local: localScanner(t), Workers: staticWorkers{{Name: "plex-1", Addr: "x"}}, Dial: noDial(t)}
 	sink := &collectSink{}
 	require.NoError(t, d.Execute(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Media Scanner"}, sink))
 	assert.Equal(t, "local\n", sink.stdout())
 }
 
 func TestDispatcherKeepsEasyAudioEncoderTranscodesLocal(t *testing.T) {
-	d := &Dispatcher{Local: localScanner(t), Workers: staticWorkers{{Name: "plex-1", Addr: "x"}}, Dial: noDial(t)}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Local: localScanner(t), Workers: staticWorkers{{Name: "plex-1", Addr: "x"}}, Dial: noDial(t)}
 	sink := &collectSink{}
 	req := &pb.ExecRequest{TargetBinary: "Plex Transcoder", Env: map[string]string{"EAE_ROOT": "/transcode/eae"}}
 	require.NoError(t, d.Execute(context.Background(), req, sink))
@@ -91,14 +92,14 @@ func TestDispatcherKeepsEasyAudioEncoderTranscodesLocal(t *testing.T) {
 }
 
 func TestDispatcherRunsLocallyWhenNoWorkerIsReady(t *testing.T) {
-	d := &Dispatcher{Local: localScanner(t), Workers: staticWorkers{}, Dial: noDial(t)}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Local: localScanner(t), Workers: staticWorkers{}, Dial: noDial(t)}
 	sink := &collectSink{}
 	require.NoError(t, d.Execute(context.Background(), &pb.ExecRequest{TargetBinary: "Plex Transcoder"}, sink))
 	assert.Equal(t, "local\n", sink.stdout())
 }
 
 func TestDispatcherFallsBackToLocalWhenDialFails(t *testing.T) {
-	d := &Dispatcher{
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
 		Local:   localScanner(t),
 		Workers: staticWorkers{{Name: "plex-1", Addr: "x"}},
 		Dial: func(context.Context, string) (pb.ManagerClient, io.Closer, error) {
@@ -112,7 +113,7 @@ func TestDispatcherFallsBackToLocalWhenDialFails(t *testing.T) {
 }
 
 func TestDispatcherFallsBackToLocalWhenWorkerRejectsBeforeOutput(t *testing.T) {
-	d := &Dispatcher{
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler),
 		Local:   localScanner(t),
 		Workers: staticWorkers{{Name: "plex-1", Addr: "x"}},
 		Dial:    unixDialer(startServer(t, failingServer{})),
@@ -124,7 +125,7 @@ func TestDispatcherFallsBackToLocalWhenWorkerRejectsBeforeOutput(t *testing.T) {
 }
 
 func TestPickWorkerRoundRobin(t *testing.T) {
-	d := &Dispatcher{}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler)}
 	ws := []Worker{{Name: "a"}, {Name: "b"}}
 	assert.Equal(t, "a", d.pick(ws).Name)
 	assert.Equal(t, "b", d.pick(ws).Name)
@@ -143,7 +144,7 @@ func (r *remuxRoute) Execute(context.Context, *pb.ExecRequest, Sink) (bool, erro
 
 func TestABrowserRemuxNeverReachesPlexsTranscoder(t *testing.T) {
 	route := &remuxRoute{handled: true}
-	d := &Dispatcher{Remux: route}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Remux: route}
 	require.NoError(t, d.Execute(t.Context(), &pb.ExecRequest{TargetBinary: Transcoder}, nil))
 	assert.Equal(t, 1, route.calls)
 }
@@ -162,7 +163,7 @@ func (r *routeStub) Execute(context.Context, *pb.ExecRequest, Sink) (bool, error
 // route that takes it is the whole job.
 func TestAScannerRunGoesToTheScanRouteBeforeTheLocalBinary(t *testing.T) {
 	scan := &routeStub{done: true}
-	d := &Dispatcher{Local: localScanner(t), Scan: scan, Dial: noDial(t)}
+	d := &Dispatcher{Logger: slog.New(slog.DiscardHandler), Local: localScanner(t), Scan: scan, Dial: noDial(t)}
 	require.NoError(t, d.Execute(context.Background(), &pb.ExecRequest{TargetBinary: Scanner, Args: []string{"--analyze", "--item", "1"}}, &collectSink{}))
 	require.Equal(t, 1, scan.calls)
 }
