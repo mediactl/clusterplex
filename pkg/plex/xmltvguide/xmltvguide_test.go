@@ -232,53 +232,109 @@ func TestEpisodeNumbersKeyItemsAsPMSKeysThem(t *testing.T) {
 		name, inner string
 		want        want
 	}{
-		{"xmltv_ns", `<title>Repeat Twice</title><sub-title>Other Ep</sub-title><episode-num system="xmltv_ns">0.4.</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/Repeat%20Twice/1/5", title: "Other Ep", index: 5,
-				season: "tv.plex.xmltv://season/Repeat%20Twice/1", seasonIndex: 1, show: "tv.plex.xmltv://show/Repeat%20Twice"}},
-		{"onscreen", `<title>Onscreen Only</title><sub-title>Seven</sub-title><episode-num system="onscreen">S02E07</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/Onscreen%20Only/2/7", title: "Seven", index: 7,
-				season: "tv.plex.xmltv://season/Onscreen%20Only/2", seasonIndex: 2, show: "tv.plex.xmltv://show/Onscreen%20Only"}},
-		{"onscreen without a season is a movie", `<title>Onscreen Odd</title><episode-num system="onscreen">Ep. 9</episode-num>`,
-			want{typ: 1, guid: "tv.plex.xmltv://movie/Onscreen%20Odd", title: "Onscreen Odd", index: -1}},
-		{"dd_progid EP: the season the current year", `<title>DD Progid EP</title><sub-title>Ep Sub</sub-title><episode-num system="dd_progid">EP00000001.0003</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/DD%20Progid%20EP/1/3", title: "Ep Sub", index: 3,
-				season: "tv.plex.xmltv://season/DD%20Progid%20EP/1", seasonIndex: 2026, show: "tv.plex.xmltv://show/DD%20Progid%20EP"}},
-		{"dd_progid MV", `<title>DD Progid MV</title><episode-num system="dd_progid">MV00000002.0000</episode-num>`,
-			want{typ: 1, guid: "tv.plex.xmltv://movie/DD%20Progid%20MV", title: "DD Progid MV", index: -1}},
-		{"dd_progid SH: keyed by no date", `<title>DD Progid SH</title><episode-num system="dd_progid">SH00000003.0000</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/DD%20Progid%20SH/1900-01-01%2000%3A00%3A00", index: -1,
-				season: "tv.plex.xmltv://season/DD%20Progid%20SH/1", seasonIndex: 2026, show: "tv.plex.xmltv://show/DD%20Progid%20SH"}},
-		{"original-air-date: keyed by the date", `<title>OAD Only</title><episode-num system="original-air-date">2020-05-06</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/OAD%20Only/2020-05-06%2000%3A00%3A00", index: -1,
-				season: "tv.plex.xmltv://season/OAD%20Only/2020", seasonIndex: 2020, show: "tv.plex.xmltv://show/OAD%20Only", available: int64(1588723200)}},
-		{"numbers and a date: keyed by the numbers, the date its oad", `<title>Year And OAD</title><date>2018</date><episode-num system="xmltv_ns">1.2.</episode-num><episode-num system="original-air-date">2018-11-20</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/Year%20And%20OAD/2/3", index: 3,
-				season: "tv.plex.xmltv://season/Year%20And%20OAD/2", seasonIndex: 2, show: "tv.plex.xmltv://show/Year%20And%20OAD", available: int64(1542672000)}},
-		{"xmltv_ns wins over category Movie", `<title>NS And Movie Category</title><category>Movie</category><episode-num system="xmltv_ns">0.1.</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/NS%20And%20Movie%20Category/1/2", index: 2,
-				season: "tv.plex.xmltv://season/NS%20And%20Movie%20Category/1", seasonIndex: 1, show: "tv.plex.xmltv://show/NS%20And%20Movie%20Category"}},
+		{
+			"xmltv_ns", `<title>Repeat Twice</title><sub-title>Other Ep</sub-title><episode-num system="xmltv_ns">0.4.</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/Repeat%20Twice/1/5", title: "Other Ep", index: 5,
+				season: "tv.plex.xmltv://season/Repeat%20Twice/1", seasonIndex: 1, show: "tv.plex.xmltv://show/Repeat%20Twice",
+			},
+		},
+		{
+			"onscreen", `<title>Onscreen Only</title><sub-title>Seven</sub-title><episode-num system="onscreen">S02E07</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/Onscreen%20Only/2/7", title: "Seven", index: 7,
+				season: "tv.plex.xmltv://season/Onscreen%20Only/2", seasonIndex: 2, show: "tv.plex.xmltv://show/Onscreen%20Only",
+			},
+		},
+		{
+			"onscreen without a season is a movie", `<title>Onscreen Odd</title><episode-num system="onscreen">Ep. 9</episode-num>`,
+			want{typ: 1, guid: "tv.plex.xmltv://movie/Onscreen%20Odd", title: "Onscreen Odd", index: -1},
+		},
+		{
+			"dd_progid EP: the season the current year", `<title>DD Progid EP</title><sub-title>Ep Sub</sub-title><episode-num system="dd_progid">EP00000001.0003</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/DD%20Progid%20EP/1/3", title: "Ep Sub", index: 3,
+				season: "tv.plex.xmltv://season/DD%20Progid%20EP/1", seasonIndex: 2026, show: "tv.plex.xmltv://show/DD%20Progid%20EP",
+			},
+		},
+		{
+			"dd_progid MV", `<title>DD Progid MV</title><episode-num system="dd_progid">MV00000002.0000</episode-num>`,
+			want{typ: 1, guid: "tv.plex.xmltv://movie/DD%20Progid%20MV", title: "DD Progid MV", index: -1},
+		},
+		{
+			"dd_progid SH: keyed by no date", `<title>DD Progid SH</title><episode-num system="dd_progid">SH00000003.0000</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/DD%20Progid%20SH/1900-01-01%2000%3A00%3A00", index: -1,
+				season: "tv.plex.xmltv://season/DD%20Progid%20SH/1", seasonIndex: 2026, show: "tv.plex.xmltv://show/DD%20Progid%20SH",
+			},
+		},
+		{
+			"original-air-date: keyed by the date", `<title>OAD Only</title><episode-num system="original-air-date">2020-05-06</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/OAD%20Only/2020-05-06%2000%3A00%3A00", index: -1,
+				season: "tv.plex.xmltv://season/OAD%20Only/2020", seasonIndex: 2020, show: "tv.plex.xmltv://show/OAD%20Only", available: int64(1588723200),
+			},
+		},
+		{
+			"numbers and a date: keyed by the numbers, the date its oad", `<title>Year And OAD</title><date>2018</date><episode-num system="xmltv_ns">1.2.</episode-num><episode-num system="original-air-date">2018-11-20</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/Year%20And%20OAD/2/3", index: 3,
+				season: "tv.plex.xmltv://season/Year%20And%20OAD/2", seasonIndex: 2, show: "tv.plex.xmltv://show/Year%20And%20OAD", available: int64(1542672000),
+			},
+		},
+		{
+			"xmltv_ns wins over category Movie", `<title>NS And Movie Category</title><category>Movie</category><episode-num system="xmltv_ns">0.1.</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/NS%20And%20Movie%20Category/1/2", index: 2,
+				season: "tv.plex.xmltv://season/NS%20And%20Movie%20Category/1", seasonIndex: 1, show: "tv.plex.xmltv://show/NS%20And%20Movie%20Category",
+			},
+		},
 		{"no number", `<title>Title Only</title>`, want{typ: 1, guid: "tv.plex.xmltv://movie/Title%20Only", title: "Title Only", index: -1}},
-		{"no number, a sub-title dropped", `<title>Sub Title Only</title><sub-title>Its Episode</sub-title><desc>No numbers at all.</desc>`,
-			want{typ: 1, guid: "tv.plex.xmltv://movie/Sub%20Title%20Only", title: "Sub Title Only", index: -1, summary: "No numbers at all."}},
-		{"xmltv_ns season alone", `<title>Season Only</title><episode-num system="xmltv_ns">3..</episode-num>`,
-			want{typ: 1, guid: "tv.plex.xmltv://movie/Season%20Only", title: "Season Only", index: -1}},
-		{"xmltv_ns empty", `<title>Empty NS</title><episode-num system="xmltv_ns">..</episode-num>`,
-			want{typ: 1, guid: "tv.plex.xmltv://movie/Empty%20NS", title: "Empty NS", index: -1}},
-		{"xmltv_ns episode alone: season 1", `<title>Episode Only</title><episode-num system="xmltv_ns">.7.</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/Episode%20Only/1/8", index: 8,
-				season: "tv.plex.xmltv://season/Episode%20Only/1", seasonIndex: 1, show: "tv.plex.xmltv://show/Episode%20Only"}},
-		{"xmltv_ns part ignored", `<title>Part Episode</title><episode-num system="xmltv_ns">0.5.0/2</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/Part%20Episode/1/6", index: 6,
-				season: "tv.plex.xmltv://season/Part%20Episode/1", seasonIndex: 1, show: "tv.plex.xmltv://show/Part%20Episode"}},
-		{"other id systems ignored", `<title>IDs TVDB</title><episode-num system="xmltv_ns">0.0.</episode-num><episode-num system="thetvdb.com">81189</episode-num><episode-num system="thetvdb.com/series">81189</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/IDs%20TVDB/1/1", index: 1,
-				season: "tv.plex.xmltv://season/IDs%20TVDB/1", seasonIndex: 1, show: "tv.plex.xmltv://show/IDs%20TVDB"}},
-		{"other id systems ignored on a movie", `<title>IDs TMDB</title><category>Movie</category><episode-num system="themoviedb.org">603</episode-num><episode-num system="imdb.com">tt0133093</episode-num><episode-num system="tms">MV000000000000</episode-num>`,
-			want{typ: 1, guid: "tv.plex.xmltv://movie/IDs%20TMDB", title: "IDs TMDB", index: -1}},
-		{"a title escaped as PMS escapes it", `<title>Ünïcødé — “Quoted” &amp; More</title><sub-title>Ep: ½ &lt;tag&gt;</sub-title><episode-num system="xmltv_ns">0.0.</episode-num>`,
-			want{typ: 4, guid: "tv.plex.xmltv://episode/%C3%9Cn%C3%AFc%C3%B8d%C3%A9%20%E2%80%94%20%E2%80%9CQuoted%E2%80%9D%20%26%20More/1/1", title: "Ep: ½ <tag>", index: 1,
+		{
+			"no number, a sub-title dropped", `<title>Sub Title Only</title><sub-title>Its Episode</sub-title><desc>No numbers at all.</desc>`,
+			want{typ: 1, guid: "tv.plex.xmltv://movie/Sub%20Title%20Only", title: "Sub Title Only", index: -1, summary: "No numbers at all."},
+		},
+		{
+			"xmltv_ns season alone", `<title>Season Only</title><episode-num system="xmltv_ns">3..</episode-num>`,
+			want{typ: 1, guid: "tv.plex.xmltv://movie/Season%20Only", title: "Season Only", index: -1},
+		},
+		{
+			"xmltv_ns empty", `<title>Empty NS</title><episode-num system="xmltv_ns">..</episode-num>`,
+			want{typ: 1, guid: "tv.plex.xmltv://movie/Empty%20NS", title: "Empty NS", index: -1},
+		},
+		{
+			"xmltv_ns episode alone: season 1", `<title>Episode Only</title><episode-num system="xmltv_ns">.7.</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/Episode%20Only/1/8", index: 8,
+				season: "tv.plex.xmltv://season/Episode%20Only/1", seasonIndex: 1, show: "tv.plex.xmltv://show/Episode%20Only",
+			},
+		},
+		{
+			"xmltv_ns part ignored", `<title>Part Episode</title><episode-num system="xmltv_ns">0.5.0/2</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/Part%20Episode/1/6", index: 6,
+				season: "tv.plex.xmltv://season/Part%20Episode/1", seasonIndex: 1, show: "tv.plex.xmltv://show/Part%20Episode",
+			},
+		},
+		{
+			"other id systems ignored", `<title>IDs TVDB</title><episode-num system="xmltv_ns">0.0.</episode-num><episode-num system="thetvdb.com">81189</episode-num><episode-num system="thetvdb.com/series">81189</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/IDs%20TVDB/1/1", index: 1,
+				season: "tv.plex.xmltv://season/IDs%20TVDB/1", seasonIndex: 1, show: "tv.plex.xmltv://show/IDs%20TVDB",
+			},
+		},
+		{
+			"other id systems ignored on a movie", `<title>IDs TMDB</title><category>Movie</category><episode-num system="themoviedb.org">603</episode-num><episode-num system="imdb.com">tt0133093</episode-num><episode-num system="tms">MV000000000000</episode-num>`,
+			want{typ: 1, guid: "tv.plex.xmltv://movie/IDs%20TMDB", title: "IDs TMDB", index: -1},
+		},
+		{
+			"a title escaped as PMS escapes it", `<title>Ünïcødé — “Quoted” &amp; More</title><sub-title>Ep: ½ &lt;tag&gt;</sub-title><episode-num system="xmltv_ns">0.0.</episode-num>`,
+			want{
+				typ: 4, guid: "tv.plex.xmltv://episode/%C3%9Cn%C3%AFc%C3%B8d%C3%A9%20%E2%80%94%20%E2%80%9CQuoted%E2%80%9D%20%26%20More/1/1", title: "Ep: ½ <tag>", index: 1,
 				season: "tv.plex.xmltv://season/%C3%9Cn%C3%AFc%C3%B8d%C3%A9%20%E2%80%94%20%E2%80%9CQuoted%E2%80%9D%20%26%20More/1", seasonIndex: 1,
-				show: "tv.plex.xmltv://show/%C3%9Cn%C3%AFc%C3%B8d%C3%A9%20%E2%80%94%20%E2%80%9CQuoted%E2%80%9D%20%26%20More"}},
+				show: "tv.plex.xmltv://show/%C3%9Cn%C3%AFc%C3%B8d%C3%A9%20%E2%80%94%20%E2%80%9CQuoted%E2%80%9D%20%26%20More",
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
