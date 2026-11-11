@@ -182,15 +182,6 @@ func parseEntry(v string) (n int, at time.Time, ok bool) {
 }
 
 // Count is what a reader takes from the Lease: its annotation while the
-// Lease was renewed within StaleAfter, else 0. clustarr's admission reads
-// it by the same rule (app/transcode/admission/videolease.go).
-func Count(l *coordinationv1.Lease, now time.Time) int {
-	if l == nil || l.Spec.RenewTime == nil || now.Sub(l.Spec.RenewTime.Time) >= StaleAfter {
-		return 0
-	}
-	n, err := strconv.Atoi(l.Annotations[Annotation])
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
-}
+// Lease was renewed within StaleAfter, else 0 (CountOf). clustarr's
+// admission reads it by the same rule (app/transcode/admission/videolease.go).
+func Count(l *coordinationv1.Lease, now time.Time) int { return CountOf(l, Annotation, now) }
