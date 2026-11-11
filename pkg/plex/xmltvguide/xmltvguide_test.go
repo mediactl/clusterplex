@@ -551,6 +551,71 @@ func TestPlexGUIDsKeyTheEpisodeSeasonAndShow(t *testing.T) {
 	item(t, rows, "tv.plex.xmltv://episode/Kinds/1/1")
 }
 
+// A syndicated show first listed on a channel without plex guids (no
+// Gracenote station paired) keeps the plex identity a later listing on a
+// paired channel gives it: its show, the season of that number and the
+// episode of those numbers, whichever airing a build meets first. So it is
+// one show, one season 7 and one episode 41 with two airings, never a
+// tv.plex.xmltv:// twin beside the plex one.
+func TestAPlexGUIDListedAnywhereKeysTheItemPMSWouldKey(t *testing.T) {
+	const paired = `<episode-num system="plex">plex://episode/6aeb5f12ac56869440d7304f</episode-num><episode-num system="plex.show">plex://show/5fc69a487c6557002ed60976</episode-num><episode-num system="plex.season">plex://season/5fc69a487c6557002ed60976/7</episode-num>`
+	rows := plannedGuide(t, guide(
+		programme{"9002", `<title>The Drew Barrymore Show</title><sub-title>Episode 41</sub-title><episode-num system="xmltv_ns">6.40.</episode-num>`},
+		programme{"9002", `<title>The Drew Barrymore Show</title><sub-title>Episode 40</sub-title><episode-num system="xmltv_ns">6.39.</episode-num>`},
+		programme{"9001", `<title>The Drew Barrymore Show</title><sub-title>Episode 41</sub-title><episode-num system="xmltv_ns">6.40.</episode-num>` + paired},
+		programme{"9001", `<title>Other</title><episode-num system="xmltv_ns">6.40.</episode-num>`},
+	))
+	byGUID := itemsByGUID(rows)
+	show := item(t, rows, "plex://show/5fc69a487c6557002ed60976")
+	season := item(t, rows, "plex://season/5fc69a487c6557002ed60976/7")
+	ep := item(t, rows, "plex://episode/6aeb5f12ac56869440d7304f")
+	assert.Equal(t, []any{show["id"], int64(7)}, []any{season["parent_id"], season["index"]})
+	assert.Equal(t, []any{season["id"], int64(41), int64(2)}, []any{ep["parent_id"], ep["index"], ep["media_item_count"]})
+	assert.Len(t, mediaOf(t, rows, "plex://episode/6aeb5f12ac56869440d7304f"), 2)
+	// The episode only the unpaired channel lists joins the plex season, as
+	// PMS's own reader puts it in the season of its title and number.
+	ep40 := item(t, rows, "tv.plex.xmltv://episode/The%20Drew%20Barrymore%20Show/7/40")
+	assert.Equal(t, season["id"], ep40["parent_id"])
+	for _, twin := range []string{
+		"tv.plex.xmltv://show/The%20Drew%20Barrymore%20Show",
+		"tv.plex.xmltv://season/The%20Drew%20Barrymore%20Show/7",
+		"tv.plex.xmltv://episode/The%20Drew%20Barrymore%20Show/7/41",
+	} {
+		assert.NotContains(t, byGUID, twin)
+	}
+	// Another title's numbers are its own.
+	item(t, rows, "tv.plex.xmltv://episode/Other/7/41")
+	item(t, rows, "tv.plex.xmltv://show/Other")
+}
+
+// PMSGUIDs gives each plex guid a build keys an item by the guid PMS's own
+// reader keys that item by, so an oracle can line the two up; an item PMS
+// keys alike is not listed.
+func TestPMSGUIDsAreTheKeysPMSsReaderGivesThePlexItems(t *testing.T) {
+	f, err := os.Open("testdata/profile.xml")
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	got, err := PMSGUIDs(f, lineup, now)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"plex://show/5fc69a487c6557002ed60976":     "tv.plex.xmltv://show/The%20Drew%20Barrymore%20Show",
+		"plex://season/5fc69a487c6557002ed60976/7": "tv.plex.xmltv://season/The%20Drew%20Barrymore%20Show/7",
+		"plex://episode/6aeb5f12ac56869440d7304f":  "tv.plex.xmltv://episode/The%20Drew%20Barrymore%20Show/7/41",
+	}, got)
+
+	// An episode with only its own plex guid (the probe's IDs Plex), and a
+	// movie's.
+	got, err = PMSGUIDs(strings.NewReader(onOne(
+		`<title>IDs Plex</title><episode-num system="xmltv_ns">0.0.</episode-num><episode-num system="plex">plex://episode/5fc6914e1a65df002dd28cd6</episode-num>`,
+		`<title>A Film</title><episode-num system="plex">plex://movie/5d776825880197001ec967c6</episode-num>`,
+	)), lineup, now)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"plex://episode/5fc6914e1a65df002dd28cd6": "tv.plex.xmltv://episode/IDs%20Plex/1/1",
+		"plex://movie/5d776825880197001ec967c6":   "tv.plex.xmltv://movie/A%20Film",
+	}, got)
+}
+
 func TestAGzippedGuideIsReadAndAnOversizedOneRefused(t *testing.T) {
 	plain, err := os.ReadFile("testdata/profile.xml")
 	require.NoError(t, err)

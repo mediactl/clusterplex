@@ -79,6 +79,56 @@ func Read(r io.Reader, lineup map[string]string, now time.Time) (guidebuild.Inpu
 	if err != nil {
 		return guidebuild.Input{}, nil, err
 	}
+	a := assemble(chans, progs, lineup, now, false)
+	return a.in, a.chans, nil
+}
+
+// PMSGUIDs reads the guide r as Read does and gives each plex guid an item
+// of the build is keyed by (the profile's plex, plex.show and plex.season
+// episode-nums, wherever the guide lists them) the guid PMS's own XMLTV
+// reader keys the same item by, which knows no plex guid (the rig's DVR 8:
+// IDs Plex is tv.plex.xmltv://episode/IDs%20Plex/1/1). An oracle lines a
+// build up with PMS's load of the same guide by it. An item keyed alike by
+// both is not listed; a plex guid two of PMS's items would carry is the
+// first's.
+func PMSGUIDs(r io.Reader, lineup map[string]string, now time.Time) (map[string]string, error) {
+	body, err := open(r)
+	if err != nil {
+		return nil, err
+	}
+	chans, progs, err := decode(body)
+	if err != nil {
+		return nil, err
+	}
+	ours := assemble(chans, progs, lineup, now, false)
+	pms := assemble(chans, progs, lineup, now, true)
+	out := map[string]string{}
+	pair := func(a, b string) {
+		if _, ok := out[a]; !ok && a != b && strings.HasPrefix(a, "plex://") {
+			out[a] = b
+		}
+	}
+	// Both read the same programmes, a programme's item at the same place.
+	for i, a := range ours.items {
+		b := pms.items[i]
+		pair(a.GUID, b.GUID)
+		pair(a.ParentGUID, b.ParentGUID)
+		pair(a.GrandparentGUID, b.GrandparentGUID)
+	}
+	return out, nil
+}
+
+// assembled is a guide read into a build's input: the input, every channel
+// of the guide, and each programme read as its item, in the guide's order.
+type assembled struct {
+	in    guidebuild.Input
+	chans []Channel
+	items []epgcloud.Item
+}
+
+// assemble reads the decoded guide into a build's input. asPMS keys every
+// item as PMS's own reader does, without the plex guids.
+func assemble(chans []xChannel, progs []xProgramme, lineup map[string]string, now time.Time, asPMS bool) assembled {
 	in := guidebuild.Input{
 		Provider: guidebuild.ProviderXMLTV,
 		Grids:    map[string][][]epgcloud.Item{},
@@ -107,7 +157,11 @@ func Read(r io.Reader, lineup map[string]string, now time.Time) (guidebuild.Inpu
 		out = append(out, ch)
 	}
 
-	rd := reader{now: now, shows: map[string]show{}, firsts: map[string]epgcloud.Item{}, metadata: in.Metadata}
+	rd := reader{now: now, asPMS: asPMS, shows: map[string]show{}, firsts: map[string]epgcloud.Item{}, metadata: in.Metadata}
+	if !asPMS {
+		rd.plex = plexGUIDs(progs, now)
+	}
+	var items []epgcloud.Item
 	slice, last := 0, -1
 	for _, p := range progs {
 		i, ok := place[p.Channel]
@@ -118,6 +172,7 @@ func Read(r io.Reader, lineup map[string]string, now time.Time) (guidebuild.Inpu
 		if !ok {
 			continue
 		}
+		items = append(items, it)
 		if hd(p) {
 			in.Stations[i].IsHD = true
 		}
@@ -131,7 +186,7 @@ func Read(r io.Reader, lineup map[string]string, now time.Time) (guidebuild.Inpu
 		}
 		in.Grids[n][slice] = append(in.Grids[n][slice], it)
 	}
-	return in, out, nil
+	return assembled{in: in, chans: out, items: items}
 }
 
 // open is r decompressed when it is gzip, capped at maxBody.
@@ -268,7 +323,13 @@ type show struct {
 
 // reader turns programmes into items, in the guide's order.
 type reader struct {
-	now      time.Time
+	now time.Time
+	// asPMS keys every item as PMS's own reader does, by its title and
+	// numbers, whatever plex guids the guide carries.
+	asPMS bool
+	// plex is the plex guid the guide lists anywhere for each key PMS's
+	// reader gives an item (plexGUIDs).
+	plex     map[string]string
 	shows    map[string]show          // by title
 	firsts   map[string]epgcloud.Item // by guid: an item's first programme's, its airing aside
 	metadata map[string]epgcloud.Item // shows' metadata, by guid
@@ -294,30 +355,26 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 	if title == "" || !okStart || !okStop || !stop.After(start) {
 		return epgcloud.Item{}, false
 	}
-	nums := map[string]string{} // system -> its first value
-	for _, n := range p.EpisodeNums {
-		if _, ok := nums[n.System]; !ok {
-			nums[n.System] = strings.TrimSpace(n.Value)
-		}
+	nums := episodeNums(p)
+	if rd.asPMS {
+		delete(nums, "plex")
+		delete(nums, "plex.show")
+		delete(nums, "plex.season")
 	}
 	num := numberOf(nums, rd.now)
+	keys := pmsKeys(title, num)
 	airing := epgcloud.Airing{
 		BeginsAt: start.Unix(), EndsAt: stop.Unix(), Duration: stop.Sub(start).Milliseconds(),
 		Live: p.Live != nil, Premiere: num.episode && p.Shown == nil, VideoResolution: resolution(p),
 	}
 
-	var guid string
+	// An item is keyed by its own plex guid, else by the one the guide
+	// lists for its key anywhere else, else by its key.
+	kind := "plex://movie/"
 	if num.episode {
-		guid = nums["plex"]
-		if !strings.HasPrefix(guid, "plex://episode/") {
-			guid = guidEpisode + escape(title) + "/" + num.key
-		}
-	} else {
-		guid = nums["plex"]
-		if !strings.HasPrefix(guid, "plex://movie/") {
-			guid = guidMovie + escape(title)
-		}
+		kind = "plex://episode/"
 	}
+	guid := cmp.Or(plexGUID(nums, "plex", kind), rd.plex[keys.item], keys.item)
 	if f, ok := rd.firsts[guid]; ok {
 		f.Media = []epgcloud.Airing{airing}
 		return f, true
@@ -358,7 +415,7 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 			// The show is its first episode's: its guid, images, and the
 			// categories, credits, countries and rating PMS's reader writes
 			// on it and never on an episode.
-			s = show{guid: cmp.Or(nums["plex.show"], guidShow+escape(title)), thumb: thumb, art: images["backdrop"]}
+			s = show{guid: cmp.Or(plexGUID(nums, "plex.show", "plex://show/"), rd.plex[keys.show], keys.show), thumb: thumb, art: images["backdrop"]}
 			rd.shows[title] = s
 			rd.metadata[s.guid] = epgcloud.Item{
 				Type: "show", GUID: s.guid, RatingKey: s.guid, Title: title, Thumb: s.thumb, Art: s.art,
@@ -367,7 +424,7 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 		}
 		it.Type, it.Title = "episode", firstText(p.SubTitles)
 		it.Index, it.ParentIndex, it.OriginallyAvailableAt = num.index, num.parent, num.aired
-		it.ParentGUID = cmp.Or(nums["plex.season"], guidSeason+escape(title)+"/"+strconv.Itoa(num.season))
+		it.ParentGUID = cmp.Or(plexGUID(nums, "plex.season", "plex://season/"), rd.plex[keys.season], keys.season)
 		it.Thumb, it.Art = images["still"], images["backdrop"]
 		it.GrandparentGUID, it.GrandparentRatingKey, it.GrandparentTitle = s.guid, s.guid, title
 		it.GrandparentThumb, it.GrandparentArt = s.thumb, s.art
@@ -392,6 +449,76 @@ type numbering struct {
 	parent  int
 	index   int
 	aired   string // its original-air-date, as the planner reads a date; "" for none
+}
+
+// keys are the guids PMS's own reader keys a programme's item by: its show,
+// season and episode, or (item alone) its movie.
+type keys struct{ show, season, item string }
+
+// pmsKeys are a programme's keys, from its title and numbering.
+func pmsKeys(title string, num numbering) keys {
+	t := escape(title)
+	if !num.episode {
+		return keys{item: guidMovie + t}
+	}
+	return keys{
+		show:   guidShow + t,
+		season: guidSeason + t + "/" + strconv.Itoa(num.season),
+		item:   guidEpisode + t + "/" + num.key,
+	}
+}
+
+// plexGUIDs maps each key PMS's reader gives an item (pmsKeys) to the plex
+// guid the guide's first listing of that item with one carries: a
+// syndicated show first listed on a channel no Gracenote station pairs
+// (no plex guids) is the plex show a paired channel's listing names, and
+// so are its season of that number and its episode of those numbers, as
+// PMS would make one item of each. So a build never makes a
+// tv.plex.xmltv:// twin of a plex item.
+func plexGUIDs(progs []xProgramme, now time.Time) map[string]string {
+	out := map[string]string{}
+	set := func(k, v string) {
+		if _, ok := out[k]; !ok && v != "" {
+			out[k] = v
+		}
+	}
+	for _, p := range progs {
+		title := firstText(p.Titles)
+		if title == "" {
+			continue
+		}
+		nums := episodeNums(p)
+		num := numberOf(nums, now)
+		k := pmsKeys(title, num)
+		if !num.episode {
+			set(k.item, plexGUID(nums, "plex", "plex://movie/"))
+			continue
+		}
+		set(k.show, plexGUID(nums, "plex.show", "plex://show/"))
+		set(k.season, plexGUID(nums, "plex.season", "plex://season/"))
+		set(k.item, plexGUID(nums, "plex", "plex://episode/"))
+	}
+	return out
+}
+
+// episodeNums are a programme's episode-nums, each system's first value.
+func episodeNums(p xProgramme) map[string]string {
+	nums := map[string]string{}
+	for _, n := range p.EpisodeNums {
+		if _, ok := nums[n.System]; !ok {
+			nums[n.System] = strings.TrimSpace(n.Value)
+		}
+	}
+	return nums
+}
+
+// plexGUID is the system's plex guid when it is of the kind prefix names,
+// else "": a movie's guid on an episode is not the episode's.
+func plexGUID(nums map[string]string, system, prefix string) string {
+	if v := nums[system]; strings.HasPrefix(v, prefix) {
+		return v
+	}
+	return ""
 }
 
 // noDate is the date an episode PMS knows by neither numbers nor a date is
