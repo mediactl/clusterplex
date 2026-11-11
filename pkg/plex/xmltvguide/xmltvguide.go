@@ -186,6 +186,7 @@ func assemble(chans []xChannel, progs []xProgramme, lineup map[string]string, no
 		}
 		in.Grids[n][slice] = append(in.Grids[n][slice], it)
 	}
+	rd.fillImages(&in)
 	return assembled{in: in, chans: out, items: items}
 }
 
@@ -333,6 +334,47 @@ type reader struct {
 	shows    map[string]show          // by title
 	firsts   map[string]epgcloud.Item // by guid: an item's first programme's, its airing aside
 	metadata map[string]epgcloud.Item // shows' metadata, by guid
+	// fills is the first thumb and art any listing of an item or a show
+	// carries, by its guid (fill).
+	fills map[string][2]string
+}
+
+// fill records a listing's thumb and art for the item or show guid keys,
+// each kept where none was before: an item listed more than once keeps its
+// first listing's text, as PMS's reader does, but the images the build
+// adds are the first any listing carries, so a syndicated show first
+// listed on a channel no Gracenote station pairs (a poster at most) takes
+// its paired listing's still and backdrop (fillImages).
+func (rd *reader) fill(guid, thumb, art string) {
+	if rd.fills == nil {
+		rd.fills = map[string][2]string{}
+	}
+	f := rd.fills[guid]
+	rd.fills[guid] = [2]string{cmp.Or(f[0], thumb), cmp.Or(f[1], art)}
+}
+
+// fillImages gives every item read, its show and the shows' metadata the
+// images fill recorded where they have none: a show's thumb stays its
+// first episode's first icon, PMS's.
+func (rd *reader) fillImages(in *guidebuild.Input) {
+	for _, grid := range in.Grids {
+		for _, items := range grid {
+			for i := range items {
+				it := &items[i]
+				f := rd.fills[it.GUID]
+				it.Thumb, it.Art = cmp.Or(it.Thumb, f[0]), cmp.Or(it.Art, f[1])
+				if it.Type == "episode" {
+					s := rd.fills[it.GrandparentGUID]
+					it.GrandparentThumb, it.GrandparentArt = cmp.Or(it.GrandparentThumb, s[0]), cmp.Or(it.GrandparentArt, s[1])
+				}
+			}
+		}
+	}
+	for g, m := range in.Metadata {
+		f := rd.fills[g]
+		m.Thumb, m.Art = cmp.Or(m.Thumb, f[0]), cmp.Or(m.Art, f[1])
+		in.Metadata[g] = m
+	}
 }
 
 // The guid forms of PMS's XMLTV reader, each of a title.
@@ -375,10 +417,6 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 		kind = "plex://episode/"
 	}
 	guid := cmp.Or(plexGUID(nums, "plex", kind), rd.plex[keys.item], keys.item)
-	if f, ok := rd.firsts[guid]; ok {
-		f.Media = []epgcloud.Airing{airing}
-		return f, true
-	}
 
 	icon := ""
 	if len(p.Icons) > 0 {
@@ -391,6 +429,18 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 		}
 	}
 	thumb := cmp.Or(icon, images["poster"])
+	if num.episode {
+		rd.fill(guid, images["still"], images["backdrop"])
+	} else {
+		rd.fill(guid, thumb, images["backdrop"])
+	}
+	if f, ok := rd.firsts[guid]; ok {
+		if num.episode {
+			rd.fill(f.GrandparentGUID, thumb, images["backdrop"])
+		}
+		f.Media = []epgcloud.Airing{airing}
+		return f, true
+	}
 	// Every category is a genre, the profile's classifiers (Series on an
 	// episode, Movie on a movie, design §5.4) too, as PMS keeps them (the
 	// rig's tag "Series" on Element Soup's show; Movie Typical "Comedy|Movie").
@@ -422,6 +472,7 @@ func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 				ContentRating: rating, Genre: kept, Role: cast, Director: directors, Writer: writers, Producer: producers, Country: countries,
 			}
 		}
+		rd.fill(s.guid, thumb, images["backdrop"])
 		it.Type, it.Title = "episode", firstText(p.SubTitles)
 		it.Index, it.ParentIndex, it.OriginallyAvailableAt = num.index, num.parent, num.aired
 		it.ParentGUID = cmp.Or(plexGUID(nums, "plex.season", "plex://season/"), rd.plex[keys.season], keys.season)

@@ -588,6 +588,33 @@ func TestAPlexGUIDListedAnywhereKeysTheItemPMSWouldKey(t *testing.T) {
 	item(t, rows, "tv.plex.xmltv://show/Other")
 }
 
+// An item listed more than once keeps its first listing's text, as PMS's
+// reader does, but each image the build adds is the first any listing of
+// it carries: a syndicated show first listed on an unpaired channel, with
+// a poster icon alone, takes its paired listing's still and backdrop, and
+// its show that backdrop. The show's thumb is still its first episode's
+// first icon, PMS's.
+func TestAnItemsImagesAreTheFirstAnyOfItsListingsCarries(t *testing.T) {
+	const paired = `<episode-num system="plex">plex://episode/6aeb5f12ac56869440d7304f</episode-num><episode-num system="plex.show">plex://show/5fc69a487c6557002ed60976</episode-num>`
+	const other = "https://example.org/other-poster.jpg"
+	rows := plannedGuide(t, guide(
+		programme{"9002", `<title>The Drew Barrymore Show</title><sub-title>Episode 41</sub-title><desc>First.</desc><icon src="` + poster + `"/><episode-num system="xmltv_ns">6.40.</episode-num>`},
+		programme{"9001", `<title>The Drew Barrymore Show</title><sub-title>Episode 41</sub-title><desc>Second.</desc><icon src="` + other + `"/><episode-num system="xmltv_ns">6.40.</episode-num>` + paired +
+			`<image type="backdrop">` + backdrop + `</image><image type="still">` + still + `</image>`},
+		programme{"9003", `<title>Film</title><desc>First.</desc>`},
+		programme{"9004", `<title>Film</title><desc>Second.</desc><icon src="` + poster + `"/><image type="backdrop">` + backdrop + `</image>`},
+	))
+	ep := item(t, rows, "plex://episode/6aeb5f12ac56869440d7304f")
+	assert.Equal(t, []any{"First.", "Episode 41", still, backdrop}, []any{ep["summary"], ep["title"], ep["user_thumb_url"], ep["user_art_url"]})
+	show := item(t, rows, "plex://show/5fc69a487c6557002ed60976")
+	assert.Equal(t, []any{poster, backdrop}, []any{show["user_thumb_url"], show["user_art_url"]})
+	film := item(t, rows, "tv.plex.xmltv://movie/Film")
+	assert.Equal(t, []any{"First.", poster, backdrop}, []any{film["summary"], film["user_thumb_url"], film["user_art_url"]})
+	// Both airings are the one item's.
+	assert.Len(t, mediaOf(t, rows, "plex://episode/6aeb5f12ac56869440d7304f"), 2)
+	assert.Len(t, mediaOf(t, rows, "tv.plex.xmltv://movie/Film"), 2)
+}
+
 // PMSGUIDs gives each plex guid a build keys an item by the guid PMS's own
 // reader keys that item by, so an oracle can line the two up; an item PMS
 // keys alike is not listed.
