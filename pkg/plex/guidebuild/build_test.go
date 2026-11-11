@@ -545,10 +545,14 @@ func TestAnAiringOfAStationWithoutALogoHasNoChannelThumb(t *testing.T) {
 // xmltvStations are the probe's four channels as the reader makes them: a
 // station per channel, its number its identifier, no grid key.
 var xmltvStations = []epgcloud.Station{
-	{ID: "9001", VCN: "9001", CallSign: "X1 One", Title: "X1 One HD", IsHD: true,
-		Thumb: "https://provider-static.plex.tv/a/epg/channels/logos/gracenote/ac4ffe27107b835cf4e6a7a5b5c4b7c0.png"},
-	{ID: "9002", VCN: "9002", CallSign: "X1 Two", Title: "X1 Two", IsHD: true,
-		Thumb: "https://metadata-static.plex.tv/c/gracenote/cdcc962e86c6c828c2061b994f624cc2.jpg"},
+	{
+		ID: "9001", VCN: "9001", CallSign: "X1 One", Title: "X1 One HD", IsHD: true,
+		Thumb: "https://provider-static.plex.tv/a/epg/channels/logos/gracenote/ac4ffe27107b835cf4e6a7a5b5c4b7c0.png",
+	},
+	{
+		ID: "9002", VCN: "9002", CallSign: "X1 Two", Title: "X1 Two", IsHD: true,
+		Thumb: "https://metadata-static.plex.tv/c/gracenote/cdcc962e86c6c828c2061b994f624cc2.jpg",
+	},
 	{ID: "9003", VCN: "9003", CallSign: "X1 Three", Title: "X1 Three"},
 	{ID: "9004", VCN: "9004", CallSign: "X1 Four", Title: "X1 Four", Affiliate: "ABC", Thumb: "http://10.96.1.1/logo.png"},
 }
@@ -630,13 +634,33 @@ func TestXMLTVFlavourWritesCreditsCountryAndNewsSection(t *testing.T) {
 	assert.Equal(t, []tg{
 		// Element Soup's, as the rig numbered them: its genres sorted, then
 		// writer, actors, director, producer and country.
-		{5, "Comedy", 1}, {6, "Drama", 1}, {7, "Series", 1}, {8, "Wri Ter", 5},
-		{9, "Act Orone", 6}, {10, "Act Ortwo", 6}, {11, "Dir Ector", 6}, {12, "Pro Ducer", 7}, {13, "US", 8},
-		{14, "W One", 5}, {15, "A One", 6}, {16, "A Two", 6}, {17, "A Three", 6}, {18, "D One", 6}, {19, "D Two", 6},
-		{20, "Action", 1}, {21, "Adventure", 1}, {22, "Children", 1}, {23, "Documentary", 1}, {24, "News", 1},
-		{25, "Reality", 1}, {26, "Sci-Fi", 1}, {27, "Talk", 1},
-		{28, "Sports", 1}, {29, "Sports event", 1},
-		{30, "Football", 1}, {31, "GB", 8}, // News, Sports and Sports event are the tags already made
+		{5, "Comedy", 1},
+		{6, "Drama", 1},
+		{7, "Series", 1},
+		{8, "Wri Ter", 5},
+		{9, "Act Orone", 6},
+		{10, "Act Ortwo", 6},
+		{11, "Dir Ector", 6},
+		{12, "Pro Ducer", 7},
+		{13, "US", 8},
+		{14, "W One", 5},
+		{15, "A One", 6},
+		{16, "A Two", 6},
+		{17, "A Three", 6},
+		{18, "D One", 6},
+		{19, "D Two", 6},
+		{20, "Action", 1},
+		{21, "Adventure", 1},
+		{22, "Children", 1},
+		{23, "Documentary", 1},
+		{24, "News", 1},
+		{25, "Reality", 1},
+		{26, "Sci-Fi", 1},
+		{27, "Talk", 1},
+		{28, "Sports", 1},
+		{29, "Sports event", 1},
+		{30, "Football", 1},
+		{31, "GB", 8}, // News, Sports and Sports event are the tags already made
 	}, tags)
 
 	e := item(t, rows, "plex://episode/soup")
@@ -646,9 +670,15 @@ func TestXMLTVFlavourWritesCreditsCountryAndNewsSection(t *testing.T) {
 	assert.Equal(t, "US", e["tags_country"])
 	assert.Equal(t, "", e["tags_director"], "a director is a star; tags_director is never set")
 	assert.Equal(t, [][3]any{
-		{int64(5), int64(0), ""}, {int64(6), int64(1), ""}, {int64(7), int64(2), ""}, // genres at their sorted places
+		// genres at their sorted places
+		{int64(5), int64(0), ""},
+		{int64(6), int64(1), ""},
+		{int64(7), int64(2), ""},
 		{int64(8), int64(0), ""},
-		{int64(9), int64(0), "Lead"}, {int64(10), int64(1), "Support"}, {int64(11), int64(2), ""}, // an actor's role is its text
+		// an actor's role is its text
+		{int64(9), int64(0), "Lead"},
+		{int64(10), int64(1), "Support"},
+		{int64(11), int64(2), ""},
 		{int64(12), int64(0), ""},
 		{int64(13), int64(0), ""},
 	}, taggingsOf(t, rows, "plex://episode/soup", len(xmltvStations)))
@@ -658,7 +688,11 @@ func TestXMLTVFlavourWritesCreditsCountryAndNewsSection(t *testing.T) {
 	assert.Equal(t, "W One", r["tags_writer"], "a name listed twice is one tag")
 	assert.Equal(t, [][3]any{
 		{int64(14), int64(0), ""},
-		{int64(15), int64(0), "Hero"}, {int64(16), int64(1), ""}, {int64(17), int64(2), ""}, {int64(18), int64(3), ""}, {int64(19), int64(4), ""},
+		{int64(15), int64(0), "Hero"},
+		{int64(16), int64(1), ""},
+		{int64(17), int64(2), ""},
+		{int64(18), int64(3), ""},
+		{int64(19), int64(4), ""},
 	}, taggingsOf(t, rows, "plex://episode/rich", len(xmltvStations)))
 
 	assert.Equal(t, "Action|Adventure", item(t, rows, "plex://episode/news")["tags_genre"])
