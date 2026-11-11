@@ -435,15 +435,28 @@ clustarr the same day.
   kustomize component for the CPU pool. The metrics are
   `clusterplex_video_conversions_total{pool}` and
   `clusterplex_video_pool_passed_over_total{pool,reason}` (§7 named them
-  without `_total`); the shipped Grafana dashboard has no panel for them
-  yet.
+  without `_total`); the chart's dashboard charts them as "Conversions by
+  pool" and "Pools passed over" (panels 51 and 52, 07fc231).
 - **Live on talos since Helm rev 250 (2026-11-11 04:02Z)**: cluster-plex
   chart 0.6.9 and images `7894fdf` (branch `talos-cpu-route`, the running
   `bce4e04` plus these commits), inside clustarr chart 0.6.13 with the
   manager at `sha-1db0963` (its intel-work Lease), `cpu.enabled` pinned to
   `talos-88-ae-dd-75-3d-a0`, `when: clustarr-busy` from the first (the
   owner chose one restart over the design's `always` step). At the deploy
-  the Lease read 21 and the CPU pod served with the eligibility flags; the
-  first conversion routed to the CPU pool, `clusterplex_video_conversions_total{pool="cpu"}`,
-  and the CPU pod's `clusterplex_video_worker_encode_speed` at or above
-  1.0 are still to be read ("Verifying it" 2-4).
+  the Lease read 21 and the CPU pod served with the eligibility flags.
+- **First conversion routed to the CPU pool: 2026-11-11 06:41:01Z** (talos
+  Helm rev 251, cluster-plex `7f641ac`, clustarr `sha-587465a`; "Verifying
+  it" 2-4). clustarr held one intel encode from 06:38 to 06:46
+  (`clustarr_transcode_jobs_active{tier="intel"}` 1, one `published`
+  intel dispatch), so the Lease was above zero, and a Live TV tune during
+  the category cutover's checks started a 1920x1080 HLS conversion on
+  `plex-video-transcode-cpu` with `encoder: libx264`, no pass-over
+  (`clusterplex_video_pool_passed_over_total` never appeared) and
+  `clusterplex_video_conversions_total{pool="cpu"}` 1. The first segment
+  was listed 1.75 s after the start (the design's 1.8 s), the pod's
+  `clusterplex_video_worker_encode_speed` read 1.32x over the one sample
+  (at or above 1.0, as required), libx264 at QP 17.8 wrote 13.4 Mb/s, and
+  the intel encode ran on beside it. PMS cancelled the session after 10 s
+  (its exit 255 is the viewer leaving, not a failure). One sample, a
+  short one: the sustained-stream and two-at-once readings (§"Verifying
+  it" 5) are still to take.
