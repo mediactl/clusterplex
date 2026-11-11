@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,4 +266,17 @@ func TestAStartNeverCopiesALoadOverAGuideTheManagersBuild(t *testing.T) {
 	touch(t, file, newer)
 	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, nil))
 	assert.Equal(t, 5, count(t, conn, testGuide.Schema(), "media_items"), "a guide the managers do not build takes the newer load")
+}
+
+// An XMLTV DVR's guide built by the managers is commented as built from
+// clustarr's XMLTV, a cloud guide's as built from Plex's guide service, and
+// either reads back as the build's time; no other comment does.
+func TestABuiltGuidesCommentNamesWhatItWasBuiltFrom(t *testing.T) {
+	cloud := Guide{Provider: "tv.plex.providers.epg.cloud", DVR: testGuide.DVR}
+	assert.Equal(t, "clusterplex: built from Plex's guide service at 42 (Unix ns)", fmt.Sprintf(builtCommentFor(cloud), 42))
+	assert.Equal(t, "clusterplex: built from clustarr's XMLTV at 42 (Unix ns)", fmt.Sprintf(builtCommentFor(testGuide), 42))
+	assert.Equal(t, int64(1794368709558824834), guideBuiltAt("clusterplex: built from Plex's guide service at 1794368709558824834 (Unix ns)"))
+	assert.Equal(t, int64(1794368709558824834), guideBuiltAt("clusterplex: built from clustarr's XMLTV at 1794368709558824834 (Unix ns)"))
+	assert.Zero(t, guideBuiltAt("clusterplex: copied from a guide file modified at 1794363406712689779 (Unix ns)"))
+	assert.Zero(t, guideBuiltAt(""))
 }

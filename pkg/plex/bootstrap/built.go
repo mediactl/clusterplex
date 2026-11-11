@@ -14,9 +14,25 @@ import (
 	"github.com/mediactl/clusterplex/pkg/plex/extradata"
 )
 
-// builtComment marks a guide schema the managers built from Plex's guide
-// service (pkg/plex/guidebuild), not one copied from a load PMS made.
-const builtComment = "clusterplex: built from Plex's guide service at %d (Unix ns)"
+// builtComment marks a guide schema the managers built (pkg/plex/guidebuild),
+// not one copied from a load PMS made: a cloud guide built from Plex's guide
+// service; builtXMLTVComment an XMLTV DVR's built from clustarr's XMLTV.
+// Either reads back as the build's time (guideBuiltAt).
+const (
+	builtComment      = "clusterplex: built from Plex's guide service at %d (Unix ns)"
+	builtXMLTVComment = "clusterplex: built from clustarr's XMLTV at %d (Unix ns)"
+)
+
+// builtComments are the comments of a guide the managers built.
+var builtComments = []string{builtComment, builtXMLTVComment}
+
+// builtCommentFor is the comment a build of g's guide gets.
+func builtCommentFor(g Guide) string {
+	if g.Provider == xmltvProvider {
+		return builtXMLTVComment
+	}
+	return builtComment
+}
 
 // BuildFunc writes a guide's rows into staging in tx: everything but the
 // sections, playlists and viewing rows InstallBuilt carries over.
@@ -176,7 +192,7 @@ func SwapStaged(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 		err = carryLive(ctx, conn, schema, staging)
 	}
 	if err == nil {
-		err = swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(builtComment, time.Now().UnixNano()))
+		err = swapGuide(ctx, conn, schema, staging, old, fmt.Sprintf(builtCommentFor(g), time.Now().UnixNano()))
 	}
 	if err != nil {
 		return fmt.Errorf("install %s: %w", schema, err)
@@ -366,17 +382,20 @@ func MarkGuideRefreshed(ctx context.Context, conn *pgx.Conn, library, dvrUUID st
 	return err
 }
 
-// guideBuiltAt reads when a guide was last built, 0 if never.
+// guideBuiltAt reads when a guide was last built, 0 if never: its comment
+// is one of builtComments.
 func guideBuiltAt(comment string) int64 {
 	var ns int64
-	if _, err := fmt.Sscanf(comment, builtComment, &ns); err != nil {
-		return 0
+	for _, format := range builtComments {
+		if _, err := fmt.Sscanf(comment, format, &ns); err == nil {
+			return ns
+		}
 	}
-	return ns
+	return 0
 }
 
 // BuiltGuideSchemas is the schemas of the live guides the managers built
-// (their comment is builtComment), whatever their provider: a Plex cloud
+// (their comment is one of builtComments), whatever their provider: a Plex cloud
 // lineup's or an XMLTV DVR's. A staging or a replaced schema is none.
 func BuiltGuideSchemas(ctx context.Context, conn *pgx.Conn) ([]string, error) {
 	rows, err := conn.Query(ctx, `SELECT nspname::text, obj_description(oid, 'pg_namespace') FROM pg_namespace
@@ -405,8 +424,8 @@ func BuiltGuideSchemas(ctx context.Context, conn *pgx.Conn) ([]string, error) {
 	return out, nil
 }
 
-// GuideBuiltAt is when g's guide was last built from Plex's guide service,
-// zero if it never was or a load has replaced it since.
+// GuideBuiltAt is when g's guide was last built, from Plex's guide service
+// or clustarr's XMLTV, zero if it never was or a load has replaced it since.
 func GuideBuiltAt(ctx context.Context, conn *pgx.Conn, g Guide) (time.Time, error) {
 	var comment *string
 	err := conn.QueryRow(ctx, `SELECT obj_description(n.oid, 'pg_namespace') FROM pg_namespace n WHERE n.nspname = $1`, g.Schema()).Scan(&comment)

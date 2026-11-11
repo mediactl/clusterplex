@@ -1342,7 +1342,7 @@ func StagingStateOf(ctx context.Context, conn *pgx.Conn, g Guide) (StagingState,
 // guideLoadedAt is when the guide in schema was last loaded, as its comment
 // records it: the copied file's modification time (importedComment), the
 // swap time of a load PMS made in PostgreSQL (loadedComment), or the swap
-// time of a guide the managers built (builtComment), so a SQLite load older
+// time of a guide the managers built (builtComments), so a SQLite load older
 // than the build never replaces it; 0 for a schema without one.
 func guideLoadedAt(ctx context.Context, conn *pgx.Conn, schema string) (int64, error) {
 	var comment *string
@@ -1353,7 +1353,7 @@ func guideLoadedAt(ctx context.Context, conn *pgx.Conn, schema string) (int64, e
 		return 0, nil
 	}
 	var at int64
-	for _, format := range []string{importedComment, loadedComment, builtComment} {
+	for _, format := range append([]string{importedComment, loadedComment}, builtComments...) {
 		if _, err := fmt.Sscanf(*comment, format, &at); err == nil {
 			return at, nil
 		}
