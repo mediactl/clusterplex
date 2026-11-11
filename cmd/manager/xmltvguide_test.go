@@ -487,6 +487,23 @@ func TestAnEmptyXMLTVIsRefusedBeforeAnyJob(t *testing.T) {
 	assert.Empty(t, jobs.Items, "no build Job runs for it")
 }
 
+// TestAnXMLTVOverTheOldCapIsFetched: a category's XMLTV is 14 days of
+// Gracenote listings, about 0.5 MB a paired channel, so the 64 MiB cap the
+// fetch once had (sized for a week of iptv-epg.org's 450 channels) refused
+// a category of about 130 paired channels, and its DVR ran dry. A body
+// between that and xmltvMaxBody is fetched, and reads as the guide.
+func TestAnXMLTVOverTheOldCapIsFetched(t *testing.T) {
+	now := time.Now()
+	body := xmltvBody(now, 2)
+	end := strings.LastIndex(body, "</tv>")
+	body = body[:end] + strings.Repeat("\n", 65<<20) + body[end:] // past the old 64 MiB
+	gz, err := fetchXMLTVBody(t, body)
+	require.NoError(t, err)
+	airs, err := xmltvAirs(gz, map[string]string{"1001": "1001"}, now)
+	require.NoError(t, err)
+	assert.True(t, airs)
+}
+
 // fetchXMLTVBody is body as fetchXMLTV caches it: gzipped.
 func fetchXMLTVBody(t *testing.T, body string) ([]byte, error) {
 	t.Helper()

@@ -45,9 +45,13 @@ type Channel struct {
 	ID, Number, CallSign, Name, Icon string
 }
 
-// maxBody caps a guide as read, decompressed: a block's week of 450
-// channels is about 20 MB.
-var maxBody int64 = 64 << 20
+// maxBody caps a guide as read, decompressed. A category's XMLTV is 14
+// days of Gracenote listings, about 0.5 MB a paired channel, so a block of
+// 400 paired channels is about 200 MB (a week of iptv-epg.org's 450
+// channels was about 20 MB, and the 64 MiB this was sized for it refused
+// about 130 paired channels). Read holds about 4x the body, within the
+// build Job's 2 GiB.
+var maxBody int64 = 256 << 20
 
 // ErrTooLarge is a guide over maxBody.
 var ErrTooLarge = errors.New("xmltvguide: guide over the size cap")

@@ -51,9 +51,14 @@ const (
 	// xmltvBuildEvery is how often a guide whose XMLTV did not change is
 	// built again, so airings that ended leave it.
 	xmltvBuildEvery = 24 * time.Hour
-	// xmltvMaxBody caps a block's XMLTV as fetched (a week of 450 channels
-	// is about 20 MB), and xmltvMaxLineup its lineup.json.
-	xmltvMaxBody   = 64 << 20
+	// xmltvMaxBody caps a block's XMLTV as fetched, and xmltvMaxLineup its
+	// lineup.json. A category's XMLTV is 14 days of Gracenote listings,
+	// about 0.5 MB a paired channel, so a block of 400 paired channels is
+	// about 200 MB (a week of iptv-epg.org's 450 channels was about 20 MB,
+	// and the 64 MiB this was sized for it refused about 130 paired
+	// channels). The build Job's limit is 2 GiB, and xmltvguide.Read holds
+	// about 4x its body.
+	xmltvMaxBody   = 256 << 20
 	xmltvMaxLineup = 1 << 20
 	// xmltvFetchTimeout bounds a fetch from the tuner, in the cluster.
 	xmltvFetchTimeout = 5 * time.Minute

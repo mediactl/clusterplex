@@ -699,6 +699,32 @@ func TestPMSGUIDsAreTheKeysPMSsReaderGivesThePlexItems(t *testing.T) {
 	}, got)
 }
 
+// TestAGuideOverTheOldCapIsRead: a category's XMLTV is 14 days of
+// Gracenote listings, about 0.5 MB a paired channel, so about 130 paired
+// channels passed the 64 MiB cap the guide once had (sized for a week of
+// iptv-epg.org's 450 channels, about 20 MB) and the DVR ran dry. A guide
+// between that and maxBody reads as the guide without its padding.
+func TestAGuideOverTheOldCapIsRead(t *testing.T) {
+	plain, err := os.ReadFile("testdata/profile.xml")
+	require.NoError(t, err)
+	end := bytes.LastIndex(plain, []byte("</tv>"))
+	require.Positive(t, end)
+	var gz bytes.Buffer
+	w := gzip.NewWriter(&gz)
+	_, err = w.Write(plain[:end])
+	require.NoError(t, err)
+	_, err = w.Write(bytes.Repeat([]byte("\n"), 65<<20)) // past the old 64 MiB
+	require.NoError(t, err)
+	_, err = w.Write(plain[end:])
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	in, chans, err := Read(&gz, lineup, now)
+	require.NoError(t, err)
+	want, wantChans := readProfile(t)
+	assert.Equal(t, want, in)
+	assert.Equal(t, wantChans, chans)
+}
+
 func TestAGzippedGuideIsReadAndAnOversizedOneRefused(t *testing.T) {
 	plain, err := os.ReadFile("testdata/profile.xml")
 	require.NoError(t, err)
