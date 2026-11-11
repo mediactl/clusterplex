@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	"github.com/mediactl/clusterplex/pkg/plex/guidebuild"
@@ -426,15 +428,19 @@ func cloudBuildFunc(in *guidebuild.Input, stats *guidebuild.Stats) plexbootstrap
 // plan's from Plex's guide service, an XMLTV plan's XMLTV (planProvider) --
 // and stages the guide. It returns the exit code.
 func runGuideBuild(args []string) int {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("component", "livetv-guide-build")
-	dvr, stamp, pg, err := guideBuildConfig(args)
+	dvr, stamp, pg, lo, err := guideBuildConfig(args)
 	if err != nil {
-		log.Error("invalid build configuration", "error", err)
+		logging.New(logging.Options{Output: os.Stdout}).Error("invalid build configuration", "err", err)
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	ctx, log, err := guideBuildRoot(ctx, lo, os.Stdout)
+	if err != nil {
+		logging.New(logging.Options{Output: os.Stdout}).Error("logging", "err", err)
 		return 2
 	}
 	log = log.With("dvr", dvr, "stamp", stamp)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 	cfg, err := pgx.ParseConfig(pg.DSN())
 	if err != nil {
 		log.Error("postgres settings", "error", err)
@@ -524,23 +530,23 @@ func readStampedPlan(ctx context.Context, conn *pgx.Conn, dvr, stamp string) ([]
 
 // guideBuildConfig reads guide-build's flags and the library database's
 // settings, which the Job's pod has from the Plex pod's environment.
-func guideBuildConfig(args []string) (dvr, stamp string, pg plexdb.Config, err error) {
-	fs := newFlagSet()
+func guideBuildConfig(args []string) (dvr, stamp string, pg plexdb.Config, lo logging.Options, err error) {
+	fs := newFlagSet(&lo)
 	fs.String("dvr", "", "the DVR whose guide to build")
 	fs.String("stamp", "", "the stamp of the plan to build")
 	if err := fs.Parse(args); err != nil {
-		return "", "", pg, err
+		return "", "", pg, lo, err
 	}
 	v := viper.New()
 	v.SetEnvPrefix(envPrefix)
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 	v.AutomaticEnv()
 	if err := v.BindPFlags(fs); err != nil {
-		return "", "", pg, fmt.Errorf("bind flags: %w", err)
+		return "", "", pg, lo, fmt.Errorf("bind flags: %w", err)
 	}
 	dvr, stamp = strings.TrimSpace(v.GetString("dvr")), strings.TrimSpace(v.GetString("stamp"))
 	if dvr == "" || stamp == "" {
-		return "", "", pg, errors.New("--dvr and --stamp are required")
+		return "", "", pg, lo, errors.New("--dvr and --stamp are required")
 	}
 	pg = plexdb.Config{
 		Host:     v.GetString("postgres-host"),
@@ -553,5 +559,17 @@ func guideBuildConfig(args []string) (dvr, stamp string, pg plexdb.Config, err e
 		PoolMax:  v.GetInt("postgres-pool-max"),
 		SSLMode:  v.GetString("postgres-sslmode"),
 	}
-	return dvr, stamp, pg, pg.Validate()
+	return dvr, stamp, pg, lo, pg.Validate()
+}
+
+// guideBuildRoot is the build Job's root logger: service guide-build under
+// cluster-plex, every line under the livetv.guide.build subsystem.
+func guideBuildRoot(ctx context.Context, lo logging.Options, out io.Writer) (context.Context, *slog.Logger, error) {
+	lo.Output = out
+	ctx, _, err := logging.Root(ctx, lo, logging.ServiceFor("guide-build"))
+	if err != nil {
+		return ctx, nil, err
+	}
+	ctx = logging.Subsystem(ctx, "livetv.guide.build")
+	return ctx, logging.FromContext(ctx), nil
 }

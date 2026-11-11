@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
+	"github.com/mediactl/clusterplex/pkg/version"
 	"github.com/prometheus/client_golang/prometheus"
 	otelprom "go.opentelemetry.io/contrib/bridges/prometheus"
 	"go.opentelemetry.io/otel"
@@ -78,8 +80,8 @@ func (o OTel) Setup(ctx context.Context) (shutdown func(context.Context) error, 
 		return noop, Signals{}, err
 	}
 	if o.Logger != nil {
-		log := o.Logger.With("component", "otel")
-		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { log.Warn("OpenTelemetry export", "error", err) }))
+		log := logging.SubsystemLogger(o.Logger, "telemetry")
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { log.Warn("OpenTelemetry export", "err", err) }))
 	}
 
 	var shutdowns []func(context.Context) error
@@ -114,11 +116,16 @@ func (o OTel) Setup(ctx context.Context) (shutdown func(context.Context) error, 
 	return shutdown, on, nil
 }
 
-// resource names this pod; OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
-// override it.
+// resource names this pod: the service's name under service.namespace
+// cluster-plex and the build's service.version, the three attributes its
+// log records carry (the 2026-11-10 structured-logging design §3);
+// OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override it.
 func (o OTel) resource(ctx context.Context) (*resource.Resource, error) {
 	attrs := []resource.Option{resource.WithTelemetrySDK()}
-	kv := []attribute.KeyValue{}
+	kv := []attribute.KeyValue{
+		semconv.ServiceNamespace(logging.ServiceNamespace),
+		semconv.ServiceVersion(version.Version),
+	}
 	if o.ServiceName != "" {
 		kv = append(kv, semconv.ServiceName(o.ServiceName))
 	}

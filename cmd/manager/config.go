@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/viper"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
 	plexbootstrap "github.com/mediactl/clusterplex/pkg/plex/bootstrap"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
@@ -61,6 +62,12 @@ const (
 type Config struct {
 	PodName   string
 	Namespace string
+
+	// Logging is the process's logging options: the --log-* flags, the
+	// LOG_LEVEL/LOG_FORMAT environment and the logging: section of the
+	// config file, which logging.Root resolves and re-reads every 10 s
+	// (the 2026-11-10 structured-logging design §4, §6).
+	Logging logging.Options
 
 	// PMSBinary is the Plex Media Server executable.
 	PMSBinary string
@@ -209,9 +216,16 @@ type Config struct {
 }
 
 // newFlagSet declares every flag and the default for each setting.
-func newFlagSet() *pflag.FlagSet {
+func newFlagSet(lo *logging.Options) *pflag.FlagSet {
 	fs := pflag.NewFlagSet("manager", pflag.ContinueOnError)
 	fs.String("config", "", "path to a YAML configuration file (default "+defaultConfigFile+" when present)")
+	// --log-level, --log-format, --log-add-source, --log-subsystem-level and
+	// --log-config, the last defaulting to the config file itself, whose
+	// logging: section is the live knob.
+	if lo.Format == "" {
+		lo.Format = "json"
+	}
+	logging.BindFlags(fs, lo)
 	fs.String("pod-name", "", "name of this pod (usually from the downward API as POD_NAME)")
 	fs.String("pod-namespace", "", "namespace of this pod (usually from the downward API as POD_NAMESPACE)")
 	fs.String("pms-binary", "/usr/lib/plexmediaserver/Plex Media Server", "Plex Media Server executable")
@@ -261,9 +275,15 @@ func newFlagSet() *pflag.FlagSet {
 // loadConfig resolves the configuration from flags, the environment and an
 // optional YAML file.
 func loadConfig(args []string) (Config, error) {
-	fs := newFlagSet()
+	var lo logging.Options
+	fs := newFlagSet(&lo)
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	// An explicit --config is the file whose logging: section is read,
+	// unless --log-config names another.
+	if path, _ := fs.GetString("config"); path != "" && !fs.Changed("log-config") {
+		lo.ConfigPath = path
 	}
 
 	v := viper.New()
@@ -296,6 +316,7 @@ func loadConfig(args []string) (Config, error) {
 	}
 
 	c := Config{
+		Logging:           lo,
 		PodName:           v.GetString("pod-name"),
 		Namespace:         v.GetString("pod-namespace"),
 		PMSBinary:         v.GetString("pms-binary"),

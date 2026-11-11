@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,9 +33,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/lease"
+	"github.com/mediactl/clusterplex/pkg/logging"
 	plexdb "github.com/mediactl/clusterplex/pkg/plex/db"
 	plexnet "github.com/mediactl/clusterplex/pkg/plex/net"
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
@@ -152,25 +155,50 @@ func main() {
 	os.Exit(run())
 }
 
+// newRoot builds the manager's root logger from cfg.Logging, writing to
+// out, installed on ctx: service manager under cluster-plex, the config
+// file watched under ctx. The logger it returns is the context's.
+func newRoot(ctx context.Context, cfg Config, out io.Writer) (context.Context, *slog.Logger, error) {
+	lo := cfg.Logging
+	lo.Output = out
+	return logging.Root(ctx, lo, logging.ServiceFor("manager"))
+}
+
+// bridgeKlog sends client-go's klog lines through root under the client-go
+// subsystem, so a watch failure is one record with err, never klog's own
+// text format on stderr.
+func bridgeKlog(root *slog.Logger) {
+	klog.SetLogger(logging.LogrBridge(logging.SubsystemLogger(root, "client-go")))
+}
+
 // run wires the manager and blocks until SIGTERM; it returns the exit code.
 func run() int {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-
 	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			return 0
 		}
-		logger.Error("invalid configuration", "error", err)
+		logging.New(logging.Options{Output: os.Stdout}).Error("invalid configuration", "err", err)
 		return 2
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	// The one logger the process runs with (the 2026-11-10 design §4, §5):
+	// the contract's record, service manager under cluster-plex, levels from
+	// the config file's logging: section re-read while it runs; client-go's
+	// klog lines join it under their own subsystem.
+	ctx, logger, err := newRoot(ctx, cfg, os.Stdout)
+	if err != nil {
+		logging.New(logging.Options{Output: os.Stdout}).Error("logging", "err", err)
+		return 2
+	}
+	bridgeKlog(logger)
 	tracer, metrics := telemetry.InitTelemetry()
 	metrics.Activity.Logger = logger.With("component", "activity")
 	otelShutdown, signals, err := telemetry.OTel{
-		ServiceName: "clusterplex-manager", PodName: cfg.PodName, Namespace: cfg.Namespace,
+		ServiceName: "manager", PodName: cfg.PodName, Namespace: cfg.Namespace,
 		Gatherer: prometheus.DefaultGatherer, Logger: logger,
-	}.Setup(context.Background())
+	}.Setup(ctx)
 	switch {
 	case err != nil:
 		// Plex serves without it: an exporter is not worth an outage.
@@ -196,9 +224,6 @@ func run() int {
 		logger.Error("build kubernetes client", "error", err)
 		return 1
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	// Plex's own transcodes run on this pod's node, which the activity
 	// monitor labels them with; a pool conversion takes its pod's.

@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mediactl/clusterplex/pkg/version"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -156,4 +158,19 @@ func TestSpansAndThePrometheusSeriesGoOutOverOTLP(t *testing.T) {
 	assert.Equal(t, "clusterplex-manager", r.attrs["service.name"])
 	assert.Equal(t, "plex-1", r.attrs["k8s.pod.name"])
 	assert.Equal(t, "media", r.attrs["k8s.namespace.name"])
+}
+
+// The tracer's resource carries the three service attributes the log
+// records carry (the 2026-11-10 design §3): service.name manager under
+// service.namespace cluster-plex, and the build as service.version.
+func TestTheTracerIsManagerUnderClusterPlex(t *testing.T) {
+	res, err := OTel{ServiceName: "manager", Getenv: func(string) string { return "" }}.resource(t.Context())
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, kv := range res.Attributes() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	assert.Equal(t, "manager", got["service.name"])
+	assert.Equal(t, "cluster-plex", got["service.namespace"])
+	assert.Equal(t, version.Version, got["service.version"])
 }
