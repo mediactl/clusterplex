@@ -571,7 +571,20 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
 
 ## Conventions
 
-- Logging is `slog` with a handler per component; no package-level logger.
+- Logging is `slog` through `pkg/logging`, clustarr's contract
+  (`docs/superpowers/specs/2026-11-10-structured-logging-design.md`;
+  `docs/configuration.md`'s Logging section): one root per process
+  (`logging.Root`, service `manager`, `proxy`, `video-worker`, `remux-worker`,
+  `maintenance`, `guide-build` under namespace `cluster-plex`), every
+  component handed `logging.SubsystemLogger(root, "<name>")` with the name a
+  literal in `pkg/logging/subsystems.go`, a type refusing a nil `Logger`
+  where its work starts (`errNoLogger`), `err` the one error key, no
+  `slog.Default`, no `"component"` attribute, no `log()`/`logger()` helper
+  inventing a logger, no print past the logger but `cmd/shim`'s and the
+  maintenance Job's usage error (`test/guards`). Levels come from
+  `config.yaml`'s `logging:` section, re-read every 10 s, then set flags,
+  then `LOG_LEVEL`/`LOG_FORMAT`. Plex's own log files are read into the same
+  stream by `pkg/plex/logs` (`pms`, `pms.*`, `shim`) and deleted once read.
 - Packages under `pkg/plex/` are named for their directory (`db`, `net`,
   `prefs`, `route`, `bootstrap`) and imported as `plexdb`, `plexnet`,
   `plexprefs`, `plexroute` and `plexbootstrap`: `net` would shadow the

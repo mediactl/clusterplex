@@ -24,6 +24,67 @@ plex:
       value: Cluster Plex
 ```
 
+## Logging
+
+Every cluster-plex process -- the manager, the proxy, the two workers, the
+maintenance Job and the guide-build Job -- writes one JSON record per line,
+clustarr's contract (`docs/superpowers/specs/2026-11-10-structured-logging-design.md`;
+clustarr's `docs/observability.md` describes the record): `time`, `level`
+(`TRACE`..`FATAL`), `msg`, `service.namespace` (`cluster-plex`), `service.name`
+(`manager`, `proxy`, `video-worker`, `remux-worker`, `maintenance`,
+`guide-build`), `service.version` (the build), `service.instance.id` (the
+pod), `subsystem` (the unit that wrote the line: `supervisor`, `livetv.guide`,
+`proxy.router`, `client-go`, ...; the table is `pkg/logging/subsystems.go`),
+`err` for an error, and `trace_id`/`span_id` inside a span.
+
+The knob is the `logging:` section of `config.yaml`, which every process
+re-reads every 10 seconds, so a level set there reaches a running pod with no
+restart. In the chart it is `global.logging` -- the one knob shared with
+clustarr's chart when cluster-plex is its subchart -- overridden key by key by
+the chart's own `logging`, the two `subsystems` maps merged:
+
+```yaml
+global:
+  logging:
+    level: info          # trace | debug | info | warn | error | fatal
+    format: json         # json | text (text is for a terminal, never a pod)
+    addSource: false
+    subsystems:
+      livetv: debug      # covers livetv.guide, livetv.converge, ...
+      pms: warn          # Plex's own lines (below)
+```
+
+The `--log-level`, `--log-format`, `--log-add-source`, `--log-subsystem-level
+name=level` and `--log-config` flags, and `LOG_LEVEL`/`LOG_FORMAT`, are the
+same knobs for a local run; the file wins over a flag that was set, which
+wins over the environment.
+
+### Plex's own log files
+
+Plex writes its logs to files under `<plex-dir>/Logs` (`Plex Media
+Server.log`, the scanner's, the tuner's, the DLNA server's, the
+transcoder's, and the plugins' under `PMS Plugin Logs/`). The manager reads
+them (`pkg/plex/logs`): every line becomes a record of the file's subsystem
+-- `pms`, `pms.scanner`, `pms.tuner`, `pms.dlna`, `pms.transcoder`,
+`pms.plugin` with `plugin` the bundle id -- carrying Plex's own time, level
+(`VERBOSE` as TRACE, `WARNING` as WARN, `CRITICAL` as ERROR), `thread`, `req`
+(the `Req#` id) and `file`; continuation lines (a query, a stack trace) fold
+into the record before them; an `X-Plex-Token` in a URL is redacted. Plex's
+stdout and stderr are `pms.stdout` and `pms.stderr`, and the PostgreSQL
+shim's own lines on them are `shim` at their level. So `subsystems: {pms:
+debug}` turns Plex's DEBUG lines on live, independent of Plex's `logDebug`,
+which only decides what reaches the file.
+
+What is kept and what is deleted: `LogNumFiles` is forced to `1`, so Plex
+keeps one rotated copy of each file beside the live one; the manager deletes
+a rotated file the moment it has read it to its end, a live file nothing has
+written to for 24 hours once drained, and at each Plex start what the
+previous process left. The `plex-logs` emptyDir is capped at 1Gi as the hard
+stop. Plex Web's "Download logs" zip therefore carries only the live files and
+at most one rotated copy each; the history is in the log store, with the
+filters the files never had (`subsystem:pms.tuner level:ERROR`,
+`req:b5`, `trace_id:...`).
+
 ## Plex preferences
 
 Plex keeps its settings as attributes of a single element in `Preferences.xml`.
@@ -403,6 +464,7 @@ The manager serves Prometheus metrics on the probe port, `/metrics`:
 | `clusterplex_proxy_connections` | Client connections open through this pod's proxy; what a drain waits on |
 | `clusterplex_manager_is_leader` | 1 on the pod that holds the plex.tv lease; every pod serves regardless |
 | `clusterplex_active_jobs`, `clusterplex_jobs_routed_total` | Helper processes running here, and intercepted helper invocations by binary and where they ran |
+| `clusterplex_plex_log_lines_total{subsystem,level}`, `clusterplex_plex_log_bytes_total{file}`, `clusterplex_plex_log_files_deleted_total{file}` | Plex's own log lines read into the manager's records (see Logging), the bytes read per file, and the rotated or stale files deleted once read; `file` is the live name, never a rotated one |
 
 Three pods splitting one library are invisible without these: nothing else
 says which pod holds how many streams.
