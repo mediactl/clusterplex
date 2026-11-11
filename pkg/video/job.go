@@ -17,6 +17,12 @@ import (
 // tried anyway and never run on Plex's node.
 var ErrShape = errors.New("not a video conversion the pool runs")
 
+// ErrNotForPool is a source beyond the pod's own rule (pipeline.Eligibility:
+// its codec, size or HDR), judged as the input opens and before any output,
+// so the relay can pass the pool over and ask the other. It is no ErrShape:
+// the other pool may well run it.
+var ErrNotForPool = errors.New("not for this pool")
+
 // Reason is why a conversion was refused: the bounded value of the
 // refusal metric's reason label, and the first word of the shim's stderr.
 type Reason string

@@ -113,6 +113,22 @@ func TestAnHDR10SourceComesOutSDR(t *testing.T) {
 	assertSDR(t, out)
 }
 
+func TestAnIneligibleSourceIsNotForThePoolBeforeAnyOutput(t *testing.T) {
+	// The HDR10 clip through a CPU pod that takes no HDR: refused as the
+	// input opens, before a segment; the same rule allowing HDR runs it.
+	need(t)
+	job := videoJob(t, hdrClip(t), 720, 404, video.Rational{Num: 24, Den: 1})
+	o := cpu
+	o.Eligible = &pipeline.Eligibility{NoHDR: true}
+	r := &recorder{}
+	err := pipeline.Run(t.Context(), job, o, r)
+	require.ErrorIs(t, err, video.ErrNotForPool)
+	assert.EqualError(t, err, "not for this pool: HDR")
+	assert.Empty(t, r.segments, "nothing was produced")
+	o.Eligible = &pipeline.Eligibility{}
+	assertSDR(t, convert(t, job, o))
+}
+
 func assertSDR(t *testing.T, path string) {
 	t.Helper()
 	b, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",

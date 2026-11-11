@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,10 +56,7 @@ type videoPath struct {
 
 func newVideoPath(job video.Job, in *input, o Options, devs *devices, c segmenter, burn *burner) (*videoPath, error) {
 	vs := in.video
-	bits := 8
-	if name := ffgo.PixelFormatName(vs.PixelFmt); strings.Contains(name, "10") || strings.HasPrefix(name, "p010") {
-		bits = 10
-	}
+	bits := bitsOf(vs)
 	v := &videoPath{
 		job: job, o: o, in: in, devs: devs, c: c, tenBit: bits == 10, burn: burn,
 		forced: video.FirstForced(job.Start, job.Video.KeyframeEvery),
@@ -66,8 +64,7 @@ func newVideoPath(job video.Job, in *input, o Options, devs *devices, c segmente
 	v.colour(vs.Color.Transfer)
 	// Until a frame says, a 10-bit BT.2020 source of no stated transfer
 	// may be HDR: it is decoded where its tone map can run.
-	mayBeHDR := v.toneMap || (bits == 10 && vs.Color.Transfer == ffgo.ColorTransferUnspecified &&
-		(vs.Color.Space == ffgo.ColorSpaceBT2020NCL || vs.Color.Space == ffgo.ColorSpaceBT2020CL))
+	mayBeHDR := v.toneMap || mayBeHDR(vs, bits)
 	switch vs.FieldOrder {
 	case ffgo.FieldOrderTT, ffgo.FieldOrderBB, ffgo.FieldOrderTB, ffgo.FieldOrderBT:
 		v.deinterlace = true
@@ -384,6 +381,9 @@ func (v *videoPath) openEncoder() error {
 		cfg.PixelFormat = ffgo.PixelFormatYUV420P
 		cfg.RateControl, cfg.CRF = ffgo.RateControlCRF, out.CRF
 		cfg.CodecOptions = map[string]string{"bf": "0", "forced-idr": "1", "x264-params": "scenecut=0"}
+		if v.o.Threads > 0 {
+			cfg.CodecOptions["threads"] = strconv.Itoa(v.o.Threads)
+		}
 	}
 	if v.toneMap {
 		// The stream says what the tone map made of it.
