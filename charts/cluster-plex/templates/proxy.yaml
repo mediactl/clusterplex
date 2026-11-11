@@ -51,6 +51,10 @@ spec:
           image: {{ include "cluster-plex.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/usr/local/bin/proxy"]
+          # The TLS Secret already lives under /etc/clusterplex, and a mountpoint
+          # inside a read-only ConfigMap directory cannot be created, so the
+          # config is mounted beside it and --log-config names the file.
+          args: ["--log-config=/etc/clusterplex/config/config.yaml"]
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -80,12 +84,16 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            - {name: config, mountPath: /etc/clusterplex/config, readOnly: true}
             # Read only: the proxy serves media, it never changes the library.
             - {name: plex-media, mountPath: /media, readOnly: true{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
             {{- if .Values.proxy.tls.secretName }}
             - {name: tls, mountPath: /etc/clusterplex/tls, readOnly: true}
             {{- end }}
       volumes:
+        - name: config
+          configMap:
+            name: {{ include "cluster-plex.fullname" . }}-config
         - name: plex-media
           persistentVolumeClaim:
             claimName: {{ include "cluster-plex.mediaClaim" . }}

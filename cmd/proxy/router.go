@@ -63,7 +63,7 @@ func (r *Router) Run(ctx context.Context) {
 func (r *Router) refresh(ctx context.Context) {
 	serving, err := r.Tracker.Serving(ctx)
 	if err != nil {
-		r.log().Warn("list serving pods", "error", err)
+		r.Logger.Warn("list serving pods", "err", err)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (r *Router) refresh(ctx context.Context) {
 	r.mu.Unlock()
 
 	if len(members) == 0 && had {
-		r.log().Warn("no pod is serving Plex; requests will wait")
+		r.Logger.Warn("no pod is serving Plex; requests will wait")
 	}
 }
 
@@ -128,11 +128,4 @@ func (r *Router) Wait(ctx context.Context, sessionKey string, timeout time.Durat
 			}
 		}
 	}
-}
-
-func (r *Router) log() *slog.Logger {
-	if r.Logger != nil {
-		return r.Logger
-	}
-	return slog.Default()
 }

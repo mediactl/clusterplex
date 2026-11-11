@@ -68,9 +68,13 @@ spec:
             {{- toYaml .Values.videoTranscode.cpu.resources | nindent 12 }}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           volumeMounts:
+            - {name: config, mountPath: /etc/clusterplex, readOnly: true}
             - {name: inputs, mountPath: /run/video-inputs}
             - {name: media, mountPath: /media, readOnly: true{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
       volumes:
+        - name: config
+          configMap:
+            name: {{ include "cluster-plex.fullname" . }}-config
         - name: inputs
           emptyDir: {medium: Memory, sizeLimit: {{ .Values.videoTranscode.inputs.sizeLimit }}}
         - name: media

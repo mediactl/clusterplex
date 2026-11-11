@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/mediactl/clusterplex/pkg/logging"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/stretchr/testify/require"
 
@@ -65,4 +70,20 @@ func TestAFailedMeasureEndsTheProcess(t *testing.T) {
 	caps, err = measureDevice(t.Context(), "h264_qsv", "/dev/dri/renderD128", ok)
 	require.NoError(t, err)
 	require.True(t, caps.Decode["h264:8"])
+}
+
+// The process's first record carries its service (the 2026-11-10
+// structured-logging design §3): service.name video-worker under cluster-plex.
+func TestItsFirstLineCarriesItsService(t *testing.T) {
+	var out bytes.Buffer
+	_, log, err := newRoot(t.Context(), logging.Options{Format: "json"}, &out)
+	require.NoError(t, err)
+	log.Info("started")
+	line, _, _ := bytes.Cut(out.Bytes(), []byte("\n"))
+	var rec struct {
+		Service struct{ Name, Namespace string } `json:"service"`
+	}
+	require.NoError(t, json.Unmarshal(line, &rec), "%s", out.String())
+	assert.Equal(t, "video-worker", rec.Service.Name)
+	assert.Equal(t, "cluster-plex", rec.Service.Namespace)
 }

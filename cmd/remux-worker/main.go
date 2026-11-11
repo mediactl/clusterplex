@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
 	"github.com/mediactl/clusterplex/pkg/remux/cache"
 	"github.com/mediactl/clusterplex/pkg/remux/pipeline"
 	"github.com/mediactl/clusterplex/pkg/remux/worker"
@@ -43,9 +45,18 @@ func checkRuntime(version func() (uint32, uint32, uint32), shimAPI func() int, m
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("remux-worker", "error", err)
+		logging.New(logging.Options{Output: os.Stderr}).Error("remux-worker", "err", err)
 		os.Exit(1)
 	}
+}
+
+// newRoot builds the process's root logger from lo, writing to out,
+// installed on ctx: service remux-worker under cluster-plex, the config file's
+// logging: section watched under ctx (the 2026-11-10 structured-logging
+// design §4, §5).
+func newRoot(ctx context.Context, lo logging.Options, out io.Writer) (context.Context, *slog.Logger, error) {
+	lo.Output = out
+	return logging.Root(ctx, lo, logging.ServiceFor("remux-worker"))
 }
 
 func run() error {
@@ -53,8 +64,15 @@ func run() error {
 	probe := pflag.String("probe", ":8080", "address serving /healthz and /readyz")
 	dir := pflag.String("cache-dir", "/cache", "worker-local directory holding the remux cache")
 	maxBytes := pflag.Int64("cache-max-bytes", 50<<30, "size the cache is evicted down to; 0 keeps everything")
+	lo := logging.Options{Format: "json"}
+	logging.BindFlags(pflag.CommandLine, &lo)
 	pflag.Parse()
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	ctx, log, err := newRoot(ctx, lo, os.Stderr)
+	if err != nil {
+		return err
+	}
 
 	if err := ffgo.Init(); err != nil {
 		return fmt.Errorf("load FFmpeg: %w", err)
@@ -69,13 +87,11 @@ func run() error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
 	srv := grpc.NewServer()
 	remuxpb.RegisterRemuxServer(srv, &worker.Server{
 		Cache:  &cache.Cache{Dir: *dir, MaxBytes: *maxBytes},
 		Run:    pipeline.Run,
-		Logger: log,
+		Logger: logging.SubsystemLogger(log, "remux.worker"),
 	})
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {

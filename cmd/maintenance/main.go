@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
 	"github.com/mediactl/clusterplex/pkg/maintenance"
 )
 
@@ -48,21 +50,38 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	code := run(ctx, *endpoint, *task, waitFor(*task, *timeout), os.Stdout, os.Stderr)
+	// The Job's lines are the contract's records (the 2026-11-10 design):
+	// service maintenance, levels from the mounted config file; the usage
+	// error above is the one line before a logger exists.
+	ctx, log, err := newRoot(ctx, logging.Options{ConfigPath: logging.DefaultConfigPath}, os.Stdout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "maintenance:", err)
+		os.Exit(2)
+	}
+	code := run(ctx, log, *endpoint, *task, waitFor(*task, *timeout))
 	stop()
 	os.Exit(code)
 }
 
+// newRoot builds the process's root logger from lo, writing to out,
+// installed on ctx: service maintenance under cluster-plex, the config file's
+// logging: section watched under ctx (the 2026-11-10 structured-logging
+// design §4, §5).
+func newRoot(ctx context.Context, lo logging.Options, out io.Writer) (context.Context, *slog.Logger, error) {
+	lo.Output = out
+	return logging.Root(ctx, lo, logging.ServiceFor("maintenance"))
+}
+
 // run asks the manager to distribute the task, returning the process exit code.
 // Anything other than success exits non-zero so the Job fails and is retried.
-func run(ctx context.Context, endpoint, task string, timeout time.Duration, stdout, stderr io.Writer) int {
+func run(ctx context.Context, log *slog.Logger, endpoint, task string, timeout time.Duration) int {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	url := strings.TrimSuffix(endpoint, "/") + "/api/v1/maintenance/" + task
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "maintenance %s: %v\n", task, err)
+		log.Error("maintenance: build the request", "task", task, "err", err)
 		return 1
 	}
 
@@ -70,16 +89,16 @@ func run(ctx context.Context, endpoint, task string, timeout time.Duration, stdo
 	if err != nil {
 		// Most likely a failover in progress. Failing is correct: the Job
 		// retries, by which time a new pod has taken over.
-		_, _ = fmt.Fprintf(stderr, "maintenance %s: %v\n", task, err)
+		log.Error("maintenance: no manager answered", "task", task, "err", err)
 		return 1
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if resp.StatusCode != http.StatusAccepted {
-		_, _ = fmt.Fprintf(stderr, "maintenance %s: %s: %s\n", task, resp.Status, strings.TrimSpace(string(body)))
+		log.Error("maintenance: the manager refused the task", "task", task, "status", resp.Status, "answer", strings.TrimSpace(string(body)))
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "maintenance %s accepted: %s\n", task, strings.TrimSpace(string(body)))
+	log.Info("maintenance: task accepted", "task", task, "answer", strings.TrimSpace(string(body)))
 	return 0
 }

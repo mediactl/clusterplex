@@ -59,5 +59,11 @@ spec:
               resources:
                 requests: {cpu: 10m, memory: 16Mi}
                 limits: {memory: 64Mi}
+              volumeMounts:
+                - {name: config, mountPath: /etc/clusterplex, readOnly: true}
+          volumes:
+            - name: config
+              configMap:
+                name: {{ include "cluster-plex.fullname" $ }}-config
 {{- end }}
 {{- end }}

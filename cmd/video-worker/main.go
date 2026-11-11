@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 
+	"github.com/mediactl/clusterplex/pkg/logging"
 	"github.com/mediactl/clusterplex/pkg/video"
 	"github.com/mediactl/clusterplex/pkg/video/gpu"
 	"github.com/mediactl/clusterplex/pkg/video/pipeline"
@@ -116,9 +117,18 @@ func selfCheck(w io.Writer) error {
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("video-worker", "error", err)
+		logging.New(logging.Options{Output: os.Stderr}).Error("video-worker", "err", err)
 		os.Exit(1)
 	}
+}
+
+// newRoot builds the process's root logger from lo, writing to out,
+// installed on ctx: service video-worker under cluster-plex, the config file's
+// logging: section watched under ctx (the 2026-11-10 structured-logging
+// design §4, §5).
+func newRoot(ctx context.Context, lo logging.Options, out io.Writer) (context.Context, *slog.Logger, error) {
+	lo.Output = out
+	return logging.Root(ctx, lo, logging.ServiceFor("video-worker"))
 }
 
 func run() error {
@@ -134,8 +144,9 @@ func run() error {
 	noHDR := pflag.Bool("no-hdr", false, "refuse an HDR source (PQ, HLG, or 10-bit BT.2020 of no stated transfer)")
 	threads := pflag.Int("threads", 0, "libx264's thread count; 0 leaves it the encoder's default")
 	check := pflag.Bool("self-check", false, "print the runtime and what the image carries, then exit")
+	lo := logging.Options{Format: "json"}
+	logging.BindFlags(pflag.CommandLine, &lo)
 	pflag.Parse()
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 	if err := ffgo.Init(); err != nil {
 		return fmt.Errorf("load FFmpeg: %w", err)
@@ -152,6 +163,10 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+	ctx, log, err := newRoot(ctx, lo, os.Stderr)
+	if err != nil {
+		return err
+	}
 	active := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "clusterplex_video_worker_active_jobs", Help: "Conversions this pod runs, by output (hls, dash, file)",
 	}, []string{"kind"})
@@ -161,7 +176,7 @@ func run() error {
 	})
 	var measured atomic.Bool
 	srv := &worker.Server{
-		Slots: worker.NewSlots(*maxJobs), Run: pipeline.Run, Logger: log, Measured: measured.Load,
+		Slots: worker.NewSlots(*maxJobs), Run: pipeline.Run, Logger: logging.SubsystemLogger(log, "video.worker"), Measured: measured.Load,
 		Options: pipeline.Options{
 			Encoder: *encoder, RenderNode: *node, InputsDir: *inputsDir, FontsDir: *fontsDir,
 			Eligible: eligibility(*sources, *maxPixels, *noHDR), Threads: *threads,

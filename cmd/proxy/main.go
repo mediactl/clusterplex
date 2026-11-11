@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mediactl/clusterplex/pkg/logging"
+	"github.com/spf13/pflag"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -37,9 +41,33 @@ func main() {
 	os.Exit(run())
 }
 
+// newRoot builds the process's root logger from lo, writing to out,
+// installed on ctx: service proxy under cluster-plex, the config file's
+// logging: section watched under ctx (the 2026-11-10 structured-logging
+// design §4, §5).
+func newRoot(ctx context.Context, lo logging.Options, out io.Writer) (context.Context, *slog.Logger, error) {
+	lo.Output = out
+	return logging.Root(ctx, lo, logging.ServiceFor("proxy"))
+}
+
 func run() int {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	lo := logging.Options{Format: "json"}
+	fs := pflag.NewFlagSet("proxy", pflag.ContinueOnError)
+	logging.BindFlags(fs, &lo)
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0
+		}
+		logging.New(logging.Options{Output: os.Stdout}).Error("invalid flags", "err", err)
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	ctx, logger, err := newRoot(ctx, lo, os.Stdout)
+	if err != nil {
+		logging.New(logging.Options{Output: os.Stdout}).Error("logging", "err", err)
+		return 2
+	}
 
 	namespace := env("POD_NAMESPACE", "")
 	if namespace == "" {
@@ -49,12 +77,12 @@ func run() int {
 	listen := env("CLUSTERPLEX_PROXY_LISTEN", ":32400")
 	plexPort, err := strconv.Atoi(env("CLUSTERPLEX_PMS_PORT", "32400"))
 	if err != nil {
-		logger.Error("invalid CLUSTERPLEX_PMS_PORT", "error", err)
+		logger.Error("invalid CLUSTERPLEX_PMS_PORT", "err", err)
 		return 2
 	}
 	managerPort, err := strconv.Atoi(env("CLUSTERPLEX_PROBE_PORT", "8080"))
 	if err != nil {
-		logger.Error("invalid CLUSTERPLEX_PROBE_PORT", "error", err)
+		logger.Error("invalid CLUSTERPLEX_PROBE_PORT", "err", err)
 		return 2
 	}
 	probeAddr := env("CLUSTERPLEX_PROBE_LISTEN", ":8080")
@@ -62,18 +90,15 @@ func run() int {
 	keyFile := env("CLUSTERPLEX_TLS_KEY", "")
 	waitFor, err := time.ParseDuration(env("CLUSTERPLEX_FAILOVER_GRACE", "30s"))
 	if err != nil {
-		logger.Error("invalid CLUSTERPLEX_FAILOVER_GRACE", "error", err)
+		logger.Error("invalid CLUSTERPLEX_FAILOVER_GRACE", "err", err)
 		return 2
 	}
 
 	client, err := newClient()
 	if err != nil {
-		logger.Error("load kubernetes config", "error", err)
+		logger.Error("load kubernetes config", "err", err)
 		return 1
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	// Membership comes from the pods themselves rather than from the Lease.
 	// The Lease names one holder, which is right for "who talks to plex.tv"
@@ -86,7 +111,7 @@ func run() int {
 			Port:        plexPort,
 			ManagerPort: managerPort,
 		},
-		Logger: logger.With("component", "router"),
+		Logger: logging.SubsystemLogger(logger, "proxy.router"),
 	}
 	go router.Run(ctx)
 
@@ -130,7 +155,7 @@ func run() int {
 			},
 		},
 		Timeout:       waitFor + time.Minute,
-		Logger:        logger.With("component", "proxy"),
+		Logger:        logging.SubsystemLogger(logger, "proxy"),
 		OnBytesServed: func(n int64) { bytesServed.Add(float64(n)) },
 	}
 
@@ -146,13 +171,13 @@ func run() int {
 
 	lis, err := net.Listen("tcp", listen)
 	if err != nil {
-		logger.Error("listen", "addr", listen, "error", err)
+		logger.Error("listen", "addr", listen, "err", err)
 		return 1
 	}
 
 	logger.Info("proxy listening", "addr", listen, "tls", certFile != "", "namespace", namespace)
 	if err := serve(lis, srv, certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("proxy stopped", "error", err)
+		logger.Error("proxy stopped", "err", err)
 		return 1
 	}
 	return 0
@@ -181,7 +206,7 @@ func serveProbes(ctx context.Context, logger *slog.Logger, addr string, router *
 		_ = srv.Close()
 	}()
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("probe server stopped", "error", err)
+		logger.Error("probe server stopped", "err", err)
 	}
 }
 

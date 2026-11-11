@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
+
+	"github.com/mediactl/clusterplex/pkg/logging"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/stretchr/testify/require"
 )
@@ -25,4 +30,20 @@ func TestTheWorkerRefusesAnOldShim(t *testing.T) {
 	// The pinned ffgo forces keyframes through API 2 (v0.0.0-clustarr.14).
 	require.ErrorContains(t, checkRuntime(v(63), api(1), minShimAPI), "shim API")
 	require.NoError(t, checkRuntime(v(63), api(2), minShimAPI))
+}
+
+// The process's first record carries its service (the 2026-11-10
+// structured-logging design §3): service.name remux-worker under cluster-plex.
+func TestItsFirstLineCarriesItsService(t *testing.T) {
+	var out bytes.Buffer
+	_, log, err := newRoot(t.Context(), logging.Options{Format: "json"}, &out)
+	require.NoError(t, err)
+	log.Info("started")
+	line, _, _ := bytes.Cut(out.Bytes(), []byte("\n"))
+	var rec struct {
+		Service struct{ Name, Namespace string } `json:"service"`
+	}
+	require.NoError(t, json.Unmarshal(line, &rec), "%s", out.String())
+	assert.Equal(t, "remux-worker", rec.Service.Name)
+	assert.Equal(t, "cluster-plex", rec.Service.Namespace)
 }

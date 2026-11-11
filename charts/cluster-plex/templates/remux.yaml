@@ -42,9 +42,13 @@ spec:
           resources: {{- toYaml .Values.remux.resources | nindent 12 }}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           volumeMounts:
+            - {name: config, mountPath: /etc/clusterplex, readOnly: true}
             - {name: cache, mountPath: /cache}
             - {name: media, mountPath: /media, readOnly: true{{ with .Values.storage.media.subPath }}, subPath: {{ . | quote }}{{ end }}}
       volumes:
+        - name: config
+          configMap:
+            name: {{ include "cluster-plex.fullname" . }}-config
         - name: cache
           emptyDir: {sizeLimit: {{ .Values.remux.cache.sizeLimit }}}
         - name: media

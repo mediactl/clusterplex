@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/mediactl/clusterplex/pkg/logging"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
 
@@ -17,9 +21,11 @@ func trigger(t *testing.T, handler http.HandlerFunc) (int, string) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	var out, errOut bytes.Buffer
-	code := run(context.Background(), srv.URL, "analyze", 5*time.Second, &out, &errOut)
-	return code, out.String() + errOut.String()
+	var out bytes.Buffer
+	_, log, err := newRoot(t.Context(), logging.Options{Format: "json"}, &out)
+	require.NoError(t, err)
+	code := run(context.Background(), log, srv.URL, "analyze", 5*time.Second)
+	return code, out.String()
 }
 
 func TestSucceedsWhenTheManagerAcceptsTheTask(t *testing.T) {
@@ -55,11 +61,13 @@ func TestFailsWhenTheTaskIsUnknown(t *testing.T) {
 func TestFailsWhenNoManagerAnswers(t *testing.T) {
 	// This is the failover case: the Job should fail and be retried, by which
 	// time another pod has taken over.
-	var out, errOut bytes.Buffer
-	code := run(context.Background(), "http://127.0.0.1:1", "analyze", 200*time.Millisecond, &out, &errOut)
+	var out bytes.Buffer
+	_, log, err := newRoot(t.Context(), logging.Options{Format: "json"}, &out)
+	require.NoError(t, err)
+	code := run(context.Background(), log, "http://127.0.0.1:1", "analyze", 200*time.Millisecond)
 
 	assert.NotZero(t, code)
-	assert.Contains(t, errOut.String(), "analyze")
+	assert.Contains(t, out.String(), "analyze")
 }
 
 func TestTrailingSlashesOnTheEndpointDoNotMatter(t *testing.T) {
@@ -69,8 +77,10 @@ func TestTrailingSlashesOnTheEndpointDoNotMatter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var out, errOut bytes.Buffer
-	code := run(context.Background(), srv.URL+"/", "analyze", 5*time.Second, &out, &errOut)
+	var out bytes.Buffer
+	_, log, err := newRoot(t.Context(), logging.Options{Format: "json"}, &out)
+	require.NoError(t, err)
+	code := run(context.Background(), log, srv.URL+"/", "analyze", 5*time.Second)
 	assert.Zero(t, code)
 }
 
@@ -90,4 +100,20 @@ func TestAnExplicitTimeoutIsKept(t *testing.T) {
 func TestAnUnknownTaskWaitsAMinute(t *testing.T) {
 	// The manager answers 404 at once; there is nothing to wait for.
 	assert.Equal(t, time.Minute, waitFor("no-such-task", 0))
+}
+
+// The process's first record carries its service (the 2026-11-10
+// structured-logging design §3): service.name maintenance under cluster-plex.
+func TestItsFirstLineCarriesItsService(t *testing.T) {
+	var out bytes.Buffer
+	_, log, err := newRoot(t.Context(), logging.Options{Format: "json"}, &out)
+	require.NoError(t, err)
+	log.Info("started")
+	line, _, _ := bytes.Cut(out.Bytes(), []byte("\n"))
+	var rec struct {
+		Service struct{ Name, Namespace string } `json:"service"`
+	}
+	require.NoError(t, json.Unmarshal(line, &rec), "%s", out.String())
+	assert.Equal(t, "maintenance", rec.Service.Name)
+	assert.Equal(t, "cluster-plex", rec.Service.Namespace)
 }
