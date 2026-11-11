@@ -517,21 +517,10 @@ func xmltvAirs(body []byte, lineup map[string]string, now time.Time) (bool, erro
 		if lineup[channel] == "" {
 			continue
 		}
-		if end, ok := xmltvStop(stop); ok && end.After(now) {
+		if end, ok := xmltvguide.ParseTime(stop); ok && end.After(now) {
 			return true, nil
 		}
 	}
-}
-
-// xmltvStop reads a programme's stop as pkg/plex/xmltvguide reads it:
-// "20261110200000 +0000", the zone left out read as UTC.
-func xmltvStop(v string) (time.Time, bool) {
-	for _, layout := range []string{"20060102150405 -0700", "20060102150405", "200601021504 -0700", "200601021504"} {
-		if t, err := time.Parse(layout, v); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
 }
 
 // errEmptyXMLTV is an XMLTV with no programme to build: never built over a

@@ -790,7 +790,7 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		// whole-guide read out, 2026-11-04) extends it; the lease holder
 		// reloads it whole only once it has run short.
 		if c.CloudGuides != nil {
-			c.cancelBuiltLoads(ctx, id)
+			c.cancelBuiltLoads(ctx, p, id, ps)
 			c.CloudGuides.Want(dvr.UUID, b.Lineup, uri, b.LineupHash)
 		} else if err := c.refreshCloudGuide(ctx, p, b, id, dvr, ps); err != nil {
 			return err
@@ -805,13 +805,20 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		// builder fills it, rebuilds it when its hash moves, and PMS's
 		// loads of it are cancelled after a map save and refused at their
 		// rename.
+		//
+		// In practice that reload is refused too: the next pass asks the
+		// builder (an empty guide is reloaded once an emptyGuideRetry),
+		// which names the DVR before a load of minutes ends, and a guide a
+		// build installed is the managers' from the start. It stays for a
+		// guide no build has filled, which the build the first ask starts
+		// fills either way (reviewed 2026-11-10, left as it is).
 		if !c.xmltvAsked[dvr.UUID] && c.emptyGuide(ctx, id, dvr) {
 			if err := c.reloadEmpty(ctx, p, b, id, dvr, ps); err != nil {
 				return err
 			}
 			break
 		}
-		c.cancelBuiltLoads(ctx, id)
+		c.cancelBuiltLoads(ctx, p, id, ps)
 		c.xmltvAsked[dvr.UUID] = true
 		c.XMLTVGuides.Want(dvr.UUID, uri+b.GuidePath, b.GuideHash)
 	case b.GuideHash != "" && s.guide != b.GuideHash:
@@ -1051,13 +1058,22 @@ const cancelLoadsFor = 5 * time.Minute
 // cancelBuiltLoads cancels PMS's guide loads while a built guide's map save
 // is recent. A load writes its own file, which nobody copies in for a built
 // guide (cmd/manager's loadsNotOurs), so it is only half an hour at a core.
-func (c *Converger) cancelBuiltLoads(ctx context.Context, id string) {
+// PMS's activities do not say whose guide a load is, so the cancel takes
+// every load PMS runs: while a block of p this converger holds has a DVR
+// whose channel map is not saved yet (mapsPending), nothing is cancelled,
+// since that DVR's first load is what pairs its map (an XMLTV block's: the
+// 14 category DVRs of the custom guides' cutover are made one after
+// another). Its rename is refused all the same, so only PMS's work is spent.
+func (c *Converger) cancelBuiltLoads(ctx context.Context, p Provider, id string, ps *pass) {
 	until, ok := c.cancelLoadsUntil[id]
 	if !ok {
 		return
 	}
 	if c.now().After(until) {
 		delete(c.cancelLoadsUntil, id)
+		return
+	}
+	if c.mapsPending(p, ps) {
 		return
 	}
 	acts, err := c.PMS.Activities(ctx)
@@ -1074,6 +1090,22 @@ func (c *Converger) cancelBuiltLoads(ctx context.Context, id string) {
 		}
 		c.log("Live TV: cancelled PMS's load of a guide the managers build", "activity", a.UUID)
 	}
+}
+
+// mapsPending reports whether a block of p this converger holds has no DVR
+// in PMS yet, or a channel map not saved for its lineup hash.
+func (c *Converger) mapsPending(p Provider, ps *pass) bool {
+	for _, b := range p.Blocks {
+		id := strings.ToUpper(b.DeviceID)
+		if _, held := c.held[id]; !held {
+			continue
+		}
+		dev, ok := ps.devices[id]
+		if !ok || len(ps.dvrsOf(dev.UUID)) == 0 || c.saved[id].lineup != b.LineupHash {
+			return true
+		}
+	}
+	return false
 }
 
 // maxPlexMapBytes caps the tuner's plexmap.json: a block's map is under

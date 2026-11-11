@@ -41,6 +41,12 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 	prov := m.Config.Provision
 	store := m.tokenStore()
 	m.stopLeaderWork()
+	if m.xmltv != nil {
+		// Before this pod writes any guide (holdsLease): the guides a build
+		// installed are the managers' before the converger names them, so
+		// the poll never copies a load PMS left over one.
+		m.learnBuiltOnLease(ctx)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
 	m.stopLeader = cancel
@@ -70,6 +76,25 @@ func (m *Manager) startLeaderWork(ctx context.Context) {
 		go m.prefetchCodecs(ctx)
 	}
 	go m.countLibrary(ctx)
+}
+
+// learnBuiltTimeout bounds the lease winner's listing of the built guides.
+const learnBuiltTimeout = 30 * time.Second
+
+// learnBuiltOnLease has the XMLTV builder learn the guides a build
+// installed, as a PMS start does (prepareGuides), for a pod that wins the
+// lease after its PMS started.
+func (m *Manager) learnBuiltOnLease(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, learnBuiltTimeout)
+	defer cancel()
+	conn, err := m.connectGuides(ctx)
+	if err == nil {
+		err = m.xmltv.learnBuilt(ctx, conn)
+		_ = conn.Close(context.Background())
+	}
+	if err != nil {
+		m.Logger.Warn("Live TV: list the guides the managers built at the lease's win", "error", err)
+	}
 }
 
 // stopLeaderWork ends it; safe to call when nothing runs.

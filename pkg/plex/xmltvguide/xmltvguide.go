@@ -289,8 +289,8 @@ const (
 // a build meets first. false: p has no title or no times.
 func (rd *reader) item(p xProgramme) (epgcloud.Item, bool) {
 	title := firstText(p.Titles)
-	start, okStart := xmltvTime(p.Start)
-	stop, okStop := xmltvTime(p.Stop)
+	start, okStart := ParseTime(p.Start)
+	stop, okStop := ParseTime(p.Stop)
 	if title == "" || !okStart || !okStop || !stop.After(start) {
 		return epgcloud.Item{}, false
 	}
@@ -488,9 +488,10 @@ func airDate(v string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// xmltvTime is a programme's start or stop: "20261110200000 +0000", the
-// zone left out read as UTC.
-func xmltvTime(v string) (time.Time, bool) {
+// ParseTime reads a programme's start or stop: "20261110200000 +0000", the
+// zone left out read as UTC. It is the reader's one parser of the guide's
+// times, which cluster-plex's look at a guide before its build uses too.
+func ParseTime(v string) (time.Time, bool) {
 	v = strings.TrimSpace(v)
 	for _, layout := range []string{"20060102150405 -0700", "20060102150405", "200601021504 -0700", "200601021504"} {
 		if t, err := time.Parse(layout, v); err == nil {

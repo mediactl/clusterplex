@@ -58,6 +58,11 @@ type fakePMS struct {
 	// discoversLeaveDead is how many more discovers answer as PMS does
 	// before the tuner serves the device's path: 200, the device still dead.
 	discoversLeaveDead int
+	// loadOf says whose guide the running load is ("create <device uuid>",
+	// "save <device key>", "reload <path>", "pms"); cancelled lists the
+	// loads a DELETE /activities ended, so.
+	loadOf    string
+	cancelled []string
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
@@ -105,8 +110,17 @@ func (f *fakePMS) endGrab() {
 
 func (f *fakePMS) startLoad() {
 	f.mu.Lock()
-	f.loading = true
+	f.loading, f.loadOf = true, "pms"
 	f.mu.Unlock()
+}
+
+// takeCancelled is the loads cancelled since the last look.
+func (f *fakePMS) takeCancelled() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.cancelled
+	f.cancelled = nil
+	return c
 }
 
 // startLoadAfter starts a load once n more /activities reads answered idle.
@@ -249,7 +263,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		f.saves[k]++
 		f.saved[k] = q
 		delete(f.mapOverride, k)
-		f.loading = true // a save rebuilds the guide (recorded)
+		f.loading, f.loadOf = true, "save "+k // a save rebuilds the guide (recorded)
 	case r.Method == http.MethodGet && path == "/livetv/dvrs":
 		f.answer(w, "Dvr", f.dvrs)
 	case r.Method == http.MethodPost && path == "/livetv/dvrs":
@@ -266,7 +280,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		v := plexapi.DVR{Key: plexapi.Str(f.key()), UUID: fmt.Sprintf("dvr-%d", f.next), Language: q.Get("language"), Lineup: q.Get("lineup"), Devices: []plexapi.Device{*dev}}
 		dev.ParentID, _ = strconv.Atoi(string(v.Key))
 		f.dvrs = append(f.dvrs, v)
-		f.loading = true
+		f.loading, f.loadOf = true, "create "+dev.UUID
 		f.answer(w, "Dvr", []plexapi.DVR{v})
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/livetv/dvrs/"):
 		k := strings.TrimPrefix(path, "/livetv/dvrs/")
@@ -276,9 +290,12 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/reloadGuide"):
-		f.loading = true
+		f.loading, f.loadOf = true, "reload "+path
 	case r.Method == http.MethodDelete && path == "/activities/a1":
 		// Cancelling the guide load ends it.
+		if f.loading {
+			f.cancelled = append(f.cancelled, f.loadOf)
+		}
 		f.loading = false
 	case r.Method == http.MethodGet && path == "/livetv/epg/channelmap":
 		f.epgMapReads++
@@ -297,7 +314,7 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 			acts = append(acts, plexapi.Activity{UUID: "a1", Type: plexapi.ActivityGuideLoad, Title: "Refreshing EPG"})
 		} else if f.loadIn > 0 {
 			if f.loadIn--; f.loadIn == 0 {
-				f.loading = true
+				f.loading, f.loadOf = true, "pms"
 			}
 		}
 		f.answer(w, "Activity", acts)

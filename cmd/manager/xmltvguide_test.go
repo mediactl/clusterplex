@@ -534,3 +534,24 @@ func TestABuiltGuideIsTheManagersFromTheStart(t *testing.T) {
 		assert.Equal(t, 2, airings(), "nor did the poll")
 	})
 }
+
+// TestALeaseWinnerKnowsTheBuiltGuidesAtOnce: a pod that wins the lease after
+// its PMS started learns the guides a build installed before it writes any,
+// so its poll copies no load over one before the converger names it.
+func TestALeaseWinnerKnowsTheBuiltGuidesAtOnce(t *testing.T) {
+	db := libraryDatabase(t)
+	m := newTestManager()
+	m.Config.PlexDir = t.TempDir()
+	m.Config.LiveTV = LiveTVConfig{Enabled: true, CloudGuide: CloudGuidePMS, XMLTVGuide: XMLTVGuideManager, CloudGuideBuild: CloudGuideBuildInProcess}
+	m.Config.Postgres = db
+	require.NoError(t, os.MkdirAll(m.guideDir(), 0o755))
+	m.xmltv = newXMLTVGuides(m)
+	conn := guideConn(t, db.DSN())
+	require.NoError(t, plexbootstrap.InstallBuilt(t.Context(), m.Logger, conn, "plex", xmltvGuide,
+		func(context.Context, pgx.Tx, string) error { return nil }))
+	assert.Equal(t, "this pod does not write the guides", m.loadsNotOurs(xmltvGuide))
+
+	m.takePlexTV(t.Context())
+	defer m.releasePlexTV(context.Background())
+	assert.Equal(t, "the managers build this guide", m.loadsNotOurs(xmltvGuide), "known from the lease's win, before any Want")
+}

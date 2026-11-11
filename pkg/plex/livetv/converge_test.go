@@ -814,3 +814,95 @@ func TestAnEmptyXMLTVGuideIsPMSsToFillUntilTheBuilderIsAsked(t *testing.T) {
 	assert.Zero(t, reloads(r.pms.takeWrites()), "an empty guide once asked for is the builder's")
 	assert.Len(t, built.take(), 1)
 }
+
+// deviceOf is block b's device in the fake PMS.
+func (r *rig) deviceOf(t *testing.T, b livetv.Block) plexapi.Device {
+	t.Helper()
+	devs, _ := r.pms.state()
+	for _, d := range devs {
+		if d.DeviceID == b.DeviceID {
+			return d
+		}
+	}
+	t.Fatalf("no device %s", b.DeviceID)
+	return plexapi.Device{}
+}
+
+// hasDVR is whether block b's device has a DVR in the fake PMS.
+func (r *rig) hasDVR(b livetv.Block) bool {
+	_, dvrs := r.pms.state()
+	for _, d := range dvrs {
+		for _, dev := range d.Devices {
+			if dev.DeviceID == b.DeviceID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestABlockMadeInAnothersCancelWindowKeepsItsFirstLoad: PMS's activities do
+// not say whose guide a load is, so the cancel after block A's map save
+// would end whatever load runs -- block B's first, made inside A's window
+// (the cutover makes 14 category DVRs one after another), which is what
+// pairs B's channel map. While a block's map is not saved, no load is
+// cancelled; B's map is saved on its next pass, and then B's own rebuild is
+// cancelled.
+func TestABlockMadeInAnothersCancelWindowKeepsItsFirstLoad(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	r.conv.Now = func() time.Time { return now } // every pass inside A's window
+	a, b := r.block(0), r.block(1)
+	p := provider(a, b)
+	run := func() {
+		t.Helper()
+		_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+	}
+
+	run() // A's DVR is made, its first load runs
+	r.pms.endLoad()
+	for range 4 {
+		run()
+		if r.hasDVR(b) {
+			break
+		}
+		r.pms.endLoad()
+	}
+	require.True(t, r.hasDVR(b), "B's DVR is made")
+	require.Equal(t, 1, r.pms.saves[string(r.deviceOf(t, a).Key)], "A's map is saved: its window is open")
+	bUUID := "device://tv.plex.grabbers.hdhomerun/" + b.DeviceID
+
+	run() // B's first load runs, inside A's window
+	assert.Empty(t, r.pms.takeCancelled(), "no load is cancelled while B's map is not saved")
+	r.pms.mu.Lock()
+	loading, of := r.pms.loading, r.pms.loadOf
+	r.pms.mu.Unlock()
+	assert.True(t, loading, "B's first load runs on")
+	assert.Equal(t, "create "+bUUID, of)
+
+	r.pms.endLoad()
+	run()
+	bKey := string(r.deviceOf(t, b).Key)
+	assert.Equal(t, 1, r.pms.saves[bKey], "B's map is saved on its next pass")
+	assert.Equal(t, []string{"save " + bKey}, r.pms.takeCancelled(), "with every map saved, B's rebuild is cancelled")
+}
+
+// TestWithEveryMapSavedARenumberingsLoadIsCancelled: in the steady state the
+// cancel stays: a renumbering (a lineup-hash move) saves the block's map,
+// and the whole XMLTV load PMS starts for it is cancelled.
+func TestWithEveryMapSavedARenumberingsLoadIsCancelled(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	p := provider(r.block(0), r.block(1))
+	r.converge(t, 10, p)
+	r.pms.takeCancelled()
+
+	p.Blocks[1].LineupHash = "renumbered"
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	bKey := string(r.deviceOf(t, p.Blocks[1]).Key)
+	assert.Equal(t, 2, r.pms.saves[bKey])
+	assert.Equal(t, []string{"save " + bKey}, r.pms.takeCancelled())
+}
