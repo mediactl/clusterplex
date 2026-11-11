@@ -1230,8 +1230,10 @@ counts the conversions by the pool that took them and
 `clusterplex_video_pool_passed_over_total{pool,reason}` the pass-overs
 (`full`, `ineligible`). Measured on a 2026 NUC's eight cores, a 1080p60
 H.264 stream to 720p30 runs at 8.2x real time on one job and two together at
-3.5x each, with the first segment 1.2 s later than the GPU's and a VMAF the
-viewer cannot tell apart; the design's "Measured" section has the numbers.
+3.5x each, with the first segment about a third of a second later than the
+GPU's (0.55 s against 0.22 s from a cold start; eight segments in 1.8 s
+against 0.62 s) and a VMAF the viewer cannot tell apart; the design's
+"Measured" section has the numbers.
 There is no kustomize component for the CPU pool yet.
 
 ## Applying a change

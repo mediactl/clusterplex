@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"maps"
 	"math"
 	"net"
@@ -129,6 +130,9 @@ type pms struct {
 	tokens  []string
 	lists   []string
 	present [][]string
+	// slow is served in 64 KiB writes 5 ms apart, as a Live TV session's
+	// stream arrives, so a reader is still reading when something happens.
+	slow map[string][]byte
 	// throttled answers a progress PUT as PMS does while a job is its
 	// throttle buffer ahead of the client (finding P).
 	throttled atomic.Bool
@@ -158,6 +162,33 @@ func (p *pms) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-p.manifested:
 		case <-r.Context().Done():
+			return
+		}
+	}
+	if r.Method == http.MethodGet && r.Header.Get("X-Plex-Token") == "tok" {
+		p.mu.Lock()
+		b, ok := p.slow[r.URL.Path]
+		if ok {
+			p.calls = append(p.calls, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		}
+		p.mu.Unlock()
+		if ok {
+			f, _ := w.(http.Flusher)
+			for len(b) > 0 {
+				n := min(len(b), 64<<10)
+				if _, err := w.Write(b[:n]); err != nil {
+					return
+				}
+				if f != nil {
+					f.Flush()
+				}
+				b = b[n:]
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
 			return
 		}
 	}
@@ -1074,4 +1105,92 @@ func TestARestartIsPlacedAfresh(t *testing.T) {
 	assert.NotEmpty(t, cpu.job)
 	assert.NotEmpty(t, gpu.job)
 	assert.Equal(t, 1, h.count.begun, "only the GPU run was counted")
+}
+
+func TestAnUnreachableFirstPoolIsPassedOver(t *testing.T) {
+	// Every pod of the first pool refuses with something other than full or
+	// shape (a rollout's terminating pod, a crashed one answering
+	// Unavailable): the spec's "then the second pool's" -- the GPU pool
+	// takes the tune, and no refusal is counted. With both pools so, the
+	// job is refused worker-error with the last pool's error.
+	gpu := &worker{run: script(seg(0, 0, 8, false), done("", ""))}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": {refuse: codes.Unavailable}}, true)
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, s), s.stderr())
+	assert.NotEmpty(t, gpu.job, "the GPU pool took it")
+	assert.Empty(t, h.refs, "no refusal")
+	routed, passed := h.seen()
+	assert.Equal(t, []string{relay.PoolGPU}, routed)
+	assert.Empty(t, passed, "an unreachable pool is not a full or ineligible one")
+
+	h = setup2(t, map[string]*worker{"video-0": {refuse: codes.Unavailable}}, map[string]*worker{"cpu-0": {refuse: codes.Unavailable}}, true)
+	s = &sink{}
+	require.Error(t, h.relay.Execute(t.Context(), h.req, s))
+	assert.Contains(t, s.stderr(), "video: worker-error: video-0: ", "the last pool's error")
+	assert.Equal(t, []video.Reason{video.ReasonWorkerError}, h.refs)
+}
+
+func TestAPassedOverPoolsPumpEndsWithIt(t *testing.T) {
+	// The first pool's pump reads Plex's Live TV session only while its
+	// conversion lives: once the pool is passed over, the pump ends with
+	// the conversion's context and logs no failure, so the pass-over of a
+	// Live TV tune reads as what it is.
+	live := bytes.Repeat([]byte("TS packet bytes."), 64<<10) // 1 MiB
+	cpu := &worker{}
+	cpu.run = func(ctx context.Context, _ func(*videopb.Down) error) error {
+		for {
+			cpu.mu.Lock()
+			n := cpu.input.Len()
+			cpu.mu.Unlock()
+			if n >= 256<<10 {
+				return status.Error(codes.FailedPrecondition, "not for this pool: hevc")
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	gpu := &worker{eof: make(chan struct{})}
+	gpu.run = func(ctx context.Context, send func(*videopb.Down) error) error {
+		select {
+		case <-gpu.eof:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return send(done("", ""))
+	}
+	h := setup2(t, map[string]*worker{"video-0": gpu}, map[string]*worker{"cpu-0": cpu}, true)
+	var logged lockedBuffer
+	h.relay.Logger = slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	h.pms.slow = map[string][]byte{"/livetv/sessions/abc/index.ts": live}
+	for i, a := range h.req.Args {
+		if a == "-i" {
+			h.req.Args[i+1] = "http://127.0.0.1:32400/livetv/sessions/abc/index.ts"
+		}
+	}
+	s := &sink{}
+	require.NoError(t, h.relay.Execute(t.Context(), h.req, s), s.stderr())
+	time.Sleep(50 * time.Millisecond) // the first pump's last read, if it were still running
+	assert.NotContains(t, logged.String(), "stream an input to the pool", "the passed-over pool's pump logged a failure")
+	assert.NotContains(t, logged.String(), "level=WARN")
+}
+
+// lockedBuffer is a bytes.Buffer a logger may write while the test reads.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

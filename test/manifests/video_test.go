@@ -132,3 +132,36 @@ func TestTheManagerIsToldTheVideoPool(t *testing.T) {
 	assert.Equal(t, 50053, cfg["video-port"])
 	assert.Equal(t, "cluster-plex-video-transcodes", cfg["video-lease-name"])
 }
+
+// renderError renders the chart with args and returns helm's output when it
+// refuses, "" when it renders.
+func renderError(t *testing.T, args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH")
+	}
+	out, err := exec.Command("helm", append([]string{
+		"template", "cp", "../../charts/cluster-plex",
+		"--namespace", "media", "--set", "postgres.host=postgres", "--set", "postgres.passwordSecret.name=pg",
+	}, args...)...).CombinedOutput()
+	if err == nil {
+		return ""
+	}
+	return string(out)
+}
+
+func TestTheCPUPoolUnderClustarrBusyNeedsALease(t *testing.T) {
+	// A CPU pool enabled under the default when (clustarr-busy) with no
+	// Lease to read -- plex.clustarr off and no clustarrWorkLease -- would
+	// never be asked first and say nothing; the chart refuses instead, so
+	// the operator sets when: always or names the Lease.
+	cpu := []string{"--set", "videoTranscode.enabled=true", "--set", "videoTranscode.cpu.enabled=true"}
+	assert.Contains(t, renderError(t, cpu...), "videoTranscode.cpu.when")
+	assert.Empty(t, renderError(t, append(cpu, "--set", "videoTranscode.cpu.when=always")...))
+	assert.Empty(t, renderError(t, append(cpu, "--set", "videoTranscode.cpu.when=never")...))
+	assert.Empty(t, renderError(t, append(cpu, "--set", "videoTranscode.cpu.clustarrWorkLease=clustarr-system/clustarr-intel-work")...))
+	assert.Empty(t, renderError(t, append(cpu, "--set", "plex.clustarr.enabled=true")...), "clustarr's own Lease is derived")
+	cfg := managerConfig(t, renderObjects(t, append(cpu, "--set", "plex.clustarr.enabled=true")...))
+	assert.Equal(t, "clustarr-system/clustarr-intel-work", cfg["clustarr-work-lease"])
+	assert.Equal(t, "app=plex-video-transcode-cpu", cfg["video-cpu-selector"])
+}

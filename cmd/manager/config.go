@@ -618,6 +618,7 @@ func (c Config) cpuFirst(k kubernetes.Interface, log *slog.Logger) func(context.
 	}
 	ns, name, ok := strings.Cut(c.ClustarrWorkLease, "/")
 	if !ok || ns == "" || name == "" {
+		log.Warn("the CPU video pool is never asked first: --video-cpu-when is clustarr-busy and no --clustarr-work-lease names clustarr's Lease; it is the GPU pool's second chance only")
 		return func(context.Context) bool { return false }
 	}
 	w := &lease.Work{Client: k, Namespace: ns, Name: name}

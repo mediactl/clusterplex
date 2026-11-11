@@ -192,5 +192,7 @@ func TestAnUnreadableWorkLeaseIsNotBusy(t *testing.T) {
 
 	assert.True(t, Config{VideoCPUWhen: "always"}.cpuFirst(cs, log)(t.Context()))
 	assert.False(t, Config{VideoCPUWhen: "never"}.cpuFirst(cs, log)(t.Context()))
+	logged.Reset()
 	assert.False(t, Config{VideoCPUWhen: "clustarr-busy"}.cpuFirst(cs, log)(t.Context()), "no Lease named: never first")
+	assert.Contains(t, logged.String(), "never asked first", "an operator who enabled the pool is told it is only the GPU pool's second chance")
 }
