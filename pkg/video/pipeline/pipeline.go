@@ -34,6 +34,13 @@ type Options struct {
 	// the encoder the job runs on and the device its video decodes on
 	// ("vaapi", or "" for the CPU); nil tells nothing.
 	Started func(encoder, decoder string)
+	// Eligible is the rule the source must pass once the input is open and
+	// before any device, burner or output exists; a source beyond it ends
+	// the run with video.ErrNotForPool. nil takes every source.
+	Eligible *Eligibility
+	// Threads bounds libx264 (its "threads" option); 0 leaves it the
+	// encoder's own default.
+	Threads int
 }
 
 func (o Options) onGPU() bool { return o.Caps != nil }
@@ -73,6 +80,11 @@ func Run(ctx context.Context, job video.Job, o Options, sink Sink) error {
 		return err
 	}
 	defer in.close()
+	if o.Eligible != nil {
+		if err := o.Eligible.Check(sourceOf(in)); err != nil {
+			return err
+		}
+	}
 
 	devs, err := openDevices(o)
 	if err != nil {
