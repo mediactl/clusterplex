@@ -151,7 +151,9 @@ the XMLTV is the whole answer. The rig's probe (2026-11-10/11) is DVR 8,
   a programme needs it, so the sections come from the reference). The load's
   time is `min(created_at)` of its non-section items.
 - **The run:**
-  `GUIDEBUILD_DSN=postgres://plex:plex@127.0.0.1:<forwarded plex-postgres>/plex go run ./hack/guidebuild -xmltv <dir>/site/hdhr/x1/xmltv.xml -lineup <dir>/site/hdhr/x1/lineup.json -ref epg_ref_x1 -out epg_ref_x1_built -now <load time> -additions`.
+  `go run ./hack/guidebuild -dsn "$(cat dsn)" -xmltv <dir>/site/hdhr/x1/xmltv.xml -lineup <dir>/site/hdhr/x1/lineup.json -ref epg_ref_x1 -out epg_ref_x1_built -now <load time> -additions`,
+  where `dsn` is a 0600 file holding the DSN of the forwarded
+  `plex-postgres` (`hack/kind-postgres.yaml`'s user and database).
   Without `-additions` the run lists every plex guid as a row only one side
   has and every image PMS stores none of as a differing column, and exits 1;
   with it those are listed apart, under "additions", and a run with no other
@@ -163,16 +165,24 @@ the XMLTV is the whole answer. The rig's probe (2026-11-10/11) is DVR 8,
   accents (`Ünïcødé` as `Unic0de`), measured with
   `hack/guiderig/xmltv-sortprobe.py`, an XMLTV of 728 one-character titles
   loaded the same way (`pkg/plex/guidebuild/testdata/sortprobe.tsv` keeps
-  PMS's answers); and the reader keys an item by any plex guid the guide
+  PMS's answers). The planner takes the one table for cloud guides too, on
+  the inference that PMS computes `title_sort` in one place for both
+  loaders (the service's answers carry no sort title). The cloud loads on
+  the rig (48,548 and 3,942 titles) agree with the table but cannot tell it
+  from the old fold, since none carries a character on which the two
+  differ; the probe on PMS is the evidence. And the reader keys an item by any plex guid the guide
   lists for it, taking each added image from the first listing that has one.
 
 **The built mode on the rig.** With an image carrying the builder (`kind
 load` it as above), set `xmltvGuide: manager` beside `cloudGuide` in
-`clusterplex-config`, give `clusterplex-sa` the chart's Job verbs (the
-kind overlay's `clusterplex-role` has none, so a build Job fails "cannot
-get resource jobs" and waits its 15-minute retry: the rig carries a Role
-`rig-guide-jobs`, `batch` `jobs` get, list, create, delete, bound to it),
-restart the StatefulSet, and move the block's
+`clusterplex-config` (the base's Role grants no Jobs; the kind overlay
+takes `k8s/components/guide-build-jobs`, the chart's `batch` `jobs` get,
+list, create and delete for `clusterplex-sa`, without which a build Job
+fails "cannot get resource jobs" and waits its 15-minute retry; on the rig
+apply only that component's Role and RoleBinding, picked out of
+`kubectl kustomize k8s/overlays/kind`, never the whole overlay, whose
+StatefulSet pins the production identity), restart the StatefulSet, and
+move the block's
 `guideHash` in `rig-x1`'s status
 (`kubectl -n media patch iptvprovider rig-x1 --subresource=status --type=json -p '[{"op":"replace","path":"/status/blocks/0/guideHash","value":"<new>"}]'`).
 The converger asks the builder for DVR 8; a `plex-guide-build-*` Job stages
@@ -201,8 +211,9 @@ neither an image beyond the show's poster nor a plex guid; the forced
 reload was refused in 164 µs and the sums stood two minutes later. PMS
 still moves the DVR's `refreshedAt` for the load it was refused, so
 `refreshedAt` says nothing about whose guide is served. The schema's
-comment reads "built from Plex's guide service" for an XMLTV build too
-(the stored text is the cloud build's, parsed by the time). Two traps: a
+comment then read "built from Plex's guide service", the cloud build's
+text; an XMLTV build's reads "built from clustarr's XMLTV at …" since,
+and either is read as the build's time. Two traps: a
 port-forward and the server's `.LocalAdminToken` both die with the pod, so
 re-forward and re-read the token after every restart; and the managers'
 timers run on the monotonic clock, which stops while the workstation
