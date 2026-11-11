@@ -820,13 +820,15 @@ func resolution(v string) (int64, int64) {
 }
 
 // sortTitle is a title as PMS sorts it (the rig's 248-channel load,
-// 48,548 titles, 2026-11-10): its accents folded ("Dónde" sorts as
-// "Donde"), without leading quotes, brackets, dots and the like ("... And a
-// Hearse", "'Tis", "(Don't) Lean on Me", "¡A rockear!") -- but a leading
-// "#", "$" or "&" stays ("$25K to Save the Day") -- and without a leading
-// article of PMS's list, in any case: the English ones, "El", "La", "Der"
-// and "Das" ("THE SOLAR EXIT HOTLINE", "La La Anthony"), never "Los",
-// "Las", "Le", "Les", "Die", "Il" or "O" ("Los Angeles", "Die Hard").
+// 48,548 titles, 2026-11-10, and its XMLTV sort probe of 728, 2026-11-11):
+// its letters folded by PMS's table (foldAccents: "Dónde" sorts as
+// "Donde", "Ünïcødé" as "Unic0de"), without leading quotes, brackets,
+// dots, dashes and the like ("... And a Hearse", "'Tis", "(Don't) Lean on
+// Me", "¡A rockear!") -- but a leading "#", "$" or "&" stays ("$25K to
+// Save the Day") -- and without a leading article of PMS's list, in any
+// case: the English ones, "El", "La", "Der" and "Das" ("THE SOLAR EXIT
+// HOTLINE", "La La Anthony"), never "Los", "Las", "Le", "Les", "Die", "Il"
+// or "O" ("Los Angeles", "Die Hard").
 func sortTitle(t string) string {
 	t = foldAccents(t)
 	t = strings.TrimLeftFunc(t, func(r rune) bool {
@@ -840,26 +842,52 @@ func sortTitle(t string) string {
 	return t
 }
 
-// sortStrip is what a sort title loses at its start. The rig showed " ' (
-// [ . ¡ and a word joiner gone; the other quotes, brackets and marks here
-// are their kin, not seen.
-const sortStrip = `"'([{.¡¿“”‘’«»…`
+// sortStrip is what a sort title loses at its start: the sort probe's " '
+// ( [ { . ¡ ¿ “ ” ‘ ’ « » … - ~ · • – —, and the 248-channel load's word
+// joiner (a format character); never # $ & * ! _ @ + = % ^ < > ? / \ | ; :
+// , ` or a digit.
+const sortStrip = `"'([{.¡¿“”‘’«»…-~·•–—`
 
 // sortArticles are the articles PMS drops from a sort title, each with the
 // space after it.
 var sortArticles = []string{"the ", "a ", "an ", "el ", "la ", "der ", "das "}
 
-// foldAccents drops the marks off accented letters, but a double acute
-// stays ("Gergő Németh" sorts as "Gergő Nemeth": the one such title on the
-// rig, where the macron of "ā" folded).
+// latin1Sort is what PMS's sort title makes of each of U+00C0 to U+00FF,
+// the classic Latin-1 accent table: Æ and æ as E and e, Ð as D, ð as O, ×
+// as x, Ø and ø as the digit 0, Þ and þ as P and p, ß as s, ÷ as / (the
+// sort probe, every one).
+const latin1Sort = "AAAAAAECEEEEIIIIDNOOOOOx0UUUUYPsaaaaaaeceeeeiiiiOnooooo/0uuuuypy"
+
+// sortFolds are the letters past Latin-1 PMS's sort title folds, every one
+// the sort probe found: the lower-case vowels with a macron (Ā, Ē, Ī, Ō
+// and Ū stay), and the letters with a caron, both cases. Every other
+// letter stays as it is: ă ą ć ċ ę ğ ő ś ş ș ũ ů ź ż, ǖ, ẁ, Greek and
+// Cyrillic ("Gergő Németh" sorts as "Gergő Nemeth").
+var sortFolds = map[rune]rune{
+	'ā': 'a', 'ē': 'e', 'ī': 'i', 'ō': 'o', 'ū': 'u',
+	'Č': 'C', 'č': 'c', 'Ď': 'D', 'ď': 'd', 'Ě': 'E', 'ě': 'e', 'Ľ': 'L', 'ľ': 'l', 'Ň': 'N', 'ň': 'n',
+	'Ř': 'R', 'ř': 'r', 'Š': 'S', 'š': 's', 'Ť': 'T', 'ť': 't', 'Ž': 'Z', 'ž': 'z',
+	'Ǎ': 'A', 'ǎ': 'a', 'Ǐ': 'I', 'ǐ': 'i', 'Ǒ': 'O', 'ǒ': 'o', 'Ǔ': 'U', 'ǔ': 'u',
+	'Ǧ': 'G', 'ǧ': 'g', 'Ǩ': 'K', 'ǩ': 'k', 'ǰ': 'j',
+}
+
+// foldAccents is a title's letters as PMS sorts them: composed first (a
+// letter and its combining accent are the accented letter: "Tambie\u0301n"
+// sorts as "Tambien"), then each through latin1Sort or sortFolds.
 func foldAccents(s string) string {
 	var b strings.Builder
-	for _, r := range norm.NFD.String(s) {
-		if !unicode.Is(unicode.Mn, r) || r == '\u030B' {
+	for _, r := range norm.NFC.String(s) {
+		switch {
+		case r >= 0xC0 && r <= 0xFF:
+			b.WriteByte(latin1Sort[r-0xC0])
+		default:
+			if f, ok := sortFolds[r]; ok {
+				r = f
+			}
 			b.WriteRune(r)
 		}
 	}
-	return norm.NFC.String(b.String())
+	return b.String()
 }
 
 // date is an ISO time as Unix seconds, 0 for none. Only the plain form,

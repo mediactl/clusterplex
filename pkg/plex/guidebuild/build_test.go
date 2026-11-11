@@ -1,6 +1,7 @@
 package guidebuild
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -406,9 +407,38 @@ func TestSortTitlesAndDatesAreReadAsPMSReadsThem(t *testing.T) {
 	} {
 		assert.Equal(t, want, sortTitle(in), in)
 	}
+	// The rig's XMLTV load of DVR 8 (2026-11-10), and a combining accent
+	// the 248-channel load composed ("También").
+	assert.Equal(t, "Unic0de — “Quoted” & More", sortTitle("Ünïcødé — “Quoted” & More"))
+	assert.Equal(t, "Y Tu Tina Tambien", sortTitle("Y Tu Tina Tambie\u0301n"))
 	assert.Equal(t, int64(1567080000), date("2019-08-29T12:00:00Z"))
 	assert.Zero(t, date("2026-10-08T22:35:42.281Z"), "PMS keeps no date with fractional seconds")
 	assert.Zero(t, date(""))
+}
+
+// PMS sorts a title by a fixed table, not by stripping every accent: the
+// Latin-1 letters by the classic one (Æ as E, Ø and ø as the digit 0, ð as
+// O, Þ as P, ß as s, × as x, ÷ as /), a few letters beyond it (the
+// carons, and ā ē ī ō ū but not their capitals), every other letter kept
+// (ă ą ć ő ș Ā...), and dashes, a tilde and middle dots dropped from the
+// start besides the quotes and brackets. testdata/sortprobe.tsv is PMS's
+// own load of hack/guiderig/xmltv-sortprobe.py's 728 titles on the kind
+// rig (2026-11-11), one character each, in a title's middle and at its
+// start.
+func TestSortTitlesAreThoseOfPMSsSortProbe(t *testing.T) {
+	b, err := os.ReadFile("testdata/sortprobe.tsv")
+	require.NoError(t, err)
+	n := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if l == "" || strings.HasPrefix(l, "# ") { // a header line; "#Z" is a title
+			continue
+		}
+		title, want, ok := strings.Cut(l, "\t")
+		require.True(t, ok, l)
+		assert.Equal(t, want, sortTitle(title), "%q", title)
+		n++
+	}
+	assert.Equal(t, 728, n)
 }
 
 func TestAShowDatedByItsYearAloneIsDatedItsFirstDay(t *testing.T) {
