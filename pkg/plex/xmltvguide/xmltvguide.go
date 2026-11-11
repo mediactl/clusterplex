@@ -354,8 +354,11 @@ func (rd *reader) fill(guid, thumb, art string) {
 }
 
 // fillImages gives every item read, its show and the shows' metadata the
-// images fill recorded where they have none: a show's thumb stays its
-// first episode's first icon, PMS's.
+// images fill recorded where they have none. A show's or a movie's thumb
+// is its first listing's (its first icon, PMS's, else its poster image)
+// whenever that listing carries one; only one whose first listing carries
+// none takes a later listing's, which PMS's reader may not (unmeasured:
+// the oracle lists it as an addition).
 func (rd *reader) fillImages(in *guidebuild.Input) {
 	for _, grid := range in.Grids {
 		for _, items := range grid {
