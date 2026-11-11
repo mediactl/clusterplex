@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -231,4 +232,37 @@ func TestBuiltGuideSchemasAreTheLiveBuiltGuidesOfEveryProvider(t *testing.T) {
 	got, err := BuiltGuideSchemas(ctx, conn)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{testGuide.Schema(), cloud.Schema()}, got, "an XMLTV and a cloud build; no staging schema, no guide PMS loaded")
+}
+
+// TestAStartNeverCopiesALoadOverAGuideTheManagersBuild: at PMS's start a
+// load PMS left in a guide's file is copied in, however new, unless the
+// guide is one the managers build (skip): only their next build replaces
+// it.
+func TestAStartNeverCopiesALoadOverAGuideTheManagersBuild(t *testing.T) {
+	ctx := context.Background()
+	connect, conn := libraryDB(t)
+	_, err := conn.Exec(ctx, `INSERT INTO plex.media_provider_resources (id, parent_id, type, identifier, uuid) VALUES
+		(2, NULL, 1, 'tv.plex.harvesters.dvr', 'adfe4a6f-79d0-4135-93d5-edf0235ec02b'),
+		(3, 2, 3, 'tv.plex.providers.epg.xmltv', 'faff9ab8-b5a2-41f5-b229-b5ccac4e379e')`)
+	require.NoError(t, err)
+	require.NoError(t, InstallBuilt(ctx, quiet, conn, "plex", testGuide, buildItems(2)))
+	plexDir := t.TempDir()
+	file := filepath.Join(plexDir, "Plug-in Support", "Databases", testGuide.File())
+	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+	newer := time.Now().Add(time.Hour)
+
+	loadedGuide(t, conn, file, 5)
+	touch(t, file, newer)
+	built := func(g Guide) bool { return g == testGuide }
+	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, built))
+	assert.Equal(t, 2, count(t, conn, testGuide.Schema(), "metadata_items"), "the built guide stays")
+	assert.Zero(t, count(t, conn, testGuide.Schema(), "media_items"))
+	at, err := GuideBuiltAt(ctx, conn, testGuide)
+	require.NoError(t, err)
+	assert.False(t, at.IsZero(), "and stays a built one")
+
+	loadedGuide(t, conn, file, 5)
+	touch(t, file, newer)
+	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, nil))
+	assert.Equal(t, 5, count(t, conn, testGuide.Schema(), "media_items"), "a guide the managers do not build takes the newer load")
 }

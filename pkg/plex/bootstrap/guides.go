@@ -395,8 +395,10 @@ func EnsureGuideSchema(ctx context.Context, conn *pgx.Conn, library string, g Gu
 // A pod that does not write the guides (writer false: the Live TV guides'
 // writer file allows it none, cmd/manager's guidewriter.go) copies no load
 // in and sweeps no staging schema: the pod that writes them may be loading
-// into one, and a load this pod's PMS left is not the guide's.
-func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, library, schemaDir, plexDir string, writer bool) error {
+// into one, and a load this pod's PMS left is not the guide's. Nor is a load
+// of a guide skip names (nil names none): one the managers build, which only
+// their next build replaces, however new the load PMS left in its file.
+func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, library, schemaDir, plexDir string, writer bool, skip func(Guide) bool) error {
 	conn, err := connect(ctx)
 	if err != nil {
 		return err
@@ -418,7 +420,7 @@ func PrepareGuides(ctx context.Context, log *slog.Logger, connect Connect, libra
 	}
 	for _, g := range guides {
 		file := filepath.Join(dir, g.File())
-		if !writer {
+		if !writer || (skip != nil && skip(g)) {
 			// Nothing to copy: the shadow below replaces the file.
 		} else if _, err := ImportGuide(ctx, log, conn, library, g, file); err != nil {
 			// The shadow replaces a file the copy could not read all the

@@ -136,6 +136,9 @@ type cloudGuides struct {
 	wants map[string]cloudWant // by DVR uuid
 	built map[string]cloudBuilt
 	kick  chan struct{}
+	// logger, when set, is the log of the builder that runs the build Jobs
+	// through this one (xmltvGuides); a cloud builder's own otherwise.
+	logger *slog.Logger
 }
 
 func newCloudGuides(m *Manager) *cloudGuides {
@@ -162,7 +165,12 @@ func (c *cloudGuides) Want(dvrUUID, lineup, mapURI, lineupHash string) {
 	}
 }
 
-func (c *cloudGuides) log() *slog.Logger { return c.m.Logger.With("component", "livetv-cloud-guide") }
+func (c *cloudGuides) log() *slog.Logger {
+	if c.logger != nil {
+		return c.logger
+	}
+	return c.m.Logger.With("component", "livetv-cloud-guide")
+}
 
 // budget is the guide service's one budget, claimed through q.
 func budget(q epgcloud.Querier) *epgcloud.Budget {

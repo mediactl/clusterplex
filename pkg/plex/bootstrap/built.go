@@ -118,7 +118,7 @@ func StageBuilt(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 	if aerr := analyzeSchema(ctx, conn, staging); aerr != nil {
 		log.Warn("analyze a guide's staging schema", "schema", staging, "error", aerr)
 	}
-	log.Info("staged a Live TV guide built from Plex's guide service", "guide", g.File(), "schema", staging,
+	log.Info("staged a Live TV guide built from "+builtFrom(g), "guide", g.File(), "schema", staging,
 		"stamp", stamp, "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }
@@ -187,8 +187,16 @@ func SwapStaged(ctx context.Context, log *slog.Logger, conn *pgx.Conn, library s
 	if err := dropSchema(ctx, conn, old); err != nil {
 		log.Debug("a replaced guide is still read; it is dropped later", "schema", old, "error", err)
 	}
-	log.Info("built a Live TV guide from Plex's guide service", "guide", g.File(), "schema", schema, "stamp", stamp)
+	log.Info("built a Live TV guide from "+builtFrom(g), "guide", g.File(), "schema", schema, "stamp", stamp)
 	return nil
+}
+
+// builtFrom is what g's guide is built from, for the log.
+func builtFrom(g Guide) string {
+	if g.Provider == xmltvProvider {
+		return "its XMLTV"
+	}
+	return "Plex's guide service"
 }
 
 // fillBuilt writes staging's sections and build's rows, and records the

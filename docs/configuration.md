@@ -935,21 +935,24 @@ XMLTV lineup (a block of clustarr's custom guides, whose device serves
   URL PMS loads), keeps the XMLTV in `clusterplex.epg_cache`, and builds the
   guide in the way and the place a built cloud guide is (`cloudGuideBuild`
   chooses the Job or the holder, and the Job's RBAC is granted when either
-  guide mode is `manager`). It builds at once the first time it is asked
-  for a DVR (and after each manager restart), again when clustarr's guide
-  hash for the block moves, but no sooner than 30 minutes after the last
-  build (clustarr renders a block's XMLTV again on every guide-source
-  change), and once a day otherwise. A build that fails is tried again 15
-  minutes later, and an XMLTV with nothing left to air is never built over
-  the guide the DVR has.
+  guide mode is `manager`). It builds at once a DVR's guide that was
+  never built, again when clustarr's guide hash for the block moves, but no
+  sooner than 30 minutes after the last build (clustarr renders a block's
+  XMLTV again on every guide-source change), and once a day otherwise. A
+  new lease holder reads each guide's last build and the hash its plan
+  carried, so it builds only what moved or aged. A build that fails is tried
+  again 15 minutes later. An XMLTV with nothing left to air on the device's
+  channels is refused as soon as it is fetched, before any build Job, and is
+  never built over the guide the DVR has.
 - **No reloads.** The converger posts no `reloadGuide` on a guide-hash
   move; the load PMS starts at a channel-map save is cancelled; and a load
   PMS makes of the guide anyway is refused at its rename (the shim's swap
   request answers `skip the managers build this guide`), so it is not
-  swapped in. It stays in PMS's own file, which is copied in at that PMS's
-  next start only when it is newer than the last build, as for a built
-  cloud guide; a load older than the build never replaces it. PMS's later
-  writes to the guide are held, as for a built cloud guide.
+  swapped in. Nor is the load it leaves in PMS's own file copied in, by the
+  poll or at PMS's next start: once a build has installed a guide, only the
+  next build replaces it (at a start the guides a build installed are known
+  from their schemas, before the converger names them). PMS's later writes
+  to the guide are held, as for a built cloud guide.
 - **One writer.** The key turns on the single guide writer
   (`GuideWriter`), as `cloudGuide: manager` and `severalPods` do.
 

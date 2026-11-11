@@ -321,9 +321,9 @@ func (m *Manager) handleGuideRequest(ctx context.Context, line string) string {
 // load PMS makes there stays in its own file, and its PMS reopens the guide
 // by name, which the shim serves from the shared schema. The managers build
 // every cloud guide under cloudGuide "manager", and under xmltvGuide
-// "manager" an XMLTV DVR's once the converger has named it (xmltvguide.go):
-// never before, so PMS's first load of a new DVR's guide, which pairs its
-// channel map, is swapped in.
+// "manager" an XMLTV DVR's once the converger has named it or a build has
+// installed it (xmltvguide.go): never before, so PMS's first load of a new
+// DVR's guide, which pairs its channel map, is swapped in.
 func (m *Manager) loadsNotOurs(g plexbootstrap.Guide) string {
 	switch {
 	case !m.Config.LiveTV.GuideWriter():
@@ -332,7 +332,7 @@ func (m *Manager) loadsNotOurs(g plexbootstrap.Guide) string {
 		return "this pod does not write the guides"
 	case m.Config.LiveTV.CloudGuide == CloudGuideManager && g.Provider == cloudGuideProvider:
 		return "the managers build this guide"
-	case g.Provider == guidebuild.ProviderXMLTV && m.xmltv.wanted(g.DVR):
+	case m.xmltv.ours(g):
 		return "the managers build this guide"
 	}
 	return ""
@@ -463,7 +463,11 @@ func (m *Manager) connectGuides(ctx context.Context) (*pgx.Conn, error) {
 
 // prepareGuides makes each Live TV guide's schema the library lists and
 // rebuilds its shadow, copying a load the file holds first, before every
-// PMS start (Supervisor.BeforeStart).
+// PMS start (Supervisor.BeforeStart): never into a guide the managers build
+// (loadsNotOurs), which only their next build replaces. Under xmltvGuide
+// "manager" the guides a build installed are learnt first, since at a start
+// the converger has named none; a pod that cannot list them copies no XMLTV
+// guide's load at this start.
 func (m *Manager) prepareGuides(ctx context.Context) error {
 	if err := m.prepareGuideWriter(ctx); err != nil {
 		return fmt.Errorf("the guides' writer file: %w", err)
@@ -474,9 +478,28 @@ func (m *Manager) prepareGuides(ctx context.Context) error {
 	}
 	m.guides.mu.Lock()
 	defer m.guides.mu.Unlock()
+	writer := !m.Config.LiveTV.GuideWriter() || m.holdsLease()
+	skip := func(g plexbootstrap.Guide) bool { return m.loadsNotOurs(g) != "" }
+	if writer && m.xmltv != nil {
+		if err := m.learnBuiltGuides(ctx, cfg); err != nil {
+			m.Logger.Warn("Live TV: list the guides the managers built; no XMLTV guide's load is copied in at this start", "error", err)
+			skip = func(g plexbootstrap.Guide) bool {
+				return g.Provider == guidebuild.ProviderXMLTV || m.loadsNotOurs(g) != ""
+			}
+		}
+	}
 	return plexbootstrap.PrepareGuides(ctx, m.Logger.With("component", "plex-postgresql-init"),
-		plexbootstrap.ConnectWith(cfg), m.Config.Postgres.Schema, m.Config.SchemaDir, m.Config.PlexDir,
-		!m.Config.LiveTV.GuideWriter() || m.holdsLease())
+		plexbootstrap.ConnectWith(cfg), m.Config.Postgres.Schema, m.Config.SchemaDir, m.Config.PlexDir, writer, skip)
+}
+
+// learnBuiltGuides has the XMLTV builder learn the guides a build installed.
+func (m *Manager) learnBuiltGuides(ctx context.Context, cfg *pgx.ConnConfig) error {
+	conn, err := plexbootstrap.ConnectWith(cfg)(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return m.xmltv.learnBuilt(ctx, conn)
 }
 
 // guideEmpty is whether a DVR's guide, in its schema, holds no airings,

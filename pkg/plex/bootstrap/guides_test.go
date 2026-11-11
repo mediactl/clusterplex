@@ -156,7 +156,7 @@ func TestEveryGuideGetsItsSchemaAndAShadowBeforePMSStarts(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(shadow), 0o755))
 	require.NoError(t, os.WriteFile(shadow, []byte("PMS's own guide"), 0o644))
 
-	err = PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true)
+	err = PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, nil)
 	require.ErrorContains(t, err, testGuide.File(), "the copy's failure is reported")
 	assert.True(t, one[bool](t, conn, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", testGuide.Schema()))
 
@@ -172,7 +172,7 @@ func TestEveryGuideGetsItsSchemaAndAShadowBeforePMSStarts(t *testing.T) {
 	assert.Equal(t, 1, tables)
 
 	// A second start finds the schema and rebuilds only the shadow.
-	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true))
+	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, nil))
 }
 
 // loadedGuide writes file as PMS leaves a guide after a load: its own
@@ -386,7 +386,7 @@ func TestAGuideLoadedBeforeARestartIsCopiedBeforeItsShadowReplacesIt(t *testing.
 	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
 	loadedGuide(t, conn, file, 4)
 
-	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true))
+	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, nil))
 	assert.Equal(t, 4, one[int](t, conn, "SELECT count(*) FROM "+testGuide.Schema()+".media_items"))
 	imported, err := ImportGuide(ctx, quiet, conn, "plex", testGuide, file)
 	require.NoError(t, err)
@@ -666,7 +666,7 @@ func TestAStartClearsEveryLoadAndBuildsTheShadowTemplate(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, made)
 
-	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true))
+	require.NoError(t, PrepareGuides(ctx, quiet, connect, "plex", schemaDir, plexDir, true, nil))
 	_, err = os.Stat(load)
 	assert.True(t, os.IsNotExist(err), "the load file is gone")
 	_, err = os.Stat(load + "-wal")

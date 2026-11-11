@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -98,11 +99,24 @@ type xmltvGuides struct {
 	mu    sync.Mutex
 	wants map[string]xmltvWant // by DVR uuid, lower case
 	built map[string]cloudBuilt
+	// known is the schemas of the guides a build installed, by this holder
+	// or one before it (learnBuilt, at each PMS start): the managers' from
+	// the start, before the converger names them, so no load PMS left in a
+	// guide's file is copied over one.
+	known map[string]bool
 	kick  chan struct{}
+	// lastBuild reads when dvr's guide was last built and from which hash
+	// (storedBuild); a variable for the tests.
+	lastBuild func(ctx context.Context, dvr string) (cloudBuilt, error)
 }
 
 func newXMLTVGuides(m *Manager) *xmltvGuides {
-	return &xmltvGuides{m: m, wants: map[string]xmltvWant{}, built: map[string]cloudBuilt{}, kick: make(chan struct{}, 1)}
+	x := &xmltvGuides{
+		m: m, wants: map[string]xmltvWant{}, built: map[string]cloudBuilt{}, known: map[string]bool{},
+		kick: make(chan struct{}, 1),
+	}
+	x.lastBuild = x.storedBuild
+	return x
 }
 
 // Want implements plexlivetv.XMLTVGuideBuilder.
@@ -136,6 +150,36 @@ func (x *xmltvGuides) wanted(dvr string) bool {
 	return ok
 }
 
+// ours reports whether g's guide is the managers': an XMLTV DVR's the
+// converger has named (wanted), or one a build installed (known). Nil has
+// none.
+func (x *xmltvGuides) ours(g plexbootstrap.Guide) bool {
+	if x == nil || g.Provider != guidebuild.ProviderXMLTV {
+		return false
+	}
+	if x.wanted(g.DVR) {
+		return true
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.known[g.Schema()]
+}
+
+// learnBuilt adds every guide a build installed (plexbootstrap's
+// BuiltGuideSchemas) to known.
+func (x *xmltvGuides) learnBuilt(ctx context.Context, conn *pgx.Conn) error {
+	schemas, err := plexbootstrap.BuiltGuideSchemas(ctx, conn)
+	if err != nil {
+		return err
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	for _, s := range schemas {
+		x.known[s] = true
+	}
+	return nil
+}
+
 func (x *xmltvGuides) log() *slog.Logger { return x.m.Logger.With("component", "livetv-xmltv-guide") }
 
 // runBuilder runs on the lease holder: it builds each named block's guide
@@ -150,7 +194,7 @@ func (x *xmltvGuides) runBuilder(ctx context.Context) {
 		x.mu.Unlock()
 		slices.SortFunc(wants, func(a, b xmltvWant) int { return strings.Compare(a.dvr, b.dvr) })
 		for _, w := range wants {
-			if !x.due(w, time.Now()) {
+			if !x.due(ctx, w, time.Now()) {
 				continue
 			}
 			if err := x.build(ctx, w); err != nil && ctx.Err() == nil {
@@ -167,18 +211,32 @@ func (x *xmltvGuides) runBuilder(ctx context.Context) {
 	}
 }
 
-// due reports whether w's guide wants building at now: never built by this
-// holder (a build at once: the guide may be PMS's first fill, or a build
-// another holder made of an older XMLTV); its hash moved and the last build
-// is xmltvBuildFloor old; or the last build is xmltvBuildEvery old. A
-// failed build waits cloudRetryAfter.
-func (x *xmltvGuides) due(w xmltvWant, now time.Time) bool {
+// due reports whether w's guide wants building at now: never built (a
+// build at once: the guide is PMS's first fill); its hash moved and the
+// last build is xmltvBuildFloor old; or the last build is xmltvBuildEvery
+// old. A failed build waits cloudRetryAfter. At first sight a holder reads
+// the last build from the guide and its plan (lastBuild), so a restart
+// builds again only what moved or aged.
+func (x *xmltvGuides) due(ctx context.Context, w xmltvWant, now time.Time) bool {
+	k := strings.ToLower(w.dvr)
 	x.mu.Lock()
-	b, ok := x.built[strings.ToLower(w.dvr)]
+	b, ok := x.built[k]
 	x.mu.Unlock()
+	if !ok {
+		last, err := x.lastBuild(ctx, w.dvr)
+		if err != nil {
+			x.log().Warn("Live TV: read when an XMLTV guide was last built", "dvr", w.dvr, "error", err)
+			return false
+		}
+		if last.at.IsZero() {
+			return true
+		}
+		b = last
+		x.mu.Lock()
+		x.built[k] = b
+		x.mu.Unlock()
+	}
 	switch {
-	case !ok:
-		return true
 	case !b.failed.IsZero() && now.Sub(b.failed) < cloudRetryAfter:
 		return false
 	case b.at.IsZero():
@@ -201,8 +259,43 @@ func (x *xmltvGuides) failed(dvr string, at time.Time) {
 	x.built[k] = b
 }
 
+// storedBuild is when dvr's guide was last built and the hash it was built
+// from, as the guide's schema and the plan cached for it say: zero when it
+// never was, a load has replaced it since, or a build is under way or staged
+// (built again, which adopts that build by its stamp, as cloud guides do);
+// the hash empty, so a moved one is assumed, when the cached plan is no
+// XMLTV plan or was written after the build (one that failed).
+func (x *xmltvGuides) storedBuild(ctx context.Context, dvr string) (cloudBuilt, error) {
+	conn, err := x.m.connectGuides(ctx)
+	if err != nil {
+		return cloudBuilt{}, err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	at, err := plexbootstrap.GuideBuiltAt(ctx, conn, plexbootstrap.Guide{Provider: guidebuild.ProviderXMLTV, DVR: dvr})
+	if err != nil || at.IsZero() {
+		return cloudBuilt{}, err
+	}
+	if (&cloudGuides{m: x.m, logger: x.log()}).inFlight(ctx, dvr) {
+		return cloudBuilt{}, nil
+	}
+	if err := epgcloud.EnsureCache(ctx, conn); err != nil {
+		return cloudBuilt{}, err
+	}
+	b := cloudBuilt{at: at}
+	body, planned, ok, err := cachedPlan(ctx, conn, dvr)
+	if err != nil {
+		return cloudBuilt{}, err
+	}
+	var p xmltvPlan
+	if ok && !planned.After(at) && planProvider(body) == guidebuild.ProviderXMLTV && json.Unmarshal(body, &p) == nil {
+		b.hash = p.Hash
+	}
+	return b, nil
+}
+
 // build fetches w's lineup and XMLTV, caches them with the plan, and builds
-// and installs the guide.
+// and installs the guide. An XMLTV with nothing to air is refused here,
+// before anything is cached or a Job started (the Job refuses it too).
 func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 	log := x.log().With("dvr", w.dvr)
 	began := time.Now()
@@ -210,17 +303,22 @@ func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 	if err != nil {
 		return err
 	}
+	fetched := time.Now()
+	body, err := fetchXMLTV(ctx, w.url)
+	if err != nil {
+		return err
+	}
+	if airs, err := xmltvAirs(body, lineup, time.Now()); err != nil {
+		return fmt.Errorf("read the XMLTV: %w", err)
+	} else if !airs {
+		return errEmptyXMLTV
+	}
 	conn, err := x.m.connectGuides(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	if err := epgcloud.EnsureCache(ctx, conn); err != nil {
-		return err
-	}
-	fetched := time.Now()
-	body, err := fetchXMLTV(ctx, w.url)
-	if err != nil {
 		return err
 	}
 	if err := epgcloud.CachePut(ctx, conn, xmltvKey(w.dvr, w.hash), body, fetched); err != nil {
@@ -241,8 +339,8 @@ func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 	if inJob {
 		stamp := cloudPlanStamp(planBody)
 		// The cloud guides' Job machinery, which reads nothing of a cloud
-		// builder but the manager.
-		jobs := &cloudGuides{m: x.m}
+		// builder but the manager, logging as this builder.
+		jobs := &cloudGuides{m: x.m, logger: x.log()}
 		if err := jobs.stageInJob(ctx, log, conn, g, stamp); err != nil {
 			return err
 		}
@@ -264,6 +362,7 @@ func (x *xmltvGuides) build(ctx context.Context, w xmltvWant) error {
 	}
 	x.mu.Lock()
 	x.built[strings.ToLower(w.dvr)] = cloudBuilt{hash: w.hash, at: now}
+	x.known[g.Schema()] = true
 	x.mu.Unlock()
 	// The DVR's older XMLTV bodies are read by no plan any more.
 	if err := epgcloud.CachePrune(ctx, conn, xmltvPrefix+w.dvr+"/", fetched); err != nil {
@@ -377,6 +476,62 @@ func fetchXMLTV(ctx context.Context, guideURL string) ([]byte, error) {
 		return nil, fmt.Errorf("the guide at %s is over %d MiB", guideURL, xmltvMaxBody>>20)
 	}
 	return buf.Bytes(), nil
+}
+
+// xmltvAirs reports whether an XMLTV body (gzip or plain) holds a programme
+// on a channel lineup names whose stop is past now: the holder's look
+// before it plans a build, which reads only as far as the first such
+// programme and decodes nothing else, where the build's reading
+// (readXMLTV) decodes the whole guide.
+func xmltvAirs(body []byte, lineup map[string]string, now time.Time) (bool, error) {
+	var r io.Reader = bytes.NewReader(body)
+	if len(body) > 1 && body[0] == 0x1f && body[1] == 0x8b {
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			return false, err
+		}
+		r = gz
+	}
+	d := xml.NewDecoder(r)
+	for {
+		tok, err := d.Token()
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok || se.Name.Local != "programme" {
+			continue
+		}
+		var channel, stop string
+		for _, a := range se.Attr {
+			switch a.Name.Local {
+			case "channel":
+				channel = strings.TrimSpace(a.Value)
+			case "stop":
+				stop = strings.TrimSpace(a.Value)
+			}
+		}
+		if lineup[channel] == "" {
+			continue
+		}
+		if end, ok := xmltvStop(stop); ok && end.After(now) {
+			return true, nil
+		}
+	}
+}
+
+// xmltvStop reads a programme's stop as pkg/plex/xmltvguide reads it:
+// "20261110200000 +0000", the zone left out read as UTC.
+func xmltvStop(v string) (time.Time, bool) {
+	for _, layout := range []string{"20060102150405 -0700", "20060102150405", "200601021504 -0700", "200601021504"} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // errEmptyXMLTV is an XMLTV with no programme to build: never built over a

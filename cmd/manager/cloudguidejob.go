@@ -314,7 +314,7 @@ func (c *cloudGuides) ensureCloudJob(ctx context.Context, dvr, stamp string) (*b
 	if err != nil {
 		return nil, fmt.Errorf("start the build Job %s: %w", name, err)
 	}
-	c.log().Info("Live TV: started a cloud guide's build Job", "dvr", dvr, "job", name)
+	c.log().Info("Live TV: started a guide's build Job", "dvr", dvr, "job", name)
 	return created, nil
 }
 
@@ -377,7 +377,7 @@ func (c *cloudGuides) stageInJob(ctx context.Context, log *slog.Logger, conn *pg
 		case apierrors.IsNotFound(err):
 			return fmt.Errorf("the build Job %s is gone and staged nothing", cloudJobName(g.DVR, stamp))
 		case err != nil:
-			log.Warn("Live TV: read a cloud guide's build Job", "job", cloudJobName(g.DVR, stamp), "error", err)
+			log.Warn("Live TV: read a guide's build Job", "job", cloudJobName(g.DVR, stamp), "error", err)
 		default:
 			if done, failed, why := jobFinished(j); failed {
 				return fmt.Errorf("the build Job %s failed: %s", j.Name, why)
