@@ -437,8 +437,13 @@ clustarr the same day.
   `clusterplex_video_pool_passed_over_total{pool,reason}` (§7 named them
   without `_total`); the shipped Grafana dashboard has no panel for them
   yet.
-- **Not yet**: the talos proof ("Verifying it" 1-4) waits for a clustarr
-  chart that pulls this cluster-plex and the owner's deploy, with
-  `cpu.enabled`, `affinity` on `talos-88-ae-dd-75-3d-a0`, `when: always`
-  first, then `clustarr-busy` once clustarr publishes its Lease. Its
-  readings go here.
+- **Live on talos since Helm rev 250 (2026-11-11 04:02Z)**: cluster-plex
+  chart 0.6.9 and images `7894fdf` (branch `talos-cpu-route`, the running
+  `bce4e04` plus these commits), inside clustarr chart 0.6.13 with the
+  manager at `sha-1db0963` (its intel-work Lease), `cpu.enabled` pinned to
+  `talos-88-ae-dd-75-3d-a0`, `when: clustarr-busy` from the first (the
+  owner chose one restart over the design's `always` step). At the deploy
+  the Lease read 21 and the CPU pod served with the eligibility flags; the
+  first conversion routed to the CPU pool, `clusterplex_video_conversions_total{pool="cpu"}`,
+  and the CPU pod's `clusterplex_video_worker_encode_speed` at or above
+  1.0 are still to be read ("Verifying it" 2-4).
