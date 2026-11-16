@@ -34,6 +34,8 @@ type TCP struct {
 
 	sessionOnce  sync.Once
 	sessionCache tls.ClientSessionCache
+	// passed is when each server name passed through unread was last logged.
+	passed sync.Map
 
 	lis  net.Listener
 	wg   sync.WaitGroup

@@ -87,6 +87,12 @@ func (p *TCP) terminate(client net.Conn) (conn net.Conn, name string, ok bool) {
 	name = serverName(hello)
 	cert := p.Terminate(name)
 	if cert == nil {
+		// Said once a minute per name: such a connection's requests are
+		// never offered to the divert, and which names clients ask for is
+		// how that is found out.
+		if p.Logger != nil && p.passNoted(name) {
+			p.Logger.Info("proxy passes a TLS connection through unread: no certificate for its server name", "serverName", name)
+		}
 		return raw, "", true
 	}
 	server := tls.Server(raw, &tls.Config{
@@ -139,4 +145,15 @@ func tcpOf(c net.Conn) net.Conn {
 			return c
 		}
 	}
+}
+
+// passNoted reports whether a passed-through server name is due a log line:
+// the first time, and again after a minute.
+func (p *TCP) passNoted(name string) bool {
+	now := time.Now()
+	if last, ok := p.passed.Load(name); ok && now.Sub(last.(time.Time)) < time.Minute {
+		return false
+	}
+	p.passed.Store(name, now)
+	return true
 }
