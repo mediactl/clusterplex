@@ -129,6 +129,10 @@ type LiveTVConfig struct {
 	// every PMS still records every recording rule: no pod owns a
 	// recording yet. Default false (liveTVNeedsOnePod).
 	SeveralPods bool `mapstructure:"severalPods"`
+	// OnNowHubs has the proxy add Sports, Movies and News On Now to an
+	// XMLTV guide's What's On list, which PMS lists for a cloud guide alone
+	// (pkg/plexhubs). Only a plain-HTTP client's request is rewritten.
+	OnNowHubs bool `mapstructure:"onNowHubs"`
 	// CloudGuide is who fills a Plex cloud lineup's guide: "pms" (PMS
 	// loads and refreshes it) or "manager" (the managers build it from
 	// Plex's guide service, and PMS's own writes to it are held). Default

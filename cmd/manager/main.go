@@ -40,6 +40,7 @@ import (
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 	"github.com/mediactl/clusterplex/pkg/plex/servertoken"
+	"github.com/mediactl/clusterplex/pkg/plexhubs"
 	"github.com/mediactl/clusterplex/pkg/plexscan"
 	"github.com/mediactl/clusterplex/pkg/plexsession"
 	"github.com/mediactl/clusterplex/pkg/proxy"
@@ -325,7 +326,7 @@ func run() int {
 			// the proxy sends it to the scan route, and only a plain-HTTP
 			// client's; a TLS client's reaches Plex until the proxy can
 			// terminate with Plex's own certificate.
-			Divert: scanDiverter(cfg.ScanRoute),
+			Divert: diverters(scanDiverter(cfg.ScanRoute), onNowDiverter(&cfg, plexNet.PlexAddrPort().String())),
 		},
 		BeforeStart:      m.prepareGuides,
 		OnUnexpectedExit: func(err error) { m.plexLost(err) },
@@ -424,6 +425,36 @@ func scanDiverter(route string) proxy.Divert {
 		return nil
 	}
 	return plexscan.Diverter(route, nil)
+}
+
+// onNowDiverter is the proxy's Divert adding the on-now hubs to an XMLTV
+// guide's What's On list (pkg/plexhubs); none unless plex.liveTV.onNowHubs.
+func onNowDiverter(cfg *Config, plexAddr string) proxy.Divert {
+	if !cfg.LiveTV.Enabled || !cfg.LiveTV.OnNowHubs {
+		return nil
+	}
+	return plexhubs.Diverter(plexAddr, nil)
+}
+
+// diverters offers a request to each divert in turn; nil when there is none.
+func diverters(all ...proxy.Divert) proxy.Divert {
+	var set []proxy.Divert
+	for _, d := range all {
+		if d != nil {
+			set = append(set, d)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return func(ctx context.Context, req *http.Request) (*http.Response, bool) {
+		for _, d := range set {
+			if resp, claimed := d(ctx, req); claimed {
+				return resp, true
+			}
+		}
+		return nil, false
+	}
 }
 
 func (m *Manager) serveProbes() {

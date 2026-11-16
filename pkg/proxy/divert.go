@@ -31,7 +31,9 @@ type Divert func(ctx context.Context, req *http.Request) (resp *http.Response, c
 // body is never read: it streams to Plex as it arrives, whatever its size.
 // TLS and anything else is piped as it is.
 var (
-	divertable  = regexp.MustCompile(`^(?:POST|GET) /library/sections/[0-9]+/refresh(?:[ ?])`)
+	// An XMLTV guide's hub list is the other request offered (pkg/plexhubs:
+	// the on-now hubs PMS lists for a cloud guide alone).
+	divertable  = regexp.MustCompile(`^(?:(?:POST|GET) /library/sections/[0-9]+/refresh|GET /tv\.plex\.providers\.epg\.xmltv:[0-9]+/hubs/discover)(?:[ ?])`)
 	httpStart   = regexp.MustCompile(`^[A-Z]{3,7} /`)
 	requestLine = regexp.MustCompile(`^[A-Z]{3,7} /\S* HTTP/1\.[01]$`)
 )
