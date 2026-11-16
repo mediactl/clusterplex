@@ -282,12 +282,37 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 		f.dvrs = append(f.dvrs, v)
 		f.loading, f.loadOf = true, "create "+dev.UUID
 		f.answer(w, "Dvr", []plexapi.DVR{v})
+	case r.Method == http.MethodPut && strings.HasPrefix(path, "/livetv/dvrs/") && strings.Contains(path, "/devices/"):
+		// Attaching a device to a DVR that exists starts no load (rig,
+		// 2026-11-16).
+		k, devKey, _ := strings.Cut(strings.TrimPrefix(path, "/livetv/dvrs/"), "/devices/")
+		var dev *plexapi.Device
+		for i := range f.devices {
+			if string(f.devices[i].Key) == devKey {
+				dev = &f.devices[i]
+			}
+		}
+		for i := range f.dvrs {
+			if string(f.dvrs[i].Key) != k || dev == nil {
+				continue
+			}
+			dev.ParentID, _ = strconv.Atoi(k)
+			f.dvrs[i].Devices = append(f.dvrs[i].Devices, *dev)
+			f.answer(w, "Dvr", []plexapi.DVR{f.dvrs[i]})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/livetv/dvrs/"):
 		k := strings.TrimPrefix(path, "/livetv/dvrs/")
 		n := len(f.dvrs)
 		f.dvrs = slices.DeleteFunc(f.dvrs, func(d plexapi.DVR) bool { return string(d.Key) == k })
 		if len(f.dvrs) == n {
 			w.WriteHeader(http.StatusNotFound)
+		}
+		for i := range f.devices { // a deleted DVR's devices belong to none
+			if strconv.Itoa(f.devices[i].ParentID) == k {
+				f.devices[i].ParentID = 0
+			}
 		}
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/reloadGuide"):
 		f.loading, f.loadOf = true, "reload "+path
@@ -331,7 +356,7 @@ func guideWrite(method, path string) bool {
 	switch {
 	case method == http.MethodDelete && !strings.HasPrefix(path, "/activities/"):
 		return true
-	case method == http.MethodPut && strings.HasSuffix(path, "/channelmap"):
+	case method == http.MethodPut && (strings.HasSuffix(path, "/channelmap") || strings.Contains(path, "/devices/")):
 		return true
 	case method == http.MethodPost && (path == "/livetv/dvrs" || strings.HasSuffix(path, "/reloadGuide")):
 		return true

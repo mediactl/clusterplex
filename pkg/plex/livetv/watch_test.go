@@ -100,3 +100,19 @@ func TestTheWatcherReportsTheProvidersAsTheyComeAndGo(t *testing.T) {
 		t.Fatal("no list after the delete")
 	}
 }
+
+// TestProviderOfReadsTheOneDVR: status.dvr asks for one DVR over every
+// block's device; one without a guide address asks for nothing.
+func TestProviderOfReadsTheOneDVR(t *testing.T) {
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "polutv", "namespace": ns},
+		"status": map[string]any{"dvr": map[string]any{
+			"title": "Clustarr Polu TV", "guidePath": "/livetv/media/polutv/xmltv.xml",
+			"guideURI": "http://" + address + "/livetv/media/polutv/xmltv.xml", "guideHash": "whole-1",
+		}},
+	}}
+	assert.Equal(t, &livetv.DVR{Title: "Clustarr Polu TV", GuideURI: "http://" + address + "/livetv/media/polutv/xmltv.xml", GuideHash: "whole-1"}, livetv.ProviderOf(u).DVR)
+
+	unstructured.RemoveNestedField(u.Object, "status", "dvr", "guideURI")
+	assert.Nil(t, livetv.ProviderOf(u).DVR)
+}

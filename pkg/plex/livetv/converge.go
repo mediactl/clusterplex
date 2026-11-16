@@ -115,7 +115,22 @@ type Provider struct {
 	// Address is the livetv Service, host:port, every block's URI is on.
 	Address string
 	Blocks  []Block
+	// DVR, when set, is the one DVR over every block's device (clustarr's
+	// status.dvr, its single-DVR design 2026-11-16); nil is a DVR a block.
+	DVR *DVR
 }
+
+// DVR is a provider's one DVR: its lineup's title, and the whole lineup's
+// XMLTV guide and that guide's hash. PMS's limit is a device's channel map,
+// not a DVR's channels, so the blocks' devices, each with its own map, share
+// it.
+type DVR struct {
+	Title, GuideURI, GuideHash string
+}
+
+// groupKey keys what the converger keeps for p's one DVR, beside what it
+// keeps by device id.
+func groupKey(p Provider) string { return "dvr/" + p.key() }
 
 func (p Provider) key() string { return p.Namespace + "/" + p.Name }
 
@@ -689,62 +704,16 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		}
 	}
 
-	dvrs := ps.dvrsOf(dev.UUID)
-	if extra := dvrs[min(1, len(dvrs)):]; len(extra) > 0 {
-		for _, d := range extra {
-			if err := c.idle(ctx, ps); err != nil {
-				return c.wait(p, b, "delete duplicate DVRs", err)
-			}
-			if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
-				return fmt.Errorf("delete duplicate DVR %s: %w", d.Key, err)
-			}
-			ps.changed[p.key()] = p
-			c.record(p, ReasonRemoved, fmt.Sprintf("block %s: deleted duplicate DVR %s", b.Start, d.Key), false)
-		}
-	}
 	var dvr plexapi.DVR
-	if len(dvrs) > 0 {
-		dvr = dvrs[0]
-		delete(c.stale, id)
+	if p.DVR != nil {
+		dvr, err = c.sharedDVR(ctx, p, b, id, dev, ps)
 	} else {
-		if dev.ParentID != 0 {
-			if err := c.staleList(p, b, dev, ps); err != nil {
-				return err
-			}
-		}
-		if err := c.idle(ctx, ps); err != nil {
-			return c.wait(p, b, "create the DVR", err)
-		}
-		lang := c.Language
-		if lang == "" {
-			lang = "eng"
-		}
-		lineup := b.Lineup
-		if lineup == "" {
-			lineup = plexapi.XMLTVLineup(uri+b.GuidePath, b.FriendlyName)
-		}
-		created, err := c.PMS.CreateDVR(ctx, lang, dev.UUID, lineup)
-		if err != nil {
-			return fmt.Errorf("create DVR: %w", err)
-		}
-		ps.changed[p.key()] = p
-		ps.guideBusy = true // creating a DVR loads its guide
-		if created.Key == "" {
-			all, err := c.PMS.DVRs(ctx)
-			if err != nil {
-				return fmt.Errorf("list DVRs: %w", err)
-			}
-			ps.dvrs = all
-			got := ps.dvrsOf(dev.UUID)
-			if len(got) == 0 {
-				return errors.New("PMS lists no DVR on the device after creating one")
-			}
-			created = got[0]
-		}
-		dvr = created
-		delete(c.saved, id)
-		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: created DVR %s", b.Start, dvr.Key), false)
+		dvr, err = c.blockDVR(ctx, p, b, id, uri, dev, ps)
 	}
+	if err != nil {
+		return err
+	}
+	dev = ps.devices[id]
 
 	s, ok := c.saved[id]
 	if n := (savedNote{}); !ok && json.Unmarshal([]byte(lease.Annotations[AnnotationSaved]), &n) == nil && n.DVR == string(dvr.Key) {
@@ -789,11 +758,23 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 			ps.guideBusy = false
 		}
 		s.lineup, s.guide = b.LineupHash, b.GuideHash
+		if p.DVR != nil {
+			// The save loaded the one DVR's guide, the whole lineup's.
+			s.guide = p.DVR.GuideHash
+			c.saved[groupKey(p)] = savedHashes{guide: p.DVR.GuideHash}
+			if c.built(b) {
+				c.cancelLoadsUntil[groupKey(p)] = c.now().Add(cancelLoadsFor)
+			}
+		}
 		c.saved[id] = s
 		c.note(ctx, p, id, dvr.Key, s)
 		c.record(p, ReasonChannelMapSaved, fmt.Sprintf("block %s: saved the channel map: %d channels", b.Start, len(m)), false)
 	}
 	switch {
+	case p.DVR != nil:
+		if err := c.sharedGuide(ctx, p, b, id, dvr, s, ps); err != nil {
+			return err
+		}
 	case b.Lineup != "":
 		// Plex's own guide: nothing of clustarr's to reload. PMS's nightly
 		// refresh (the RefreshEpgGuides butler task, which cluster-plex keeps
@@ -849,6 +830,248 @@ func (c *Converger) converge(ctx context.Context, p Provider, b Block, ps *pass)
 		}
 	}
 	delete(c.told, "wait/"+id)
+	return nil
+}
+
+// blockDVR is the DVR over b's device alone, created when it has none.
+func (c *Converger) blockDVR(ctx context.Context, p Provider, b Block, id, uri string, dev plexapi.Device, ps *pass) (plexapi.DVR, error) {
+	// A DVR over several devices is a provider's one DVR, which this one no
+	// longer asks for: it goes, and each block gets its own again.
+	var dvrs []plexapi.DVR
+	for _, d := range ps.dvrsOf(dev.UUID) {
+		if len(d.Devices) < 2 {
+			dvrs = append(dvrs, d)
+			continue
+		}
+		if err := c.idle(ctx, ps); err != nil {
+			return plexapi.DVR{}, c.wait(p, b, "delete the shared DVR "+string(d.Key), err)
+		}
+		if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
+			return plexapi.DVR{}, fmt.Errorf("delete the shared DVR %s: %w", d.Key, err)
+		}
+		ps.orphan(d)
+		ps.changed[p.key()] = p
+		delete(c.saved, id)
+		c.record(p, ReasonRemoved, fmt.Sprintf("block %s: deleted DVR %s, which held %d devices; the provider has a DVR a block", b.Start, d.Key, len(d.Devices)), false)
+	}
+	dev = ps.devices[id]
+	if extra := dvrs[min(1, len(dvrs)):]; len(extra) > 0 {
+		for _, d := range extra {
+			if err := c.idle(ctx, ps); err != nil {
+				return plexapi.DVR{}, c.wait(p, b, "delete duplicate DVRs", err)
+			}
+			if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
+				return plexapi.DVR{}, fmt.Errorf("delete duplicate DVR %s: %w", d.Key, err)
+			}
+			ps.changed[p.key()] = p
+			c.record(p, ReasonRemoved, fmt.Sprintf("block %s: deleted duplicate DVR %s", b.Start, d.Key), false)
+		}
+	}
+	var dvr plexapi.DVR
+	if len(dvrs) > 0 {
+		dvr = dvrs[0]
+		delete(c.stale, id)
+	} else {
+		if dev.ParentID != 0 {
+			if err := c.staleList(p, b, dev, ps); err != nil {
+				return plexapi.DVR{}, err
+			}
+		}
+		if err := c.idle(ctx, ps); err != nil {
+			return plexapi.DVR{}, c.wait(p, b, "create the DVR", err)
+		}
+		lang := c.Language
+		if lang == "" {
+			lang = "eng"
+		}
+		lineup := b.Lineup
+		if lineup == "" {
+			lineup = plexapi.XMLTVLineup(uri+b.GuidePath, b.FriendlyName)
+		}
+		created, err := c.PMS.CreateDVR(ctx, lang, dev.UUID, lineup)
+		if err != nil {
+			return plexapi.DVR{}, fmt.Errorf("create DVR: %w", err)
+		}
+		ps.changed[p.key()] = p
+		ps.guideBusy = true // creating a DVR loads its guide
+		if created.Key == "" {
+			all, err := c.PMS.DVRs(ctx)
+			if err != nil {
+				return plexapi.DVR{}, fmt.Errorf("list DVRs: %w", err)
+			}
+			ps.dvrs = all
+			got := ps.dvrsOf(dev.UUID)
+			if len(got) == 0 {
+				return plexapi.DVR{}, errors.New("PMS lists no DVR on the device after creating one")
+			}
+			created = got[0]
+		}
+		dvr = created
+		delete(c.saved, id)
+		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: created DVR %s", b.Start, dvr.Key), false)
+	}
+
+	return dvr, nil
+}
+
+// sharedDVR is p's one DVR with b's device on it (Provider.DVR). A DVR of
+// the device on any other guide is a block's own from before and is deleted;
+// the DVR is created over the first device that needs it and every other is
+// attached, which starts no load (rig, 2026-11-16). Each is one write, never
+// while PMS loads a guide. Under the managers' builder the loads the create
+// and the map saves start are cancelled: the whole lineup's load is half an
+// hour, every write waits for it, and the guide is the builder's.
+func (c *Converger) sharedDVR(ctx context.Context, p Provider, b Block, id string, dev plexapi.Device, ps *pass) (plexapi.DVR, error) {
+	gk := groupKey(p)
+	if c.XMLTVGuides != nil {
+		c.cancelBuiltLoads(ctx, gk, ps)
+	}
+	var shared *plexapi.DVR
+	all := slices.Clone(ps.dvrs)
+	slices.SortFunc(all, func(a, b plexapi.DVR) int { return compareKeys(string(a.Key), string(b.Key)) })
+	for i := range all {
+		if sameURL(lineupGuide(all[i].Lineup), p.DVR.GuideURI) {
+			shared = &all[i]
+			break
+		}
+	}
+	on := false
+	for _, d := range ps.dvrsOf(dev.UUID) {
+		if shared != nil && d.Key == shared.Key {
+			on = true
+			continue
+		}
+		if err := c.idle(ctx, ps); err != nil {
+			return plexapi.DVR{}, c.wait(p, b, "delete the block's own DVR "+string(d.Key), err)
+		}
+		if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
+			return plexapi.DVR{}, fmt.Errorf("delete the block's own DVR %s: %w", d.Key, err)
+		}
+		ps.orphan(d)
+		ps.changed[p.key()] = p
+		delete(c.saved, id)
+		c.record(p, ReasonRemoved, fmt.Sprintf("block %s: deleted its own DVR %s; the provider's devices share one DVR", b.Start, d.Key), false)
+	}
+	dev = ps.devices[id]
+	switch {
+	case on:
+		delete(c.stale, id)
+		return *shared, nil
+	case shared != nil:
+		if err := c.idle(ctx, ps); err != nil {
+			return plexapi.DVR{}, c.wait(p, b, "attach the device to DVR "+string(shared.Key), err)
+		}
+		if err := c.PMS.AttachDevice(ctx, string(shared.Key), string(dev.Key)); err != nil {
+			return plexapi.DVR{}, fmt.Errorf("attach device %s to DVR %s: %w", id, shared.Key, err)
+		}
+		ps.attach(shared.Key, dev)
+		ps.changed[p.key()] = p
+		delete(c.saved, id)
+		delete(c.stale, id)
+		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: attached device %s to DVR %s", b.Start, id, shared.Key), false)
+		return *shared, nil
+	}
+	if dev.ParentID != 0 {
+		if err := c.staleList(p, b, dev, ps); err != nil {
+			return plexapi.DVR{}, err
+		}
+	}
+	if err := c.idle(ctx, ps); err != nil {
+		return plexapi.DVR{}, c.wait(p, b, "create the DVR", err)
+	}
+	lang := c.Language
+	if lang == "" {
+		lang = "eng"
+	}
+	created, err := c.PMS.CreateDVR(ctx, lang, dev.UUID, plexapi.XMLTVLineup(p.DVR.GuideURI, p.DVR.Title))
+	if err != nil {
+		return plexapi.DVR{}, fmt.Errorf("create DVR: %w", err)
+	}
+	ps.changed[p.key()] = p
+	ps.guideBusy = true // creating a DVR loads its guide
+	all, err = c.PMS.DVRs(ctx)
+	if err != nil {
+		return plexapi.DVR{}, fmt.Errorf("list DVRs: %w", err)
+	}
+	ps.dvrs = all
+	if created.Key == "" {
+		got := ps.dvrsOf(dev.UUID)
+		if len(got) == 0 {
+			return plexapi.DVR{}, errors.New("PMS lists no DVR on the device after creating one")
+		}
+		created = got[0]
+	}
+	if c.XMLTVGuides != nil {
+		c.cancelLoadsUntil[gk] = c.now().Add(cancelLoadsFor)
+	}
+	delete(c.saved, id)
+	delete(c.saved, gk)
+	c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: created DVR %s for every device of the provider", b.Start, created.Key), false)
+	return created, nil
+}
+
+// orphan forgets, for the rest of the pass, that d's devices belong to it:
+// PMS clears a deleted DVR's devices' parent.
+func (ps *pass) orphan(d plexapi.DVR) {
+	for _, dd := range d.Devices {
+		id := deviceID(dd)
+		if cur, ok := ps.devices[id]; ok && strconv.Itoa(cur.ParentID) == string(d.Key) {
+			cur.ParentID = 0
+			ps.devices[id] = cur
+		}
+	}
+}
+
+// attach records dev as on DVR key for the rest of the pass.
+func (ps *pass) attach(key plexapi.Str, dev plexapi.Device) {
+	for i := range ps.dvrs {
+		if ps.dvrs[i].Key == key {
+			ps.dvrs[i].Devices = append(slices.Clone(ps.dvrs[i].Devices), dev)
+		}
+	}
+	if n, err := strconv.Atoi(string(key)); err == nil {
+		dev.ParentID = n
+		ps.devices[deviceID(dev)] = dev
+	}
+}
+
+// sharedGuide keeps the one DVR's guide, once b's map is saved: the
+// managers' builder is asked for the whole lineup's guide under its hash
+// (the same ask from every block of the provider), else PMS reloads it once
+// when that hash moves, whichever block's turn finds it moved. A block's own
+// guide hash is not the DVR's.
+func (c *Converger) sharedGuide(ctx context.Context, p Provider, b Block, id string, dvr plexapi.DVR, s savedHashes, ps *pass) error {
+	gk, hash := groupKey(p), p.DVR.GuideHash
+	if c.XMLTVGuides != nil {
+		c.cancelBuiltLoads(ctx, id, ps)
+		c.xmltvAsked[dvr.UUID] = true
+		c.XMLTVGuides.Want(dvr.UUID, p.DVR.GuideURI, hash)
+		return nil
+	}
+	g, known := c.saved[gk]
+	if !known && s.guide == hash {
+		g.guide = hash // what a block's Lease notes the DVR's guide was loaded at
+		c.saved[gk] = g
+	}
+	switch {
+	case hash != "" && g.guide != hash:
+		if err := c.idle(ctx, ps); err != nil {
+			return c.wait(p, b, "reload the guide", err)
+		}
+		if err := c.PMS.ReloadGuide(ctx, string(dvr.Key)); err != nil {
+			return fmt.Errorf("reload the guide: %w", err)
+		}
+		ps.guideBusy = true
+		g.guide = hash
+		c.saved[gk] = g
+	case c.emptyGuide(ctx, gk, dvr):
+		return c.reloadEmpty(ctx, p, b, gk, dvr, ps)
+	}
+	if s.guide != hash {
+		s.guide = hash
+		c.saved[id] = s
+		c.note(ctx, p, id, dvr.Key, s)
+	}
 	return nil
 }
 
@@ -1110,6 +1333,9 @@ func (c *Converger) cancelBuiltLoads(ctx context.Context, id string, ps *pass) {
 // its lineup hash.
 func (c *Converger) mapsPending(ps *pass) bool {
 	for _, p := range ps.converging {
+		if p.DVR != nil {
+			continue // one DVR's maps are paired without a load of PMS's
+		}
 		for _, b := range p.Blocks {
 			id := strings.ToUpper(b.DeviceID)
 			if _, held := c.held[id]; !held {

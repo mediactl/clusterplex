@@ -259,6 +259,13 @@ func (c *Client) CreateDVR(ctx context.Context, language, deviceUUID, lineup str
 	return out.MediaContainer.Dvr[0], nil
 }
 
+// AttachDevice adds the device deviceKey to the DVR dvrKey, beside the
+// devices it has: each keeps its own channel map, and PMS tunes a channel on
+// the device whose map lists it (rig, 2026-11-16). It starts no guide load.
+func (c *Client) AttachDevice(ctx context.Context, dvrKey, deviceKey string) error {
+	return c.do(ctx, http.MethodPut, "/livetv/dvrs/"+url.PathEscape(dvrKey)+"/devices/"+url.PathEscape(deviceKey), nil, nil)
+}
+
 // DeleteDVR removes a DVR, and with it its recording rules.
 func (c *Client) DeleteDVR(ctx context.Context, key string) error {
 	return c.do(ctx, http.MethodDelete, "/livetv/dvrs/"+url.PathEscape(key), nil, nil)

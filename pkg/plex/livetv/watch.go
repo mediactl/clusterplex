@@ -117,7 +117,7 @@ func (w *Watcher) installed() bool {
 }
 
 // ProviderOf reads the fields the converger needs from an IPTVProvider:
-// status.address and status.blocks, as clustarr publishes them.
+// status.address, status.blocks and status.dvr, as clustarr publishes them.
 func ProviderOf(u *unstructured.Unstructured) Provider {
 	p := Provider{
 		Namespace: u.GetNamespace(), Name: u.GetName(), UID: string(u.GetUID()),
@@ -144,6 +144,13 @@ func ProviderOf(u *unstructured.Unstructured) Provider {
 			Path:         nestedString(m, "path"),
 			URI:          nestedString(m, "uri"),
 		})
+	}
+	if uri := nestedString(u.Object, "status", "dvr", "guideURI"); uri != "" {
+		p.DVR = &DVR{
+			Title:     nestedString(u.Object, "status", "dvr", "title"),
+			GuideURI:  uri,
+			GuideHash: nestedString(u.Object, "status", "dvr", "guideHash"),
+		}
 	}
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	for _, c := range conds {
