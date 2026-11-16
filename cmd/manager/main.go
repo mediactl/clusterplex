@@ -46,6 +46,7 @@ import (
 	plexprefs "github.com/mediactl/clusterplex/pkg/plex/prefs"
 	plexroute "github.com/mediactl/clusterplex/pkg/plex/route"
 	"github.com/mediactl/clusterplex/pkg/plex/servertoken"
+	"github.com/mediactl/clusterplex/pkg/plexcert"
 	"github.com/mediactl/clusterplex/pkg/plexhubs"
 	"github.com/mediactl/clusterplex/pkg/plexscan"
 	"github.com/mediactl/clusterplex/pkg/plexsession"
@@ -316,6 +317,7 @@ func run() int {
 		Logger:    logging.SubsystemLogger(logger, "net.egress"),
 	}
 
+	divert := diverters(scanDiverter(cfg.ScanRoute), onNowDiverter(&cfg, plexNet.PlexAddrPort().String()))
 	m.sup = &Supervisor{
 		Binary:    cfg.PMSBinary,
 		Subreaper: cfg.SubreaperBinary,
@@ -360,7 +362,10 @@ func run() int {
 			// the proxy sends it to the scan route, and only a plain-HTTP
 			// client's; a TLS client's reaches Plex until the proxy can
 			// terminate with Plex's own certificate.
-			Divert: diverters(scanDiverter(cfg.ScanRoute), onNowDiverter(&cfg, plexNet.PlexAddrPort().String())),
+			Divert: divert,
+			// With something to divert, a TLS client's connection ends here
+			// with Plex's own certificate, so its requests are offered too.
+			Terminate: terminator(&cfg, divert),
 		},
 		BeforeStart:      m.prepareGuides,
 		OnUnexpectedExit: func(err error) { m.plexLost(err) },
@@ -459,6 +464,17 @@ func scanDiverter(route string) proxy.Divert {
 		return nil
 	}
 	return plexscan.Diverter(route, nil)
+}
+
+// terminator is the proxy's Terminate: Plex's own certificate, read from its
+// data directory, when there is a divert to offer requests to and
+// --proxy-terminate-tls is not off; nil otherwise.
+func terminator(cfg *Config, divert proxy.Divert) proxy.Terminate {
+	if divert == nil || !cfg.TerminateTLS {
+		return nil
+	}
+	store := &plexcert.Store{Dir: cfg.PlexDir}
+	return store.For
 }
 
 // onNowDiverter is the proxy's Divert adding the on-now hubs to an XMLTV

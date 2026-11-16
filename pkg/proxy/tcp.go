@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -32,6 +33,12 @@ type TCP struct {
 	// Divert, when set, is offered a connection's first plain-HTTP library
 	// scan request before Plex sees it (divert.go).
 	Divert Divert
+	// Terminate, when set, ends a client's TLS at the proxy with Plex's own
+	// certificate (terminate.go), so Divert sees those requests too.
+	Terminate Terminate
+
+	sessionOnce  sync.Once
+	sessionCache tls.ClientSessionCache
 
 	lis  net.Listener
 	wg   sync.WaitGroup
@@ -230,6 +237,16 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 		defer p.OnConnChange(-1)
 	}
 
+	// A TLS connection the proxy holds Plex's certificate for ends here;
+	// from then on client is its plain side.
+	plain, tlsName, ok := p.terminate(client)
+	if !ok {
+		return
+	}
+	raw := client
+	client = plain
+	defer func() { _ = raw.Close() }()
+
 	src, forward, done := p.divert(ctx, client)
 	if done {
 		return
@@ -254,6 +271,14 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 		p.Logger.Info("proxy upstream is reachable again", "target", p.Target)
 	}
 	defer func() { _ = upstream.Close() }()
+	if tlsName != "" {
+		secured, err := p.upstreamTLS(ctx, upstream, tlsName)
+		if err != nil {
+			p.Logger.Warn("proxy could not open TLS to Plex for a connection it terminated", "err", err)
+			return
+		}
+		upstream = secured
+	}
 
 	stop := context.AfterFunc(ctx, func() { _ = client.Close(); _ = upstream.Close() })
 	defer stop()
@@ -290,8 +315,8 @@ func pipe(ctx context.Context, wg *sync.WaitGroup, dst, src net.Conn, act *activ
 		_, _ = io.Copy(touchWriter{dst, act}, src)
 		awaitDelivery(ctx, dst, act)
 	}
-	if tc, ok := dst.(*net.TCPConn); ok {
-		_ = tc.CloseWrite()
+	if hc, ok := dst.(interface{ CloseWrite() error }); ok {
+		_ = hc.CloseWrite()
 		return
 	}
 	_ = dst.Close()
@@ -309,14 +334,14 @@ func awaitDelivery(ctx context.Context, c net.Conn, act *activity) {
 	last := -1
 	progressed := time.Now()
 	for {
-		pending, ok := sendQueue(c)
+		pending, ok := sendQueue(tcpOf(c))
 		if !ok || pending == 0 {
 			return
 		}
-		if e, known := socketError(c); known && e != 0 {
+		if e, known := socketError(tcpOf(c)); known && e != 0 {
 			return
 		}
-		if tcpClosed(c) {
+		if tcpClosed(tcpOf(c)) {
 			return
 		}
 		if last >= 0 && pending < last {

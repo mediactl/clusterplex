@@ -156,6 +156,11 @@ type Config struct {
 	// manager's own /api/v1/scan on the probe port, normally. Empty leaves
 	// every scan to Plex.
 	ScanRoute string
+	// TerminateTLS has the proxy end a client's TLS connection with Plex's
+	// own certificate when it has a request to divert, so a plex.direct
+	// client's requests are seen as a plain one's are (pkg/proxy
+	// terminate.go). Without it a TLS connection passes through unread.
+	TerminateTLS bool
 	// RemuxPort is the remux workers' gRPC port.
 	RemuxPort int
 	// VideoSelector picks the GPU pool's pods (pkg/video/relay); empty
@@ -245,6 +250,7 @@ func newFlagSet(lo *logging.Options) *pflag.FlagSet {
 	fs.String("video-cpu-selector", "", "label selector of the CPU pool's pods (libx264): the GPU pool's second chance, or the first pool asked per --video-cpu-when; empty leaves no CPU pool")
 	fs.String("video-cpu-when", "clustarr-busy", "when the CPU pool is asked first: clustarr-busy (clustarr's intel-work Lease is fresh and above zero), always, never")
 	fs.String("clustarr-work-lease", "", "clustarr's intel-work Lease as <namespace>/<name>, read under --video-cpu-when=clustarr-busy; empty is never first")
+	fs.Bool("proxy-terminate-tls", true, "end a client's TLS connection at the proxy with Plex's own certificate when the proxy diverts requests (library scans, the on-now hubs), so they apply to plex.direct clients; false passes TLS through unread")
 	fs.String("scan-route", "", "URL a library scan of a provisioned section is sent to instead of Plex, normally this pod's http://127.0.0.1:<probe-port>/api/v1/scan; empty leaves every scan to Plex")
 	fs.Int("probe-port", 8080, "port serving health probes and metrics")
 	fs.Duration("drain-timeout", 2*time.Minute, "how long a stopping pod lets the client connections it holds finish before Plex is stopped; the pod's termination grace period must cover it plus Plex's own 30s")
@@ -336,6 +342,7 @@ func loadConfig(args []string) (Config, error) {
 		VideoCPUWhen:      strings.TrimSpace(v.GetString("video-cpu-when")),
 		ClustarrWorkLease: strings.TrimSpace(v.GetString("clustarr-work-lease")),
 		ScanRoute:         strings.TrimSpace(v.GetString("scan-route")),
+		TerminateTLS:      v.GetBool("proxy-terminate-tls"),
 		ProbePort:         port("probe-port"),
 		DrainTimeout:      v.GetDuration("drain-timeout"),
 		BlockPlexTV:       v.GetBool("block-plex-tv"),
