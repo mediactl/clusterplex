@@ -483,7 +483,7 @@ func onNowDiverter(cfg *Config, plexAddr string) proxy.Divert {
 	if !cfg.LiveTV.AddsOnNowHubs() {
 		return nil
 	}
-	return plexhubs.Diverter(plexAddr, nil)
+	return plexhubs.DiverterWith(plexAddr, nil, plexhubs.Options{OnNow: true, Badge: currentLiveBadge})
 }
 
 // diverters offers a request to each divert in turn; nil when there is none.

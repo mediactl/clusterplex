@@ -223,3 +223,128 @@ func TestPageXMLCutsTheHubsOfAPage(t *testing.T) {
 		t.Errorf("page:\n%s", out)
 	}
 }
+
+const airingsJSON = `{"MediaContainer":{"size":3,"Metadata":[
+ {"title":"Game","onAir":true,"Media":[{"id":1,"onAir":true,"live":"1","premiere":"1"}]},
+ {"title":"Rerun","onAir":true,"addedAt":1794837618,"Media":[{"id":2,"onAir":true,"premiere":"1"},{"id":3}]},
+ {"title":"Later","Media":[{"id":4,"premiere":"1"}]}]}}`
+
+func TestStripJSONTakesMarksOffAiringsThatAreNotLive(t *testing.T) {
+	type media struct {
+		ID       int
+		OnAir    *bool
+		Premiere *string
+	}
+	type doc struct {
+		MediaContainer struct {
+			Metadata []struct {
+				Title string
+				OnAir *bool
+				Media []media
+			}
+		}
+	}
+	read := func(b Badge) doc {
+		out, ok := StripJSON([]byte(airingsJSON), b)
+		if !ok {
+			t.Fatalf("%+v: nothing changed", b)
+		}
+		var d doc
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"addedAt":1794837618`) {
+			t.Errorf("a number was not kept as written: %s", out)
+		}
+		return d
+	}
+	d := read(ParseBadge("onair"))
+	items := d.MediaContainer.Metadata
+	if items[0].OnAir == nil || items[0].Media[0].OnAir == nil {
+		t.Error("a live airing lost onAir")
+	}
+	if items[1].OnAir != nil || items[1].Media[0].OnAir != nil || items[1].Media[0].Premiere == nil {
+		t.Errorf("an airing that is not live: %+v", items[1])
+	}
+	d = read(ParseBadge("premiere"))
+	items = d.MediaContainer.Metadata
+	if items[0].Media[0].Premiere == nil || items[1].Media[0].Premiere != nil || items[2].Media[0].Premiere != nil || items[1].OnAir == nil {
+		t.Errorf("premiere: %+v", items)
+	}
+	d = read(ParseBadge("item-onair"))
+	if it := d.MediaContainer.Metadata[1]; it.OnAir != nil || it.Media[0].OnAir == nil {
+		t.Errorf("item-onair: %+v", it)
+	}
+	if _, ok := StripJSON([]byte(airingsJSON), Badge{}); ok {
+		t.Error("nothing asked, something changed")
+	}
+}
+
+func TestStripXMLTakesMarksOffAiringsThatAreNotLive(t *testing.T) {
+	const body = `<MediaContainer size="3">
+<Video title="Game" onAir="1" type="episode">
+<Media id="1" onAir="1" live="1" premiere="1"/>
+</Video>
+<Video title="Rerun" onAir="1" thumb="http://x/a">
+<Media id="2" onAir="1" premiere="1">
+<Part id="2"/>
+</Media>
+</Video>
+<Video title="Later"><Media id="4" premiere="1"/></Video>
+</MediaContainer>`
+	out, ok := StripXML([]byte(body), ParseBadge("onair,premiere"))
+	if !ok {
+		t.Fatal("nothing changed")
+	}
+	want := `<MediaContainer size="3">
+<Video title="Game" onAir="1" type="episode">
+<Media id="1" onAir="1" live="1" premiere="1"/>
+</Video>
+<Video title="Rerun" thumb="http://x/a">
+<Media id="2">
+<Part id="2"/>
+</Media>
+</Video>
+<Video title="Later"><Media id="4"/></Video>
+</MediaContainer>`
+	if string(out) != want {
+		t.Errorf("got:\n%s", out)
+	}
+}
+
+// With marks to take off, a list of airings other than the hub list is read
+// too, asked of Plex as the client asked; without, it is Plex's to answer.
+func TestTheBadgeReadsEveryListOfAirings(t *testing.T) {
+	var asked []string
+	pms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.RequestURI()+" size="+r.Header.Get("X-Plex-Container-Size"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, airingsJSON)
+	}))
+	defer pms.Close()
+	mode := ""
+	d := DiverterWith(strings.TrimPrefix(pms.URL, "http://"), nil, Options{OnNow: true, Badge: func() Badge { return ParseBadge(mode) }})
+	req := func(path string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("X-Plex-Container-Size", "20")
+		return r
+	}
+	const list = "/tv.plex.providers.epg.xmltv:1/sections/3/all?type=4&X-Plex-Token=t"
+	if _, claimed := d(context.Background(), req(list)); claimed {
+		t.Fatal("claimed with nothing to take off")
+	}
+	mode = "onair"
+	resp, claimed := d(context.Background(), req(list))
+	if !claimed {
+		t.Fatal("not claimed")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Count(string(body), `"onAir"`) != 2 || len(asked) != 1 || asked[0] != list+" size=20" {
+		t.Errorf("asked %q, answered %s", asked, body)
+	}
+	for _, other := range []string{"/tv.plex.providers.epg.xmltv:1/metadata/x/thumb", "/tv.plex.providers.epg.cloud:1/sections/3/all", "/library/sections/1/all"} {
+		if _, claimed := d(context.Background(), req(other)); claimed {
+			t.Errorf("claimed %s", other)
+		}
+	}
+}

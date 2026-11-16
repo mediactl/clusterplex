@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/mediactl/clusterplex/pkg/plexhubs"
 	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mediactl/clusterplex/pkg/logging"
@@ -222,6 +224,7 @@ func (m *Manager) watchLiveTVRestart(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		noteLiveBadge(log, p.Annotations[liveBadgeAnnotation])
 		gen := p.Annotations[liveTVRestartAnnotation]
 		if gen == "" || gen == handled || gen == p.Annotations[liveTVRestartedAnnotation] {
 			continue
@@ -293,4 +296,30 @@ func (m *Manager) restartPMSInPlace(ctx context.Context) (err error) {
 		case <-time.After(liveTVRestartPoll):
 		}
 	}
+}
+
+// liveBadgeAnnotation, on this pod, names the marks the proxy takes off the
+// airings its guide does not call live (plexhubs.ParseBadge: item-onair,
+// media-onair, onair, premiere), read with the restart annotation every
+// liveTVSelfPoll. None by default, and gone with the pod: which mark Plex's
+// apps draw their LIVE badge from is found by trying them on a running
+// server (owner, 2026-11-16), which a value fixed at start cannot do.
+const liveBadgeAnnotation = "livetv.clusterplex.io/live-badge"
+
+// liveBadge is the annotation's last reading, as the proxy's divert asks it.
+var liveBadge atomic.Value // string
+
+// noteLiveBadge records a reading, and says when it changed.
+func noteLiveBadge(log *slog.Logger, value string) {
+	if last, _ := liveBadge.Load().(string); last != value {
+		liveBadge.Store(value)
+		log.Info("Live TV: the marks taken off airings that are not live changed", "marks", value, "read", fmt.Sprintf("%+v", plexhubs.ParseBadge(value)))
+	}
+}
+
+// currentLiveBadge is the marks to take off, none until the annotation is
+// read.
+func currentLiveBadge() plexhubs.Badge {
+	value, _ := liveBadge.Load().(string)
+	return plexhubs.ParseBadge(value)
 }
