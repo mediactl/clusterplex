@@ -1,9 +1,11 @@
 package livetv_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -183,4 +185,91 @@ func TestTheOneDVRsGuideIsTheBuilders(t *testing.T) {
 	for _, w := range wants {
 		assert.Equal(t, dvrs[0].UUID+" http://"+address+"/livetv/media/polutv/xmltv.xml whole-1", w)
 	}
+}
+
+// A DVR made for a built guide is opened by PMS before the build exists,
+// and PMS's own first load, whose end would have it open the guide again,
+// is cancelled: PMS serves an empty guide for good (talos, 2026-11-16: 796
+// channels and 132,893 airings built, and an empty grid until a restart by
+// hand). Once every map is saved and the build holds airings, a guide PMS
+// serves nothing of has this pod's PMS restarted, once.
+func TestABuiltGuidePMSDoesNotServeRestartsPMSOnce(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	started := now.Add(-time.Hour)
+	built := false
+	r.conv.Now = func() time.Time { return now }
+	r.conv.PMSStarted = func() time.Time { return started }
+	r.conv.GuideHorizon = func(context.Context, string) (time.Time, error) {
+		if !built {
+			return time.Time{}, nil
+		}
+		return now.Add(14 * 24 * time.Hour), nil
+	}
+	p := single(provider(r.block(0), r.block(1)))
+	run := func() livetv.Result {
+		t.Helper()
+		res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		return res
+	}
+	for i := 0; ; i++ {
+		require.Less(t, i, 40, "no convergence")
+		res := run()
+		require.False(t, res.RestartSelf, "nothing is built yet")
+		if res.Status == livetv.Converged {
+			break
+		}
+	}
+	require.Zero(t, r.pms.gridReads, "a guide not built is not asked about")
+
+	built = true
+	assert.True(t, run().RestartSelf, "the build holds airings PMS does not serve")
+	assert.False(t, run().RestartSelf, "asked once per start of PMS")
+
+	started = now.Add(time.Minute) // PMS restarted and opened the build
+	now = now.Add(2 * time.Minute)
+	r.pms.servesGuides = true
+	assert.False(t, run().RestartSelf)
+	reads := r.pms.gridReads
+	run()
+	assert.Equal(t, reads, r.pms.gridReads, "a guide PMS serves is not asked about again")
+}
+
+// PMS loads a DVR's guide on its own account too: at its start, and nightly.
+// A load of the one DVR's guide is the whole lineup's, half an hour at a
+// core on the owner's server, for a file nobody reads. With every DVR of
+// this PMS a provider's one DVR on a built guide, any load is cancelled,
+// whenever it runs.
+func TestPMSsOwnLoadsOfTheOneDVRsGuideAreCancelled(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	r.conv.Now = func() time.Time { return now }
+	p := single(provider(r.block(0), r.block(1)))
+	for i := 0; ; i++ {
+		require.Less(t, i, 40, "no convergence")
+		res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		if res.Status == livetv.Converged {
+			break
+		}
+	}
+	r.pms.takeCancelled()
+
+	now = now.Add(6 * time.Hour) // long past any save's window
+	r.pms.startLoad()
+	_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Len(t, r.pms.takeCancelled(), 1, "PMS's own load of the built guide")
+
+	t.Run("not while another DVR's guide is PMS's own", func(t *testing.T) {
+		r.pms.addReal()
+		r.pms.startLoad()
+		_, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		assert.Empty(t, r.pms.takeCancelled())
+		r.pms.endLoad()
+	})
 }

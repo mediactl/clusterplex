@@ -63,6 +63,11 @@ type fakePMS struct {
 	// loads a DELETE /activities ended, so.
 	loadOf    string
 	cancelled []string
+	// servesGuides is whether PMS reads its guides where the managers'
+	// builds are (true once it has opened them after a build); gridReads
+	// counts the reads of a guide's grid.
+	servesGuides bool
+	gridReads    int
 }
 
 func newFakePMS(t *testing.T) (*fakePMS, *plexapi.Client) {
@@ -330,6 +335,15 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 			m[i] = plexapi.ChannelMapping{ChannelKey: id, DeviceIdentifier: id, LineupIdentifier: id}
 		}
 		f.answer(w, "ChannelMapping", m)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/tv.plex.providers.epg.xmltv:") && strings.HasSuffix(path, "/grid"):
+		// What PMS serves of a guide now: nothing while it holds the file it
+		// opened before the managers' build (servesGuides false).
+		f.gridReads++
+		if f.servesGuides {
+			f.answer(w, "Metadata", []map[string]string{{"title": "on now"}})
+		} else {
+			f.answer(w, "Metadata", []map[string]string{})
+		}
 	case r.Method == http.MethodGet && path == "/activities":
 		var acts []plexapi.Activity
 		if f.grabbing {
