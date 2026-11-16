@@ -112,7 +112,7 @@ ARG TARGETARCH
 # provider as BEGIN, INSERT, last_insert_rowid, and the shim answered the
 # row id from the handle's connection while the INSERT had run on the
 # transaction's; v1.3.17-clusterplex.40 answers from the transaction's.
-ARG VERSION=1.43.5.11029-6bf8af3f0
+ARG VERSION=1.43.5.11079-b3b13e506
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends wget ca-certificates tzdata \
