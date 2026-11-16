@@ -79,7 +79,7 @@ data:
         guideRefreshWindow: {{ .Values.plex.liveTV.guideRefreshWindow | default "8-11" | quote }}
         guideLoadsInPostgres: {{ .Values.plex.liveTV.guideLoadsInPostgres | default false }}
         severalPods: {{ .Values.plex.liveTV.severalPods | default false }}
-        onNowHubs: {{ .Values.plex.liveTV.onNowHubs | default false }}
+        onNowHubs: {{ ne (toString .Values.plex.liveTV.onNowHubs) "false" }}
         cloudGuide: {{ .Values.plex.liveTV.cloudGuide | default "pms" | quote }}
         xmltvGuide: {{ .Values.plex.liveTV.xmltvGuide | default "pms" | quote }}
         cloudGuideBuild: {{ .Values.plex.liveTV.cloudGuideBuild | default "job" | quote }}
