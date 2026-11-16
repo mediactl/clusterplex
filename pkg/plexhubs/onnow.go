@@ -103,7 +103,24 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 		if !ok {
 			return nil, false
 		}
+		// A browser app sends its token and client parameters in the
+		// query, not as headers (Plex Web, 2026-11-16: PMS refused the
+		// item requests, and no hub was added): each item request carries
+		// the list request's X-Plex-* parameters too.
+		var client []string
+		for _, kv := range strings.Split(req.URL.RawQuery, "&") {
+			if strings.HasPrefix(kv, "X-Plex-") {
+				client = append(client, kv)
+			}
+		}
 		fetch := func(key string, size int) ([]byte, bool) {
+			if len(client) > 0 {
+				sep := "?"
+				if strings.Contains(key, "?") {
+					sep = "&"
+				}
+				key += sep + strings.Join(client, "&")
+			}
 			body, _, ok := get(ctx, req, key, size)
 			return body, ok
 		}

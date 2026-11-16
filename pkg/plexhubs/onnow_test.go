@@ -125,12 +125,17 @@ func TestAListWithoutTheShowsHubIsLeftAlone(t *testing.T) {
 }
 
 // The diverted answer keeps the headers PMS gave the request: a browser app
-// refuses the list without PMS's Access-Control-Allow-Origin.
+// refuses the list without PMS's Access-Control-Allow-Origin. And the item
+// requests carry the token a browser app sends in the query.
 func TestTheAnswerKeepsPlexsResponseHeaders(t *testing.T) {
 	pms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
 		w.Header().Set("Vary", "Origin, X-Plex-Token")
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("X-Plex-Token") != "tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/hubs/discover") {
 			_, _ = io.WriteString(w, `{"MediaContainer":{"size":2,"Hub":[{"hubIdentifier":"today.onrightnow","key":"/k","size":1},{"hubIdentifier":"today.upcomingnews","key":"/tv.plex.providers.epg.xmltv:1/sections/4/all?type=4&beginsAt>=now","size":1}]}}`)
 			return
@@ -138,7 +143,7 @@ func TestTheAnswerKeepsPlexsResponseHeaders(t *testing.T) {
 		_, _ = io.WriteString(w, `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"title":"N"}]}}`)
 	}))
 	defer pms.Close()
-	req := httptest.NewRequest(http.MethodGet, "/tv.plex.providers.epg.xmltv:1/hubs/discover", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tv.plex.providers.epg.xmltv:1/hubs/discover?count=12&X-Plex-Token=tok&X-Plex-Product=Plex%20Web", nil)
 	req.Header.Set("Origin", "https://app.plex.tv")
 	resp, claimed := Diverter(strings.TrimPrefix(pms.URL, "http://"), nil)(context.Background(), req)
 	if !claimed {
