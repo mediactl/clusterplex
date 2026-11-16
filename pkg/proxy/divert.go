@@ -275,21 +275,48 @@ func (p *TCP) noteGuideRequest(client net.Conn, head []byte) {
 		"accept", header("Accept"), "pageStart", header("X-Plex-Container-Start"), "pageSize", header("X-Plex-Container-Size"))
 }
 
-// singlyEncoded is head with a guide request's doubly-encoded plus sign
-// encoded once. A guide hub's key filters by time with a relative value
-// PMS writes as %2B1s ("+1s": endsAt>=%2B1s, what is on now), and Plex for
-// iOS encodes the key again when it follows one ("view all"), sending
-// %252B1s, which PMS refuses with 500 "Unknown unit: B1s" (2026-11-16, the
-// app's bug, the same against a server without this proxy). No guide
-// parameter carries a literal "%2B", so within a guide request's line the
-// doubled form is only ever that mistake.
+// singlyEncoded is head with a guide request's line put back into the form
+// PMS reads, where Plex for iOS sends another (2026-11-16, the app's bugs,
+// the same against a server without this proxy):
+//
+//   - A hub's key filters by time with a relative value PMS writes as %2B1s
+//     ("+1s": endsAt>=%2B1s, what is on now), and the app encodes the key
+//     again when it follows one ("view all"), sending %252B1s, which PMS
+//     refuses with 500 "Unknown unit: B1s". No guide parameter carries a
+//     literal "%2B", so the doubled form is only ever that mistake.
+//   - An XMLTV item's key is its guid, encoded: the guid's own escapes (a
+//     title's space, colon, apostrophe) appear in it as %25xx. The app sends
+//     some of them encoded once ("Martin Hall: Breaking 80": %3A for PMS's
+//     %253A), PMS answers 404, and the app asks again without end. In the
+//     guid's path nothing but %2F, %2E and %25 is ever encoded once, so any
+//     other escape there has its % encoded again.
 func singlyEncoded(head []byte) []byte {
 	line := firstLine(head)
-	if !guideRequest.Match(line) || !bytes.Contains(line, []byte("%252B")) {
+	if !guideRequest.Match(line) {
 		return head
 	}
 	fixed := bytes.ReplaceAll(line, []byte("%252B"), []byte("%2B"))
-	out := make([]byte, 0, len(head))
+	if m := xmltvKey.FindSubmatchIndex(fixed); m != nil {
+		path := xmltvEscape.ReplaceAllFunc(fixed[m[2]:m[3]], func(esc []byte) []byte {
+			switch string(bytes.ToUpper(esc[1:])) {
+			case "2F", "2E", "25":
+				return esc
+			}
+			return append([]byte("%25"), esc[1:]...)
+		})
+		fixed = append(append(bytes.Clone(fixed[:m[2]]), path...), fixed[m[3]:]...)
+	}
+	if bytes.Equal(fixed, line) {
+		return head
+	}
+	out := make([]byte, 0, len(head)+len(fixed)-len(line))
 	out = append(out, fixed...)
 	return append(out, head[len(line):]...)
 }
+
+// xmltvKey finds, in a request line, the path of an XMLTV item's guid within
+// its key: what follows the guid's scheme, up to the query.
+var (
+	xmltvKey    = regexp.MustCompile(`/metadata/tv(?:\.|%2E)plex(?:\.|%2E)xmltv%3A%2F%2F([^ ?]*)`)
+	xmltvEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+)

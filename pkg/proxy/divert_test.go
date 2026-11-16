@@ -232,3 +232,18 @@ func TestADoublyEncodedPlusInAGuideRequestIsEncodedOnce(t *testing.T) {
 		t.Errorf("a request outside the guide was changed: %q", got)
 	}
 }
+
+func TestAnXMLTVKeysOnceEncodedEscapesAreEncodedAgain(t *testing.T) {
+	const pms = "/tv.plex.providers.epg.xmltv:106/metadata/tv%2Eplex%2Exmltv%3A%2F%2Fepisode%2FMartin%2520Hall%253A%2520Breaking%252080%2F1%2F2"
+	const ios = "/tv.plex.providers.epg.xmltv:106/metadata/tv.plex.xmltv%3A%2F%2Fepisode%2FMartin%2520Hall%3A%2520Breaking%252080%2F1%2F2"
+	const want = "/tv.plex.providers.epg.xmltv:106/metadata/tv.plex.xmltv%3A%2F%2Fepisode%2FMartin%2520Hall%253A%2520Breaking%252080%2F1%2F2"
+	line := func(path string) []byte {
+		return []byte("GET " + path + "?includeExtras=1&title=a%3Ab HTTP/1.1\r\nHost: x\r\n\r\n")
+	}
+	if got := singlyEncoded(line(ios)); string(got) != string(line(want)) {
+		t.Errorf("the app's key:\n got %s", got)
+	}
+	if got := singlyEncoded(line(pms)); string(got) != string(line(pms)) {
+		t.Errorf("PMS's own key was changed:\n got %s", got)
+	}
+}
