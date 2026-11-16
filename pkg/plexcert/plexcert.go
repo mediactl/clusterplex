@@ -22,6 +22,10 @@ import (
 // recheck is how often the files are looked at again.
 const recheck = 30 * time.Second
 
+// fileNames are the names PMS keeps its certificate under, in its Cache
+// directory.
+var fileNames = []string{"certificate.p12", "cert-v2.p12"}
+
 var processedID = regexp.MustCompile(`\bProcessedMachineIdentifier="([0-9a-f]+)"`)
 
 // Store serves the certificate in a Plex data directory, read again when
@@ -60,9 +64,18 @@ func (s *Store) current() *tls.Certificate {
 		return s.cert
 	}
 	s.checked = time.Now()
-	path := filepath.Join(s.Dir, "Cache", "certificate.p12")
-	info, err := os.Stat(path)
-	if err != nil {
+	// PMS has kept the file under both names (certificate.p12 on the rig's
+	// server, cert-v2.p12 on talos's, the same build): the newer one is the
+	// certificate it serves.
+	var path string
+	var info os.FileInfo
+	for _, name := range fileNames {
+		candidate := filepath.Join(s.Dir, "Cache", name)
+		if fi, err := os.Stat(candidate); err == nil && (info == nil || fi.ModTime().After(info.ModTime())) {
+			path, info = candidate, fi
+		}
+	}
+	if info == nil {
 		s.cert, s.mod = nil, time.Time{}
 		return nil
 	}
