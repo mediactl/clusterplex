@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -339,5 +340,35 @@ func TestNoPassConvergesBeforeTheBuiltGuideIsAskedAbout(t *testing.T) {
 			break
 		}
 		require.NotEqual(t, livetv.Converged, res.Status, "pass %d converged with the built guide unserved", i)
+	}
+}
+
+// TestABlockGoneFromTheOneDVRTakesOnlyItsDevice: a block the provider no
+// longer publishes (a category that lost its last channel) loses its
+// device, detached from the one DVR first, and the DVR stays with the
+// others' devices, its recording rules and its guide. Deleting the device's
+// DVRs, right for a DVR a block, deleted the one DVR of every block (rig,
+// 2026-11-16: DVR 37 gone with one of its two blocks); PMS's own
+// DELETE /livetv/dvrs/<key>/devices/<device> keeps it, the DVR's first
+// device included (rig, same day).
+func TestABlockGoneFromTheOneDVRTakesOnlyItsDevice(t *testing.T) {
+	r := newRig(t)
+	p := single(provider(r.block(0), r.block(1), r.block(2)))
+	r.converge(t, 16, p)
+	_, before := r.pms.state()
+	require.Len(t, before, 1)
+	r.pms.takeWrites()
+
+	for _, gone := range []int{2, 0} { // the last block, then the DVR's first
+		p.Blocks = slices.DeleteFunc(p.Blocks, func(b livetv.Block) bool { return b.DeviceID == r.block(gone).DeviceID })
+		r.converge(t, 8, p)
+		writes := r.pms.takeWrites()
+		devs, dvrs := r.pms.state()
+		require.Len(t, dvrs, 1, "the one DVR stays")
+		assert.Equal(t, before[0].Key, dvrs[0].Key)
+		assert.Len(t, dvrs[0].Devices, len(p.Blocks))
+		assert.Len(t, devs, len(p.Blocks))
+		assert.Equal(t, 0, count(writes, "DELETE /livetv/dvrs/"+string(dvrs[0].Key))-count(writes, "DELETE /livetv/dvrs/"+string(dvrs[0].Key)+"/devices/"), "the DVR is never deleted")
+		assert.Equal(t, 1, count(writes, "DELETE /livetv/dvrs/"+string(dvrs[0].Key)+"/devices/"), "the device is detached")
 	}
 }

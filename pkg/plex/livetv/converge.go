@@ -1614,14 +1614,22 @@ func (c *Converger) deleteDVR(ctx context.Context, ps *pass, key plexapi.Str) er
 	return nil
 }
 
-// remove deletes a managed device's DVRs, then the device, unless a guide
-// is loading.
+// remove deletes a managed device, unless a guide is loading: first each
+// DVR that holds it alone, and from a DVR other devices share (a provider's
+// one DVR) the device is only detached. Deleting that DVR took every
+// block's Live TV and the recording rules with one block (rig, 2026-11-16:
+// a category that loses its last channel).
 func (c *Converger) remove(ctx context.Context, p Provider, dev plexapi.Device, ps *pass) error {
 	for _, d := range ps.dvrsOf(dev.UUID) {
 		if err := c.idle(ctx, ps); err != nil {
 			return err
 		}
-		if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
+		if len(d.Devices) > 1 {
+			if err := c.PMS.DetachDevice(ctx, string(d.Key), string(dev.Key)); err != nil && !errors.Is(err, plexapi.ErrNotFound) {
+				return fmt.Errorf("detach device %s from DVR %s: %w", dev.Key, d.Key, err)
+			}
+			ps.detach(d.Key, dev)
+		} else if err := c.deleteDVR(ctx, ps, d.Key); err != nil {
 			return fmt.Errorf("delete DVR %s: %w", d.Key, err)
 		}
 		ps.changed[p.key()] = p
@@ -1637,8 +1645,17 @@ func (c *Converger) remove(ctx context.Context, p Provider, dev plexapi.Device, 
 	delete(c.saved, id)
 	delete(c.held, id)
 	delete(c.registered, id)
-	c.log("deleted the DVRs and device of a block no provider names", "device", dev.UUID, "uri", dev.URI)
+	c.log("deleted the device of a block no provider names, and the DVRs it alone was on", "device", dev.UUID, "uri", dev.URI)
 	return nil
+}
+
+// detach records dev as off DVR key for the rest of the pass.
+func (ps *pass) detach(key plexapi.Str, dev plexapi.Device) {
+	for i := range ps.dvrs {
+		if ps.dvrs[i].Key == key {
+			ps.dvrs[i].Devices = slices.DeleteFunc(slices.Clone(ps.dvrs[i].Devices), func(d plexapi.Device) bool { return d.UUID == dev.UUID })
+		}
+	}
 }
 
 // dropDVR forgets a DVR this pass deleted, so no later step of the pass
