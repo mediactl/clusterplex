@@ -1,7 +1,9 @@
 package plexhubs
 
 import (
+	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -158,5 +160,66 @@ func TestTheAnswerKeepsPlexsResponseHeaders(t *testing.T) {
 	}
 	if resp.Header.Get("Vary") == "" || resp.Header.Get("Content-Type") != "application/json" || resp.Header.Get("Content-Length") != "" {
 		t.Errorf("headers: %v", resp.Header)
+	}
+}
+
+// What a client's request says travels to Plex with the item requests, and
+// a paged list is cut after the hubs are added.
+func TestTheClientsRequestIsPreserved(t *testing.T) {
+	defer func(n int) { gzipFrom = n }(gzipFrom)
+	gzipFrom = 1
+	var items []string
+	pms := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/hubs/discover") {
+			if r.Header.Get("X-Plex-Container-Size") != "" || r.URL.Query().Has("X-Plex-Container-Size") {
+				t.Errorf("the list was asked for in pages: %s %v", r.URL.RawQuery, r.Header)
+			}
+			_, _ = io.WriteString(w, `{"MediaContainer":{"size":3,"Hub":[{"hubIdentifier":"today.whatsonnow","key":"/a","size":1},{"hubIdentifier":"today.onrightnow","key":"/k","size":1},{"hubIdentifier":"today.upcomingnews","key":"/tv.plex.providers.epg.xmltv:1/sections/4/all?type=4&beginsAt>=now&sort=beginsAt","size":2}]}}`)
+			return
+		}
+		items = append(items, r.URL.RawQuery+" size="+r.Header.Get("X-Plex-Container-Size")+" lang="+r.Header.Get("X-Plex-Language"))
+		_, _ = io.WriteString(w, `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"title":"N"}]}}`)
+	}))
+	defer pms.Close()
+	req := httptest.NewRequest(http.MethodGet, "/tv.plex.providers.epg.xmltv:1/hubs/discover?count=12&excludeFields=summary&type=9&X-Plex-Token=tok&X-Plex-Container-Start=1&X-Plex-Container-Size=2", nil)
+	req.Header.Set("X-Plex-Language", "de")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.TLS = &tls.ConnectionState{}
+	resp, claimed := Diverter(strings.TrimPrefix(pms.URL, "https://"), nil)(context.Background(), req)
+	if !claimed {
+		t.Fatal("not claimed")
+	}
+	if len(items) != 1 || items[0] != "type=4&beginsAt%3C=now&endsAt%3E=%2B1s&sort=beginsAt&excludeFields=summary&X-Plex-Token=tok size=12 lang=de" {
+		t.Errorf("item requests: %q", items)
+	}
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("not compressed for a client that accepts it: %v", resp.Header)
+	}
+	zr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(zr)
+	var doc struct {
+		MediaContainer struct {
+			Size, TotalSize, Offset int
+			Hub                     []struct{ HubIdentifier string }
+		}
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	mc := doc.MediaContainer
+	if mc.Size != 2 || mc.TotalSize != 4 || mc.Offset != 1 || len(mc.Hub) != 2 || mc.Hub[0].HubIdentifier != "today.onrightnow" || mc.Hub[1].HubIdentifier != "today.newsonnow" {
+		t.Errorf("page: %+v", mc)
+	}
+}
+
+func TestPageXMLCutsTheHubsOfAPage(t *testing.T) {
+	out := string(pageXML([]byte(listXML), window{start: 1, size: 1}))
+	if !strings.Contains(out, `<MediaContainer size="1" identifier="tv.plex.providers.epg.xmltv" totalSize="3" offset="1">`) ||
+		strings.Count(out, "<Hub ") != 1 || !strings.Contains(out, "today.upcomingsports") || !strings.HasSuffix(strings.TrimSpace(out), "</MediaContainer>") {
+		t.Errorf("page:\n%s", out)
 	}
 }

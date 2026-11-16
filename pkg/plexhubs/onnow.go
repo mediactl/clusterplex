@@ -14,12 +14,16 @@ package plexhubs
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -62,26 +66,42 @@ var discoverPath = regexp.MustCompile(`^/tv\.plex\.providers\.epg\.xmltv:[0-9]+/
 // that is not a hub list, sends the request on to Plex untouched.
 func Diverter(target string, client *http.Client) proxy.Divert {
 	if client == nil {
-		client = &http.Client{Timeout: timeout}
+		// Plex is in this pod, across the link the proxy owns: a request
+		// made for a TLS client goes to it over TLS, its certificate not
+		// verified again (the proxy does the same, pkg/proxy terminate.go).
+		client = &http.Client{Timeout: timeout, Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // the pod's own Plex
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     30 * time.Second,
+		}}
 	}
-	base := "http://" + target
-	get := func(ctx context.Context, from *http.Request, uri string, size int) ([]byte, http.Header, bool) {
+	get := func(ctx context.Context, from *http.Request, uri string, start, size int) ([]byte, http.Header, bool) {
+		// What the client's connection was, the request to Plex is: Plex
+		// can be set to refuse plain HTTP, and tells the two apart.
+		scheme := "http://"
+		if from.TLS != nil {
+			scheme = "https://"
+		}
 		// A hub's key writes its comparisons bare (beginsAt<=now).
 		uri = strings.NewReplacer("<", "%3C", ">", "%3E").Replace(uri)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+uri, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+target+uri, nil)
 		if err != nil {
 			return nil, nil, false
 		}
 		for name, values := range from.Header {
 			switch http.CanonicalHeaderKey(name) {
-			case "Connection", "Accept-Encoding", "Content-Length", "Range", "If-None-Match", "If-Modified-Since":
+			// The body is read whole and answered whole: nothing
+			// conditional, ranged or encoded is asked of Plex, and the
+			// hub list's paging is applied here, after the hubs are added.
+			case "Connection", "Accept-Encoding", "Content-Length", "Range", "If-Range", "If-None-Match", "If-Modified-Since",
+				"X-Plex-Container-Start", "X-Plex-Container-Size":
 				continue
 			}
 			req.Header[name] = values
 		}
 		req.Host = from.Host
 		if size > 0 {
-			req.Header.Set("X-Plex-Container-Start", "0")
+			req.Header.Set("X-Plex-Container-Start", strconv.Itoa(start))
 			req.Header.Set("X-Plex-Container-Size", strconv.Itoa(size))
 		}
 		resp, err := client.Do(req)
@@ -99,33 +119,37 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 		if req.Method != http.MethodGet || !discoverPath.MatchString(req.URL.Path) {
 			return nil, false
 		}
-		list, header, ok := get(ctx, req, req.URL.RequestURI(), 0)
+		q := parseQuery(req.URL.RawQuery)
+		// The list is asked for whole: a client that pages it would get a
+		// page without the On Later hubs the new ones are made from, and
+		// one whose length the added hubs change. Its page is cut below.
+		page, paged := pageOf(req, q)
+		list, header, ok := get(ctx, req, req.URL.Path+q.without(pagingParams...).encode(), 0, 0)
 		if !ok {
 			return nil, false
 		}
-		// A browser app sends its token and client parameters in the
-		// query, not as headers (Plex Web, 2026-11-16: PMS refused the
-		// item requests, and no hub was added): each item request carries
-		// the list request's X-Plex-* parameters too.
-		var client []string
-		for _, kv := range strings.Split(req.URL.RawQuery, "&") {
-			if strings.HasPrefix(kv, "X-Plex-") {
-				client = append(client, kv)
-			}
+		// Each item request carries what the list request said of the
+		// client and of how items are to be written: a browser app sends
+		// its token and client parameters in the query, not as headers
+		// (Plex Web, 2026-11-16: PMS refused the item requests, and no hub
+		// was added), and the list's own items follow excludeFields and
+		// its like. count and the paging are the list's alone.
+		carried := q.without(append([]string{"count"}, pagingParams...)...)
+		count := 0
+		if n, err := strconv.Atoi(q.get("count")); err == nil && n > 0 {
+			count = n
 		}
 		fetch := func(key string, size int) ([]byte, bool) {
-			if len(client) > 0 {
-				sep := "?"
-				if strings.Contains(key, "?") {
-					sep = "&"
-				}
-				key += sep + strings.Join(client, "&")
+			if count > 0 {
+				size = count
 			}
-			body, _, ok := get(ctx, req, key, size)
+			path, own, _ := strings.Cut(key, "?")
+			body, _, ok := get(ctx, req, path+parseQuery(own).merge(carried).encode(), 0, size)
 			return body, ok
 		}
+		json := strings.Contains(header.Get("Content-Type"), "json")
 		var out []byte
-		if strings.Contains(header.Get("Content-Type"), "json") {
+		if json {
 			out, ok = RewriteJSON(list, fetch)
 		} else {
 			out, ok = RewriteXML(list, fetch)
@@ -133,20 +157,202 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 		if !ok {
 			out = list
 		}
+		if paged {
+			if json {
+				out = pageJSON(out, page)
+			} else {
+				out = pageXML(out, page)
+			}
+		}
 		// The answer carries PMS's own headers: a browser app refuses a
 		// response without the Access-Control-* ones PMS gave this Origin
 		// (Plex Web showed "Something went wrong" for the bare answer,
 		// 2026-11-16). Only what describes the body PMS sent is left out.
-		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(out))}
+		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
 		for name, values := range header {
 			switch http.CanonicalHeaderKey(name) {
-			case "Content-Length", "Content-Encoding", "Transfer-Encoding", "Connection", "Keep-Alive", "Etag":
+			case "Content-Length", "Content-Encoding", "Transfer-Encoding", "Connection", "Keep-Alive", "Etag", "Last-Modified", "Accept-Ranges", "Content-Range":
 				continue
 			}
 			resp.Header[name] = values
 		}
+		if acceptsGzip(req) && len(out) >= gzipFrom {
+			var packed bytes.Buffer
+			zw := gzip.NewWriter(&packed)
+			if _, err := zw.Write(out); err == nil && zw.Close() == nil {
+				out = packed.Bytes()
+				resp.Header.Set("Content-Encoding", "gzip")
+				resp.Header.Add("Vary", "Accept-Encoding")
+			}
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
 		return resp, true
 	}
+}
+
+// gzipFrom is the body size from which an answer is compressed for a client
+// that accepts it, as PMS compresses its own.
+var gzipFrom = 1 << 10
+
+// pagingParams are the hub list's paging, as a query's parameters.
+var pagingParams = []string{"X-Plex-Container-Start", "X-Plex-Container-Size"}
+
+// acceptsGzip reports whether the client's Accept-Encoding names gzip.
+func acceptsGzip(req *http.Request) bool {
+	for _, v := range req.Header.Values("Accept-Encoding") {
+		for _, enc := range strings.Split(v, ",") {
+			name, _, _ := strings.Cut(strings.TrimSpace(enc), ";")
+			if strings.EqualFold(name, "gzip") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// query is a raw query's parameters in order, each as it was written: a
+// request to Plex is built from a client's without re-encoding anything.
+type query []string
+
+func parseQuery(raw string) query {
+	var q query
+	for _, kv := range strings.Split(raw, "&") {
+		if kv != "" {
+			q = append(q, kv)
+		}
+	}
+	return q
+}
+
+// name is a parameter's name, unescaped.
+func (query) name(kv string) string {
+	name, _, _ := strings.Cut(kv, "=")
+	// A hub key's comparisons are part of the name (beginsAt<=now).
+	if i := strings.IndexAny(name, "<>"); i >= 0 {
+		name = name[:i]
+	}
+	if u, err := url.QueryUnescape(name); err == nil {
+		name = u
+	}
+	return name
+}
+
+func (q query) get(name string) string {
+	for _, kv := range q {
+		if q.name(kv) == name {
+			_, v, _ := strings.Cut(kv, "=")
+			if u, err := url.QueryUnescape(v); err == nil {
+				return u
+			}
+			return v
+		}
+	}
+	return ""
+}
+
+func (q query) without(names ...string) query {
+	var out query
+	for _, kv := range q {
+		if !slices.Contains(names, q.name(kv)) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// merge is q followed by the parameters of more that q does not name.
+func (q query) merge(more query) query {
+	out := slices.Clone(q)
+	for _, kv := range more {
+		name := q.name(kv)
+		if !slices.ContainsFunc(q, func(own string) bool { return q.name(own) == name }) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+func (q query) encode() string {
+	if len(q) == 0 {
+		return ""
+	}
+	return "?" + strings.Join(q, "&")
+}
+
+// window is a client's page of the hub list.
+type window struct{ start, size int }
+
+// pageOf is the page a request asks for, in its headers or its query.
+func pageOf(req *http.Request, q query) (window, bool) {
+	read := func(name string) (int, bool) {
+		v := req.Header.Get(name)
+		if v == "" {
+			v = q.get(name)
+		}
+		n, err := strconv.Atoi(v)
+		return n, err == nil && n >= 0
+	}
+	size, ok := read("X-Plex-Container-Size")
+	if !ok {
+		return window{}, false
+	}
+	start, _ := read("X-Plex-Container-Start")
+	return window{start, size}, true
+}
+
+// cut is the page's bounds in a list of n.
+func (w window) cut(n int) (from, to int) {
+	from = min(w.start, n)
+	return from, min(from+w.size, n)
+}
+
+// pageJSON is a JSON hub list cut to a page, as PMS cuts one: the hubs of
+// the page, size their count, totalSize the whole list's, offset the start.
+func pageJSON(list []byte, w window) []byte {
+	var doc, mc map[string]json.RawMessage
+	var hubs []json.RawMessage
+	if json.Unmarshal(list, &doc) != nil || json.Unmarshal(doc["MediaContainer"], &mc) != nil || json.Unmarshal(mc["Hub"], &hubs) != nil {
+		return list
+	}
+	from, to := w.cut(len(hubs))
+	mc["Hub"], _ = json.Marshal(hubs[from:to])
+	mc["size"], _ = json.Marshal(to - from)
+	mc["totalSize"], _ = json.Marshal(len(hubs))
+	mc["offset"], _ = json.Marshal(from)
+	doc["MediaContainer"], _ = json.Marshal(mc)
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return list
+	}
+	return out
+}
+
+// pageXML is an XML hub list cut to a page, as pageJSON cuts a JSON one.
+func pageXML(list []byte, w window) []byte {
+	opens := xmlHubOpen.FindAllIndex(list, -1)
+	head := xmlContainer.FindIndex(list)
+	tail := bytes.LastIndex(list, []byte("</MediaContainer>"))
+	if head == nil || tail < 0 {
+		return list
+	}
+	from, to := w.cut(len(opens))
+	bound := func(i int) int {
+		if i < len(opens) {
+			return opens[i][0]
+		}
+		return tail
+	}
+	tag := list[head[0]:head[1]]
+	tag = setXMLAttr(tag, "size", strconv.Itoa(to-from), false)
+	tag = setXMLAttr(tag, "totalSize", strconv.Itoa(len(opens)), false)
+	tag = setXMLAttr(tag, "offset", strconv.Itoa(from), false)
+	out := make([]byte, 0, len(list))
+	out = append(out, list[:head[0]]...)
+	out = append(out, tag...)
+	out = append(out, '\n')
+	out = append(out, list[bound(from):bound(to)]...)
+	out = append(out, list[tail:]...)
+	return out
 }
 
 // Fetch answers a hub key (a path and query on PMS) with at most size items.
