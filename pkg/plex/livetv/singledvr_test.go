@@ -2,6 +2,7 @@ package livetv_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -201,7 +202,11 @@ func TestABuiltGuidePMSDoesNotServeRestartsPMSOnce(t *testing.T) {
 	built := false
 	r.conv.Now = func() time.Time { return now }
 	r.conv.PMSStarted = func() time.Time { return started }
+	swapping := false
 	r.conv.GuideHorizon = func(context.Context, string) (time.Time, error) {
+		if swapping {
+			return time.Time{}, errors.New("relation does not exist")
+		}
 		if !built {
 			return time.Time{}, nil
 		}
@@ -226,6 +231,9 @@ func TestABuiltGuidePMSDoesNotServeRestartsPMSOnce(t *testing.T) {
 	require.Zero(t, r.pms.gridReads, "a guide not built is not asked about")
 
 	assert.Equal(t, livetv.Waiting, run().Status, "the next pass comes soon while the guide is not built: the cutover is not over")
+	swapping = true
+	assert.Equal(t, livetv.Waiting, run().Status, "nor is it over while the build's schema cannot be read")
+	swapping = false
 
 	built = true
 	res := run()
