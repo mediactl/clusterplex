@@ -219,3 +219,15 @@ func TestCloseAfterSetsConnectionCloseExceptOnAnUpgrade(t *testing.T) {
 		require.Equal(t, tc.want, string(closeAfter([]byte(tc.head))), tc.name)
 	}
 }
+
+func TestADoublyEncodedPlusInAGuideRequestIsEncodedOnce(t *testing.T) {
+	head := []byte("GET /tv.plex.providers.epg.xmltv:106/all?type=1,4&beginsAt%3C=now&endsAt%3E=%252B1s&sort=beginsAt HTTP/1.1\r\nHost: x\r\n\r\n")
+	want := "GET /tv.plex.providers.epg.xmltv:106/all?type=1,4&beginsAt%3C=now&endsAt%3E=%2B1s&sort=beginsAt HTTP/1.1\r\nHost: x\r\n\r\n"
+	if got := string(singlyEncoded(head)); got != want {
+		t.Errorf("got %q", got)
+	}
+	other := []byte("GET /library/metadata/1?title=a%252Bb HTTP/1.1\r\nHost: x\r\n\r\n")
+	if got := singlyEncoded(other); string(got) != string(other) {
+		t.Errorf("a request outside the guide was changed: %q", got)
+	}
+}
