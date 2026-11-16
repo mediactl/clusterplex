@@ -131,8 +131,10 @@ type LiveTVConfig struct {
 	SeveralPods bool `mapstructure:"severalPods"`
 	// OnNowHubs has the proxy add Sports, Movies and News On Now to an
 	// XMLTV guide's What's On list, which PMS lists for a cloud guide alone
-	// (pkg/plexhubs). Only a plain-HTTP client's request is rewritten.
-	OnNowHubs bool `mapstructure:"onNowHubs"`
+	// (pkg/plexhubs). Only a plain-HTTP client's request is rewritten. Unset
+	// is on (AddsOnNowHubs), so a chart that does not know the key yet runs
+	// it; false turns it off.
+	OnNowHubs *bool `mapstructure:"onNowHubs"`
 	// CloudGuide is who fills a Plex cloud lineup's guide: "pms" (PMS
 	// loads and refreshes it) or "manager" (the managers build it from
 	// Plex's guide service, and PMS's own writes to it are held). Default
@@ -189,6 +191,12 @@ const defaultGuideRefreshWindow = "8-11"
 
 // parseWindow reads an "HH-HH" window of UTC hours, "none" or "" as the
 // empty window, into the hours [start, end), each 0-23.
+// AddsOnNowHubs reports whether the proxy adds the on-now hubs: with Live
+// TV on, unless plex.liveTV.onNowHubs is false.
+func (lt LiveTVConfig) AddsOnNowHubs() bool {
+	return lt.Enabled && (lt.OnNowHubs == nil || *lt.OnNowHubs)
+}
+
 func parseWindow(s string) ([2]int, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.EqualFold(s, "none") || strings.EqualFold(s, "off") {

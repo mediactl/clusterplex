@@ -462,9 +462,9 @@ func scanDiverter(route string) proxy.Divert {
 }
 
 // onNowDiverter is the proxy's Divert adding the on-now hubs to an XMLTV
-// guide's What's On list (pkg/plexhubs); none unless plex.liveTV.onNowHubs.
+// guide's What's On list (pkg/plexhubs); none when plex.liveTV.onNowHubs is false.
 func onNowDiverter(cfg *Config, plexAddr string) proxy.Divert {
-	if !cfg.LiveTV.Enabled || !cfg.LiveTV.OnNowHubs {
+	if !cfg.LiveTV.AddsOnNowHubs() {
 		return nil
 	}
 	return plexhubs.Diverter(plexAddr, nil)

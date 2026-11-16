@@ -158,8 +158,8 @@ plex:
     # the manager's proxy adds them from the same sections Plex's "On Later"
     # hubs read. Only clients that reach Plex over plain HTTP (through a
     # gateway that terminates TLS, say) see them: a TLS connection passes
-    # through the proxy unread.
-    onNowHubs: false
+    # through the proxy unread. On unless set false.
+    onNowHubs: true
     # Who fills a Plex cloud lineup's guide: "pms", PMS's own loads and
     # refreshes, or "manager", the managers build it from Plex's guide
     # service, their fetching spread across the pods, and PMS's own writes
