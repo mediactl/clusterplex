@@ -53,36 +53,36 @@ func serverName(hello []byte) string {
 }
 
 // terminate looks at a connection's first bytes. A TLS connection whose
-// hello names a server Terminate has a certificate for is handshaken here:
-// the returned connection is its plain side, and name is the server name to
-// ask Plex for. Anything else comes back unread (through its buffered
-// reader) with name empty. ok is false when the handshake failed and the
-// connection is finished.
-func (p *TCP) terminate(client net.Conn) (conn net.Conn, name string, ok bool) {
+// hello Terminate has a certificate for is handshaken here: ended is true,
+// the returned connection is its plain side, and name is the server name it
+// asked for (none, for a client that dialled an address), to ask Plex for
+// in turn. Anything else comes back unread (through its buffered reader).
+// ok is false when the handshake failed and the connection is finished.
+func (p *TCP) terminate(client net.Conn) (conn net.Conn, name string, ended, ok bool) {
 	if p.Terminate == nil {
-		return client, "", true
+		return client, "", false, true
 	}
 	br := bufio.NewReaderSize(client, maxHello+5)
 	raw := readerConn{client, br}
 	first, err := br.Peek(1)
 	if err != nil || first[0] != tlsHandshake {
-		return raw, "", true
+		return raw, "", false, true
 	}
 	_ = client.SetReadDeadline(time.Now().Add(headWait))
 	head, err := br.Peek(5)
 	if err != nil {
 		_ = client.SetReadDeadline(time.Time{})
-		return raw, "", true
+		return raw, "", false, true
 	}
 	n := int(head[3])<<8 | int(head[4])
 	if n > maxHello {
 		_ = client.SetReadDeadline(time.Time{})
-		return raw, "", true
+		return raw, "", false, true
 	}
 	hello, err := br.Peek(5 + n)
 	_ = client.SetReadDeadline(time.Time{})
 	if err != nil {
-		return raw, "", true
+		return raw, "", false, true
 	}
 	name = serverName(hello)
 	cert := p.Terminate(name)
@@ -93,7 +93,7 @@ func (p *TCP) terminate(client net.Conn) (conn net.Conn, name string, ok bool) {
 		if p.Logger != nil && p.passNoted(name) {
 			p.Logger.Info("proxy passes a TLS connection through unread: no certificate for its server name", "serverName", name)
 		}
-		return raw, "", true
+		return raw, "", false, true
 	}
 	server := tls.Server(raw, &tls.Config{
 		Certificates: []tls.Certificate{*cert},
@@ -103,9 +103,9 @@ func (p *TCP) terminate(client net.Conn) (conn net.Conn, name string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), handshakeWait)
 	defer cancel()
 	if err := server.HandshakeContext(ctx); err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	return server, name, true
+	return server, name, true, true
 }
 
 // upstreamTLS opens TLS to Plex over an established connection, for a
