@@ -1164,8 +1164,16 @@ func (c *Converger) reopen(ctx context.Context, p Provider, dvr plexapi.DVR, ps 
 	}
 	asked, was := c.reopenAsked[dvr.UUID]
 	horizon, err := c.GuideHorizon(ctx, dvr.UUID)
-	if err != nil || !horizon.After(c.now()) {
-		ps.unserved = err == nil && !was // not built yet: soon
+	if err != nil {
+		// A build swapping its schema in answers an error for a moment
+		// (rig, 2026-11-16: that pass read as converged, and the guide
+		// stayed empty for a provisioning period). Asked again soon.
+		c.log("Live TV: read how far a built guide reaches", "dvr", dvr.Key, "err", err)
+		ps.unserved = !was
+		return
+	}
+	if !horizon.After(c.now()) {
+		ps.unserved = !was // not built yet: soon
 		return
 	}
 	epg := dvr.EPGIdentifier
