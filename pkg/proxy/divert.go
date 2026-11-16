@@ -32,9 +32,10 @@ type Divert func(ctx context.Context, req *http.Request) (resp *http.Response, c
 // body is never read: it streams to Plex as it arrives, whatever its size.
 // TLS and anything else is piped as it is.
 var (
-	// An XMLTV guide's hub list is the other request offered (pkg/plexhubs:
-	// the on-now hubs PMS lists for a cloud guide alone).
-	divertable  = regexp.MustCompile(`^(?:(?:POST|GET) /library/sections/[0-9]+/refresh|GET /tv\.plex\.providers\.epg\.xmltv:[0-9]+/hubs/discover)(?:[ ?])`)
+	// An XMLTV guide's lists of airings are the other requests offered
+	// (pkg/plexhubs: the on-now hubs PMS lists for a cloud guide alone, and
+	// the marks taken off airings that are not live).
+	divertable  = regexp.MustCompile(`^(?:(?:POST|GET) /library/sections/[0-9]+/refresh(?:[ ?])|GET /tv\.plex\.providers\.epg\.xmltv:[0-9]+/(?:hubs/|sections/[0-9]+/all[ ?]|all[ ?]|grid[ ?]|watchnow/all[ ?]|metadata/))`)
 	httpStart   = regexp.MustCompile(`^[A-Z]{3,7} /`)
 	requestLine = regexp.MustCompile(`^[A-Z]{3,7} /\S* HTTP/1\.[01]$`)
 )
@@ -93,7 +94,9 @@ func (p *TCP) divert(ctx context.Context, client net.Conn) (src net.Conn, forwar
 	}
 	p.noteGuideRequest(client, head)
 	if divertable.Match(firstLine(head)) {
-		if req, n, ok := scanRequest(br, head); ok {
+		// The divert reads the request as Plex will: with the line an app
+		// mis-encoded put right (singlyEncoded).
+		if req, n, ok := scanRequest(br, head, singlyEncoded(head)); ok {
 			_ = client.SetReadDeadline(time.Time{})
 			// The divert is told where the request came from and whether
 			// its connection was TLS the proxy ended (terminate.go), so
@@ -150,12 +153,13 @@ func firstLine(head []byte) []byte {
 	return bytes.TrimSuffix(line, []byte("\r"))
 }
 
-// scanRequest parses a scan request whose head is head, with its body when
+// scanRequest parses a request whose head is head, read as read (the same
+// head, or one with its line corrected), with its body when
 // it has one that fits the buffer, without consuming either; n is how many
 // bytes the request takes. A chunked body or one too large to look at is
 // not offered to the divert: the request goes to Plex.
-func scanRequest(br *bufio.Reader, head []byte) (req *http.Request, n int, ok bool) {
-	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(head)))
+func scanRequest(br *bufio.Reader, head, read []byte) (req *http.Request, n int, ok bool) {
+	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(read)))
 	if err != nil || len(req.TransferEncoding) > 0 || req.ContentLength < 0 || len(head)+int(req.ContentLength) > bufSize {
 		return nil, 0, false
 	}
