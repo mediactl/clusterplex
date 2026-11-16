@@ -983,7 +983,11 @@ func (c *Converger) sharedDVR(ctx context.Context, p Provider, b Block, id strin
 		}
 		ps.attach(shared.Key, dev)
 		ps.changed[p.key()] = p
-		delete(c.saved, id)
+		// A device just attached has no map, whatever the block's Lease
+		// notes of a device this DVR held before it (a block that left
+		// and came back): nothing is saved, here and for the next holder.
+		c.saved[id] = savedHashes{}
+		c.note(ctx, p, id, "", savedHashes{})
 		delete(c.stale, id)
 		c.record(p, ReasonProvisioned, fmt.Sprintf("block %s: attached device %s to DVR %s", b.Start, id, shared.Key), false)
 		return *shared, nil
