@@ -318,3 +318,26 @@ func TestABuiltGuideStillUnservedAfterTheRestartIsLeft(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, livetv.Converged, res.Status, "left as it is, the passes at their usual pace")
 }
+
+// The pass that saves the last device's map asks about the guide at its
+// first block, before that save: it must not read as converged, or the
+// guide stays empty for a provisioning period (talos, 2026-11-16: ten
+// minutes between the last map and the restart that opened the guide).
+func TestNoPassConvergesBeforeTheBuiltGuideIsAskedAbout(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	r.conv.Now = func() time.Time { return now }
+	r.conv.PMSStarted = func() time.Time { return now.Add(-time.Hour) }
+	r.conv.GuideHorizon = func(context.Context, string) (time.Time, error) { return now.Add(24 * time.Hour), nil }
+	p := single(provider(r.block(0), r.block(1), r.block(2)))
+	for i := 0; ; i++ {
+		require.Less(t, i, 60, "PMS was never restarted")
+		res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		if res.RestartSelf {
+			break
+		}
+		require.NotEqual(t, livetv.Converged, res.Status, "pass %d converged with the built guide unserved", i)
+	}
+}
