@@ -241,7 +241,7 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 
 	// A TLS connection the proxy holds Plex's certificate for ends here;
 	// from then on client is its plain side.
-	plain, tlsName, ok := p.terminate(client)
+	plain, tlsName, tlsEnded, ok := p.terminate(client)
 	if !ok {
 		return
 	}
@@ -273,7 +273,7 @@ func (p *TCP) handle(ctx context.Context, client net.Conn) {
 		p.Logger.Info("proxy upstream is reachable again", "target", p.Target)
 	}
 	defer func() { _ = upstream.Close() }()
-	if tlsName != "" {
+	if tlsEnded {
 		secured, err := p.upstreamTLS(ctx, upstream, tlsName)
 		if err != nil {
 			p.Logger.Warn("proxy could not open TLS to Plex for a connection it terminated", "err", err)

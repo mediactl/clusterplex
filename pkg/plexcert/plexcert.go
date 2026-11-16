@@ -41,17 +41,21 @@ type Store struct {
 }
 
 // For returns the certificate for a TLS client asking for serverName, or
-// nil when there is none that is valid for that name right now.
+// nil when there is none that is valid for that name right now. A client
+// that names no server gets it too, as it does from PMS, which has no other
+// to give: Plex's iOS app connects to the server's address and checks the
+// certificate against the plex.direct name itself (talos, 2026-11-16: its
+// What's On requests passed through the proxy unread).
 func (s *Store) For(serverName string) *tls.Certificate {
-	if serverName == "" {
-		return nil
-	}
 	cert := s.current()
 	if cert == nil || cert.Leaf == nil {
 		return nil
 	}
 	now := time.Now()
-	if now.Before(cert.Leaf.NotBefore) || now.After(cert.Leaf.NotAfter) || cert.Leaf.VerifyHostname(serverName) != nil {
+	if now.Before(cert.Leaf.NotBefore) || now.After(cert.Leaf.NotAfter) {
+		return nil
+	}
+	if serverName != "" && cert.Leaf.VerifyHostname(serverName) != nil {
 		return nil
 	}
 	return cert

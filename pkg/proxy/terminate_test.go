@@ -47,7 +47,7 @@ func TestTerminatedTLSOffersRequestsToTheDivert(t *testing.T) {
 	p := &TCP{
 		Listen: "127.0.0.1:0", Target: upstream.Listener.Addr().String(), Logger: slog.New(slog.DiscardHandler),
 		Terminate: func(name string) *tls.Certificate {
-			if name == "a.b.plex.direct" {
+			if name == "a.b.plex.direct" || name == "" {
 				return cert
 			}
 			return nil
@@ -90,6 +90,20 @@ func TestTerminatedTLSOffersRequestsToTheDivert(t *testing.T) {
 	}
 	if body, served := get("a.b.plex.direct", "/identity"); body != "plex:/identity" || served != "a.b.plex.direct" {
 		t.Errorf("forwarded request: body %q, certificate %q", body, served)
+	}
+	// A client that names no server (it dialled an address) is ended too.
+	conn, err := tls.Dial("tcp", addr.String(), &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn := conn.ConnectionState().PeerCertificates[0].Subject.CommonName; cn != "a.b.plex.direct" {
+		t.Errorf("no server name: certificate %q", cn)
+	}
+	_, _ = io.WriteString(conn, "GET /tv.plex.providers.epg.xmltv:1/hubs/discover HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+	answer, _ := io.ReadAll(conn)
+	_ = conn.Close()
+	if !strings.HasSuffix(string(answer), "diverted") {
+		t.Errorf("no server name: answer %q", answer)
 	}
 	if body, served := get("other.example", "/tv.plex.providers.epg.xmltv:1/hubs/discover"); !strings.HasPrefix(body, "plex:") || served == "a.b.plex.direct" {
 		t.Errorf("a name without a certificate was not piped: body %q, certificate %q", body, served)
