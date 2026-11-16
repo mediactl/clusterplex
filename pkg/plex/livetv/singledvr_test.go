@@ -372,3 +372,28 @@ func TestABlockGoneFromTheOneDVRTakesOnlyItsDevice(t *testing.T) {
 		assert.Equal(t, 1, count(writes, "DELETE /livetv/dvrs/"+string(dvrs[0].Key)+"/devices/"), "the device is detached")
 	}
 }
+
+// TestABlockBackOnTheOneDVRSavesItsMapAgain: a block that left the one DVR
+// and comes back with the lineup it had is a new device with no channel
+// map, on the DVR its Lease's note names: the note of the old device's save
+// is no save of this one's (rig, 2026-11-16: the device sat attached with
+// none of its 398 channels enabled).
+func TestABlockBackOnTheOneDVRSavesItsMapAgain(t *testing.T) {
+	r := newRig(t)
+	p := single(provider(r.block(0), r.block(1), r.block(2)))
+	r.converge(t, 16, p)
+	p.Blocks = p.Blocks[:2]
+	r.converge(t, 8, p)
+	r.pms.takeWrites()
+
+	p.Blocks = append(p.Blocks, r.block(2))
+	r.converge(t, 8, p)
+	devs, dvrs := r.pms.state()
+	require.Len(t, dvrs, 1)
+	require.Len(t, dvrs[0].Devices, 3)
+	for _, d := range devs {
+		if d.DeviceID == r.block(2).DeviceID {
+			assert.Equal(t, 1, count(r.pms.takeWrites(), "PUT /media/grabbers/devices/"+string(d.Key)+"/channelmap"), "the returned device's map is saved")
+		}
+	}
+}
