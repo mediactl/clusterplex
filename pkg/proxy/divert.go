@@ -111,7 +111,7 @@ func (p *TCP) divert(ctx context.Context, client net.Conn) (src net.Conn, forwar
 		}
 	}
 	_, _ = br.Discard(len(head))
-	return src, closeAfter(head), false
+	return src, closeAfter(singlyEncoded(head)), false
 }
 
 // peekHead returns the request head at the front of br -- its request line
@@ -273,4 +273,23 @@ func (p *TCP) noteGuideRequest(client net.Conn, head []byte) {
 		"method", string(m[1]), "path", string(m[2]), "params", names, "tls", overTLS,
 		"product", header("X-Plex-Product"), "platform", header("X-Plex-Platform"), "agent", header("User-Agent"),
 		"accept", header("Accept"), "pageStart", header("X-Plex-Container-Start"), "pageSize", header("X-Plex-Container-Size"))
+}
+
+// singlyEncoded is head with a guide request's doubly-encoded plus sign
+// encoded once. A guide hub's key filters by time with a relative value
+// PMS writes as %2B1s ("+1s": endsAt>=%2B1s, what is on now), and Plex for
+// iOS encodes the key again when it follows one ("view all"), sending
+// %252B1s, which PMS refuses with 500 "Unknown unit: B1s" (2026-11-16, the
+// app's bug, the same against a server without this proxy). No guide
+// parameter carries a literal "%2B", so within a guide request's line the
+// doubled form is only ever that mistake.
+func singlyEncoded(head []byte) []byte {
+	line := firstLine(head)
+	if !guideRequest.Match(line) || !bytes.Contains(line, []byte("%252B")) {
+		return head
+	}
+	fixed := bytes.ReplaceAll(line, []byte("%252B"), []byte("%2B"))
+	out := make([]byte, 0, len(head))
+	out = append(out, fixed...)
+	return append(out, head[len(line):]...)
 }
