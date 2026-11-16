@@ -307,6 +307,27 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/livetv/dvrs/") && strings.Contains(path, "/devices/"):
+		// Detaching a device keeps the DVR, its first device's too (rig,
+		// 2026-11-16).
+		k, devKey, _ := strings.Cut(strings.TrimPrefix(path, "/livetv/dvrs/"), "/devices/")
+		found := false
+		for i := range f.dvrs {
+			if string(f.dvrs[i].Key) != k {
+				continue
+			}
+			n := len(f.dvrs[i].Devices)
+			f.dvrs[i].Devices = slices.DeleteFunc(f.dvrs[i].Devices, func(d plexapi.Device) bool { return string(d.Key) == devKey })
+			found = len(f.dvrs[i].Devices) != n
+		}
+		for i := range f.devices {
+			if found && string(f.devices[i].Key) == devKey {
+				f.devices[i].ParentID = 0
+			}
+		}
+		if !found {
+			w.WriteHeader(http.StatusNotFound)
+		}
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/livetv/dvrs/"):
 		k := strings.TrimPrefix(path, "/livetv/dvrs/")
 		n := len(f.dvrs)

@@ -287,6 +287,13 @@ func (c *Client) AttachDevice(ctx context.Context, dvrKey, deviceKey string) err
 	return c.do(ctx, http.MethodPut, "/livetv/dvrs/"+url.PathEscape(dvrKey)+"/devices/"+url.PathEscape(deviceKey), nil, nil)
 }
 
+// DetachDevice takes a device off a DVR, which stays with its other
+// devices, its recording rules and its guide, the DVR's first device
+// included (rig, 2026-11-16). The device stays registered, on no DVR.
+func (c *Client) DetachDevice(ctx context.Context, dvrKey, deviceKey string) error {
+	return c.do(ctx, http.MethodDelete, "/livetv/dvrs/"+url.PathEscape(dvrKey)+"/devices/"+url.PathEscape(deviceKey), nil, nil)
+}
+
 // DeleteDVR removes a DVR, and with it its recording rules.
 func (c *Client) DeleteDVR(ctx context.Context, key string) error {
 	return c.do(ctx, http.MethodDelete, "/livetv/dvrs/"+url.PathEscape(key), nil, nil)
