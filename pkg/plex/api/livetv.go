@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // maxLiveTVBody caps a Live TV answer: a DVR or an EPG channel map lists a
@@ -257,6 +259,25 @@ func (c *Client) CreateDVR(ctx context.Context, language, deviceUUID, lineup str
 		return DVR{}, nil
 	}
 	return out.MediaContainer.Dvr[0], nil
+}
+
+// GuideServes reports whether PMS serves an airing of the guide epgIdentifier
+// (a DVR's, tv.plex.providers.epg.xmltv:<key>) at now. PMS decides where a
+// guide is read from when it opens it, so one opened before the managers'
+// build is served empty until PMS opens it again.
+func (c *Client) GuideServes(ctx context.Context, epgIdentifier string, now time.Time) (bool, error) {
+	var out struct {
+		MediaContainer struct {
+			Size     int               `json:"size"`
+			Metadata []json.RawMessage `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	at := strconv.FormatInt(now.Unix(), 10)
+	q := url.Values{"type": {"1"}, "endsAt>": {at}, "beginsAt<": {at}, "X-Plex-Container-Start": {"0"}, "X-Plex-Container-Size": {"1"}}
+	if err := c.doLimit(ctx, http.MethodGet, "/"+epgIdentifier+"/grid", q, &out, maxLiveTVBody); err != nil {
+		return false, err
+	}
+	return out.MediaContainer.Size > 0 || len(out.MediaContainer.Metadata) > 0, nil
 }
 
 // AttachDevice adds the device deviceKey to the DVR dvrKey, beside the

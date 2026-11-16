@@ -60,6 +60,7 @@ const (
 	ReasonPodsRestarted      = "DVRPodsRestarted"
 	ReasonDVRListStale       = "DVRListStale"
 	ReasonRevived            = "DVRDeviceRevived"
+	ReasonGuideReopened      = "DVRGuideReopened"
 	ReasonGuideRefreshed     = "DVRGuideRefreshed"
 	ReasonRefreshWaiting     = "DVRGuideRefreshWaiting"
 	ReasonChannelMapRestored = "DVRChannelMapRestored"
@@ -284,6 +285,11 @@ type Converger struct {
 	// a map PMS had replaced was last saved again (restoreMap).
 	mapChecked  map[string]mapCheck
 	mapRestored map[string]time.Time
+	// served is, by DVR uuid, a one DVR's built guide PMS was seen to serve,
+	// and reopenAsked when this pod's PMS was last restarted to open one it
+	// served nothing of (reopen).
+	served      map[string]bool
+	reopenAsked map[string]time.Time
 }
 
 // mapCheck is one look at a device's saved channel map.
@@ -404,6 +410,11 @@ type pass struct {
 	deadDevice  bool
 	changed     map[string]Provider
 	restartSelf bool
+	// ownLoads is this pass having looked for loads PMS runs on its own
+	// account of built guides (cancelOwnLoads), and reopened the DVR uuids
+	// it has asked PMS about (reopen): each once a pass.
+	ownLoads bool
+	reopened map[string]bool
 	// converging is the providers this pass converges (Ready, Enabled,
 	// with an address): the ones whose blocks a cancel waits for
 	// (mapsPending). A provider left as it is keeps its Leases but is never
@@ -424,6 +435,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 		c.revived, c.cloudReloaded = map[string]time.Time{}, map[string]time.Time{}
 		c.cancelLoadsUntil, c.xmltvAsked = map[string]time.Time{}, map[string]bool{}
 		c.mapChecked, c.mapRestored = map[string]mapCheck{}, map[string]time.Time{}
+		c.served, c.reopenAsked = map[string]bool{}, map[string]time.Time{}
 	}
 	devices, err := c.PMS.Devices(ctx)
 	if err != nil {
@@ -925,6 +937,7 @@ func (c *Converger) sharedDVR(ctx context.Context, p Provider, b Block, id strin
 	gk := groupKey(p)
 	if c.XMLTVGuides != nil {
 		c.cancelBuiltLoads(ctx, gk, ps)
+		c.cancelOwnLoads(ctx, ps)
 	}
 	var shared *plexapi.DVR
 	all := slices.Clone(ps.dvrs)
@@ -1046,6 +1059,7 @@ func (c *Converger) sharedGuide(ctx context.Context, p Provider, b Block, id str
 		c.cancelBuiltLoads(ctx, id, ps)
 		c.xmltvAsked[dvr.UUID] = true
 		c.XMLTVGuides.Want(dvr.UUID, p.DVR.GuideURI, hash)
+		c.reopen(ctx, p, dvr, ps)
 		return nil
 	}
 	g, known := c.saved[gk]
@@ -1073,6 +1087,100 @@ func (c *Converger) sharedGuide(ctx context.Context, p Provider, b Block, id str
 		c.note(ctx, p, id, dvr.Key, s)
 	}
 	return nil
+}
+
+// cancelOwnLoads cancels the guide loads PMS runs on its own account, at
+// its start and nightly, when every DVR it has is a provider's one DVR on a
+// guide the managers build: such a load is the whole lineup's, half an hour
+// at a core on a small server (2026-11-16: Plex stopped answering under
+// it), for a file whose rename is refused. PMS's activities do not say
+// whose guide a load is, so with any other DVR in PMS nothing is cancelled
+// outside a save's window (cancelBuiltLoads). Once a pass.
+func (c *Converger) cancelOwnLoads(ctx context.Context, ps *pass) {
+	if ps.ownLoads || c.XMLTVGuides == nil || len(ps.dvrs) == 0 {
+		return
+	}
+	ps.ownLoads = true
+	for _, d := range ps.dvrs {
+		guide, ours := lineupGuide(d.Lineup), false
+		for _, p := range ps.converging {
+			if p.DVR != nil && sameURL(guide, p.DVR.GuideURI) {
+				ours = true
+			}
+		}
+		if !ours {
+			return
+		}
+	}
+	acts, err := c.PMS.Activities(ctx)
+	if err != nil {
+		return
+	}
+	for _, a := range acts {
+		if a.Type != plexapi.ActivityGuideLoad {
+			continue
+		}
+		if err := c.PMS.CancelActivity(ctx, a.UUID); err != nil {
+			c.log("Live TV: cancel PMS's own load of a guide the managers build", "activity", a.UUID, "err", err)
+			continue
+		}
+		c.log("Live TV: cancelled PMS's own load of a guide the managers build", "activity", a.UUID)
+	}
+}
+
+// reopen has this pod's PMS restarted when it serves nothing of a one DVR's
+// built guide. PMS decides where a guide is read from as it opens it, and
+// opens a new DVR's before the first build exists; the load whose end would
+// have it open the guide again is cancelled (sharedDVR), so it would serve
+// the empty file for good (talos, 2026-11-16: 132,893 airings built, an
+// empty grid until a restart by hand). Asked once every device's map is
+// saved and the build holds airings past now, once a pass and once per
+// start of PMS, until PMS is seen to serve the guide.
+func (c *Converger) reopen(ctx context.Context, p Provider, dvr plexapi.DVR, ps *pass) {
+	if c.served[dvr.UUID] || ps.reopened[dvr.UUID] || c.GuideHorizon == nil || dvr.UUID == "" {
+		return
+	}
+	if ps.reopened == nil {
+		ps.reopened = map[string]bool{}
+	}
+	ps.reopened[dvr.UUID] = true
+	for _, b := range p.Blocks {
+		id := strings.ToUpper(b.DeviceID)
+		if id == "" {
+			continue
+		}
+		dev, ok := ps.devices[id]
+		if !ok || strconv.Itoa(dev.ParentID) != string(dvr.Key) || c.saved[id].lineup != b.LineupHash {
+			return // the DVR is still being put together
+		}
+	}
+	horizon, err := c.GuideHorizon(ctx, dvr.UUID)
+	if err != nil || !horizon.After(c.now()) {
+		return // not built yet
+	}
+	epg := dvr.EPGIdentifier
+	if epg == "" {
+		epg = "tv.plex.providers.epg.xmltv:" + string(dvr.Key)
+	}
+	serves, err := c.PMS.GuideServes(ctx, epg, c.now())
+	if err != nil {
+		c.log("Live TV: ask PMS what it serves of a built guide", "dvr", dvr.Key, "err", err)
+		return
+	}
+	if serves {
+		c.served[dvr.UUID] = true
+		return
+	}
+	var started time.Time
+	if c.PMSStarted != nil {
+		started = c.PMSStarted()
+	}
+	if asked, was := c.reopenAsked[dvr.UUID]; was && !started.After(asked) {
+		return
+	}
+	c.reopenAsked[dvr.UUID] = c.now()
+	ps.restartSelf = true
+	c.record(p, ReasonGuideReopened, fmt.Sprintf("DVR %s: PMS serves nothing of its built guide, which it opened before the build; restarting this pod's Plex to open it", dvr.Key), true)
 }
 
 // built is whether b's guide is built by the managers rather than loaded by
