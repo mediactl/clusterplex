@@ -215,23 +215,30 @@ func TestABuiltGuidePMSDoesNotServeRestartsPMSOnce(t *testing.T) {
 		return res
 	}
 	for i := 0; ; i++ {
-		require.Less(t, i, 40, "no convergence")
+		require.Less(t, i, 40, "the maps are never saved")
 		res := run()
 		require.False(t, res.RestartSelf, "nothing is built yet")
-		if res.Status == livetv.Converged {
+		devs, _ := r.pms.state()
+		if len(devs) == 2 && r.pms.saves[string(devs[0].Key)] == 1 && r.pms.saves[string(devs[1].Key)] == 1 {
 			break
 		}
 	}
 	require.Zero(t, r.pms.gridReads, "a guide not built is not asked about")
 
+	assert.Equal(t, livetv.Waiting, run().Status, "the next pass comes soon while the guide is not built: the cutover is not over")
+
 	built = true
-	assert.True(t, run().RestartSelf, "the build holds airings PMS does not serve")
+	res := run()
+	assert.True(t, res.RestartSelf, "the build holds airings PMS does not serve")
+	assert.Equal(t, livetv.Waiting, res.Status)
 	assert.False(t, run().RestartSelf, "asked once per start of PMS")
 
 	started = now.Add(time.Minute) // PMS restarted and opened the build
 	now = now.Add(2 * time.Minute)
 	r.pms.servesGuides = true
-	assert.False(t, run().RestartSelf)
+	res = run()
+	assert.False(t, res.RestartSelf)
+	assert.Equal(t, livetv.Converged, res.Status)
 	reads := r.pms.gridReads
 	run()
 	assert.Equal(t, reads, r.pms.gridReads, "a guide PMS serves is not asked about again")
@@ -272,4 +279,34 @@ func TestPMSsOwnLoadsOfTheOneDVRsGuideAreCancelled(t *testing.T) {
 		assert.Empty(t, r.pms.takeCancelled())
 		r.pms.endLoad()
 	})
+}
+
+// A guide PMS still serves nothing of after the restart is not one it opened
+// too early: PMS is restarted once, never in a loop.
+func TestABuiltGuideStillUnservedAfterTheRestartIsLeft(t *testing.T) {
+	r := newRig(t)
+	r.conv.XMLTVGuides = &fakeXMLTVGuides{}
+	now := time.Unix(1792540000, 0)
+	started := now.Add(-time.Hour)
+	r.conv.Now = func() time.Time { return now }
+	r.conv.PMSStarted = func() time.Time { return started }
+	r.conv.GuideHorizon = func(context.Context, string) (time.Time, error) { return now.Add(24 * time.Hour), nil }
+	p := single(provider(r.block(0)))
+	restarts := 0
+	for range 40 {
+		res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+		require.NoError(t, err)
+		if res.RestartSelf {
+			restarts++
+			started = now.Add(time.Second) // PMS restarted, and serves nothing still
+			now = now.Add(time.Minute)
+		}
+		if res.Status == livetv.Converged {
+			break
+		}
+	}
+	assert.Equal(t, 1, restarts)
+	res, err := r.conv.Run(t.Context(), []livetv.Provider{p})
+	require.NoError(t, err)
+	assert.Equal(t, livetv.Converged, res.Status, "left as it is, the passes at their usual pace")
 }
