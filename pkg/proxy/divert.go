@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -90,9 +91,18 @@ func (p *TCP) divert(ctx context.Context, client net.Conn) (src net.Conn, forwar
 	if !ok || !requestLine.Match(firstLine(head)) {
 		return src, nil, false
 	}
+	p.noteGuideRequest(client, head)
 	if divertable.Match(firstLine(head)) {
 		if req, n, ok := scanRequest(br, head); ok {
 			_ = client.SetReadDeadline(time.Time{})
+			// The divert is told where the request came from and whether
+			// its connection was TLS the proxy ended (terminate.go), so
+			// what it asks Plex on the client's behalf can go the same way.
+			req.RemoteAddr = client.RemoteAddr().String()
+			if tc, ok := client.(*tls.Conn); ok {
+				state := tc.ConnectionState()
+				req.TLS = &state
+			}
 			if resp, claimed := p.Divert(ctx, req); claimed {
 				_, _ = br.Discard(n)
 				p.answer(client, resp)
@@ -224,4 +234,43 @@ func (p *TCP) answer(client net.Conn, resp *http.Response) {
 	resp.ProtoMajor, resp.ProtoMinor = 1, 1
 	resp.Close = true
 	_ = resp.Write(client)
+}
+
+// guideRequest is the request line of anything asked of a Live TV guide
+// provider.
+var guideRequest = regexp.MustCompile(`^([A-Z]{3,7}) (/tv\.plex\.providers\.epg\.[a-z]+:[0-9]+/[^ ?]*)(?:\?(\S*))? HTTP/`)
+
+// noteGuideRequest logs a request to a Live TV guide provider: its path, the
+// names of its parameters (never their values: a token is one), the app and
+// whether it pages, and whether it came over TLS the proxy ended. Which
+// requests each Plex app makes for its Live TV screens is not documented,
+// and PMS logs them only at debug (2026-11-16: the on-now hubs reached Plex
+// Web and no other app).
+func (p *TCP) noteGuideRequest(client net.Conn, head []byte) {
+	m := guideRequest.FindSubmatch(firstLine(head))
+	// The grid is one request a channel, hundreds a screen, and says
+	// nothing new each time.
+	if m == nil || p.Logger == nil || bytes.HasSuffix(m[2], []byte("/grid")) {
+		return
+	}
+	var names []string
+	for _, kv := range bytes.Split(m[3], []byte("&")) {
+		if name, _, _ := bytes.Cut(kv, []byte("=")); len(name) > 0 {
+			names = append(names, string(name))
+		}
+	}
+	header := func(name string) string {
+		for _, l := range bytes.Split(head, []byte("\n"))[1:] {
+			k, v, found := bytes.Cut(l, []byte(":"))
+			if found && bytes.EqualFold(bytes.TrimSpace(k), []byte(name)) {
+				return string(bytes.TrimSpace(v))
+			}
+		}
+		return ""
+	}
+	_, overTLS := client.(*tls.Conn)
+	p.Logger.Info("proxy saw a Live TV guide request",
+		"method", string(m[1]), "path", string(m[2]), "params", names, "tls", overTLS,
+		"product", header("X-Plex-Product"), "platform", header("X-Plex-Platform"), "agent", header("User-Agent"),
+		"accept", header("Accept"), "pageStart", header("X-Plex-Container-Start"), "pageSize", header("X-Plex-Container-Size"))
 }
