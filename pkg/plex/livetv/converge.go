@@ -415,6 +415,10 @@ type pass struct {
 	// it has asked PMS about (reopen): each once a pass.
 	ownLoads bool
 	reopened map[string]bool
+	// unserved is a one DVR's built guide PMS does not serve yet: the pass
+	// is Waiting, so the next comes soon and the cutover ends when the
+	// guide shows, not a provisioning period later.
+	unserved bool
 	// converging is the providers this pass converges (Ready, Enabled,
 	// with an address): the ones whose blocks a cancel waits for
 	// (mapsPending). A provider left as it is keeps its Leases but is never
@@ -562,7 +566,7 @@ func (c *Converger) Run(ctx context.Context, live []Provider) (Result, error) {
 	switch {
 	case pending:
 		res.Status = Pending
-	case waiting, ps.deadDevice:
+	case waiting, ps.deadDevice, ps.unserved:
 		res.Status = Waiting
 	}
 	return res, errors.Join(errs...)
@@ -1154,9 +1158,15 @@ func (c *Converger) reopen(ctx context.Context, p Provider, dvr plexapi.DVR, ps 
 			return // the DVR is still being put together
 		}
 	}
+	var started time.Time
+	if c.PMSStarted != nil {
+		started = c.PMSStarted()
+	}
+	asked, was := c.reopenAsked[dvr.UUID]
 	horizon, err := c.GuideHorizon(ctx, dvr.UUID)
 	if err != nil || !horizon.After(c.now()) {
-		return // not built yet
+		ps.unserved = err == nil && !was // not built yet: soon
+		return
 	}
 	epg := dvr.EPGIdentifier
 	if epg == "" {
@@ -1171,15 +1181,19 @@ func (c *Converger) reopen(ctx context.Context, p Provider, dvr plexapi.DVR, ps 
 		c.served[dvr.UUID] = true
 		return
 	}
-	var started time.Time
-	if c.PMSStarted != nil {
-		started = c.PMSStarted()
-	}
-	if asked, was := c.reopenAsked[dvr.UUID]; was && !started.After(asked) {
+	switch {
+	case was && !started.After(asked):
+		ps.unserved = true // the restart asked for is under way
+		return
+	case was:
+		// PMS has started since and still serves nothing: not a guide it
+		// opened too early. Said once, and left.
+		c.served[dvr.UUID] = true
+		c.record(p, ReasonGuideReopened, fmt.Sprintf("DVR %s: PMS still serves nothing of its built guide after its restart; not restarting it again", dvr.Key), true)
 		return
 	}
 	c.reopenAsked[dvr.UUID] = c.now()
-	ps.restartSelf = true
+	ps.restartSelf, ps.unserved = true, true
 	c.record(p, ReasonGuideReopened, fmt.Sprintf("DVR %s: PMS serves nothing of its built guide, which it opened before the build; restarting this pod's Plex to open it", dvr.Key), true)
 }
 
