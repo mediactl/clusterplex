@@ -1155,7 +1155,13 @@ func (c *Converger) reopen(ctx context.Context, p Provider, dvr plexapi.DVR, ps 
 		}
 		dev, ok := ps.devices[id]
 		if !ok || strconv.Itoa(dev.ParentID) != string(dvr.Key) || c.saved[id].lineup != b.LineupHash {
-			return // the DVR is still being put together
+			// The DVR is still being put together, by a later block of this
+			// very pass perhaps: the next pass comes soon. On talos
+			// (2026-11-16) the pass that saved the last map asked here at its
+			// first block, read as converged, and the guide stayed empty for
+			// a provisioning period.
+			ps.unserved = true
+			return
 		}
 	}
 	var started time.Time
