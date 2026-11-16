@@ -65,12 +65,12 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 		client = &http.Client{Timeout: timeout}
 	}
 	base := "http://" + target
-	get := func(ctx context.Context, from *http.Request, uri string, size int) ([]byte, string, bool) {
+	get := func(ctx context.Context, from *http.Request, uri string, size int) ([]byte, http.Header, bool) {
 		// A hub's key writes its comparisons bare (beginsAt<=now).
 		uri = strings.NewReplacer("<", "%3C", ">", "%3E").Replace(uri)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+uri, nil)
 		if err != nil {
-			return nil, "", false
+			return nil, nil, false
 		}
 		for name, values := range from.Header {
 			switch http.CanonicalHeaderKey(name) {
@@ -86,20 +86,20 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, "", false
+			return nil, nil, false
 		}
 		defer func() { _ = resp.Body.Close() }()
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 		if err != nil || resp.StatusCode != http.StatusOK || len(body) > maxBody {
-			return nil, "", false
+			return nil, nil, false
 		}
-		return body, resp.Header.Get("Content-Type"), true
+		return body, resp.Header, true
 	}
 	return func(ctx context.Context, req *http.Request) (*http.Response, bool) {
 		if req.Method != http.MethodGet || !discoverPath.MatchString(req.URL.Path) {
 			return nil, false
 		}
-		list, contentType, ok := get(ctx, req, req.URL.RequestURI(), 0)
+		list, header, ok := get(ctx, req, req.URL.RequestURI(), 0)
 		if !ok {
 			return nil, false
 		}
@@ -108,7 +108,7 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 			return body, ok
 		}
 		var out []byte
-		if strings.Contains(contentType, "json") {
+		if strings.Contains(header.Get("Content-Type"), "json") {
 			out, ok = RewriteJSON(list, fetch)
 		} else {
 			out, ok = RewriteXML(list, fetch)
@@ -116,11 +116,18 @@ func Diverter(target string, client *http.Client) proxy.Divert {
 		if !ok {
 			out = list
 		}
+		// The answer carries PMS's own headers: a browser app refuses a
+		// response without the Access-Control-* ones PMS gave this Origin
+		// (Plex Web showed "Something went wrong" for the bare answer,
+		// 2026-11-16). Only what describes the body PMS sent is left out.
 		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(out))}
-		if contentType != "" {
-			resp.Header.Set("Content-Type", contentType)
+		for name, values := range header {
+			switch http.CanonicalHeaderKey(name) {
+			case "Content-Length", "Content-Encoding", "Transfer-Encoding", "Connection", "Keep-Alive", "Etag":
+				continue
+			}
+			resp.Header[name] = values
 		}
-		resp.Header.Set("Cache-Control", "no-cache")
 		return resp, true
 	}
 }
