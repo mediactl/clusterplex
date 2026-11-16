@@ -65,22 +65,6 @@ var discoverPath = regexp.MustCompile(`^/tv\.plex\.providers\.epg\.xmltv:[0-9]+/
 // goes to the client with the on-now hubs added. Any failure, and an answer
 // that is not a hub list, sends the request on to Plex untouched.
 func Diverter(target string, client *http.Client) proxy.Divert {
-	return DiverterWith(target, client, Options{OnNow: true})
-}
-
-// Options are what the divert does to a guide's answers.
-type Options struct {
-	// OnNow adds the on-now hubs to the hub list.
-	OnNow bool
-	// Badge, when set, is asked at each request which marks to take off
-	// the airings the guide does not call live (badge.go); every list of
-	// airings a guide provider answers is then read, not the hub list
-	// alone.
-	Badge func() Badge
-}
-
-// DiverterWith is Diverter with its options named.
-func DiverterWith(target string, client *http.Client, opts Options) proxy.Divert {
 	if client == nil {
 		// Plex is in this pod, across the link the proxy owns: a request
 		// made for a TLS client goes to it over TLS, its certificate not
@@ -91,7 +75,7 @@ func DiverterWith(target string, client *http.Client, opts Options) proxy.Divert
 			IdleConnTimeout:     30 * time.Second,
 		}}
 	}
-	get := func(ctx context.Context, from *http.Request, uri string, start, size int, paged bool) ([]byte, http.Header, bool) {
+	get := func(ctx context.Context, from *http.Request, uri string, start, size int) ([]byte, http.Header, bool) {
 		// What the client's connection was, the request to Plex is: Plex
 		// can be set to refuse plain HTTP, and tells the two apart.
 		scheme := "http://"
@@ -109,12 +93,9 @@ func DiverterWith(target string, client *http.Client, opts Options) proxy.Divert
 			// The body is read whole and answered whole: nothing
 			// conditional, ranged or encoded is asked of Plex, and the
 			// hub list's paging is applied here, after the hubs are added.
-			case "Connection", "Accept-Encoding", "Content-Length", "Range", "If-Range", "If-None-Match", "If-Modified-Since":
+			case "Connection", "Accept-Encoding", "Content-Length", "Range", "If-Range", "If-None-Match", "If-Modified-Since",
+				"X-Plex-Container-Start", "X-Plex-Container-Size":
 				continue
-			case "X-Plex-Container-Start", "X-Plex-Container-Size":
-				if !paged {
-					continue
-				}
 			}
 			req.Header[name] = values
 		}
@@ -135,32 +116,15 @@ func DiverterWith(target string, client *http.Client, opts Options) proxy.Divert
 		return body, resp.Header, true
 	}
 	return func(ctx context.Context, req *http.Request) (*http.Response, bool) {
-		if req.Method != http.MethodGet {
+		if req.Method != http.MethodGet || !discoverPath.MatchString(req.URL.Path) {
 			return nil, false
-		}
-		badge := Badge{}
-		if opts.Badge != nil {
-			badge = opts.Badge()
-		}
-		discover := discoverPath.MatchString(req.URL.Path) && opts.OnNow
-		if !discover {
-			// Any other list of airings is read only to take marks off
-			// it: asked of PMS as the client asked, its paging included.
-			if badge.Off() || !airingsPath.MatchString(req.URL.Path) {
-				return nil, false
-			}
-			body, header, ok := get(ctx, req, req.URL.RequestURI(), 0, 0, true)
-			if !ok {
-				return nil, false
-			}
-			return answer(req, header, stripBadge(body, header, badge)), true
 		}
 		q := parseQuery(req.URL.RawQuery)
 		// The list is asked for whole: a client that pages it would get a
 		// page without the On Later hubs the new ones are made from, and
 		// one whose length the added hubs change. Its page is cut below.
 		page, paged := pageOf(req, q)
-		list, header, ok := get(ctx, req, req.URL.Path+q.without(pagingParams...).encode(), 0, 0, false)
+		list, header, ok := get(ctx, req, req.URL.Path+q.without(pagingParams...).encode(), 0, 0)
 		if !ok {
 			return nil, false
 		}
@@ -180,7 +144,7 @@ func DiverterWith(target string, client *http.Client, opts Options) proxy.Divert
 				size = count
 			}
 			path, own, _ := strings.Cut(key, "?")
-			body, _, ok := get(ctx, req, path+parseQuery(own).merge(carried).encode(), 0, size, false)
+			body, _, ok := get(ctx, req, path+parseQuery(own).merge(carried).encode(), 0, size)
 			return body, ok
 		}
 		json := strings.Contains(header.Get("Content-Type"), "json")
@@ -200,56 +164,30 @@ func DiverterWith(target string, client *http.Client, opts Options) proxy.Divert
 				out = pageXML(out, page)
 			}
 		}
-		return answer(req, header, stripBadge(out, header, badge)), true
-	}
-}
-
-// airingsPath is a guide provider's answers that list airings, beside its
-// hub list: its hubs' items, a section's or every section's, the grid, an
-// item and the guide's own lists.
-var airingsPath = regexp.MustCompile(`^/tv\.plex\.providers\.epg\.xmltv:[0-9]+/(?:hubs/.+|sections/[0-9]+/all|all|grid|watchnow/all|metadata/[^/]+)$`)
-
-// stripBadge is body with badge's marks taken off, in the format header
-// names; body itself when there is nothing to take.
-func stripBadge(body []byte, header http.Header, badge Badge) []byte {
-	if badge.Off() {
-		return body
-	}
-	strip := StripXML
-	if strings.Contains(header.Get("Content-Type"), "json") {
-		strip = StripJSON
-	}
-	if out, ok := strip(body, badge); ok {
-		return out
-	}
-	return body
-}
-
-// answer is the divert's response: body under the headers PMS gave its own
-// answer. A browser app refuses a response without the Access-Control-*
-// ones PMS gave this Origin (Plex Web showed "Something went wrong" for a
-// bare answer, 2026-11-16). Only what describes the body PMS sent is left
-// out, and the body is compressed for a client that accepts it, as PMS's is.
-func answer(req *http.Request, header http.Header, out []byte) *http.Response {
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
-	for name, values := range header {
-		switch http.CanonicalHeaderKey(name) {
-		case "Content-Length", "Content-Encoding", "Transfer-Encoding", "Connection", "Keep-Alive", "Etag", "Last-Modified", "Accept-Ranges", "Content-Range":
-			continue
+		// The answer carries PMS's own headers: a browser app refuses a
+		// response without the Access-Control-* ones PMS gave this Origin
+		// (Plex Web showed "Something went wrong" for the bare answer,
+		// 2026-11-16). Only what describes the body PMS sent is left out.
+		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
+		for name, values := range header {
+			switch http.CanonicalHeaderKey(name) {
+			case "Content-Length", "Content-Encoding", "Transfer-Encoding", "Connection", "Keep-Alive", "Etag", "Last-Modified", "Accept-Ranges", "Content-Range":
+				continue
+			}
+			resp.Header[name] = values
 		}
-		resp.Header[name] = values
-	}
-	if acceptsGzip(req) && len(out) >= gzipFrom {
-		var packed bytes.Buffer
-		zw := gzip.NewWriter(&packed)
-		if _, err := zw.Write(out); err == nil && zw.Close() == nil {
-			out = packed.Bytes()
-			resp.Header.Set("Content-Encoding", "gzip")
-			resp.Header.Add("Vary", "Accept-Encoding")
+		if acceptsGzip(req) && len(out) >= gzipFrom {
+			var packed bytes.Buffer
+			zw := gzip.NewWriter(&packed)
+			if _, err := zw.Write(out); err == nil && zw.Close() == nil {
+				out = packed.Bytes()
+				resp.Header.Set("Content-Encoding", "gzip")
+				resp.Header.Add("Vary", "Accept-Encoding")
+			}
 		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
+		return resp, true
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(out))
-	return resp
 }
 
 // gzipFrom is the body size from which an answer is compressed for a client

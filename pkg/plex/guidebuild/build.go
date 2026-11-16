@@ -538,15 +538,6 @@ func Plan(in Input) (*Rows, error) {
 		if a.station.Thumb != "" {
 			fields["at:channelThumb"] = a.station.Thumb
 		}
-		// An XMLTV guide's live mark rides along as at:live, which PMS's own
-		// load drops (its reader keeps no <live/>) and its answers pass
-		// through as the airing's live="1" (rig, 2026-11-16): the proxy
-		// reads it there to tell a live broadcast from everything else that
-		// is on (pkg/plexhubs). The one field of an airing PMS's load does
-		// not write.
-		if xmltv && a.m.Live {
-			fields["at:live"] = "1"
-		}
 		version := int64(0)
 		if a.m.Premiere {
 			fields["at:premiere"] = "1"
