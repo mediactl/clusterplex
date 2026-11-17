@@ -1,3 +1,4 @@
+extension fuzzystrmatch
 extension pg_trgm
 extension plpgsql
 extension unaccent
@@ -34,7 +35,6 @@ function plex.gtrgm_union(internal, internal)
 function plex.iif(condition boolean, true_val anyelement, false_val anyelement)
 function plex.integer_equals_text(integer, text)
 function plex.maybe_cleanup_statistics()
-function plex.reject_empty_statistics()
 function plex.run_statistics_cleanup(p_days_to_keep integer)
 function plex.set_available_at()
 function plex.set_limit(real)
@@ -63,11 +63,22 @@ function plex.word_similarity_commutator_op(text, text)
 function plex.word_similarity_dist_commutator_op(text, text)
 function plex.word_similarity_dist_op(text, text)
 function plex.word_similarity_op(text, text)
+function plex_fuzzy.difference(text, text)
+function plex_fuzzy.dmetaphone(text)
+function plex_fuzzy.dmetaphone_alt(text)
+function plex_fuzzy.levenshtein(text, text)
+function plex_fuzzy.levenshtein(text, text, integer, integer, integer)
+function plex_fuzzy.levenshtein_less_equal(text, text, integer)
+function plex_fuzzy.levenshtein_less_equal(text, text, integer, integer, integer, integer)
+function plex_fuzzy.metaphone(text, integer)
+function plex_fuzzy.soundex(text)
+function plex_fuzzy.text_soundex(text)
 function public.eq_bool_int(b boolean, i integer)
 function public.eq_int_bool(i integer, b boolean)
 function public.integer_equals_text(integer, text)
 function public.json_valid(val text)
 function public.jsonb_mergepatch(target jsonb, patch jsonb)
+function public.levenshtein(a text, b text)
 function public.text_equals_integer(text, integer)
 index plex.accounts_pkey
 index plex.activities_pkey
@@ -367,7 +378,6 @@ table plex.view_settings
 trigger plex.metadata_items.metadata_items_set_available_at
 trigger plex.metadata_items.spellfix_vocab_metadata_items_insert
 trigger plex.metadata_items.spellfix_vocab_metadata_items_update
-trigger plex.statistics_media.statistics_media_reject_empty
 trigger plex.statistics_resources.trg_clean_statistics_resources
 trigger plex.tags.spellfix_vocab_tags_insert
 trigger plex.tags.spellfix_vocab_tags_update
