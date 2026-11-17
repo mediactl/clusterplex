@@ -50,6 +50,9 @@ data:
           language: {{ .language | default "en-US" | quote }}
           locations: {{ toJson .locations }}
           switchAgent: {{ .switchAgent | default false }}
+          {{- with .formerNames }}
+          formerNames: {{ toJson . }}
+          {{- end }}
           {{- with .preferences }}
           preferences:
             {{- range . }}

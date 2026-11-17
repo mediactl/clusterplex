@@ -454,6 +454,7 @@ plex:
       language: en-US
       locations: [/media/movies]
       switchAgent: true
+      formerNames: [Clustarr Movies]
       preferences:
         - {name: useSeasonTitles, value: 0}
   clustarr:
@@ -468,6 +469,7 @@ plex:
 	require.Len(t, c.Provision.Libraries, 1)
 	assert.True(t, c.Provision.Libraries[0].SwitchAgent, "camelCase keys survive viper's lowercasing")
 	assert.Equal(t, []string{"/media/movies"}, c.Provision.Libraries[0].Locations)
+	assert.Equal(t, []string{"Clustarr Movies"}, c.Provision.Libraries[0].FormerNames, "a former name keeps its case")
 	assert.Equal(t, []plexprovision.Preference{{Name: "useSeasonTitles", Value: "0"}}, c.Provision.Libraries[0].Preferences,
 		"a library preference keeps its case, and an unquoted value reads as a string")
 	assert.Equal(t, ClustarrConfig{
@@ -493,6 +495,7 @@ func TestConfigRefusesAClustarrWatchItCannotUse(t *testing.T) {
 		"relative mapping":         "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: data, plex: /media}]\n",
 		"duplicate clustarr side":  "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n    pathMappings: [{clustarr: /data, plex: /a}, {clustarr: /data/, plex: /b}]\n",
 		"library without type":     "plex:\n  libraries:\n    - {name: M, provider: p, locations: [/media]}\n",
+		"former name twice":        "plex:\n  libraries:\n    - {name: M, type: movie, provider: p, locations: [/media], formerNames: [Old]}\n    - {name: T, type: show, provider: p, locations: [/tv], formerNames: [Old]}\n",
 		"fixed library preference": "plex:\n  libraries:\n    - {name: M, type: movie, provider: p, locations: [/media], preferences: [{name: enableBIFGeneration, value: 1}]}\n",
 	} {
 		t.Run(name, func(t *testing.T) {

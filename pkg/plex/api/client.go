@@ -72,6 +72,7 @@ type Section struct {
 	Type     string     `json:"type"`
 	Title    string     `json:"title"`
 	Agent    string     `json:"agent"`
+	Scanner  string     `json:"scanner"`
 	Language string     `json:"language"`
 	Location []Location `json:"Location"`
 }
@@ -170,6 +171,29 @@ func (c *Client) CreateSection(ctx context.Context, s NewSection) error {
 func (c *Client) SetSectionAgent(ctx context.Context, key, agent string, groupID int) error {
 	return c.do(ctx, http.MethodPut, "/library/sections/"+url.PathEscape(key),
 		url.Values{"agent": {agent}, "metadataAgentProviderGroupId": {strconv.Itoa(groupID)}}, nil)
+}
+
+// RenameSection gives the library s the title name, in place. Plex Web's
+// edit sends the section's agent, scanner, language and every location
+// again beside the name, and so does this: PMS refuses an edit without
+// agent, and an edit that names no location is not known to keep them.
+// groupID, when not 0, is the agent's group, sent as SetSectionAgent
+// sends it. Not recorded against a server.
+func (c *Client) RenameSection(ctx context.Context, s Section, name string, groupID int) error {
+	q := url.Values{"name": {name}, "agent": {s.Agent}}
+	if s.Scanner != "" {
+		q.Set("scanner", s.Scanner)
+	}
+	if s.Language != "" {
+		q.Set("language", s.Language)
+	}
+	if groupID != 0 {
+		q.Set("metadataAgentProviderGroupId", strconv.Itoa(groupID))
+	}
+	for _, l := range s.Location {
+		q.Add("location", l.Path)
+	}
+	return c.do(ctx, http.MethodPut, "/library/sections/"+url.PathEscape(s.Key), q, nil)
 }
 
 // SectionPrefs reads a library section's advanced settings, by id. PMS

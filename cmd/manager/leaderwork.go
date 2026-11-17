@@ -212,7 +212,9 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		// and markers ADR 0006 seeded, and now the items, folders, parts
 		// and media rows with them, written by the projection; Plex's
 		// scanner never runs for those sections.
-		seeder := &plexseed.Seeder{DB: m.pool, Libraries: m.Config.Provision.LibraryNames()}
+		// By title, a former one included: a file seeds before the
+		// provisioner's rename as after it.
+		seeder := &plexseed.Seeder{DB: m.pool, Libraries: m.Config.Provision.LibraryTitles()}
 		// Files is the library as this pod mounts it, where Plex reads it:
 		// the sweep takes a file Plex scanned that is gone off its item.
 		w.Projection = &plexproject.Projector{

@@ -31,6 +31,12 @@ type Library struct {
 	Provider  string   `mapstructure:"provider"`
 	Language  string   `mapstructure:"language"`
 	Locations []string `mapstructure:"locations"`
+	// FormerNames are the titles the library had before Name. A section
+	// of the library's type under one of them, when none is titled Name,
+	// is renamed to Name in place rather than a second library created;
+	// and whatever names a library by title (a PlexCollection's or a
+	// PlexHubLayout's spec.library) may go on using a former name.
+	FormerNames []string `mapstructure:"formerNames"`
 	// SwitchAgent lets the provisioner move an existing library of this
 	// name onto the provider's agent. Off, a library on another agent is
 	// reported as drifted and left alone.
@@ -76,6 +82,21 @@ func (c Config) Validate() error {
 		}
 	}
 	seen := map[string]bool{}
+	for _, l := range c.Libraries {
+		seen[l.Name] = true
+	}
+	for _, l := range c.Libraries {
+		for _, f := range l.FormerNames {
+			switch {
+			case f == "":
+				errs = append(errs, fmt.Errorf("library %q: empty former name", l.Name))
+			case seen[f]:
+				errs = append(errs, fmt.Errorf("library %q: former name %q is a library's name or another former name", l.Name, f))
+			}
+			seen[f] = true
+		}
+	}
+	seen = map[string]bool{}
 	for _, l := range c.Libraries {
 		switch {
 		case l.Name == "":
@@ -130,6 +151,48 @@ func (c Config) LibraryNames() []string {
 	return out
 }
 
+// LibraryTitles are every title a configured library has or had: each
+// name, then its former names. The seeder writes into a library under any
+// of them, so a file seeds before the rename as after it.
+func (c Config) LibraryTitles() []string {
+	var out []string
+	for _, l := range c.Libraries {
+		out = append(out, l.Name)
+		out = append(out, l.FormerNames...)
+	}
+	return out
+}
+
+// SectionsTitled are the sections a library title names: those titled
+// title; else, when title is a configured library's name or one of its
+// former names, the sections of that library's type under any of its
+// names. So a resource that names a library by the title it had before a
+// rename still finds it, and one that names the new title finds a library
+// not renamed yet. More than one answer is the caller's ambiguity.
+func (c Config) SectionsTitled(sections []plexapi.Section, title string) []plexapi.Section {
+	var out []plexapi.Section
+	for _, s := range sections {
+		if s.Title == title {
+			out = append(out, s)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, l := range c.Libraries {
+		if l.Name != title && !slices.Contains(l.FormerNames, title) {
+			continue
+		}
+		for _, s := range sections {
+			if s.Type == l.Type && (s.Title == l.Name || slices.Contains(l.FormerNames, s.Title)) {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 // Provisioner reconciles Config into one Plex.
 type Provisioner struct {
 	PMS *plexapi.Client
@@ -161,9 +224,14 @@ func (p *Provisioner) Keys() map[string]string {
 	return out
 }
 
-func (p *Provisioner) recordKeys(sections []plexapi.Section) {
+// recordKeys keeps each library's section key, but for a library whose
+// sections conflict: which of them is the library is a person's to say.
+func (p *Provisioner) recordKeys(sections []plexapi.Section, conflicted map[string]bool) {
 	keys := map[string]string{}
 	for _, lib := range p.Config.Libraries {
+		if conflicted[lib.Name] {
+			continue
+		}
 		for _, s := range sections {
 			if s.Title == lib.Name {
 				keys[lib.Name] = s.Key
@@ -230,6 +298,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 	}
 	var errs []error
 	var ensured []Library
+	conflicted := map[string]bool{}
 	for _, lib := range p.Config.Libraries {
 		if _, ok := roots[lib.Provider]; !ok {
 			if pending {
@@ -238,11 +307,16 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 			errs = append(errs, fmt.Errorf("library %q: no configured provider declares %q", lib.Name, lib.Provider))
 			continue
 		}
-		if err := p.ensureLibrary(ctx, log, lib, groups[lib.Provider], sections); err != nil {
+		ok, err := p.ensureLibrary(ctx, log, lib, groups[lib.Provider], sections)
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		ensured = append(ensured, lib)
+		if ok {
+			ensured = append(ensured, lib)
+		} else {
+			conflicted[lib.Name] = true
+		}
 	}
 	if len(ensured) > 0 {
 		// Listed again: a library created above has a key only now.
@@ -255,7 +329,7 @@ func (p *Provisioner) Run(ctx context.Context) (Result, error) {
 			}
 		}
 	}
-	p.recordKeys(sections)
+	p.recordKeys(sections, conflicted)
 	if err := errors.Join(errs...); err != nil {
 		return Errored, err
 	}
@@ -301,23 +375,59 @@ func (p *Provisioner) ensureGroups(ctx context.Context, roots map[string]Root) (
 	return out, nil
 }
 
-func (p *Provisioner) ensureLibrary(ctx context.Context, log *slog.Logger, lib Library, groupID int, sections []plexapi.Section) error {
+// ensureLibrary creates the library, renames a section still under one of
+// its former names, or moves it onto its agent. It reports false, with no
+// error, for a library whose sections conflict: nothing of it is written.
+func (p *Provisioner) ensureLibrary(ctx context.Context, log *slog.Logger, lib Library, groupID int, sections []plexapi.Section) (bool, error) {
 	language := lib.Language
 	if language == "" {
 		language = "en-US"
 	}
 	i := slices.IndexFunc(sections, func(s plexapi.Section) bool { return s.Title == lib.Name })
+	var former []int
+	for j, s := range sections {
+		if s.Type == lib.Type && slices.Contains(lib.FormerNames, s.Title) {
+			former = append(former, j)
+		}
+	}
+	switch {
+	case i >= 0 && len(former) > 0:
+		log.Warn("a library of the configured name exists beside one under a former name; neither is changed: rename or delete one in Plex",
+			"library", lib.Name, "key", sections[i].Key, "former", sections[former[0]].Title, "formerKey", sections[former[0]].Key)
+		p.drift(lib.Name, true)
+		return false, nil
+	case len(former) > 1:
+		log.Warn("more than one library is under the library's former names; none is renamed: rename or delete all but one in Plex",
+			"library", lib.Name, "first", sections[former[0]].Title, "second", sections[former[1]].Title)
+		p.drift(lib.Name, true)
+		return false, nil
+	case len(former) == 1:
+		// Renamed in place, never created beside it. The group is sent
+		// only for the agent it belongs to.
+		i = former[0]
+		s := sections[i]
+		group := 0
+		if s.Agent == lib.Provider {
+			group = groupID
+		}
+		if err := p.PMS.RenameSection(ctx, s, lib.Name, group); err != nil {
+			return false, fmt.Errorf("library %q: rename from %q: %w", lib.Name, s.Title, err)
+		}
+		log.Info("renamed library", "library", lib.Name, "from", s.Title, "key", s.Key)
+		// The rest of this run reads the section under its new title.
+		sections[i].Title = lib.Name
+	}
 	if i < 0 {
 		err := p.PMS.CreateSection(ctx, plexapi.NewSection{
 			Name: lib.Name, Type: lib.Type, Agent: lib.Provider,
 			Scanner: scanners[lib.Type], Language: language, GroupID: groupID, Locations: lib.Locations,
 		})
 		if err != nil {
-			return fmt.Errorf("library %q: create: %w", lib.Name, err)
+			return false, fmt.Errorf("library %q: create: %w", lib.Name, err)
 		}
 		log.Info("created library", "library", lib.Name, "agent", lib.Provider)
 		p.drift(lib.Name, false)
-		return nil
+		return true, nil
 	}
 	s := sections[i]
 	if !sameLocations(s.Location, lib.Locations) {
@@ -326,25 +436,25 @@ func (p *Provisioner) ensureLibrary(ctx context.Context, log *slog.Logger, lib L
 	}
 	if s.Agent == lib.Provider {
 		p.drift(lib.Name, false)
-		return nil
+		return true, nil
 	}
 	if !lib.SwitchAgent {
 		log.Warn("library is on another agent; set switchAgent to move it",
 			"library", lib.Name, "agent", s.Agent, "configured", lib.Provider)
 		p.drift(lib.Name, true)
-		return nil
+		return true, nil
 	}
 	if err := p.PMS.SetSectionAgent(ctx, s.Key, lib.Provider, groupID); err != nil {
 		p.drift(lib.Name, true)
-		return fmt.Errorf("library %q: switch agent: %w", lib.Name, err)
+		return false, fmt.Errorf("library %q: switch agent: %w", lib.Name, err)
 	}
 	// A new agent otherwise applies only to items added from now on.
 	if err := p.PMS.RefreshSection(ctx, s.Key, "", true); err != nil {
-		return fmt.Errorf("library %q: refresh after switching agent: %w", lib.Name, err)
+		return false, fmt.Errorf("library %q: refresh after switching agent: %w", lib.Name, err)
 	}
 	log.Info("moved library onto its configured agent", "library", lib.Name, "from", s.Agent, "to", lib.Provider)
 	p.drift(lib.Name, false)
-	return nil
+	return true, nil
 }
 
 // analysisSettings are the section settings for a library's own analysis

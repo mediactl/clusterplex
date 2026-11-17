@@ -206,11 +206,10 @@ func (m *Manager) provisionedKeys(ctx context.Context) map[string]bool {
 	if err != nil {
 		return out
 	}
-	for _, s := range sections {
-		for _, n := range names {
-			if s.Title == n {
-				out[s.Key] = true
-			}
+	// A library still under a former name is the same section.
+	for _, n := range names {
+		for _, s := range m.Config.Provision.SectionsTitled(sections, n) {
+			out[s.Key] = true
 		}
 	}
 	m.keys, m.keysAt = out, time.Now()

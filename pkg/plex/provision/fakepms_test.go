@@ -111,11 +111,23 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 			f.prefs[key][id] = v
 		}
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/library/sections/"):
-		write()
 		key := strings.TrimPrefix(r.URL.Path, "/library/sections/")
+		if q.Has("name") {
+			// A rename, recorded with what it sent.
+			f.writes = append(f.writes, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		} else {
+			write()
+		}
+		if !q.Has("agent") { // PMS refuses an edit without agent
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		for i := range f.sections {
 			if f.sections[i].Key == key {
 				f.sections[i].Agent = q.Get("agent")
+				if q.Has("name") {
+					f.sections[i].Title = q.Get("name")
+				}
 			}
 		}
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/refresh"):

@@ -74,6 +74,10 @@ func TestItSendsWritesWithTheirParameters(t *testing.T) {
 		GroupID: 7, Locations: []string{"/media/a", "/media/b"},
 	}))
 	require.NoError(t, c.SetSectionAgent(ctx, "1", "tv.plex.agents.custom.clustarr.movies", 7))
+	require.NoError(t, c.RenameSection(ctx, plexapi.Section{
+		Key: "1", Title: "Clustarr Movies", Agent: "tv.plex.agents.custom.clustarr.movies", Scanner: "Plex Movie",
+		Language: "en-US", Location: []plexapi.Location{{Path: "/media/a"}, {Path: "/media/b"}},
+	}, "Movies", 7))
 	require.NoError(t, c.RefreshSection(ctx, "1", "/media/a/Heat (1995)", false))
 	require.NoError(t, c.RefreshSection(ctx, "1", "", true))
 	require.NoError(t, c.RefreshItem(ctx, 42))
@@ -88,6 +92,7 @@ func TestItSendsWritesWithTheirParameters(t *testing.T) {
 		"POST /media/providers/metadata/group?primaryIdentifier=tv.plex.agents.custom.clustarr.movies&title=Clustarr+Movies",
 		"POST /library/sections/all?agent=tv.plex.agents.custom.clustarr.movies&language=en-US&locations=%2Fmedia%2Fa&locations=%2Fmedia%2Fb&metadataAgentProviderGroupId=7&name=Movies&scanner=Plex+Movie&type=1",
 		"PUT /library/sections/1?agent=tv.plex.agents.custom.clustarr.movies&metadataAgentProviderGroupId=7",
+		"PUT /library/sections/1?agent=tv.plex.agents.custom.clustarr.movies&language=en-US&location=%2Fmedia%2Fa&location=%2Fmedia%2Fb&metadataAgentProviderGroupId=7&name=Movies&scanner=Plex+Movie",
 		"POST /library/sections/1/refresh?path=%2Fmedia%2Fa%2FHeat+%281995%29",
 		"POST /library/sections/1/refresh?force=1",
 		"PUT /library/metadata/42/refresh?",
