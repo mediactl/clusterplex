@@ -78,7 +78,12 @@ func (t AudioTranscode) query() url.Values {
 		"location":          {"lan"},
 		"autoAdjustQuality": {"0"},
 		"hasMDE":            {"1"},
-		"session":           {t.Session},
+		// No subtitle: one Plex selects by default (an anime's English
+		// subtitles beside Japanese audio) is burned in, which converts
+		// the video, and the newest ten items of a codec can all be one
+		// such show (talos, 2026-11-16: the AAC fetch failed every try).
+		"subtitles": {"none"},
+		"session":   {t.Session},
 	}
 }
 

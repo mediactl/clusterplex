@@ -74,6 +74,7 @@ func TestADecisionIsAskedForAsTheClientWithTheVideoCopiedAndTheAudioConverted(t 
 	assert.Equal(t, "/library/metadata/72", got.Query.Get("path"))
 	assert.Equal(t, "1", got.Query.Get("directStream"), "the video is copied")
 	assert.Equal(t, "0", got.Query.Get("directStreamAudio"), "the audio is converted")
+	assert.Equal(t, "none", got.Query.Get("subtitles"), "no subtitle is burned in: that would convert the video")
 	assert.Equal(t, "0", got.Query.Get("directPlay"))
 	assert.Equal(t, "s1", got.Query.Get("session"))
 	assert.Equal(t, "s1", got.Session)
