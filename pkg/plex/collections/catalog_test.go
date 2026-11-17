@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"testing"
 
@@ -89,7 +90,10 @@ func (p *provider) server(t *testing.T) *httptest.Server {
 		end := min(len(c.Items), start+p.pageSize)
 		var items []md
 		for _, it := range c.Items[min(start, len(c.Items)):end] {
-			items = append(items, md{"guid": it.GUID, "title": it.Title, "year": it.Year, "type": "movie"})
+			items = append(items, md{
+				"guid": it.GUID, "Guid": []md{{"id": "imdb://tt0058578"}, {"id": "tmdb://51863"}},
+				"title": it.Title, "year": it.Year, "type": "movie",
+			})
 		}
 		write(w, len(c.Items), items)
 	})
@@ -333,4 +337,34 @@ func TestUntitledTMDBCollectionsShareOnlyTheirID(t *testing.T) {
 	assert.Empty(t, holder(res("titled", "The Up Collection", 95051), up), "a title of its own against none: the sync finds out what Plex holds")
 	assert.Empty(t, holder(up, res("smart", "UP", 0)), "a smart collection of another title")
 	assert.Equal(t, "smart", holder(res("normal", "up", 0), res("smart", "UP", 0)), "titles still match in any case")
+}
+
+// clustarr's own answers for The Up Collection, recorded on talos
+// (2026-11-17; testdata/provider, the host renamed): a movie carries
+// "guid" and "Guid" both, which the first cut read as one field and
+// refused the whole collection for.
+func TestTheProviderCatalogReadsClustarrsRecordedAnswers(t *testing.T) {
+	mux := http.NewServeMux()
+	serve := func(pattern, file string) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {
+			raw, err := os.ReadFile("testdata/provider/" + file)
+			require.NoError(t, err)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+		})
+	}
+	serve("GET /plex/movies/library/collections/tmdb-collection-95051", "up-collection.json")
+	serve("GET /plex/movies/library/collections/"+upPlexID+"/children", "up-children.json")
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	got, err := collections.ProviderCatalog{Providers: []string{srv.URL + "/plex/tv", srv.URL + "/plex/movies"}}.TMDBCollection(t.Context(), upCollection)
+	require.NoError(t, err)
+	assert.Equal(t, "The Up Collection", got.Title)
+	assert.Equal(t, upPosterURL, got.Poster, "TMDB's own poster for the collection")
+	assert.Equal(t, upArtURL, got.Background)
+	assert.Contains(t, got.Summary, "Granada Television")
+	require.Len(t, got.Items, 9)
+	assert.Equal(t, collections.CatalogItem{GUID: "plex://movie/5d776890f617c90020155508", Title: "Seven Up!", Year: 1964}, got.Items[0])
+	assert.Equal(t, collections.CatalogItem{GUID: "plex://movie/5eb8f2743f398b00402fc2dc", Title: "63 Up", Year: 2019}, got.Items[8])
 }

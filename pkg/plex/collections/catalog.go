@@ -73,20 +73,38 @@ type ProviderCatalog struct {
 
 var _ Catalog = ProviderCatalog{}
 
-// providerPage is a provider's MediaContainer.
+// providerPage is a provider's MediaContainer. An entry is read key by
+// key, by the key's exact spelling: a movie carries both "guid", its own
+// GUID, and "Guid", the list of its external ids, and encoding/json
+// matches a struct field to either (talos, 2026-11-17: the first TMDB
+// collection read as "cannot unmarshal array into ... Guid of type
+// string").
 type providerPage struct {
 	MediaContainer struct {
-		TotalSize int `json:"totalSize"`
-		Metadata  []struct {
-			Key     string `json:"key"`
-			GUID    string `json:"guid"`
-			Title   string `json:"title"`
-			Year    int    `json:"year"`
-			Summary string `json:"summary"`
-			Thumb   string `json:"thumb"`
-			Art     string `json:"art"`
-		} `json:"Metadata"`
+		TotalSize int             `json:"totalSize"`
+		Metadata  []providerEntry `json:"Metadata"`
 	} `json:"MediaContainer"`
+}
+
+type providerEntry map[string]json.RawMessage
+
+// text is the entry's string at key, "" when it has none or holds
+// something else there.
+func (e providerEntry) text(key string) string {
+	var s string
+	if raw, ok := e[key]; ok && json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// number is the entry's integer at key, 0 when it has none.
+func (e providerEntry) number(key string) int {
+	var n int
+	if raw, ok := e[key]; ok && json.Unmarshal(raw, &n) != nil {
+		return 0
+	}
+	return n
 }
 
 // TMDBCollection asks each provider in turn; a provider that cannot be
@@ -125,18 +143,19 @@ func (p ProviderCatalog) collection(ctx context.Context, base string, id int64) 
 	md := head.MediaContainer.Metadata[0]
 	// The children are listed at the entry's own key: clustarr answers a
 	// collection Plex knows under its Plex id.
-	if !strings.HasPrefix(md.Key, "/library/collections/") || !strings.HasSuffix(md.Key, "/children") {
-		return CatalogCollection{}, fmt.Errorf("%s answered TMDB collection %d with the key %q, not its children's", base, id, md.Key)
+	key := md.text("key")
+	if !strings.HasPrefix(key, "/library/collections/") || !strings.HasSuffix(key, "/children") {
+		return CatalogCollection{}, fmt.Errorf("%s answered TMDB collection %d with the key %q, not its children's", base, id, key)
 	}
-	col := CatalogCollection{Title: md.Title, Summary: md.Summary, Poster: md.Thumb, Background: md.Art}
+	col := CatalogCollection{Title: md.text("title"), Summary: md.text("summary"), Poster: md.text("thumb"), Background: md.text("art")}
 	for start := 0; ; {
 		var page providerPage
-		if err := p.get(ctx, base+md.Key, start, &page); err != nil {
+		if err := p.get(ctx, base+key, start, &page); err != nil {
 			return CatalogCollection{}, err
 		}
 		for _, it := range page.MediaContainer.Metadata {
-			if it.GUID != "" {
-				col.Items = append(col.Items, CatalogItem{GUID: it.GUID, Title: it.Title, Year: it.Year})
+			if guid := it.text("guid"); guid != "" {
+				col.Items = append(col.Items, CatalogItem{GUID: guid, Title: it.text("title"), Year: it.number("year")})
 			}
 		}
 		// By what came back, not by what was asked for: a provider may page

@@ -1,0 +1,675 @@
+{
+  "MediaContainer": {
+    "Metadata": [
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          },
+          {
+            "tag": "TV Movie"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0058578"
+          },
+          {
+            "id": "tmdb://51863"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "Seven Up!",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/384897f9-44a1-49d8-b1ce-806d0558c07f/poster?v=0d00cbbabc06b74f79003c84d138b619be377f5a0c6e10b4085b600601bb73db&nowebp=1"
+          },
+          {
+            "alt": "Seven Up!",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/384897f9-44a1-49d8-b1ce-806d0558c07f/fanart?v=e7734920b2a4c8b1e73a13999b886fc9922bc5396d1a6e41ab5c5df764e22a1a"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 7.9
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.2
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/384897f9-44a1-49d8-b1ce-806d0558c07f/fanart?v=e7734920b2a4c8b1e73a13999b886fc9922bc5396d1a6e41ab5c5df764e22a1a",
+        "duration": 2400000,
+        "guid": "plex://movie/5d776890f617c90020155508",
+        "key": "/library/metadata/384897f9-44a1-49d8-b1ce-806d0558c07f",
+        "originallyAvailableAt": "",
+        "ratingKey": "384897f9-44a1-49d8-b1ce-806d0558c07f",
+        "summary": "A group of British children aged 7 from widely ranging backgrounds are interviewed about a range of subjects. The filmmakers plan to re-interview them at 7 year intervals to track how their lives and attitudes change as they age.",
+        "thumb": "https://clustarr.example/art/movie/384897f9-44a1-49d8-b1ce-806d0558c07f/poster?v=0d00cbbabc06b74f79003c84d138b619be377f5a0c6e10b4085b600601bb73db&nowebp=1",
+        "title": "Seven Up!",
+        "type": "movie",
+        "year": 1964
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0066356"
+          },
+          {
+            "id": "tmdb://50754"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "7 Plus Seven",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/9f5b658b-4212-41c3-9069-33a33fdd9ab5/poster?v=9d9a37126835d67d8e739bbb74fe2cc58ebcb20fbd22d9d14cb1467961b53953"
+          },
+          {
+            "alt": "7 Plus Seven",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/9f5b658b-4212-41c3-9069-33a33fdd9ab5/fanart?v=e5b267e9b0fbc37ea2e62e29682c17585799aa1565b0be5ebe5710cab89bbd1f"
+          },
+          {
+            "alt": "7 Plus Seven",
+            "type": "clearLogo",
+            "url": "https://clustarr.example/art/movie/9f5b658b-4212-41c3-9069-33a33fdd9ab5/logo?v=071757a1970ae136b91ac4e05ba558129c9ed3c79b7e33e8479e6916c2b2d40c&nowebp=1"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 7.9
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.3
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 8.7
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/9f5b658b-4212-41c3-9069-33a33fdd9ab5/fanart?v=e5b267e9b0fbc37ea2e62e29682c17585799aa1565b0be5ebe5710cab89bbd1f",
+        "duration": 3120000,
+        "guid": "plex://movie/5d77688b51dd69001fe0de50",
+        "key": "/library/metadata/9f5b658b-4212-41c3-9069-33a33fdd9ab5",
+        "originallyAvailableAt": "1970-12-15",
+        "ratingKey": "9f5b658b-4212-41c3-9069-33a33fdd9ab5",
+        "summary": "After a 7 year wait, director Michael Apted revisits the same group of British-born children from Seven Up! The subjects are interviewed as to the changes that have occurred in their lives during the last seven years.",
+        "thumb": "https://clustarr.example/art/movie/9f5b658b-4212-41c3-9069-33a33fdd9ab5/poster?v=9d9a37126835d67d8e739bbb74fe2cc58ebcb20fbd22d9d14cb1467961b53953",
+        "title": "7 Plus Seven",
+        "type": "movie",
+        "year": 1970
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0075610"
+          },
+          {
+            "id": "tmdb://20553"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "21 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/48d77e21-7513-4bbd-af26-7155ae144598/poster?v=286bbfeec9e6d32dc1f322414eef7b7ed35616eb14a46b0b92a39b25be10aa6b"
+          },
+          {
+            "alt": "21 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/48d77e21-7513-4bbd-af26-7155ae144598/fanart?v=c9c4593c6e319254a534c608861693e203d7da85b7142041438eed645ac61d9c"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 8
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.4
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 9.1
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/48d77e21-7513-4bbd-af26-7155ae144598/fanart?v=c9c4593c6e319254a534c608861693e203d7da85b7142041438eed645ac61d9c",
+        "duration": 6000000,
+        "guid": "plex://movie/5d776846880197001ec9674d",
+        "key": "/library/metadata/48d77e21-7513-4bbd-af26-7155ae144598",
+        "originallyAvailableAt": "",
+        "ratingKey": "48d77e21-7513-4bbd-af26-7155ae144598",
+        "summary": "After another 7 year wait, director Michael Apted revisits the same group of British-born children from Seven Up! and 7 Plus Seven. The subjects are interviewed as to the changes that have occurred in their lives during the last seven years.",
+        "thumb": "https://clustarr.example/art/movie/48d77e21-7513-4bbd-af26-7155ae144598/poster?v=286bbfeec9e6d32dc1f322414eef7b7ed35616eb14a46b0b92a39b25be10aa6b",
+        "title": "21 Up",
+        "type": "movie",
+        "year": 1977
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0088650"
+          },
+          {
+            "id": "tmdb://20561"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "28 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/b15fe881-a359-4f14-8f54-b031e02f5b48/poster?v=66a6544269204ff2e7bcdc1188a56ebcd2570680d2ef026d9be57251fc6d7988"
+          },
+          {
+            "alt": "28 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/b15fe881-a359-4f14-8f54-b031e02f5b48/fanart?v=6ce2532e5640f40a923f038d89b1005e1b55117f6b616127e102260acdd9ba36"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 8.1
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.5
+          },
+          {
+            "image": "rottentomatoes://image.rating.ripe",
+            "type": "critic",
+            "value": 10
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 9.2
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/b15fe881-a359-4f14-8f54-b031e02f5b48/fanart?v=6ce2532e5640f40a923f038d89b1005e1b55117f6b616127e102260acdd9ba36",
+        "duration": 8160000,
+        "guid": "plex://movie/5d77684585719b001f3a6cd2",
+        "key": "/library/metadata/b15fe881-a359-4f14-8f54-b031e02f5b48",
+        "originallyAvailableAt": "1985-10-06",
+        "ratingKey": "b15fe881-a359-4f14-8f54-b031e02f5b48",
+        "summary": "Just two years away from turning 30, participants in Michael Apted's documentary series are facing serious questions of identity and purpose, wondering whether they've found their place in the world.",
+        "tagline": "Imagine yourself at 7, 14, 21 & 28.",
+        "thumb": "https://clustarr.example/art/movie/b15fe881-a359-4f14-8f54-b031e02f5b48/poster?v=66a6544269204ff2e7bcdc1188a56ebcd2570680d2ef026d9be57251fc6d7988",
+        "title": "28 Up",
+        "type": "movie",
+        "year": 1985
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0101254"
+          },
+          {
+            "id": "tmdb://20562"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "35 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/0b77d71a-b924-4b53-8e75-7913719dfe9f/poster?v=40edcc05262f1d6002c7129559a99d5387b3d06bb057cc8972f11f36641469cd"
+          },
+          {
+            "alt": "35 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/0b77d71a-b924-4b53-8e75-7913719dfe9f/fanart?v=d173ced23891310fe5c38236941693ed35a1897671cc7a0a31fd5b70302abe7d"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 8.1
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.6
+          },
+          {
+            "image": "rottentomatoes://image.rating.ripe",
+            "type": "critic",
+            "value": 9.4
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 9
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/0b77d71a-b924-4b53-8e75-7913719dfe9f/fanart?v=d173ced23891310fe5c38236941693ed35a1897671cc7a0a31fd5b70302abe7d",
+        "duration": 6960000,
+        "guid": "plex://movie/5d77684554c0f0001f30556f",
+        "key": "/library/metadata/0b77d71a-b924-4b53-8e75-7913719dfe9f",
+        "originallyAvailableAt": "1992-01-15",
+        "ratingKey": "0b77d71a-b924-4b53-8e75-7913719dfe9f",
+        "summary": "Director Michael Apted revisits the same group of British-born adults after a 7 year wait. The subjects are interviewed as to the changes that have occurred in their lives during the last seven years.",
+        "thumb": "https://clustarr.example/art/movie/0b77d71a-b924-4b53-8e75-7913719dfe9f/poster?v=40edcc05262f1d6002c7129559a99d5387b3d06bb057cc8972f11f36641469cd",
+        "title": "35 Up",
+        "type": "movie",
+        "year": 1991
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0164312"
+          },
+          {
+            "id": "tmdb://20565"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "42 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/955ee4b2-ddc8-448a-9982-2a105e613d89/poster?v=f860820e105ef0f536d2ab1aad70b1b857f5040a4e1d0edf840d8cdde6c6373e"
+          },
+          {
+            "alt": "42 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/955ee4b2-ddc8-448a-9982-2a105e613d89/fanart?v=09b56d8cc25bc6a775d1ab1d4cb9eb1ba246fd2e4be7297300f42bb72fb9b4ae"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 8.1
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.6
+          },
+          {
+            "image": "rottentomatoes://image.rating.ripe",
+            "type": "critic",
+            "value": 9.1
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 9.4
+          }
+        ],
+        "Studio": [
+          {
+            "tag": "Granada Television"
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/955ee4b2-ddc8-448a-9982-2a105e613d89/fanart?v=09b56d8cc25bc6a775d1ab1d4cb9eb1ba246fd2e4be7297300f42bb72fb9b4ae",
+        "duration": 7980000,
+        "guid": "plex://movie/5d776846f59e58002189ab02",
+        "key": "/library/metadata/955ee4b2-ddc8-448a-9982-2a105e613d89",
+        "originallyAvailableAt": "1999-11-17",
+        "ratingKey": "955ee4b2-ddc8-448a-9982-2a105e613d89",
+        "studio": "Granada Television",
+        "summary": "Director Michael Apted revisits the same group of British-born adults after a 7 year wait. The subjects are interviewed as to the changes that have occurred in their lives during the last seven years.",
+        "tagline": "In 1964, director Michael Apted interviewed a group of seven year old children for the documentary \"Seven Up\". He's been back to film them every seven years. Now they are 42.",
+        "thumb": "https://clustarr.example/art/movie/955ee4b2-ddc8-448a-9982-2a105e613d89/poster?v=f860820e105ef0f536d2ab1aad70b1b857f5040a4e1d0edf840d8cdde6c6373e",
+        "title": "42 Up",
+        "type": "movie",
+        "year": 1999
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt0473434"
+          },
+          {
+            "id": "tmdb://13365"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "49 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/f96f33e5-f2a1-45a1-b6ce-a1d0a01aac87/poster?v=6852cbc3b1b4398c52dda09c6575c284575bdf97b579994569f921b4dd050ece"
+          },
+          {
+            "alt": "49 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/f96f33e5-f2a1-45a1-b6ce-a1d0a01aac87/fanart?v=b5f9d5c4916564655ff7ebb10c47b134e2458467c97be88b72551a26d20aee20"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 8.1
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.4
+          },
+          {
+            "image": "rottentomatoes://image.rating.ripe",
+            "type": "critic",
+            "value": 9.7
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 8.6
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/f96f33e5-f2a1-45a1-b6ce-a1d0a01aac87/fanart?v=b5f9d5c4916564655ff7ebb10c47b134e2458467c97be88b72551a26d20aee20",
+        "duration": 8100000,
+        "guid": "plex://movie/5d77683aeb5d26001f1e1cb7",
+        "key": "/library/metadata/f96f33e5-f2a1-45a1-b6ce-a1d0a01aac87",
+        "originallyAvailableAt": "2006-10-06",
+        "ratingKey": "f96f33e5-f2a1-45a1-b6ce-a1d0a01aac87",
+        "summary": "49 Up is the seventh film in a series of landmark documentaries that began 42 years ago when UK-based Granada's World in Action team, inspired by the Jesuit maxim \"Give me the child until he is seven and I will give you the man,\" interviewed a diverse group of seven-year-old children from all over England, asking them about their lives and their dreams for the future. Michael Apted, a researcher for the original film, has returned to interview the \"children\" every seven years since, at ages 14, 21, 28, 35, 42 and now again at age 49.In this latest chapter, more life-changing decisions are revealed, more shocking announcements made and more of the original group take part than ever before, speaking out on a variety of subjects including love, marriage, career, class and prejudice.",
+        "tagline": "In 1964 a group of seven year old children were interviewed for the documentary \"Seven Up\". They've been filmed every seven years since. Now they are 49.",
+        "thumb": "https://clustarr.example/art/movie/f96f33e5-f2a1-45a1-b6ce-a1d0a01aac87/poster?v=6852cbc3b1b4398c52dda09c6575c284575bdf97b579994569f921b4dd050ece",
+        "title": "49 Up",
+        "type": "movie",
+        "year": 2006
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt2147134"
+          },
+          {
+            "id": "tmdb://116167"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "56 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/3a428628-f971-44cb-b195-d4488d5e33e5/poster?v=687efcf815f13c77e07c2b6d9b07cad2e18b84548f953d3ea3fdf136d9c0b076"
+          },
+          {
+            "alt": "56 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/3a428628-f971-44cb-b195-d4488d5e33e5/fanart?v=f128f2494d429183bed2c857dddb106f8e1675f0e4cae73e14dfb845b7dac170"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 7.9
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.2
+          },
+          {
+            "image": "rottentomatoes://image.rating.ripe",
+            "type": "critic",
+            "value": 9.8
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 7.6
+          }
+        ],
+        "Studio": [
+          {
+            "tag": "ITV Studios"
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/3a428628-f971-44cb-b195-d4488d5e33e5/fanart?v=f128f2494d429183bed2c857dddb106f8e1675f0e4cae73e14dfb845b7dac170",
+        "duration": 8640000,
+        "guid": "plex://movie/5d77696751dd69001fe1681b",
+        "key": "/library/metadata/3a428628-f971-44cb-b195-d4488d5e33e5",
+        "originallyAvailableAt": "2013-01-04",
+        "ratingKey": "3a428628-f971-44cb-b195-d4488d5e33e5",
+        "studio": "ITV Studios",
+        "summary": "When a cross-section of seven-year-olds were interviewed for 7 Up in 1964 it was immediately evident that their social backgrounds influenced their attitudes towards life. While the upper class children were confident and self-assured, those from middle and working class backgrounds were resigned to a challenging life of hard work. This premise was put to the test every seven years when the same group were interviewed about the progression of their lives. 49 years in the making, the changes that occurred to the original 14 make for fascinating television and are in many ways the stories of all our lives. From success and disappointment, marriage and childbirth, to poverty and illness, nearly every facet of life has been captured on film. Now, at the age of 56, the group are once more brought together and, with the benefit of hindsight, assess whether their lives have been ruled by circumstance or self-determination.",
+        "tagline": "In 1964 a group of seven year old children were interviewed for the documentary \"Seven Up\". They've been filmed every seven years since. Now they are 56.",
+        "thumb": "https://clustarr.example/art/movie/3a428628-f971-44cb-b195-d4488d5e33e5/poster?v=687efcf815f13c77e07c2b6d9b07cad2e18b84548f953d3ea3fdf136d9c0b076",
+        "title": "56 Up",
+        "type": "movie",
+        "year": 2012
+      },
+      {
+        "Collection": [
+          {
+            "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+            "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+            "tag": "The Up Collection"
+          }
+        ],
+        "Country": [
+          {
+            "tag": "United Kingdom"
+          }
+        ],
+        "Genre": [
+          {
+            "tag": "Documentary"
+          }
+        ],
+        "Guid": [
+          {
+            "id": "imdb://tt8929142"
+          },
+          {
+            "id": "tmdb://698102"
+          }
+        ],
+        "Image": [
+          {
+            "alt": "63 Up",
+            "type": "coverPoster",
+            "url": "https://clustarr.example/art/movie/67da30d4-ff54-4094-abb4-757cba63fdf3/poster?v=63e836ddcf33eb9d9a035ef334ae0d81d0b2988edbff5fcc2375dbcefa750383"
+          },
+          {
+            "alt": "63 Up",
+            "type": "background",
+            "url": "https://clustarr.example/art/movie/67da30d4-ff54-4094-abb4-757cba63fdf3/fanart?v=883254b1cc9bf653204c94df3b247c9032d6ee8ddbf659730e45a0bdd96f7db7"
+          }
+        ],
+        "Rating": [
+          {
+            "image": "imdb://image.rating",
+            "type": "audience",
+            "value": 8.2
+          },
+          {
+            "image": "themoviedb://image.rating",
+            "type": "audience",
+            "value": 7.2
+          },
+          {
+            "image": "rottentomatoes://image.rating.ripe",
+            "type": "critic",
+            "value": 9.8
+          },
+          {
+            "image": "rottentomatoes://image.rating.upright",
+            "type": "audience",
+            "value": 9.5
+          }
+        ],
+        "Studio": [
+          {
+            "tag": "Albert Sustainable Production"
+          },
+          {
+            "tag": "ITV Studios"
+          },
+          {
+            "tag": "Shiver"
+          }
+        ],
+        "art": "https://clustarr.example/art/movie/67da30d4-ff54-4094-abb4-757cba63fdf3/fanart?v=883254b1cc9bf653204c94df3b247c9032d6ee8ddbf659730e45a0bdd96f7db7",
+        "duration": 8700000,
+        "guid": "plex://movie/5eb8f2743f398b00402fc2dc",
+        "key": "/library/metadata/67da30d4-ff54-4094-abb4-757cba63fdf3",
+        "originallyAvailableAt": "2020-11-27",
+        "ratingKey": "67da30d4-ff54-4094-abb4-757cba63fdf3",
+        "studio": "Albert Sustainable Production",
+        "summary": "Director Michael Apted revisits the same group of British-born adults after a 7 year wait. The subjects are interviewed as to the changes that have occurred in their lives during the last seven years.",
+        "tagline": "Every seven years, their lives, their loves, their fears & losses, their hopes & dreams.",
+        "thumb": "https://clustarr.example/art/movie/67da30d4-ff54-4094-abb4-757cba63fdf3/poster?v=63e836ddcf33eb9d9a035ef334ae0d81d0b2988edbff5fcc2375dbcefa750383",
+        "title": "63 Up",
+        "type": "movie",
+        "year": 2019
+      }
+    ],
+    "identifier": "tv.plex.agents.custom.clustarr.movies",
+    "offset": 0,
+    "size": 9,
+    "totalSize": 9
+  }
+}

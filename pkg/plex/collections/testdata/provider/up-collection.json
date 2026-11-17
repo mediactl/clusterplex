@@ -1,0 +1,24 @@
+{
+  "MediaContainer": {
+    "Metadata": [
+      {
+        "art": "https://image.tmdb.org/t/p/original/ayvfXaNjANcBknVtRuYaIFJqJDN.jpg",
+        "childCount": 9,
+        "guid": "plex://collection/5ec2ebb41ef0460041f94f16",
+        "key": "/library/collections/5ec2ebb41ef0460041f94f16/children",
+        "maxYear": 2019,
+        "minYear": 1964,
+        "originallyAvailableAt": "",
+        "ratingKey": "5ec2ebb41ef0460041f94f16",
+        "summary": "The Up Series is a series of documentary films produced by Granada Television that have followed the lives of fourteen British children since 1964, when they were seven years old.  The children were selected to represent the range of socio-economic backgrounds in Britain at that time, with the explicit assumption that each child's social class predetermines their future.  Every seven years, the director, Michael Apted, films new material from as many of the fourteen as he can get to participate.",
+        "thumb": "https://image.tmdb.org/t/p/w500/aPV1Ecrkl8VXJZrcIXHXUDQeH2H.jpg",
+        "title": "The Up Collection",
+        "type": "collection"
+      }
+    ],
+    "identifier": "tv.plex.agents.custom.clustarr.movies",
+    "offset": 0,
+    "size": 1,
+    "totalSize": 1
+  }
+}
