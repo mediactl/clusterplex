@@ -32,6 +32,11 @@ const (
 	SQLiteSchemaFile = "sqlite_schema.sql"
 )
 
+// FuzzySchema holds the fuzzystrmatch extension. The compatibility functions
+// find the extension by its catalog entry, not by this name, so it is only
+// what a database cluster-plex prepared calls the schema.
+const FuzzySchema = "plex_fuzzy"
+
 // Connect opens one session. Each script gets a session of its own, as psql
 // gives each invocation one: a pg_dump sets search_path to ” for the rest of
 // its session, which a pooled connection would carry into whatever used it
@@ -99,11 +104,23 @@ func InitSchema(ctx context.Context, log *slog.Logger, connect Connect, schema, 
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 
-	// Both may fail for want of privilege on a database an administrator
+	// Each may fail for want of privilege on a database an administrator
 	// prepared already, which the upstream script tolerates too.
+	//
+	// fuzzystrmatch (owner, 2026-11-16: "cluster-plex should just enable
+	// fuzzystrmatch on the postgresql server") is voice search's edit
+	// distance: PMS orders GET /hubs/search/voice by LEVENSHTEIN(query,
+	// title), which the compatibility functions answer with
+	// public.levenshtein(text, text), a case-insensitive wrapper over the
+	// extension's C function, or a slow PL/pgSQL one when the extension is
+	// not there. It goes in a schema of its own because its own
+	// levenshtein(text, text) has the wrapper's signature. Like pg_trgm it is
+	// a trusted extension, which the database's owner may create.
 	for _, stmt := range []string{
 		"CREATE SCHEMA IF NOT EXISTS " + pgx.Identifier{schema}.Sanitize(),
 		"CREATE EXTENSION IF NOT EXISTS pg_trgm",
+		"CREATE SCHEMA IF NOT EXISTS " + pgx.Identifier{FuzzySchema}.Sanitize(),
+		"CREATE EXTENSION IF NOT EXISTS fuzzystrmatch WITH SCHEMA " + pgx.Identifier{FuzzySchema}.Sanitize(),
 	} {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			log.Warn("statement failed", "sql", stmt, "err", err)
