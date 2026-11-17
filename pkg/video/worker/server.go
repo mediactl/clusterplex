@@ -194,11 +194,12 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 		err = cause
 	}
 	done := &videopb.Done{}
-	if err != nil {
-		done.Error, done.Reason = err.Error(), string(reasonOf(ctx, err))
-		log.Warn("conversion failed", "reason", done.Reason, "err", err)
-	} else {
+	switch {
+	case err == nil:
 		log.Info("conversion done")
+	default:
+		done.Error, done.Reason = err.Error(), string(reasonOf(ctx, err))
+		logEnd(log, video.Reason(done.Reason), err)
 	}
 	_ = stream.Send(&videopb.Down{Kind: &videopb.Down_Done{Done: done}})
 	return nil
@@ -257,6 +258,18 @@ func (s *Server) inputStall() time.Duration {
 		return DefaultInputStall
 	}
 	return s.InputStall
+}
+
+// logEnd says how a conversion that did not finish ended. Plex ending the
+// job is how every session ends -- a viewer stopped, sought, or changed
+// channel -- so it is no failure and no warning (owner, 2026-11-16: "why
+// the plex transcoder is showing conversion failed ... cancelled").
+func logEnd(log *slog.Logger, reason video.Reason, err error) {
+	if reason == video.ReasonCancelled {
+		log.Info("conversion ended by Plex", "reason", reason)
+		return
+	}
+	log.Warn("conversion failed", "reason", reason, "err", err)
 }
 
 func reasonOf(ctx context.Context, err error) video.Reason {

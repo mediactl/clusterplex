@@ -551,12 +551,17 @@ func TestACancelledJobIsCancelled(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}}})
+	var logs bytes.Buffer
+	h.relay.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() { <-started; cancel() }()
 	s := &sink{}
 	require.Error(t, h.relay.Execute(ctx, h.req, s))
 	assert.Contains(t, s.stderr(), "video: cancelled: ")
 	assert.Equal(t, []video.Reason{video.ReasonCancelled}, h.refs)
+	// Plex ends every session this way: said, and no warning.
+	assert.Contains(t, logs.String(), "video conversion ended by Plex")
+	assert.NotContains(t, logs.String(), `"level":"WARN"`)
 }
 
 func TestTheStartupOverheadIsObserved(t *testing.T) {

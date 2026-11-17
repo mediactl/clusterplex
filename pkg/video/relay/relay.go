@@ -130,7 +130,12 @@ func (r *Relay) finish(sink remoteexec.Sink, job video.Job, err error) error {
 	if r.Refused != nil {
 		r.Refused(rf.reason)
 	}
-	r.Logger.Warn("video conversion refused", "reason", rf.reason, "session", job.Session, "err", rf.err)
+	if rf.reason == video.ReasonCancelled {
+		// Plex ended the job, as it ends every session: no warning.
+		r.Logger.Info("video conversion ended by Plex", "reason", rf.reason, "session", job.Session)
+	} else {
+		r.Logger.Warn("video conversion refused", "reason", rf.reason, "session", job.Session, "err", rf.err)
+	}
 	return remoteexec.Finish(sink, "video", rf)
 }
 
