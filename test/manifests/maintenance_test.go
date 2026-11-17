@@ -180,3 +180,19 @@ func TestEveryInstallsPlexPodsMatchTheManagersSelector(t *testing.T) {
 		require.Equal(t, 1, sets, "%s runs Plex in one StatefulSet", name)
 	}
 }
+
+// No Job of cluster-plex's outlives its run by more than 100 seconds
+// (owner, 2026-11-17: "Cluster-plex's jobs should not persist after running
+// - ensure they contain ttlSecondsAfterFinished: 100"): every CronJob's Job
+// template, in both installs, says so. The guide build Job the manager
+// makes is held by cmd/manager's own test.
+func TestEveryMaintenanceJobIsDeleted100SecondsAfterItFinishes(t *testing.T) {
+	for name, rendered := range map[string]string{
+		"chart":             renderChart(t),
+		"k8s/overlays/kind": render(t, "k8s/overlays/kind"),
+	} {
+		cronJobs := strings.Count(rendered, "kind: CronJob")
+		require.Positive(t, cronJobs, name)
+		require.Equal(t, cronJobs, strings.Count(rendered, "ttlSecondsAfterFinished: 100\n"), "%s: every CronJob's Job template", name)
+	}
+}

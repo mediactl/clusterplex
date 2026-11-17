@@ -104,6 +104,8 @@ func TestABuildJobIsTheHoldersImageWithTheDatabaseAlone(t *testing.T) {
 
 	assert.Equal(t, int64(3600), *j.Spec.ActiveDeadlineSeconds)
 	assert.Equal(t, cloudJobBackoff, *j.Spec.BackoffLimit)
+	require.NotNil(t, j.Spec.TTLSecondsAfterFinished)
+	assert.Equal(t, int32(100), *j.Spec.TTLSecondsAfterFinished, "a finished build Job does not persist")
 	require.NotNil(t, j.Spec.PodFailurePolicy)
 	assert.Equal(t, []int32{exitPlanMoved}, j.Spec.PodFailurePolicy.Rules[0].OnExitCodes.Values, "a moved plan fails the Job at once")
 }

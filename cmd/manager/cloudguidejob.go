@@ -62,8 +62,12 @@ const (
 	cloudJobDeadline = time.Hour
 	// cloudJobBackoff is a build Job's retries before it fails.
 	cloudJobBackoff = int32(2)
-	// cloudJobTTL keeps a finished Job, and its pod's log, this long.
-	cloudJobTTL = int32(6 * 3600)
+	// cloudJobTTL is how long a finished Job, and its pod, stays (owner,
+	// 2026-11-17: "Cluster-plex's jobs should not persist after running -
+	// ensure they contain ttlSecondsAfterFinished: 100"). The waiting
+	// manager polls far more often than this and reads the staged build
+	// before the Job, and the pod's log is in the log store.
+	cloudJobTTL = int32(100)
 	// exitPlanMoved is a build Job's exit when the cached plan is no longer
 	// the one it was started for: the holder planned again, and a retry
 	// would fail the same way (podFailurePolicy fails the Job on it).
