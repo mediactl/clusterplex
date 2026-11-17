@@ -351,7 +351,10 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
 - **A provisioned section's rows are a projection of clustarr's MediaFiles,
   and Plex's scanner never runs for it (ADR-0008, 2026-10-15).**
   `pkg/plexproject` writes `metadata_items` (keyed by guid under one rule,
-  `plexproject.GUID`, with no `hash` so Plex fills the rest on refresh),
+  `plexproject.GUID`, with no `hash` so Plex fills the rest on refresh; a
+  whole-section reconcile asks again for every row whose `refreshed_at` is
+  still NULL, since the first ask is held in memory and a row Plex never
+  refreshed has no extras -- `Projector.refreshNeverRefreshed`, 2026-11-17),
   `directories`, `media_parts`, `media_items` (stamped `cp:mediaFile=<uid>`,
   `media_analysis_version` 8) and, through `pkg/plexseed.SeedTx`, the
   streams and markers, from the MediaFile the watcher hands it; a path or

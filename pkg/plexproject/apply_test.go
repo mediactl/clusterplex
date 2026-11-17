@@ -2,6 +2,7 @@ package plexproject
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ func projector(conn *pgx.Conn, r Refresher) *Projector {
 	return &Projector{
 		DB: conn, Seeder: &plexseed.Seeder{DB: conn, Now: func() time.Time { return now0 }},
 		Now: func() time.Time { return now0 }, Refresh: r,
+		Logger: slog.New(slog.DiscardHandler),
 	}
 }
 

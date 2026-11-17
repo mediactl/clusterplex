@@ -87,7 +87,57 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 		out.Deleted++
 	}
 	out.Unknown = len(byPath)
+	if folder == "" {
+		p.refreshNeverRefreshed(ctx, section)
+	}
 	return out, nil
+}
+
+// refreshNeverRefreshed asks for the refresh of every live movie, show and
+// season of the section Plex has never refreshed, and of the season of an
+// episode it never has ([refreshTarget]). The projection asks once, when
+// it inserts a row, and the watcher holds what it was asked in memory: a
+// restart before the refresh was sent lost it, and a row an older build
+// seeded whole was never asked for at all. Such a row has what the
+// projection wrote and none of what only a refresh brings -- its extras
+// (talos, 2026-11-17: 275 movies made at 07:34Z had no trailers while the
+// provider held them, until each was refreshed by hand). A whole-section
+// reconcile runs when the watch has synced and every SeedResync, so a row
+// Plex cannot refresh is asked again at that pace. A failed read is
+// logged: the reconcile itself is done.
+func (p *Projector) refreshNeverRefreshed(ctx context.Context, section int64) {
+	if p.Refresh == nil {
+		return
+	}
+	rows, err := p.DB.Query(ctx, `SELECT DISTINCT CASE WHEN metadata_type = $2 AND parent_id IS NOT NULL THEN parent_id ELSE id END
+		FROM metadata_items
+		WHERE library_section_id = $1 AND deleted_at IS NULL AND refreshed_at IS NULL AND metadata_type = ANY($3)
+		ORDER BY 1`,
+		section, int(TypeEpisode), []int{int(TypeMovie), int(TypeShow), int(TypeSeason), int(TypeEpisode)})
+	if err != nil {
+		p.Logger.WarnContext(ctx, "plexproject: list the items Plex never refreshed", "section", section, "err", err)
+		return
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			p.Logger.WarnContext(ctx, "plexproject: list the items Plex never refreshed", "section", section, "err", err)
+			return
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		p.Logger.WarnContext(ctx, "plexproject: list the items Plex never refreshed", "section", section, "err", err)
+		return
+	}
+	for _, id := range ids {
+		p.Refresh.NeedsRefresh(id)
+	}
+	if len(ids) > 0 {
+		p.Logger.InfoContext(ctx, "plexproject: asked for the refresh of items Plex never refreshed", "section", section, "items", len(ids))
+	}
 }
 
 // liveRows reads the section's (or the folder's) live media rows: the

@@ -140,3 +140,44 @@ func TestReconcileRefusesToEmptyASectionFromAnEmptyWantList(t *testing.T) {
 	require.ErrorIs(t, err, ErrEmptyWant)
 	require.NotZero(t, mediaID(t, conn, section, "f1"))
 }
+
+// Plex is asked once for a row's refresh, when the projection inserts it,
+// and the watcher keeps what it was asked in memory. A whole-section
+// reconcile asks again for every movie, show and season Plex never
+// refreshed, and for the season of an episode it never did; a folder's
+// reconcile and a refreshed or trashed row ask for nothing (talos,
+// 2026-11-17: 275 movies had no trailers until each was refreshed by hand).
+func TestAWholeSectionReconcileAsksForTheRefreshOfRowsPlexNeverRefreshed(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	asked := &refreshes{}
+	p := projector(conn, asked)
+	ctx := context.Background()
+	want := []Change{
+		change("never", "/media/movies/Never (2000)/Never.mkv", "k1", movieItem("u-never", "", "Never")),
+		change("done", "/media/movies/Done (2001)/Done.mkv", "k1", movieItem("u-done", "", "Done")),
+		change("trashed", "/media/movies/Trashed (2002)/Trashed.mkv", "k1", movieItem("u-trashed", "", "Trashed")),
+	}
+	for _, c := range want {
+		require.NoError(t, p.Apply(ctx, section, loc, c))
+	}
+	item := func(file string) int64 {
+		var id int64
+		require.NoError(t, conn.QueryRow(ctx, `SELECT metadata_item_id FROM media_items WHERE id = $1`, mediaID(t, conn, section, file)).Scan(&id))
+		return id
+	}
+	never, done, trashed := item("never"), item("done"), item("trashed")
+	_, err := conn.Exec(ctx, `UPDATE metadata_items SET refreshed_at = 1790800000 WHERE id = $1`, done)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, `UPDATE metadata_items SET deleted_at = 1790800000 WHERE id = $1`, trashed)
+	require.NoError(t, err)
+
+	asked.ids = nil
+	_, err = p.Reconcile(ctx, section, loc, "/media/movies/Never (2000)", want)
+	require.NoError(t, err)
+	require.Empty(t, asked.ids, "a folder's reconcile asks for nothing")
+
+	_, err = p.Reconcile(ctx, section, loc, "", want)
+	require.NoError(t, err)
+	require.Equal(t, []int64{never}, asked.ids)
+}
