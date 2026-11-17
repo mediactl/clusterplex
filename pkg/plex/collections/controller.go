@@ -58,7 +58,11 @@ type Controller struct {
 	// An image newer than its chart's RBAC finds the CRD and no access,
 	// and waits rather than start a watch the apiserver refuses.
 	Allowed func(ctx context.Context) (bool, error)
-	Logger  *slog.Logger
+	// HubLayouts reports whether a PlexHubLayout lists the PlexCollection
+	// of a name (HubController.Lists): its hub's visibility is then the
+	// layout's, and spec.visibility is not applied. nil is none.
+	HubLayouts func(ctx context.Context, collection string) bool
+	Logger     *slog.Logger
 
 	once  sync.Once
 	mu    sync.Mutex
@@ -347,6 +351,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 			out.Message = fmt.Sprintf("the older PlexCollection %q holds %s (%s) in %q; this one changes nothing in Plex", first, holderTitle(spec), spec.ItemType, spec.Library)
 		} else {
 			prev.HeldByOthers = othersHold(held, name)
+			prev.HubLayout = c.HubLayouts != nil && c.HubLayouts(ctx, name)
 			out = c.Syncer.Sync(ctx, u.GetNamespace(), spec, prev)
 		}
 	}

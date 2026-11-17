@@ -13,6 +13,7 @@ var Subsystems = []string{
 	"clustarr.watch",
 	"codecs",
 	"collections",
+	"collections.hubs",
 	"db",
 	"livetv",
 	"livetv.grabs",

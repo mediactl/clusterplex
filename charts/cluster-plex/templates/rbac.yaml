@@ -94,7 +94,8 @@ roleRef:
 # MediaFiles change and refreshes the items whose metadata changes. It
 # reconciles clustarr's PlexCollections into Plex and is the one writer of
 # their status and finalizer (clustarr's 2026-11-10 plex-collections
-# design, option A), recording Events on them. With
+# design, option A), and of its PlexHubLayouts' status, recording Events
+# on both. With
 # plex.clustarr.tokenSecret it also keeps that one Secret.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -115,6 +116,13 @@ rules:
   - apiGroups: ["catalog.clustarr.io"]
     resources: ["plexcollections/status"]
     verbs: ["patch"]
+  # Plex hub layouts: read, and their status alone written (no finalizer).
+  - apiGroups: ["catalog.clustarr.io"]
+    resources: ["plexhublayouts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["catalog.clustarr.io"]
+    resources: ["plexhublayouts/status"]
+    verbs: ["patch"]
   {{- end }}
   {{- if and .Values.videoTranscode.enabled .Values.videoTranscode.cpu.enabled }}
   {{- with include "cluster-plex.clustarrWorkLease" . }}
@@ -126,8 +134,8 @@ rules:
     resourceNames: [{{ (splitList "/" .) | last | quote }}]
   {{- end }}
   {{- end }}
-  # The Events the lease holder records on PlexCollections and
-  # IPTVProviders.
+  # The Events the lease holder records on PlexCollections,
+  # PlexHubLayouts and IPTVProviders.
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]

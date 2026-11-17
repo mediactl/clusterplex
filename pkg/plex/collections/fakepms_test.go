@@ -49,12 +49,16 @@ type fakePMS struct {
 	tags     map[string][]api.TagValue   // by path without query
 	items    map[string][]api.Item       // by "section/type"
 	cols     map[string]*fakeCollection  // by ratingKey
-	hubs     map[string][]api.ManagedHub // by section key
-	failOnce map[string]int              // "METHOD PATH" -> status
-	writes   []write
-	gets     map[string]int // "GET PATH" -> count
-	nextKey  int
-	srv      *httptest.Server
+	hubs     map[string][]api.ManagedHub // by section key, in Plex's order
+	// hubDefaults are what a section's hubs reset to.
+	hubDefaults map[string][]api.ManagedHub
+	// untitledHubs makes a created collection hub carry no title.
+	untitledHubs bool
+	failOnce     map[string]int // "METHOD PATH" -> status
+	writes       []write
+	gets         map[string]int // "GET PATH" -> count
+	nextKey      int
+	srv          *httptest.Server
 }
 
 func newFakePMS(t *testing.T) *fakePMS {
@@ -65,14 +69,15 @@ func newFakePMS(t *testing.T) *fakePMS {
 			{Key: "1", Type: "movie", Title: "Clustarr Movies"},
 			{Key: "2", Type: "show", Title: "Clustarr TV"},
 		},
-		meta:     map[string][]byte{},
-		tags:     map[string][]api.TagValue{},
-		items:    map[string][]api.Item{},
-		cols:     map[string]*fakeCollection{},
-		hubs:     map[string][]api.ManagedHub{},
-		failOnce: map[string]int{},
-		gets:     map[string]int{},
-		nextKey:  9000,
+		meta:        map[string][]byte{},
+		tags:        map[string][]api.TagValue{},
+		items:       map[string][]api.Item{},
+		cols:        map[string]*fakeCollection{},
+		hubs:        map[string][]api.ManagedHub{},
+		hubDefaults: map[string][]api.ManagedHub{},
+		failOnce:    map[string]int{},
+		gets:        map[string]int{},
+		nextKey:     9000,
 	}
 	for _, s := range []string{"1", "2"} {
 		b, err := os.ReadFile("../api/testdata/meta-section" + s + ".json")
@@ -103,6 +108,47 @@ func (f *fakePMS) add(c fakeCollection) string {
 	}
 	f.cols[rk] = &c
 	return rk
+}
+
+// setHubs gives a section its hubs, which are also what it resets to
+// (without the collection hubs).
+func (f *fakePMS) setHubs(section string, hubs ...api.ManagedHub) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hubs[section] = slices.Clone(hubs)
+	f.hubDefaults[section] = slices.DeleteFunc(slices.Clone(hubs), func(h api.ManagedHub) bool {
+		return strings.HasPrefix(h.Identifier, "custom.collection.")
+	})
+}
+
+// hubOrder is a section's hub identifiers, in order.
+func (f *fakePMS) hubOrder(section string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []string{}
+	for _, h := range f.hubs[section] {
+		out = append(out, h.Identifier)
+	}
+	return out
+}
+
+// hub is a section's hub by identifier.
+func (f *fakePMS) hub(section, id string) api.ManagedHub {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, h := range f.hubs[section] {
+		if h.Identifier == id {
+			return h
+		}
+	}
+	return api.ManagedHub{}
+}
+
+// got is how many times "GET PATH" was asked.
+func (f *fakePMS) got(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets["GET "+path]
 }
 
 func (f *fakePMS) col(rk string) *fakeCollection {
@@ -331,27 +377,64 @@ func (f *fakePMS) serve(w http.ResponseWriter, r *http.Request) {
 
 	case len(parts) >= 4 && parts[0] == "hubs" && parts[1] == "sections" && parts[3] == "manage":
 		section := parts[2]
+		flags := func(id, title string) api.ManagedHub {
+			return api.ManagedHub{
+				Identifier: id, Title: title,
+				Recommended: q.Get("promotedToRecommended") == "1", OwnHome: q.Get("promotedToOwnHome") == "1", SharedHome: q.Get("promotedToSharedHome") == "1",
+			}
+		}
+		at := -1
+		if len(parts) >= 5 {
+			at = slices.IndexFunc(f.hubs[section], func(h api.ManagedHub) bool { return h.Identifier == parts[4] })
+		}
 		switch {
-		case r.Method == http.MethodGet:
-			var hubs []map[string]any
+		case r.Method == http.MethodGet && len(parts) == 4:
+			// The live shape (talos, 2026-11-16): a hub's title beside its
+			// flags, a collection's hub "deletable".
+			hubs := []map[string]any{}
 			for _, h := range f.hubs[section] {
-				hubs = append(hubs, map[string]any{"identifier": h.Identifier, "promotedToRecommended": h.Recommended, "promotedToOwnHome": h.OwnHome, "promotedToSharedHome": h.SharedHome})
+				m := map[string]any{"identifier": h.Identifier, "promotedToRecommended": h.Recommended, "promotedToOwnHome": h.OwnHome, "promotedToSharedHome": h.SharedHome}
+				if h.Title != "" {
+					m["title"] = h.Title
+				}
+				if strings.HasPrefix(h.Identifier, "custom.collection.") {
+					m["deletable"] = true
+				}
+				hubs = append(hubs, m)
 			}
 			f.json(w, map[string]any{"MediaContainer": map[string]any{"Hub": hubs}})
-		case r.Method == http.MethodPost:
-			f.hubs[section] = append(f.hubs[section], api.ManagedHub{
-				Identifier:  "custom.collection." + section + "." + q.Get("metadataItemId"),
-				Recommended: q.Get("promotedToRecommended") == "1", OwnHome: q.Get("promotedToOwnHome") == "1", SharedHome: q.Get("promotedToSharedHome") == "1",
-			})
-		case r.Method == http.MethodPut && len(parts) == 5:
-			for i, h := range f.hubs[section] {
-				if h.Identifier == parts[4] {
-					f.hubs[section][i] = api.ManagedHub{
-						Identifier:  h.Identifier,
-						Recommended: q.Get("promotedToRecommended") == "1", OwnHome: q.Get("promotedToOwnHome") == "1", SharedHome: q.Get("promotedToSharedHome") == "1",
-					}
-				}
+		case r.Method == http.MethodPost && len(parts) == 4:
+			rk, title := q.Get("metadataItemId"), ""
+			if c := f.cols[rk]; c != nil && !f.untitledHubs {
+				title = c.Title
 			}
+			f.hubs[section] = append(f.hubs[section], flags("custom.collection."+section+"."+rk, title))
+		case r.Method == http.MethodDelete && len(parts) == 4:
+			// Reset Customization: Plex's own hubs, order and visibility.
+			f.hubs[section] = slices.Clone(f.hubDefaults[section])
+		case len(parts) >= 5 && at < 0:
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPut && len(parts) == 5:
+			f.hubs[section][at] = flags(parts[4], f.hubs[section][at].Title)
+		case r.Method == http.MethodDelete && len(parts) == 5:
+			f.hubs[section] = slices.Delete(f.hubs[section], at, at+1)
+		case r.Method == http.MethodPut && len(parts) == 6 && parts[5] == "move":
+			// python-plexapi's ManagedHub.move: right after ?after=, or
+			// first without it.
+			hub := f.hubs[section][at]
+			rest := slices.Delete(slices.Clone(f.hubs[section]), at, at+1)
+			to := 0
+			if after := q.Get("after"); after != "" {
+				i := slices.IndexFunc(rest, func(h api.ManagedHub) bool { return h.Identifier == after })
+				if i < 0 {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				to = i + 1
+			}
+			f.hubs[section] = slices.Insert(rest, to, hub)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 
 	default:

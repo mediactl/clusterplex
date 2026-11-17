@@ -89,6 +89,7 @@ func newHarness(t *testing.T, crd bool, objs ...runtime.Object) *harness {
 	}
 	h.dyn = dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		collections.GVR: "PlexCollectionList", moviesGVR: "MovieList", seriesGVR: "SeriesList",
+		collections.HubLayoutGVR: "PlexHubLayoutList",
 	}, objs...)
 	applyAsMergePatch(h.dyn)
 	h.ctrl = &collections.Controller{
@@ -145,6 +146,8 @@ type lockedDiscovery struct {
 	discovery.DiscoveryInterface
 	mu        sync.Mutex
 	installed bool
+	// layouts says the PlexHubLayout CRD is installed too.
+	layouts bool
 }
 
 func (d *lockedDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.APIResourceList, error) {
@@ -153,7 +156,11 @@ func (d *lockedDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.API
 	if !d.installed || gv != "catalog.clustarr.io/v1alpha1" {
 		return nil, apierrors.NewNotFound(schema.GroupResource{Group: gv}, "")
 	}
-	return &metav1.APIResourceList{GroupVersion: gv, APIResources: []metav1.APIResource{{Name: "plexcollections", Namespaced: true, Kind: "PlexCollection"}}}, nil
+	list := &metav1.APIResourceList{GroupVersion: gv, APIResources: []metav1.APIResource{{Name: "plexcollections", Namespaced: true, Kind: "PlexCollection"}}}
+	if d.layouts {
+		list.APIResources = append(list.APIResources, metav1.APIResource{Name: "plexhublayouts", Namespaced: true, Kind: "PlexHubLayout"})
+	}
+	return list, nil
 }
 
 func (h *harness) installCRD() {

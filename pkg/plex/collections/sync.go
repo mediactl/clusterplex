@@ -92,6 +92,9 @@ type Previous struct {
 	// the holder's name: never adopted, so two resources never write one
 	// collection.
 	HeldByOthers map[string]string
+	// HubLayout says a PlexHubLayout lists the collection: where its hub
+	// is promoted is the layout's, and spec.visibility is not applied.
+	HubLayout bool
 }
 
 // Outcome is a sync's result, which the resource's status records.
@@ -128,6 +131,8 @@ type Syncer struct {
 	Catalog Catalog
 	Fetch   ImageFetcher
 	Now     func() time.Time
+	// Sections finds the library a title names; nil is by exact title.
+	Sections SectionFinder
 
 	mu    sync.Mutex
 	metas map[string]api.SectionMeta
@@ -387,18 +392,14 @@ func (s *Syncer) contentURI(ctx context.Context, sectionKey string, spec Spec, m
 	return ItemsURI(s.MachineID, members.want), nil
 }
 
-// section is the library the spec names, by title, holding its item type.
+// section is the library the spec names, by title (or, through Sections,
+// a title it had), holding its item type.
 func (s *Syncer) section(ctx context.Context, spec Spec) (api.Section, error) {
 	all, err := s.PMS.Sections(ctx)
 	if err != nil {
 		return api.Section{}, err
 	}
-	var found []api.Section
-	for _, sec := range all {
-		if sec.Title == spec.Library {
-			found = append(found, sec)
-		}
-	}
+	found := s.Sections.find(all, spec.Library)
 	switch len(found) {
 	case 0:
 		return api.Section{}, refuse(ReasonLibraryNotFound, "Plex has no library titled %q", spec.Library)

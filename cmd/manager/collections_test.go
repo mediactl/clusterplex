@@ -62,3 +62,41 @@ func TestCollectionsAccessAsksForEveryVerb(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
+
+func TestHubLayoutEventsLandOnThePlexHubLayout(t *testing.T) {
+	rec := events.NewFakeRecorder(2)
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "PlexHubLayout",
+		"metadata": map[string]any{"name": "movies", "namespace": "clustarr-system", "uid": "u2"},
+	}}
+	recordCollectionEvent(rec, obj, false, "Applied", "applied to Plex: order")
+	assert.Equal(t, "Normal Applied applied to Plex: order", <-rec.Events)
+}
+
+func TestHubLayoutsAccessAsksForTheStatusAndTheCollections(t *testing.T) {
+	cs := k8sfake.NewClientset()
+	grants := map[string]bool{
+		"get plexhublayouts": true, "list plexhublayouts": true, "watch plexhublayouts": true,
+		"list plexcollections": true, "watch plexcollections": true,
+	}
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		r := a.(clienttesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+		ra := r.Spec.ResourceAttributes
+		key := ra.Verb + " " + ra.Resource
+		if ra.Subresource != "" {
+			key += "/" + ra.Subresource
+		}
+		r.Status.Allowed = grants[key] && ra.Group == "catalog.clustarr.io" && ra.Namespace == "clustarr-system"
+		return true, r, nil
+	})
+	allowed := hubLayoutsAccess(cs, "clustarr-system")
+
+	ok, err := allowed(t.Context())
+	require.NoError(t, err)
+	assert.False(t, ok, "no patch on the status: a chart older than the image")
+
+	grants["patch plexhublayouts/status"] = true
+	ok, err = allowed(t.Context())
+	require.NoError(t, err)
+	assert.True(t, ok)
+}

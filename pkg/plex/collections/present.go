@@ -39,7 +39,9 @@ func (s *Syncer) present(ctx context.Context, sectionKey string, col *api.Collec
 		return p, err
 	}
 	p.changed = append(p.changed, changed...)
-	if spec.Visibility != nil {
+	// A collection a PlexHubLayout lists takes its visibility from the
+	// layout, so the two never write one hub against each other.
+	if spec.Visibility != nil && !prev.HubLayout {
 		set, err := s.syncVisibility(ctx, sectionKey, col.RatingKey, *spec.Visibility)
 		if err != nil {
 			return p, err
@@ -210,7 +212,7 @@ func (s *Syncer) syncVisibility(ctx context.Context, sectionKey, ratingKey strin
 		if h.Identifier != want.Identifier {
 			continue
 		}
-		if h == want {
+		if h.Promoted() == want.Promoted() {
 			return false, nil
 		}
 		return true, s.PMS.UpdateManagedHub(ctx, sectionKey, want)

@@ -26,7 +26,8 @@ const pmsRestartPoll = 30 * time.Second
 // collectionsLoop is the lease holder's Plex collections work: clustarr's
 // PlexCollections reconciled into this pod's PMS, their status and
 // finalizer written by cluster-plex (clustarr's 2026-11-10
-// plex-collections design, option A), Events recorded on them.
+// plex-collections design, option A), Events recorded on them; and its
+// PlexHubLayouts reconciled into each library's managed hubs.
 func (m *Manager) collectionsLoop(ctx context.Context) {
 	log := logging.SubsystemLogger(m.Logger, "collections")
 	broadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: m.K8sClient.EventsV1()})
@@ -49,6 +50,20 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 		case <-time.After(backoff):
 		}
 	}
+	// The hubs of each library -- their order, and where each is promoted
+	// -- are clustarr's PlexHubLayouts (the 2026-11-16 plex-hub-layout
+	// design): the status is this pod's to write, the spec never.
+	sections := plexcollections.SectionFinder(m.Config.Provision.SectionsTitled)
+	hubs := &plexcollections.HubController{
+		Dynamic: m.Dynamic, Discovery: m.K8sClient.Discovery(), Namespace: m.Config.Clustarr.Namespace,
+		Syncer: &plexcollections.HubSyncer{PMS: pms, Sections: sections},
+		Record: func(obj *unstructured.Unstructured, warning bool, reason, msg string) {
+			recordCollectionEvent(recorder, obj, warning, reason, msg)
+		},
+		Allowed: hubLayoutsAccess(m.K8sClient, m.Config.Clustarr.Namespace),
+		Ready:   m.plexAnswers,
+		Logger:  logging.SubsystemLogger(m.Logger, "collections.hubs"),
+	}
 	ctrl := &plexcollections.Controller{
 		Dynamic: m.Dynamic, Discovery: m.K8sClient.Discovery(), Namespace: m.Config.Clustarr.Namespace,
 		Syncer: &plexcollections.Syncer{
@@ -57,14 +72,27 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 			Catalog: plexcollections.ProviderCatalog{Providers: collectionProviders(m.Config.Provision)},
 			Fetch:   plexcollections.NewImageFetcher(collectionArtBase(m.Config.Clustarr.UIURL)),
 			Now:     time.Now,
+			// A library is found by a title it had, too (plex.libraries'
+			// formerNames): a collection's spec.library never changes.
+			Sections: sections,
 		},
 		Record: func(obj *unstructured.Unstructured, warning bool, reason, msg string) {
 			recordCollectionEvent(recorder, obj, warning, reason, msg)
 		},
 		Allowed: collectionsAccess(m.K8sClient, m.Config.Clustarr.Namespace),
-		Logger:  log,
+		// A collection a layout lists takes its hub's visibility from it.
+		HubLayouts: hubs.Lists,
+		Logger:     log,
 	}
-	go m.notePMSRestarts(ctx, ctrl.PMSRestarted)
+	go m.notePMSRestarts(ctx, func() {
+		ctrl.PMSRestarted()
+		hubs.PMSRestarted()
+	})
+	go func() {
+		if err := hubs.Run(ctx); err != nil {
+			hubs.Logger.Error("reconcile Plex hub layouts", "err", err)
+		}
+	}()
 	if err := ctrl.Run(ctx); err != nil {
 		log.Error("reconcile Plex collections", "err", err)
 	}
@@ -75,12 +103,31 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 // finalizer) PlexCollections, and patch their status. A chart older than
 // the image grants none of it, and the controller waits for it.
 func collectionsAccess(cs kubernetes.Interface, namespace string) func(context.Context) (bool, error) {
-	checks := []authorizationv1.ResourceAttributes{
+	return resourceAccess(cs, namespace, []authorizationv1.ResourceAttributes{
 		{Verb: "list", Resource: "plexcollections"},
 		{Verb: "watch", Resource: "plexcollections"},
 		{Verb: "patch", Resource: "plexcollections"},
 		{Verb: "patch", Resource: "plexcollections", Subresource: "status"},
-	}
+	})
+}
+
+// hubLayoutsAccess asks whether this pod may do what the hub layout
+// controller does in namespace: get, list and watch PlexHubLayouts, patch
+// their status, and list and watch the PlexCollections they name.
+func hubLayoutsAccess(cs kubernetes.Interface, namespace string) func(context.Context) (bool, error) {
+	return resourceAccess(cs, namespace, []authorizationv1.ResourceAttributes{
+		{Verb: "get", Resource: "plexhublayouts"},
+		{Verb: "list", Resource: "plexhublayouts"},
+		{Verb: "watch", Resource: "plexhublayouts"},
+		{Verb: "patch", Resource: "plexhublayouts", Subresource: "status"},
+		{Verb: "list", Resource: "plexcollections"},
+		{Verb: "watch", Resource: "plexcollections"},
+	})
+}
+
+// resourceAccess asks the apiserver whether this pod is allowed every one
+// of checks on clustarr's catalog group in namespace.
+func resourceAccess(cs kubernetes.Interface, namespace string, checks []authorizationv1.ResourceAttributes) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		for _, ra := range checks {
 			ra.Group = plexcollections.GVR.Group
@@ -97,6 +144,14 @@ func collectionsAccess(cs kubernetes.Interface, namespace string) func(context.C
 		}
 		return true, nil
 	}
+}
+
+// plexAnswers is whether Plex may be asked for hub work now: a pod that
+// runs Plex waits until it serves.
+func (m *Manager) plexAnswers() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return !m.runsPlex || m.plexServing
 }
 
 // notePMSRestarts calls restarted whenever this pod's PMS starts again.
@@ -149,14 +204,18 @@ var collectionActions = map[string]string{
 	plexcollections.ActionCreated: "Create",
 	plexcollections.ActionAdopted: "Adopt",
 	"Deleted":                     "Delete",
+	"Applied":                     "Apply",
 }
 
-// recordCollectionEvent records an Event on a PlexCollection through
-// client-go's events.k8s.io recorder.
+// recordCollectionEvent records an Event on a PlexCollection, or on the
+// PlexHubLayout obj is, through client-go's events.k8s.io recorder.
 func recordCollectionEvent(recorder events.EventRecorder, obj *unstructured.Unstructured, warning bool, reason, msg string) {
 	ref := &corev1.ObjectReference{
 		APIVersion: plexcollections.GVR.GroupVersion().String(), Kind: "PlexCollection",
 		Namespace: obj.GetNamespace(), Name: obj.GetName(), UID: obj.GetUID(),
+	}
+	if k := obj.GetKind(); k != "" {
+		ref.Kind = k
 	}
 	kind := corev1.EventTypeNormal
 	if warning {

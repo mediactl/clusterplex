@@ -298,7 +298,8 @@ func TestManagedHubsDecodes(t *testing.T) {
 		}
 	}
 	require.NotNil(t, recent)
-	assert.Equal(t, plexapi.ManagedHub{Identifier: "tv.recentlyadded", Recommended: true, OwnHome: true, SharedHome: true}, *recent)
+	assert.Equal(t, plexapi.ManagedHub{Identifier: "tv.recentlyadded", Title: "Recently Added TV", Recommended: true, OwnHome: true, SharedHome: true}, *recent)
+	assert.Equal(t, "tv.recentlyaired", hubs[0].Identifier, "Plex's order is kept")
 
 	require.NoError(t, c.CreateManagedHub(t.Context(), "2", "901", plexapi.ManagedHub{Recommended: true, OwnHome: true}))
 	q := (*got)[1].Query
@@ -312,6 +313,27 @@ func TestManagedHubsDecodes(t *testing.T) {
 	assert.Equal(t, http.MethodPut, (*got)[2].Method)
 	assert.Equal(t, "0", q.Get("promotedToRecommended"))
 	assert.Equal(t, "1", q.Get("promotedToSharedHome"))
+}
+
+// The move, reset and delete calls are python-plexapi's (ManagedHub.move,
+// LibrarySection.resetManagedHubs, ManagedHub.remove); none is recorded
+// against a server.
+func TestManagedHubMoveResetAndDelete(t *testing.T) {
+	c, got := pms(t, map[string]string{
+		"PUT /hubs/sections/2/manage/custom.collection.2.901/move": ``,
+		"PUT /hubs/sections/2/manage/tv.recentlyadded/move":        ``,
+		"DELETE /hubs/sections/2/manage":                           ``,
+		"DELETE /hubs/sections/2/manage/custom.collection.2.901":   ``,
+	})
+	require.NoError(t, c.MoveManagedHub(t.Context(), "2", "custom.collection.2.901", "tv.recentlyadded"))
+	require.NoError(t, c.MoveManagedHub(t.Context(), "2", "tv.recentlyadded", ""))
+	require.NoError(t, c.ResetManagedHubs(t.Context(), "2"))
+	require.NoError(t, c.DeleteManagedHub(t.Context(), "2", "custom.collection.2.901"))
+	require.Len(t, *got, 4)
+	assert.Equal(t, url.Values{"after": {"tv.recentlyadded"}}, (*got)[0].Query)
+	assert.Empty(t, (*got)[1].Query, "first place sends no after")
+	assert.Equal(t, "DELETE /hubs/sections/2/manage", (*got)[2].Method+" "+(*got)[2].Path)
+	assert.Equal(t, "DELETE /hubs/sections/2/manage/custom.collection.2.901", (*got)[3].Method+" "+(*got)[3].Path)
 }
 
 func TestDeleteCollectionTreats404AsDeleted(t *testing.T) {

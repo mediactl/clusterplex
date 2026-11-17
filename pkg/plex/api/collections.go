@@ -121,12 +121,18 @@ type Poster struct {
 	SHA1     string
 }
 
-// ManagedHub is a hub's visibility: Library Recommended, the owner's Home
-// and friends' Home. A collection's hub is custom.collection.<section>.<rk>.
+// ManagedHub is one hub of a section's "Manage Recommendations" list and
+// its visibility: Library Recommended, the owner's Home and friends' Home.
+// A collection's hub is custom.collection.<section>.<rk>; Title is Plex's
+// name for the hub, which a write never sends.
 type ManagedHub struct {
 	Identifier                       string
+	Title                            string
 	Recommended, OwnHome, SharedHome bool
 }
+
+// Promoted is where the hub is visible, without its name.
+func (h ManagedHub) Promoted() [3]bool { return [3]bool{h.Recommended, h.OwnHome, h.SharedHome} }
 
 type metadataContainer[T any] struct {
 	MediaContainer struct {
@@ -335,12 +341,14 @@ func (c *Client) UploadImage(ctx context.Context, ratingKey, kind string, body [
 	return err
 }
 
-// ManagedHubs lists a section's hubs and where each is visible.
+// ManagedHubs lists a section's hubs, in the order Plex shows them, and
+// where each is visible.
 func (c *Client) ManagedHubs(ctx context.Context, sectionKey string) ([]ManagedHub, error) {
 	var out struct {
 		MediaContainer struct {
 			Hub []struct {
 				Identifier            string   `json:"identifier"`
+				Title                 string   `json:"title"`
 				PromotedToRecommended plexBool `json:"promotedToRecommended"`
 				PromotedToOwnHome     plexBool `json:"promotedToOwnHome"`
 				PromotedToSharedHome  plexBool `json:"promotedToSharedHome"`
@@ -353,7 +361,7 @@ func (c *Client) ManagedHubs(ctx context.Context, sectionKey string) ([]ManagedH
 	hubs := make([]ManagedHub, 0, len(out.MediaContainer.Hub))
 	for _, h := range out.MediaContainer.Hub {
 		hubs = append(hubs, ManagedHub{
-			Identifier: h.Identifier, Recommended: bool(h.PromotedToRecommended),
+			Identifier: h.Identifier, Title: h.Title, Recommended: bool(h.PromotedToRecommended),
 			OwnHome: bool(h.PromotedToOwnHome), SharedHome: bool(h.PromotedToSharedHome),
 		})
 	}
@@ -370,6 +378,32 @@ func (c *Client) CreateManagedHub(ctx context.Context, sectionKey, ratingKey str
 // UpdateManagedHub sets where v.Identifier's hub is visible.
 func (c *Client) UpdateManagedHub(ctx context.Context, sectionKey string, v ManagedHub) error {
 	return c.do(ctx, http.MethodPut, "/hubs/sections/"+url.PathEscape(sectionKey)+"/manage/"+url.PathEscape(v.Identifier), hubQuery(v), nil)
+}
+
+// MoveManagedHub puts identifier's hub right after the hub after names,
+// or first when after is "" (python-plexapi's ManagedHub.move; not
+// recorded against a server).
+func (c *Client) MoveManagedHub(ctx context.Context, sectionKey, identifier, after string) error {
+	var q url.Values
+	if after != "" {
+		q = url.Values{"after": {after}}
+	}
+	return c.do(ctx, http.MethodPut, "/hubs/sections/"+url.PathEscape(sectionKey)+"/manage/"+url.PathEscape(identifier)+"/move", q, nil)
+}
+
+// ResetManagedHubs is Plex Web's "Reset Customization": the section's
+// hubs go back to Plex's own list, order and visibility, and every
+// collection hub goes (python-plexapi's resetManagedHubs; not recorded
+// against a server).
+func (c *Client) ResetManagedHubs(ctx context.Context, sectionKey string) error {
+	return c.do(ctx, http.MethodDelete, "/hubs/sections/"+url.PathEscape(sectionKey)+"/manage", nil, nil)
+}
+
+// DeleteManagedHub removes a collection's hub from the section's list
+// (python-plexapi's ManagedHub.remove; not recorded against a server).
+// The collection stays.
+func (c *Client) DeleteManagedHub(ctx context.Context, sectionKey, identifier string) error {
+	return c.do(ctx, http.MethodDelete, "/hubs/sections/"+url.PathEscape(sectionKey)+"/manage/"+url.PathEscape(identifier), nil, nil)
 }
 
 func hubQuery(v ManagedHub) url.Values {
