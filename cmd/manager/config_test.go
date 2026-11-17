@@ -554,6 +554,20 @@ plex:
 	}
 }
 
+func TestClustarrsRefreshesArePacedOneAtATimeUnlessToldOtherwise(t *testing.T) {
+	podIdentity(t)
+	for body, want := range map[string]int{
+		"":                        1, // unset: the default
+		"    refreshAtOnce: 0\n":  1,
+		"    refreshAtOnce: 3\n":  3,
+		"    refreshAtOnce: -1\n": 0, // no pace
+	} {
+		c, err := loadConfig([]string{"--config", writeConfig(t, "plex:\n  clustarr:\n    enabled: true\n    namespace: c\n"+body+"    pathMappings: [{clustarr: /data, plex: /media}]\n")})
+		require.NoError(t, err, body)
+		assert.Equal(t, want, c.Clustarr.RefreshesAtOnce(), body)
+	}
+}
+
 func TestConfigRefusesATokenSecretItCannotWrite(t *testing.T) {
 	podIdentity(t)
 	for name, body := range map[string]string{

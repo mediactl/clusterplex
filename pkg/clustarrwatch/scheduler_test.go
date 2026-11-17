@@ -156,3 +156,86 @@ func TestARefreshByIDIsGivenUpAfterRepeatedFailures(t *testing.T) {
 	}
 	require.Equal(t, clustarrwatch.MaxRefreshAttempts, calls)
 }
+
+// paced is newScheduler with a pace of one, a sink for refreshes by id and
+// a busy flag the test sets.
+func paced() (*clustarrwatch.Scheduler, *clock, *sink, *bool) {
+	sch, c, s := newScheduler()
+	busy := false
+	sch.RefreshAtOnce = 1
+	sch.RefreshBusy = func(context.Context) (bool, error) { return busy, nil }
+	sch.RefreshID = func(_ context.Context, id int64) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.refs = append(s.refs, fmt.Sprintf("id:%d", id))
+		return nil
+	}
+	return sch, c, s, &busy
+}
+
+func TestPacedRefreshesGoOneAFlushNewRowsFirstThenTheLongestDue(t *testing.T) {
+	sch, c, s, _ := paced()
+	sch.EnqueueRefresh("g2")
+	c.Advance(time.Second)
+	sch.EnqueueRefresh("g1")
+	c.Advance(time.Second)
+	sch.EnqueueRefreshID(7)
+	c.Advance(2 * time.Minute)
+
+	for range 4 {
+		sch.Flush(t.Context())
+	}
+	assert.Equal(t, []string{"id:7", "g2", "g1"}, s.refs,
+		"a new row first, then the changed items in the order they fell due, one a Flush")
+}
+
+func TestAPacedRefreshWaitsForPlexToFinishTheOneItHas(t *testing.T) {
+	sch, c, s, busy := paced()
+	sch.EnqueueRefresh("g1")
+	sch.EnqueueRefresh("g2")
+	c.Advance(2 * time.Minute)
+
+	*busy = true
+	sch.Flush(t.Context())
+	sch.Flush(t.Context())
+	assert.Empty(t, s.refs, "Plex is still refreshing")
+
+	*busy = false
+	sch.Flush(t.Context())
+	assert.Len(t, s.refs, 1)
+	*busy = true
+	sch.Flush(t.Context())
+	assert.Len(t, s.refs, 1, "the second waits for the first")
+	*busy = false
+	sch.Flush(t.Context())
+	assert.ElementsMatch(t, []string{"g1", "g2"}, s.refs)
+}
+
+func TestAPlexThatStaysBusyHoldsTheRefreshesOnlySoLong(t *testing.T) {
+	sch, c, s, busy := paced()
+	sch.RefreshHold = 10 * time.Minute
+	sch.EnqueueRefresh("g1")
+	sch.EnqueueRefresh("g2")
+	c.Advance(2 * time.Minute)
+	*busy = true
+
+	sch.Flush(t.Context())
+	c.Advance(9 * time.Minute)
+	sch.Flush(t.Context())
+	assert.Empty(t, s.refs)
+
+	c.Advance(2 * time.Minute)
+	sch.Flush(t.Context())
+	assert.Len(t, s.refs, 1, "an activity Plex never ends does not hold the queue for good")
+	sch.Flush(t.Context())
+	assert.Len(t, s.refs, 1, "and the hold starts again")
+}
+
+func TestABusyCheckThatFailsHoldsNothing(t *testing.T) {
+	sch, c, s, _ := paced()
+	sch.RefreshBusy = func(context.Context) (bool, error) { return true, errors.New("plex is away") }
+	sch.EnqueueRefresh("g1")
+	c.Advance(2 * time.Minute)
+	sch.Flush(t.Context())
+	assert.Equal(t, []string{"g1"}, s.refs)
+}

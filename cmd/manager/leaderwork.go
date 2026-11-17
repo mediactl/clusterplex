@@ -188,6 +188,7 @@ func (m *Manager) watchClustarr(ctx context.Context) {
 		Mapper:        clustarrwatch.NewMapper(m.Config.Clustarr.PathMappings),
 		PMS:           m.pms(),
 		ItemID:        m.plexItemID,
+		RefreshAtOnce: m.Config.Clustarr.RefreshesAtOnce(),
 		MovieProvider: m.Config.Provision.ProviderFor("movie"),
 		TVProvider:    m.Config.Provision.ProviderFor("show"),
 		Logger:        logging.SubsystemLogger(m.Logger, "clustarr.watch"),

@@ -1,8 +1,10 @@
 package clustarrwatch
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -11,6 +13,11 @@ const (
 	defaultScanDelay    = 30 * time.Second
 	defaultRefreshDelay = 60 * time.Second
 	defaultThreshold    = 50
+	// defaultRefreshHold is how long a paced Flush waits on a Plex that
+	// stays busy refreshing before it sends one anyway: an activity Plex
+	// never ends (a guide refresh that died left one until its restart)
+	// must not hold the queue for good.
+	defaultRefreshHold = 10 * time.Minute
 )
 
 // Scheduler coalesces the watcher's work and sends each piece once its
@@ -26,14 +33,77 @@ type Scheduler struct {
 	ScanDelay    time.Duration
 	RefreshDelay time.Duration
 	Threshold    int
-	Now          func() time.Time
-	Logger       *slog.Logger
+	// RefreshAtOnce paces the refreshes when positive: a Flush sends at
+	// most that many, a new row's first (RefreshID: Plex shows nothing of
+	// it until then) and then the changed items', each longest due first,
+	// and none at all while RefreshBusy says Plex is still refreshing.
+	// Zero sends everything due at once, as before 2026-11-17: a clustarr
+	// artwork rewrite then asked Plex to refresh every show within minutes,
+	// and Plex spent 1.4 of its Raspberry Pi's four cores on its queue for
+	// an hour (owner: "Pace the refresh requests").
+	RefreshAtOnce int
+	// RefreshBusy reports whether Plex is refreshing an item's metadata
+	// now. Nil, or an error, reads as not busy.
+	RefreshBusy func(ctx context.Context) (bool, error)
+	// RefreshHold is the longest a paced Flush holds for a busy Plex.
+	// Default defaultRefreshHold.
+	RefreshHold time.Duration
+	Now         func() time.Time
+	Logger      *slog.Logger
 
 	mu        sync.Mutex
 	scans     map[string]map[string]time.Time // section -> folder -> due
 	refreshes map[string]time.Time            // guid -> due
 	byID      map[int64]time.Time             // item id -> due
 	idFails   map[int64]int                   // item id -> failed sends
+	heldSince time.Time                       // when a paced Flush first found Plex busy
+	waiting   int                             // refreshes the last paced Flush left queued
+}
+
+// refreshBudget is how many refreshes this Flush may send: every one when
+// unpaced (-1), none while Plex is busy with one, else RefreshAtOnce.
+func (s *Scheduler) refreshBudget(ctx context.Context, now time.Time) int {
+	if s.RefreshAtOnce <= 0 {
+		return -1
+	}
+	busy := false
+	if s.RefreshBusy != nil {
+		b, err := s.RefreshBusy(ctx)
+		busy = err == nil && b
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !busy {
+		s.heldSince = time.Time{}
+		return s.RefreshAtOnce
+	}
+	if s.heldSince.IsZero() {
+		s.heldSince = now
+	}
+	if now.Sub(s.heldSince) < orDefault(s.RefreshHold, defaultRefreshHold) {
+		return 0
+	}
+	s.heldSince = now
+	return s.RefreshAtOnce
+}
+
+// longestDue is the keys of due, the one due longest first, ties by key,
+// cut to n when n is not negative.
+func longestDue[K cmp.Ordered](due map[K]time.Time, n int) []K {
+	keys := make([]K, 0, len(due))
+	for k := range due {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b K) int {
+		if c := due[a].Compare(due[b]); c != 0 {
+			return c
+		}
+		return cmp.Compare(a, b)
+	})
+	if n >= 0 && len(keys) > n {
+		keys = keys[:n]
+	}
+	return keys
 }
 
 // MaxRefreshAttempts is how many times a refresh by id is sent before it
@@ -151,7 +221,22 @@ func (s *Scheduler) Flush(ctx context.Context) {
 		}
 		s.mu.Unlock()
 	}
-	for g, due := range refreshes {
+	// New rows first, then changed items, within the pace's budget.
+	budget := s.refreshBudget(ctx, now)
+	if s.RefreshID == nil {
+		byID = nil
+	}
+	ids := longestDue(byID, budget)
+	left := budget
+	if budget >= 0 {
+		left = budget - len(ids)
+	}
+	guids := longestDue(refreshes, left)
+	if budget >= 0 {
+		s.noteWaiting(len(refreshes) + len(byID) - len(ids) - len(guids))
+	}
+	for _, g := range guids {
+		due := refreshes[g]
 		if err := s.Refresh(ctx, g); err != nil {
 			s.Logger.Warn("refresh failed; will retry", "err", err)
 			continue
@@ -162,10 +247,8 @@ func (s *Scheduler) Flush(ctx context.Context) {
 		}
 		s.mu.Unlock()
 	}
-	for id, due := range byID {
-		if s.RefreshID == nil {
-			break
-		}
+	for _, id := range ids {
+		due := byID[id]
 		if err := s.RefreshID(ctx, id); err != nil {
 			s.mu.Lock()
 			if s.idFails == nil {
@@ -189,5 +272,20 @@ func (s *Scheduler) Flush(ctx context.Context) {
 		}
 		delete(s.idFails, id)
 		s.mu.Unlock()
+	}
+}
+
+// noteWaiting says, when it changes between none and some, that paced
+// refreshes are queued behind Plex.
+func (s *Scheduler) noteWaiting(n int) {
+	s.mu.Lock()
+	was := s.waiting
+	s.waiting = n
+	s.mu.Unlock()
+	switch {
+	case was == 0 && n > 0:
+		s.Logger.Info("refreshes are queued behind Plex and sent as it finishes each", "queued", n, "atOnce", s.RefreshAtOnce)
+	case was > 0 && n == 0:
+		s.Logger.Info("the queued refreshes have all been sent")
 	}
 }

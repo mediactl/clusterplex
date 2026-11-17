@@ -663,8 +663,15 @@ plex:
   `plex.clustarr.namespace`, plus the token Secret below when one is named). A file that appears, moves or
   goes away rescans its folder, 30 seconds after the folder goes quiet; more
   than 50 folders at once rescan the library instead. An item whose metadata
-  changes is refreshed. `pathMappings` translate clustarr's paths to Plex's,
-  longest prefix first.
+  changes is refreshed, a minute after it goes quiet. The refreshes are
+  paced: `plex.clustarr.refreshAtOnce` (1) are sent at a time, a newly
+  added item's first and then the longest waiting, and the next only once
+  Plex has finished its "Updating Metadata" (or after ten minutes of it).
+  A change that touches every title -- clustarr rewriting its artwork --
+  would otherwise fill Plex's own queue, which works three items at once
+  (talos, 2026-11-16: 1.4 of a Raspberry Pi's four cores for an hour). A
+  negative value sends every refresh as it falls due. `pathMappings`
+  translate clustarr's paths to Plex's, longest prefix first.
 - **Plex has to see clustarr's files.** Set `storage.media.existingClaim`
   (and `subPath` if needed) to a claim **in Plex's namespace** bound to the
   same volume as clustarr's library; the chart then mounts it at `/media`

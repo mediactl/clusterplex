@@ -164,6 +164,10 @@ func (c *Client) Playing(ctx context.Context) ([]PlayingItem, error) {
 	return out.MediaContainer.Metadata, err
 }
 
+// ActivityItemMetadata is the activity of one item's metadata being
+// refreshed (Plex Web's "Updating Metadata"): a show's is one per season.
+const ActivityItemMetadata = "library.update.item.metadata"
+
 // ActivityGuideLoad is the activity of a DVR's guide being rebuilt. A DVR
 // deleted, or its map saved again, while one runs deadlocked PMS (recorded):
 // callers wait for it to end.

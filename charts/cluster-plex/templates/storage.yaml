@@ -67,6 +67,9 @@ data:
         {{- with .Values.plex.clustarr.uiURL }}
         uiURL: {{ . | quote }}
         {{- end }}
+        {{- with .Values.plex.clustarr.refreshAtOnce }}
+        refreshAtOnce: {{ . }}
+        {{- end }}
         pathMappings:
           {{- range .Values.plex.clustarr.pathMappings }}
           - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}

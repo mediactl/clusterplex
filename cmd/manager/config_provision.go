@@ -43,6 +43,27 @@ type ClustarrConfig struct {
 	// address is private (clustarr's 2026-11-10 plex-collections design).
 	// Empty refuses such images.
 	UIURL string `mapstructure:"uiURL"`
+	// RefreshAtOnce is how many of the refreshes clustarr's changes ask of
+	// Plex are sent at a time, the next only once Plex has finished
+	// refreshing (clustarrwatch.Scheduler.RefreshAtOnce). Unset or 0 is
+	// defaultRefreshAtOnce; negative sends every one as it falls due.
+	RefreshAtOnce int `mapstructure:"refreshAtOnce"`
+}
+
+// defaultRefreshAtOnce paces clustarr's refreshes one at a time: Plex's
+// own queue ran three at once and took 1.4 of a Raspberry Pi's four cores
+// for the hour a clustarr artwork rewrite lasted (talos, 2026-11-16).
+const defaultRefreshAtOnce = 1
+
+// RefreshesAtOnce is the watcher's pace: 0 for none.
+func (c ClustarrConfig) RefreshesAtOnce() int {
+	switch {
+	case c.RefreshAtOnce < 0:
+		return 0
+	case c.RefreshAtOnce == 0:
+		return defaultRefreshAtOnce
+	}
+	return c.RefreshAtOnce
 }
 
 // loadProvisioning reads what the lease holder provisions into Plex and the

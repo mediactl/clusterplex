@@ -113,6 +113,13 @@ plex:
     # fetched though its address is private. Empty refuses those images;
     # images on public https hosts are fetched either way.
     uiURL: ""
+    # How many of the metadata refreshes clustarr's changes ask of Plex are
+    # sent at a time: the next goes only once Plex has finished refreshing
+    # an item, a newly added item's first. 1 keeps a wave (a clustarr
+    # artwork rewrite touches every title) from filling Plex's own queue,
+    # which works three at once; a negative value sends every refresh as
+    # it falls due.
+    refreshAtOnce: 1
   # Live TV: add each of clustarr's IPTVProviders (in plex.clustarr.namespace)
   # to Plex as a DVR -- its HDHomeRun device, its XMLTV guide and the full
   # channel map, which carries more than the setup wizard's 480 channels.

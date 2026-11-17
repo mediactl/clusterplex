@@ -65,6 +65,10 @@ type Watcher struct {
 
 	// For tests; zero values take the spec's timings.
 	ScanDelay, RefreshDelay, FlushEvery, SectionTTL time.Duration
+	// RefreshAtOnce is how many refreshes Plex is asked for at a time
+	// (Scheduler.RefreshAtOnce): positive paces them behind Plex's own
+	// "Updating Metadata" activity; zero sends every one as it falls due.
+	RefreshAtOnce int
 	// MissRefetch is how old the library list must be before a path no
 	// library covers makes the watcher list them again; zero is 30s.
 	MissRefetch time.Duration
@@ -155,6 +159,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	w.sched = &Scheduler{
 		Scan: w.scan, Refresh: w.refresh, RefreshID: w.refreshID,
 		ScanDelay: w.ScanDelay, RefreshDelay: w.RefreshDelay, Logger: w.Logger,
+		RefreshAtOnce: w.RefreshAtOnce, RefreshBusy: w.plexRefreshing,
 	}
 	// One kind at a time: the next kind is listed once this one is in its
 	// cache. The caches cost the same in the end, and a WatchList (client-go
@@ -556,6 +561,24 @@ func (w *Watcher) scan(ctx context.Context, section, folder string) error {
 		w.Counters.Scans(scope)
 	}
 	return nil
+}
+
+// plexRefreshing reports whether Plex is refreshing an item's metadata now,
+// whoever asked for it: the pace sends the next only once it is not.
+func (w *Watcher) plexRefreshing(ctx context.Context) (bool, error) {
+	if w.PMS == nil {
+		return false, nil
+	}
+	acts, err := w.PMS.Activities(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range acts {
+		if a.Type == plexapi.ActivityItemMetadata {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (w *Watcher) refresh(ctx context.Context, guid string) error {
