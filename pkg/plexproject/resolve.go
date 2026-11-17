@@ -214,8 +214,29 @@ func itemNode(o *clustarrobj.Object, t ItemType, provider, uid string) Node {
 	return Node{
 		Type: t, UID: uid, GUID: GUID(provider, t, uid, o.PlexID), PriorGUID: prior(provider, t, uid, o.PlexID),
 		Title: title, TitleSort: TitleSort(title), Year: int32(o.Year), AddedAt: o.CreationTimestamp.Time,
-		Labels: o.Keywords,
+		Labels: labelsOf(o),
 	}
+}
+
+// labelsOf are an item's Plex labels: clustarr's keywords, then its tags
+// (spec.tags: its own, and the ones an ImportList's spec.listed put on
+// every item it names), so a smart collection filtering on a tag gathers
+// that list. A tag a keyword already spells is not repeated.
+func labelsOf(o *clustarrobj.Object) []string {
+	if len(o.Tags) == 0 {
+		return o.Keywords
+	}
+	out := make([]string, 0, len(o.Keywords)+len(o.Tags))
+	seen := make(map[string]bool, len(o.Keywords)+len(o.Tags))
+	for _, l := range append(append([]string(nil), o.Keywords...), o.Tags...) {
+		k := strings.ToLower(strings.TrimSpace(l))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, l)
+	}
+	return out
 }
 
 // prior is the custom-form guid a row keyed by a Plex id may still carry

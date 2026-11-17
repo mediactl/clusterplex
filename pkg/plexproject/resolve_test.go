@@ -132,3 +132,21 @@ func TestAnItemsKeywordsAreItsLabelsAndMoveTheKey(t *testing.T) {
 	it.Chain[0].Labels = []string{"terrorism"}
 	require.NotEqual(t, withLabels, it.Key())
 }
+
+// A movie's tags (spec.tags: its own, and the ones an ImportList's
+// spec.listed put on every item it names) are labels after its keywords,
+// so a smart collection filtering on a tag gathers a list; a tag a keyword
+// already spells is not repeated, and a tag arriving moves the key.
+func TestAnItemsTagsAreLabelsAfterItsKeywords(t *testing.T) {
+	file, movie := fixture(t, "mediafile.yaml"), fixture(t, "movie.yaml")
+	before, ok := Resolve(clustarrobj.Of(file), lookupOf(movie))
+	require.True(t, ok)
+
+	require.NoError(t, unstructured.SetNestedStringSlice(movie.Object, []string{"Criterion Collection", "Terrorism"}, "spec", "tags"))
+	it, ok := Resolve(clustarrobj.Of(file), lookupOf(movie))
+	require.True(t, ok)
+	require.Equal(t, []string{"september 11 2001", "new york city", "terrorism", "Criterion Collection"}, it.Chain[0].Labels)
+	require.NotEqual(t, before.Key(), it.Key())
+	require.NotEqual(t, clustarrobj.Of(fixture(t, "movie.yaml")).ChainKey, clustarrobj.Of(movie).ChainKey,
+		"a tag arriving has the item's files applied again")
+}

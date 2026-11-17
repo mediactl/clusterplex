@@ -256,7 +256,14 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   each of our taggings marked `cp:source`; a label the owner set in Plex is
   never touched, the same name included. The keywords are part of the
   item's chain key (`Node.Labels`, `clustarrwatch.chainKey`), so a change
-  re-applies the item's files. Configuration stays API-only.
+  re-applies the item's files. Since 2026-11-17 the item's `spec.tags` are
+  labels too, after its keywords (`plexproject.labelsOf`, owner: "import
+  lists should be able to add additional tags and metadata to each item.
+  This way it's easy to bundle them back into a collection"): clustarr's
+  ImportList `spec.listed.tags` puts a tag on every Movie and Series the
+  list names, so a smart PlexCollection filtering `label is <tag>` gathers
+  the list and follows it. Tags join the chain key only when there are any.
+  Configuration stays API-only.
 - **Only `cmd/remux-worker` and `cmd/video-worker` link ffgo.** The
   manager, shim, proxy and maintenance binaries are static and run from a
   scratch image; ffgo (purego) would make them dynamic.

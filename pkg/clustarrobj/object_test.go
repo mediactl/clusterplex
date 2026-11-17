@@ -246,6 +246,7 @@ func TestAnItemsChainFieldsAreRead(t *testing.T) {
 	s := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Series",
 		"metadata": map[string]any{"name": "show", "namespace": "media", "uid": "uid-show"},
+		"spec":     map[string]any{"tags": []any{"Criterion Collection"}},
 		"status": map[string]any{"metadata": map[string]any{
 			"title": "Show", "year": int64(2010), "externalIDs": map[string]any{"plex": "5d77"},
 			"keywords":    []any{"heist", "time travel"},
@@ -257,6 +258,8 @@ func TestAnItemsChainFieldsAreRead(t *testing.T) {
 	assert.Equal(t, "Show", o.Title)
 	assert.EqualValues(t, 2010, o.Year)
 	assert.Equal(t, []string{"heist", "time travel"}, o.Keywords)
+	assert.Equal(t, []string{"Criterion Collection"}, o.Tags)
+	assert.Contains(t, o.ChainKey, "Criterion Collection")
 	assert.Equal(t, "s1", o.PlexSeasonID(1))
 	assert.Equal(t, "s2", o.PlexSeasonID(2), "a number a YAML fixture reads as float64")
 	assert.Empty(t, o.PlexSeasonID(3))

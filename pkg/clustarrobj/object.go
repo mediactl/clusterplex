@@ -55,10 +55,14 @@ var (
 	originalLanguageField = []string{"status", "metadata", "originalLanguage"}
 	// The projection's item fields: a Movie's or Series' Plex id, title and
 	// year, its keywords (the item's Plex labels) and a Series' season ids.
-	itemPlexIDField  = []string{"status", "metadata", "externalIDs", "plex"}
-	titleField       = []string{"status", "metadata", "title"}
-	yearField        = []string{"status", "metadata", "year"}
-	keywordsField    = []string{"status", "metadata", "keywords"}
+	itemPlexIDField = []string{"status", "metadata", "externalIDs", "plex"}
+	titleField      = []string{"status", "metadata", "title"}
+	yearField       = []string{"status", "metadata", "year"}
+	keywordsField   = []string{"status", "metadata", "keywords"}
+	// tagsField is a Movie's or Series' spec.tags: its own, and the ones an
+	// ImportList's spec.listed put on it. They are the item's Plex labels
+	// too, so a smart collection filtering on a tag gathers a list.
+	tagsField        = []string{"spec", "tags"}
 	plexSeasonsField = []string{"status", "metadata", "plexSeasons"}
 	// What the seeder writes into Plex (pkg/plexseed).
 	probeField     = []string{"status", "mediaInfo"}
@@ -98,6 +102,8 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 		// keywords are TMDB's, which the projection writes as the item's
 		// Plex labels (plexseed.ReconcileLabelsTx).
 		keywordsField,
+		// tags are the item's own and its import lists', labels too.
+		tagsField,
 		{"status", "overlay"},
 	}
 	switch gvr {
@@ -149,6 +155,7 @@ type Object struct {
 	Year             int64
 	OriginalLanguage string
 	Keywords         []string
+	Tags             []string     // spec.tags
 	PlexSeasons      []PlexSeason // a Series' status.metadata.plexSeasons
 	// MetadataHash hashes what Plex shows of the item, so a refresh is asked
 	// for only when that moved; ChainKey, what of it the projection's chain
@@ -282,7 +289,7 @@ func Of(u *unstructured.Unstructured) *Object {
 		SeriesRef: str(t, seriesRefField...), SeasonNumber: integer(t, seasonNumberField...), EpisodeNumber: integer(t, episodeNumberField...),
 
 		PlexID: plexIDOf(t), Title: firstOf(str(t, titleField...), str(t, "status", "title")), Year: integer(t, yearField...),
-		OriginalLanguage: str(t, originalLanguageField...), Keywords: strs(t, keywordsField...), PlexSeasons: plexSeasonsOf(t),
+		OriginalLanguage: str(t, originalLanguageField...), Keywords: strs(t, keywordsField...), Tags: strs(t, tagsField...), PlexSeasons: plexSeasonsOf(t),
 		MetadataHash: metadataHash(t), ChainKey: chainKey(t),
 	}
 }
@@ -360,14 +367,21 @@ func seedKey(u *unstructured.Unstructured) string {
 }
 
 // chainKey is what of an item the projection's chain reads: its Plex id,
-// for a series its seasons' ids, and its keywords, which the projection
-// writes as the item's labels.
+// for a series its seasons' ids, and its keywords and tags, which the
+// projection writes as the item's labels.
 func chainKey(u *unstructured.Unstructured) string {
 	seasons, _, _ := unstructured.NestedSlice(u.Object, plexSeasonsField...)
 	b, _ := json.Marshal(seasons)
 	keywords, _, _ := unstructured.NestedStringSlice(u.Object, keywordsField...)
 	k, _ := json.Marshal(keywords)
-	return plexIDOf(u) + "|" + string(b) + "|" + string(k)
+	key := plexIDOf(u) + "|" + string(b) + "|" + string(k)
+	// Only when there are any, so an item without tags keeps the key it
+	// had and its files are not applied again for nothing.
+	if tags, _, _ := unstructured.NestedStringSlice(u.Object, tagsField...); len(tags) > 0 {
+		t, _ := json.Marshal(tags)
+		key += "|" + string(t)
+	}
+	return key
 }
 
 // plexIDOf is the Plex id an item carries: a movie's or series'
