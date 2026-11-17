@@ -344,7 +344,7 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 	default:
 		if first := firstHolder(u, spec, all); first != "" {
 			out.Reason = ReasonConflict
-			out.Message = fmt.Sprintf("the older PlexCollection %q holds %q (%s) in %q; this one changes nothing in Plex", first, spec.Title, spec.ItemType, spec.Library)
+			out.Message = fmt.Sprintf("the older PlexCollection %q holds %s (%s) in %q; this one changes nothing in Plex", first, holderTitle(spec), spec.ItemType, spec.Library)
 		} else {
 			prev.HeldByOthers = othersHold(held, name)
 			out = c.Syncer.Sync(ctx, u.GetNamespace(), spec, prev)
@@ -363,6 +363,15 @@ func (c *Controller) reconcile(ctx context.Context, name string, all []*unstruct
 	c.recordOutcome(log, u, out, prevCond)
 }
 
+// holderTitle is what a conflict message calls the collection: its title,
+// or a TMDB collection's id when it states none.
+func holderTitle(spec Spec) string {
+	if spec.Title == "" && spec.TMDBCollection != nil {
+		return fmt.Sprintf("TMDB collection %d", spec.TMDBCollection.ID)
+	}
+	return fmt.Sprintf("%q", spec.Title)
+}
+
 // firstHolder is the name of an older resource, not being deleted, of
 // the same library and title -- in any case, as Plex's titles are matched
 // -- and item type, or "".
@@ -377,7 +386,20 @@ func firstHolder(u *unstructured.Unstructured, spec Spec, all []*unstructured.Un
 		lib, _, _ := unstructured.NestedString(o.Object, "spec", "library")
 		title, _, _ := unstructured.NestedString(o.Object, "spec", "title")
 		itemType, _, _ := unstructured.NestedString(o.Object, "spec", "itemType")
-		if strings.EqualFold(lib, spec.Library) && strings.EqualFold(title, spec.Title) && itemType == spec.ItemType {
+		if !strings.EqualFold(lib, spec.Library) || itemType != spec.ItemType {
+			continue
+		}
+		if title == "" || spec.Title == "" {
+			// A TMDB collection that takes TMDB's title: the same one only
+			// when both name the same collection. One with a title of its
+			// own that Plex already holds is found out by the sync.
+			id, _, _ := unstructured.NestedInt64(o.Object, "spec", "tmdbCollection", "id")
+			if title == "" && spec.Title == "" && spec.TMDBCollection != nil && id == spec.TMDBCollection.ID {
+				return o.GetName()
+			}
+			continue
+		}
+		if strings.EqualFold(title, spec.Title) {
 			return o.GetName()
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/tools/events"
 
 	plexcollections "github.com/mediactl/clusterplex/pkg/plex/collections"
+	plexprovision "github.com/mediactl/clusterplex/pkg/plex/provision"
 )
 
 // pmsRestartPoll is how often the collections loop checks whether its
@@ -53,6 +54,7 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 		Syncer: &plexcollections.Syncer{
 			PMS: pms, MachineID: machine,
 			Members: plexcollections.DynamicMembers{Dynamic: m.Dynamic},
+			Catalog: plexcollections.ProviderCatalog{Providers: collectionProviders(m.Config.Provision)},
 			Fetch:   plexcollections.NewImageFetcher(collectionArtBase(m.Config.Clustarr.UIURL)),
 			Now:     time.Now,
 		},
@@ -126,6 +128,19 @@ func collectionArtBase(uiURL string) string {
 		return ""
 	}
 	return strings.TrimRight(uiURL, "/") + "/art/"
+}
+
+// collectionProviders are the metadata providers a TMDB collection is
+// asked of: clustarr's, as plex.metadataProviders lists them. The one
+// that holds movies answers; the TV one says 404.
+func collectionProviders(prov plexprovision.Config) []string {
+	uris := make([]string, 0, len(prov.Providers))
+	for _, p := range prov.Providers {
+		if p.URI != "" {
+			uris = append(uris, p.URI)
+		}
+	}
+	return uris
 }
 
 // collectionActions names what the lease holder did for each reason, the

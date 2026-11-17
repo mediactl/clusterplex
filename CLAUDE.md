@@ -126,13 +126,29 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
     visibility -- is put back when Plex differs; anything it leaves out is
     never touched, and a smart filter's sort and limit left out are carried
     from Plex's.
+  - **A TMDB collection is asked of clustarr's provider** (owner,
+    2026-11-17; the design's amendment): `spec.tmdbCollection.id` is a
+    normal collection in Plex whose members and unstated title, summary,
+    poster and background `ProviderCatalog` reads from the providers
+    `plex.metadataProviders` lists (`GET
+    {uri}/library/collections/tmdb-collection-<id>` and the children at the
+    key it answers; the movies provider answers, the TV one says 404).
+    cluster-plex reads no Movie for it. A provider that cannot be asked is
+    `CatalogUnavailable` and changes nothing; no movie of the collection
+    in clustarr is `Waiting`. The form exists because a smart collection
+    never hides its items: Plex flags a hidden row
+    (`metadata_items.absolute_index`) from the members it stores
+    (`taggings`), and a smart collection stores none.
+    `TestLiveATMDBCollectionHidesItsMovies` proves the hiding against a
+    real server (`CLUSTERPLEX_TEST_PMS_URL`).
   - **No two resources share a collection.** Each pass maps every recorded
     ratingKey to the oldest resource recording it (`holdsOf`): adoption
     never takes a collection another resource holds (`Conflict`, naming
     the holder), a newer resource recording the same one releases its
     claim, and a deletion spares a collection another resource still
     records. Two resources of one library, title (in any case) and item
-    type are a `Conflict` for the newer.
+    type are a `Conflict` for the newer; two TMDB collections that state no
+    title are the same only when they name the same collection.
   - It adopts only a person-made collection (`collection://` GUID) of the
     same title (in any case), item type and kind; a metadata agent's is
     `NotAdoptable`.

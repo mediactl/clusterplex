@@ -2,6 +2,7 @@ package collections
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,15 +40,39 @@ func (s *Syncer) planMembers(ctx context.Context, namespace, sectionKey string, 
 	if spec.Members != nil {
 		members = spec.Members.Items
 	}
-	p := memberPlan{total: len(members)}
 	if s.Members == nil {
-		return p, refuse(ReasonPlexUnavailable, "no clustarr reader to resolve the members with")
+		return memberPlan{total: len(members)}, refuse(ReasonPlexUnavailable, "no clustarr reader to resolve the members with")
 	}
 	guids, err := s.Members.GUIDs(ctx, namespace, members)
 	if err != nil {
-		return p, refuse(ReasonPlexUnavailable, "reading the members from clustarr: %v", err)
+		return memberPlan{total: len(members)}, refuse(ReasonPlexUnavailable, "reading the members from clustarr: %v", err)
 	}
-	itemType := ItemTypeNumber(spec.ItemType)
+	return s.planGUIDs(ctx, sectionKey, spec.ItemType, members, guids)
+}
+
+// planCatalogItems is planMembers for a TMDB collection: its members are
+// the movies clustarr lists in it, each already known by its GUID, and
+// one Plex does not hold is named by its title.
+func (s *Syncer) planCatalogItems(ctx context.Context, sectionKey string, spec Spec, items []CatalogItem) (memberPlan, error) {
+	members := make([]Member, 0, len(items))
+	guids := make(map[Member]string, len(items))
+	for _, it := range items {
+		m := Member{Kind: "Movie", Name: it.Title}
+		if _, dup := guids[m]; dup {
+			// Two films of one title (a remake in the same collection): the
+			// year tells them apart in the status.
+			m.Name = fmt.Sprintf("%s (%d)", it.Title, it.Year)
+		}
+		members = append(members, m)
+		guids[m] = it.GUID
+	}
+	return s.planGUIDs(ctx, sectionKey, spec.ItemType, members, guids)
+}
+
+// planGUIDs finds each member's Plex items by its GUID.
+func (s *Syncer) planGUIDs(ctx context.Context, sectionKey, specItemType string, members []Member, guids map[Member]string) (memberPlan, error) {
+	p := memberPlan{total: len(members)}
+	itemType := ItemTypeNumber(specItemType)
 	index, cached, err := s.guidIndex(ctx, sectionKey, itemType, false)
 	if err != nil {
 		return p, err

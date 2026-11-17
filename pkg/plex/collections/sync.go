@@ -27,6 +27,9 @@ const (
 	ReasonConflict         = "Conflict"
 	ReasonImageUnavailable = "ImageUnavailable"
 	ReasonPlexUnavailable  = "PlexUnavailable"
+	// ReasonCatalogUnavailable: clustarr's provider, which answers a TMDB
+	// collection, could not be asked.
+	ReasonCatalogUnavailable = "CatalogUnavailable"
 )
 
 // Healthy says whether a reason reads Synced=True.
@@ -121,8 +124,10 @@ type Syncer struct {
 	PMS       PMS
 	MachineID string
 	Members   MemberResolver
-	Fetch     ImageFetcher
-	Now       func() time.Time
+	// Catalog answers a TMDB collection's members and presentation.
+	Catalog Catalog
+	Fetch   ImageFetcher
+	Now     func() time.Time
 
 	mu    sync.Mutex
 	metas map[string]api.SectionMeta
@@ -183,17 +188,30 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 
 	// 2. Compile a smart collection's filter -- every rule checked and
 	// every tag resolved before Plex is touched -- or resolve a normal
-	// one's members to Plex items.
+	// one's members to Plex items. A TMDB collection is a normal one
+	// whose members, and whatever the spec leaves out of its title,
+	// summary, poster and background, clustarr answers.
 	var meta api.SectionMeta
 	var members memberPlan
-	if smart {
+	switch {
+	case spec.TMDBCollection != nil:
+		var items []CatalogItem
+		if spec, items, err = s.fromCatalog(ctx, spec); err != nil {
+			return err
+		}
+		if members, err = s.planCatalogItems(ctx, section.Key, spec, items); err != nil {
+			return err
+		}
+		out.MissingMembers = len(members.missing)
+		out.Missing = members.missing[:min(len(members.missing), maxMissing)]
+	case smart:
 		if meta, err = s.meta(ctx, section.Key); err != nil {
 			return err
 		}
 		if _, err := s.compile(ctx, spec, meta, Carry{}); err != nil {
 			return err
 		}
-	} else {
+	default:
 		if members, err = s.planMembers(ctx, namespace, section.Key, spec); err != nil {
 			return err
 		}
@@ -313,6 +331,43 @@ func (s *Syncer) sync(ctx context.Context, namespace string, spec Spec, prev Pre
 		out.Message = fmt.Sprintf("could not set the %s; %s", strings.Join(shown.problems, "; the "), out.Message)
 	}
 	return nil
+}
+
+// fromCatalog is a TMDB collection's spec with what it leaves out filled
+// in from clustarr -- the title, summary, poster and background -- and
+// the collection's movies. A catalog that cannot be asked, or that holds
+// no movie of the collection, is a refusal: Plex is left as it is.
+func (s *Syncer) fromCatalog(ctx context.Context, spec Spec) (Spec, []CatalogItem, error) {
+	id := spec.TMDBCollection.ID
+	if spec.ItemType != "movie" {
+		return spec, nil, refuse(ReasonInvalidRule, "a TMDB collection holds movies, not %ss", spec.ItemType)
+	}
+	if s.Catalog == nil {
+		return spec, nil, refuse(ReasonCatalogUnavailable, "no clustarr metadata provider to ask for TMDB collection %d", id)
+	}
+	col, err := s.Catalog.TMDBCollection(ctx, id)
+	switch {
+	case errors.Is(err, ErrNoSuchCollection):
+		return spec, nil, refuse(ReasonWaiting, "clustarr holds no movie of TMDB collection %d yet; the collection is made once it does", id)
+	case err != nil:
+		return spec, nil, refuse(ReasonCatalogUnavailable, "asking clustarr for TMDB collection %d: %v", id, err)
+	}
+	if spec.Title == "" {
+		spec.Title = col.Title
+	}
+	if spec.Title == "" {
+		return spec, nil, refuse(ReasonWaiting, "TMDB collection %d has no title in clustarr yet, and the resource states none", id)
+	}
+	if spec.Summary == nil && col.Summary != "" {
+		spec.Summary = &col.Summary
+	}
+	if spec.Poster == nil && col.Poster != "" {
+		spec.Poster = &Image{URL: col.Poster}
+	}
+	if spec.Background == nil && col.Background != "" {
+		spec.Background = &Image{URL: col.Background}
+	}
+	return spec, col.Items, nil
 }
 
 // contentURI is what a new collection is created with: a smart one's

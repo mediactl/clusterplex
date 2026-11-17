@@ -5,4 +5,5 @@ var (
 	BaseGUID            = baseGUID
 	NewImageFetcherWith = newImageFetcher
 	PublicAddress       = publicAddress
+	FirstHolder         = firstHolder
 )

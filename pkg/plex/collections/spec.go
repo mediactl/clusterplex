@@ -16,19 +16,23 @@ import (
 // api/catalog/v1alpha1/plexcollection_types.go), read from the resource
 // through the dynamic client; field names and JSON keys are the same.
 type Spec struct {
-	Library    string      `json:"library"`
-	Title      string      `json:"title"`
-	ItemType   string      `json:"itemType"`
-	Filter     *Filter     `json:"filter,omitempty"`
-	Sort       *Sort       `json:"sort,omitempty"`
-	Limit      *int32      `json:"limit,omitempty"`
-	Members    *Members    `json:"members,omitempty"`
-	Summary    *string     `json:"summary,omitempty"`
-	SortTitle  *string     `json:"sortTitle,omitempty"`
-	Poster     *Image      `json:"poster,omitempty"`
-	Background *Image      `json:"background,omitempty"`
-	Settings   *Settings   `json:"settings,omitempty"`
-	Visibility *Visibility `json:"visibility,omitempty"`
+	Library  string   `json:"library"`
+	Title    string   `json:"title"`
+	ItemType string   `json:"itemType"`
+	Filter   *Filter  `json:"filter,omitempty"`
+	Sort     *Sort    `json:"sort,omitempty"`
+	Limit    *int32   `json:"limit,omitempty"`
+	Members  *Members `json:"members,omitempty"`
+	// TMDBCollection makes the collection a TMDB collection's: a normal
+	// collection in Plex whose members and unstated presentation clustarr
+	// answers (Catalog).
+	TMDBCollection *TMDBCollection `json:"tmdbCollection,omitempty"`
+	Summary        *string         `json:"summary,omitempty"`
+	SortTitle      *string         `json:"sortTitle,omitempty"`
+	Poster         *Image          `json:"poster,omitempty"`
+	Background     *Image          `json:"background,omitempty"`
+	Settings       *Settings       `json:"settings,omitempty"`
+	Visibility     *Visibility     `json:"visibility,omitempty"`
 }
 
 // Filter is a smart collection's filter: the top level's match (all or
@@ -70,6 +74,11 @@ type Members struct {
 type Member struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
+}
+
+// TMDBCollection names a TMDB collection by its id.
+type TMDBCollection struct {
+	ID int64 `json:"id"`
 }
 
 // Image is a poster's or background's source URL.
