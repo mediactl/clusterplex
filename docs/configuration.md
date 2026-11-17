@@ -630,6 +630,7 @@ plex:
       language: en-US
       locations: [/media/movies]
       switchAgent: false
+      formerNames: [Clustarr Movies]   # titles the library had before
       preferences:            # the library's own settings, by Plex's id
         - {name: enableCinemaTrailers, value: "0"}
   clustarr:
@@ -651,6 +652,23 @@ plex:
   the manager logs it. With `switchAgent` set, the library is moved onto the
   agent and force-refreshed, since Plex otherwise applies a new agent only to
   items added afterwards.
+- **A library is renamed in place through `formerNames`.** A library is
+  found by its `name`, so changing only the name would create a second,
+  empty library beside the old one. List the old title under `formerNames`
+  and the lease holder renames the section instead: when no section is
+  titled `name` and exactly one section of the library's `type` is titled
+  one of the former names, it sends Plex Web's own edit (`PUT
+  /library/sections/<key>` with `name` and the section's agent, scanner,
+  language and every location again) and creates nothing. The section keeps
+  its key, items, collections and hubs. Two sections under former names, or
+  a section titled `name` beside one under a former name, is a conflict: it
+  is logged, `clusterplex_library_agent_drift{library}` reads 1, and
+  neither section is renamed, created beside, moved to another agent or has
+  its settings written until a person renames or deletes one in Plex
+  (clustarr's rows are not projected into that library meanwhile). A former
+  name may not be another library's name or former name. Keep the entry
+  after the rename: a PlexCollection's `spec.library` never changes, and it
+  and a PlexHubLayout go on finding the library by a former title.
 - **Each library's own settings are held too**, on every pass. A show library
   defaults to `useSeasonTitles` on, since Plex ships it off and then drops
   the season names clustarr's provider sends ("Book 1: Water"); an item takes
@@ -695,6 +713,55 @@ plex:
   client that reaches Plex over TLS still gets Plex's own walk, which
   finds nothing to do. `pathMappings` must cover every clustarr root
   folder, or its files are counted as unmappable and never projected.
+
+### Collections and hubs
+
+With `plex.clustarr.enabled` the lease holder also reconciles two of
+clustarr's resources in `plex.clustarr.namespace` into its Plex, under the
+field manager `cluster-plex`; the chart grants what each needs there, and
+an image newer than its chart's RBAC, or a clustarr without the CRD, waits
+and logs once.
+
+- **PlexCollection** is one Plex collection: a smart filter, a list of
+  members or a TMDB collection, and its presentation. cluster-plex writes
+  its status and its finalizer (clustarr's
+  `docs/superpowers/specs/2026-11-10-plex-collections-design.md`).
+- **PlexHubLayout** is one library's hubs, Plex Web's "Manage
+  Recommendations": `spec.hubs` lists hubs in the wanted order -- a
+  built-in one by its Plex `identifier` (`movie.recentlyreleased`), a
+  `collection` by the PlexCollection's name, or a `collectionTitle` no
+  resource manages -- each with `libraryRecommended`, `home` and
+  `friendsHome`. The listed hubs are put first, in that order, and
+  promoted where each says; hubs the layout does not list keep Plex's
+  order after them and their visibility. A collection's hub that does not
+  exist is made. An entry removed from the layout is left as Plex has it,
+  and deleting the layout changes nothing in Plex. The annotation
+  `catalog.clustarr.io/hubs-reset` (any new value; an RFC 3339 time by
+  convention) is Plex Web's "Reset Customization", done once per value and
+  recorded in `status.resetHandled`; the layout is applied again on top.
+  `status.hubs` is Plex's own list, in Plex's order (at most 200), and
+  `Ready` says whether every entry was applied (`Synced`), or names what
+  was skipped: `LibraryNotFound`, `CollectionNotReady` (the PlexCollection
+  holds no Plex collection yet), `CollectionNotFound`,
+  `CollectionAmbiguous`, `UnknownIdentifier`, `InvalidEntry`, `Conflict` (an
+  older layout of the same library) or `PlexUnavailable`. An entry that
+  cannot be resolved is skipped; the others are still applied. cluster-plex
+  writes the status alone, and takes no finalizer.
+- **A collection a layout lists takes its visibility from the layout**: the
+  PlexCollection's own `spec.visibility` is not applied while a
+  PlexHubLayout of the namespace lists it by name, and applies again within
+  ten minutes of the layout no longer listing it.
+- A layout is synced when it is added, when its spec or its reset
+  annotation changes, when a PlexCollection gains, loses or changes its
+  Plex collection, every ten minutes and after Plex restarts; never while
+  this pod's Plex is not serving. An idle pass is one `GET
+  /hubs/sections/<key>/manage` (and one listing of the library's
+  collections when the layout has a `collectionTitle` entry) and no write,
+  to Plex or to the status. Only a claimed server lists hubs to manage; an
+  unclaimed one reads `PlexUnavailable`.
+- The design, the exact requests and what is not yet proven against a
+  server are in
+  `docs/superpowers/specs/2026-11-16-plex-hub-layout-design.md`.
 
 | Metric | Meaning |
 | --- | --- |

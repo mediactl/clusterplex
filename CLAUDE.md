@@ -58,7 +58,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/plex/activity/` | What Tautulli reads from Plex, read by the manager: streams, plays, watch time, library counts, as Prometheus series and a span per finished play |
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
-| `pkg/plex/collections/` | Reconciling clustarr's PlexCollections into Plex's collections: the filter compiled as Plex Web encodes it, the members, the presentation, the status and finalizer, on the lease holder |
+| `pkg/plex/collections/` | Reconciling clustarr's PlexCollections into Plex's collections: the filter compiled as Plex Web encodes it, the members, the presentation, the status and finalizer, on the lease holder; and its PlexHubLayouts into each library's managed hubs (`hubs.go`, `hubs_controller.go`) |
 | `pkg/remux/` | Plex Web's DASH streams on the remux pool: classify and parse a shimmed job, the manifest, the fMP4 splitter (`remux`), the cache (`cache`), the ffgo pipeline (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
 | `cmd/remux-worker/` | The remux pool's binary; links ffgo |
 | `pkg/video/` | Plex's video conversions on the GPU pool (ADR-0010): parse and classify a shimmed job, Plex's segment cuts and lists (`video`), the Lease that counts them (`lease`), the device measure (`gpu`), the ffgo pipeline muxing in memory (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
@@ -172,6 +172,28 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
     2026-11-10): create, drift put back, members added and removed, poster
     once, mode and order, delete. Not yet proven: hub writes on a claimed
     server, and whether a second Plex pod shows a change without a restart.
+- **A library's hubs are clustarr's PlexHubLayouts, and a library is
+  renamed through `formerNames`** (owner, 2026-11-16;
+  `docs/superpowers/specs/2026-11-16-plex-hub-layout-design.md`, the
+  contract with clustarr's half). `HubController` (same package, subsystem
+  `collections.hubs`, started by `collectionsLoop`) writes a layout's
+  status alone under `cluster-plex`, no finalizer.
+  - Listed hubs go first in spec order with their three flags; unlisted
+    ones keep Plex's order and visibility; a removed entry and a deleted
+    layout change nothing in Plex. Moves are the fewest (`PlanMoves`), an
+    idle pass is one `GET .../manage` and no status write, and an entry
+    that cannot be resolved is skipped while the rest apply.
+  - A collection a layout lists takes its hub's visibility from the layout
+    (`HubController.Lists` -> `Previous.HubLayout`); `Lists` waits for the
+    controller's first look at the CRD so the two never write one hub
+    against each other.
+  - `plex.libraries[].formerNames` renames a section in place
+    (`RenameSection`) and never creates beside it; two candidates are a
+    conflict that changes nothing. Whatever finds a library by title goes
+    through `provision.Config.SectionsTitled`, so a PlexCollection's
+    immutable `spec.library` keeps working after a rename.
+  - Not proven against a server: the rename, the move, the reset and a hub
+    made promoted nowhere (the design's §7 lists the requests).
 - **Live TV holds the deployment to one Plex pod** (2026-11-09). Every PMS
   refreshes the DVR guides (at its start, and on its own 24-hour timer,
   which the butler setting does not govern) and records the recording rules

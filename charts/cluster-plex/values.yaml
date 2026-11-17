@@ -76,9 +76,15 @@ plex:
   # agent (and force a refresh); off, it is only reported as drifted.
   # preferences are the library's own settings by Plex's id, over
   # cluster-plex's defaults (useSeasonTitles on for a show library); the
-  # analysis switches are fixed and refused.
+  # analysis switches are fixed and refused. formerNames are titles the
+  # library had before: a section of its type still under one, when none is
+  # titled name, is renamed in place (never a second library created), and
+  # a PlexCollection or PlexHubLayout naming the library by one still finds
+  # it. Two candidates are a conflict: logged, reported as drifted, nothing
+  # changed.
   libraries: []
   #  - name: Movies
+  #    formerNames: [Clustarr Movies]
   #    type: movie
   #    provider: tv.plex.agents.custom.clustarr.movies
   #    language: en-US
@@ -108,7 +114,9 @@ plex:
     tokenSecret: ""
     # clustarr UI's external URL (https://clustarr.example.com). With the
     # integration on, the lease holder also reconciles clustarr's
-    # PlexCollections into Plex and writes their status and finalizer;
+    # PlexCollections into Plex and writes their status and finalizer, and
+    # its PlexHubLayouts into each library's hubs ("Manage Recommendations":
+    # their order and where each is promoted), writing their status;
     # a collection's poster or background under this URL's /art/ is
     # fetched though its address is private. Empty refuses those images;
     # images on public https hosts are fetched either way.
