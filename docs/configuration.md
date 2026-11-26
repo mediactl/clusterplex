@@ -190,6 +190,17 @@ Plex's own image does with `PLEX_CLAIM`:
   spends the code. A refused exchange (an expired code) is logged and Plex
   starts with the token it had. Delete the claim Secret afterwards; a spent
   code is harmless but useless.
+- **Read clustarr's library store.** A clustarr since its ADR-0024 keeps
+  MediaFiles and Episodes as rows in Postgres (its "library store"), not as
+  custom resources, and the watcher reads them there
+  (`pkg/clustarrlib`: the tables `library.mediafile`, `library.episode`,
+  `library.head` and `library.change` are the contract between the two
+  repositories). `plex.clustarr.library.secretName` names a Secret in this
+  release's namespace holding the store's address under `key` (default
+  `uri`); the manager takes it as `CLUSTARR_LIBRARY_DSN`. Give it a role
+  that may only read. With it set the clustarr-reader Role lists only
+  Movies and Series; unset, the watcher reads all four kinds from the
+  apiserver, which only a clustarr before that ADR serves.
 - **Share it with clustarr, and hold every replica to it.**
   `plex.clustarr.tokenSecret` names a Secret in `plex.clustarr.namespace`
   holding the server's plex.tv account: `token` (the key clustarr's Plex

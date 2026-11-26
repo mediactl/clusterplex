@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/mediactl/clusterplex/pkg/clustarrlib"
 	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plexseed"
@@ -75,6 +76,12 @@ type Watcher struct {
 	// SyncTimeout is how long the informers may take to sync before the
 	// watcher reports it; zero is 2m.
 	SyncTimeout time.Duration
+
+	// Library answers the library store's source of a kind clustarr keeps
+	// in Postgres (MediaFile, Episode; clustarr ADR-0024), nil for a kind
+	// that is still a custom resource. With Library nil every kind is read
+	// from the apiserver, as against a clustarr older than that.
+	Library func(schema.GroupVersionResource) *clustarrlib.Source
 
 	// Seed writes a file's probe and markers into Plex's library
 	// (pkg/plexseed, ADR 0006); nil seeds nothing. Every file is seeded
@@ -150,6 +157,16 @@ type seedRetry struct {
 	attempts int
 }
 
+// library is the library store's source of a kind clustarr keeps there, or
+// nil for a kind that is a custom resource (and for every kind when the
+// watcher has no Library).
+func (w *Watcher) library(gvr schema.GroupVersionResource) *clustarrlib.Source {
+	if w.Library == nil {
+		return nil
+	}
+	return w.Library(gvr)
+}
+
 // Run watches until ctx is done.
 func (w *Watcher) Run(ctx context.Context) error {
 	if w.Logger == nil {
@@ -169,8 +186,20 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// whole collection before trimming it: four at once peaked at 2.3 GB on
 	// talos (2026-11-03), one at a time the largest alone.
 	add := func(gvr schema.GroupVersionResource, hs ...cache.ResourceEventHandler) (cache.SharedIndexInformer, error) {
-		f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
-		inf := f.ForResource(gvr).Informer()
+		// A kind clustarr keeps in its library store (its ADR-0024) is read
+		// from there; the apiserver no longer serves it.
+		var (
+			inf   cache.SharedIndexInformer
+			start func()
+		)
+		if lw := w.library(gvr); lw != nil {
+			inf = lw.Informer()
+			start = func() { go inf.Run(ctx.Done()) }
+		} else {
+			f := dynamicinformer.NewFilteredDynamicSharedInformerFactory(w.Dynamic, 0, w.Namespace, nil)
+			inf = f.ForResource(gvr).Informer()
+			start = func() { f.Start(ctx.Done()) }
+		}
 		if err := inf.SetTransform(clustarrobj.Transform); err != nil {
 			return nil, err
 		}
@@ -185,7 +214,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 				return nil, err
 			}
 		}
-		f.Start(ctx.Done())
+		start()
 		if !w.waitForSync(ctx, gvr.Resource, inf.HasSynced) {
 			return nil, ctx.Err()
 		}

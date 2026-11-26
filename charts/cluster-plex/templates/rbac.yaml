@@ -104,8 +104,12 @@ metadata:
   namespace: {{ include "cluster-plex.clustarrNamespace" . }}
   labels: {{- include "cluster-plex.labels" . | nindent 4 }}
 rules:
+  # Movies and Series are custom resources; a MediaFile and an Episode are
+  # rows in clustarr's library store (its ADR-0024) and have no rule here,
+  # unless this release follows a clustarr that still serves them
+  # (plex.clustarr.library.secretName empty).
   - apiGroups: ["catalog.clustarr.io"]
-    resources: ["mediafiles", "movies", "series", "episodes"]
+    resources: [{{ if .Values.plex.clustarr.library.secretName }}"movies", "series"{{ else }}"mediafiles", "movies", "series", "episodes"{{ end }}]
     verbs: ["get", "list", "watch"]
   {{- if .Values.plex.clustarr.enabled }}
   # Plex collections: the finalizer by server-side apply (patch), and the

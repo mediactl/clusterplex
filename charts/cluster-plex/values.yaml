@@ -112,6 +112,16 @@ plex:
     # it (docs/configuration.md). Grants get and update on that one Secret,
     # and create on Secrets there.
     tokenSecret: ""
+    # clustarr's library store: the Postgres its MediaFiles and Episodes
+    # are rows in (clustarr ADR-0024), read here with a role that may only
+    # read. secretName is a Secret in THIS release's namespace holding the
+    # connection address under key (clustarr's own chart names it
+    # "<release>-postgres-app", key "uri", unless it separates a read-only
+    # role); it is rendered as a template. Empty reads those two kinds from
+    # the apiserver, which a clustarr before that ADR served them from.
+    library:
+      secretName: ""
+      key: uri
     # clustarr UI's external URL (https://clustarr.example.com). With the
     # integration on, the lease holder also reconciles clustarr's
     # PlexCollections into Plex and writes their status and finalizer, and

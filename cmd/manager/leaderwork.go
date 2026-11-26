@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mediactl/clusterplex/pkg/clustarrlib"
 	"github.com/mediactl/clusterplex/pkg/logging"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/mediactl/clusterplex/pkg/clustarrwatch"
 	"github.com/mediactl/clusterplex/pkg/plex/activity"
@@ -181,9 +185,41 @@ func (m *Manager) provisionLoop(ctx context.Context) {
 	}
 }
 
+// envClustarrLibraryDSN names the address of clustarr's library store: the
+// Postgres its MediaFiles and Episodes are rows in since they stopped being
+// custom resources (clustarr ADR-0024). It carries a password, so it comes
+// from the environment (a Secret), never the config file.
+const envClustarrLibraryDSN = "CLUSTARR_LIBRARY_DSN"
+
+// clustarrLibrary opens clustarr's library store and answers the source of
+// each kind it holds there. With no address it answers nil: every kind is
+// then read from the apiserver, which only a clustarr older than its
+// ADR-0024 still serves.
+func (m *Manager) clustarrLibrary(ctx context.Context) (func(schema.GroupVersionResource) *clustarrlib.Source, func()) {
+	log := logging.SubsystemLogger(m.Logger, "clustarr.watch")
+	dsn := os.Getenv(envClustarrLibraryDSN)
+	if dsn == "" {
+		log.Warn("no library store address; MediaFiles and Episodes are read from the apiserver, which a current clustarr no longer serves them from", "env", envClustarrLibraryDSN)
+		return nil, func() {}
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		log.Error("clustarr's library store address does not parse; MediaFiles and Episodes are not read", "err", err)
+		return nil, func() {}
+	}
+	kinds := map[schema.GroupVersionResource]*clustarrlib.Source{
+		clustarrwatch.MediaFiles: {Pool: pool, Kind: "MediaFile", Table: "mediafile", Namespace: m.Config.Clustarr.Namespace},
+		clustarrwatch.Episodes:   {Pool: pool, Kind: "Episode", Table: "episode", Namespace: m.Config.Clustarr.Namespace},
+	}
+	return func(gvr schema.GroupVersionResource) *clustarrlib.Source { return kinds[gvr] }, pool.Close
+}
+
 func (m *Manager) watchClustarr(ctx context.Context) {
+	library, closeLibrary := m.clustarrLibrary(ctx)
+	defer closeLibrary()
 	w := &clustarrwatch.Watcher{
 		Dynamic:       m.Dynamic,
+		Library:       library,
 		Namespace:     m.Config.Clustarr.Namespace,
 		Mapper:        clustarrwatch.NewMapper(m.Config.Clustarr.PathMappings),
 		PMS:           m.pms(),

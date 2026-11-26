@@ -135,6 +135,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "cluster-plex.tpl" (list (required "postgres.passwordSecret.name is required" .Values.postgres.passwordSecret.name) $) }}
                   key: {{ .Values.postgres.passwordSecret.key }}
+            {{- with .Values.plex.clustarr.library.secretName }}
+            # clustarr's library store, where its MediaFiles and Episodes
+            # are rows (clustarr ADR-0024).
+            - name: CLUSTARR_LIBRARY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cluster-plex.tpl" (list . $) }}
+                  key: {{ $.Values.plex.clustarr.library.key }}
+            {{- end }}
             - name: CLUSTERPLEX_PLEX_CLAIM
               valueFrom:
                 secretKeyRef:

@@ -16,7 +16,10 @@ import (
 // Every path the watcher and the projection read must exist in clustarr's
 // CRD schema, so a renamed field fails here rather than silently
 // projecting nothing (spec 2026-10-15 §12). The CRDs live in the sibling
-// checkout; CLUSTARR_CRD_DIR points elsewhere, and no checkout skips.
+// checkout; CLUSTARR_CRD_DIR points elsewhere, and no checkout skips. A kind
+// clustarr keeps in its library store (its ADR-0024: MediaFile, Episode)
+// has the same file, as that kind's schema, under pkg/library/schemas
+// beside the CRDs.
 func TestEveryFieldPathExistsInClustarrsCRDs(t *testing.T) {
 	dir := os.Getenv("CLUSTARR_CRD_DIR")
 	if dir == "" {
@@ -28,7 +31,11 @@ func TestEveryFieldPathExistsInClustarrsCRDs(t *testing.T) {
 	for _, gvr := range []schema.GroupVersionResource{clustarrobj.MediaFiles, clustarrobj.Movies, clustarrobj.Series, clustarrobj.Episodes} {
 		paths := clustarrobj.FieldPaths(gvr)
 		require.NotEmpty(t, paths, gvr.Resource)
-		schema := crdSchema(t, filepath.Join(dir, gvr.Group+"_"+gvr.Resource+".yaml"))
+		file := filepath.Join(dir, gvr.Group+"_"+gvr.Resource+".yaml")
+		if _, err := os.Stat(file); err != nil {
+			file = filepath.Join(dir, "..", "..", "..", "pkg", "library", "schemas", gvr.Group+"_"+gvr.Resource+".yaml")
+		}
+		schema := crdSchema(t, file)
 		for _, p := range paths {
 			require.True(t, schemaHas(schema, p), "%s: %s is not in the CRD", gvr.Resource, strings.Join(p, "."))
 		}
