@@ -502,3 +502,40 @@ func TestAProviderSectionProvisioningDoesNotOwnIsScannedByPlex(t *testing.T) {
 		}
 	})
 }
+
+// A file clustarr moved to another library leaves the one it was in: its
+// apply finds a file's row in the section its path is under alone, so the
+// row it had is removed from the section of the path it left -- at once,
+// not at that section's next whole reconcile, until which the item stood in
+// both libraries with the one it left unavailable (clustarr's anime library
+// design, 2026-11-25: a Series stored under the anime root folder moves
+// from TV Shows to Anime, its files one at a time). A file renamed or moved
+// inside one library keeps its row, which the apply re-points.
+func TestAFileMovedToAnotherLibraryLeavesTheOneItWasIn(t *testing.T) {
+	rp := &recordingProjector{}
+	p := &pms{}
+	p.tv.Store(true) // a second library, at /media/tv
+	raw, _, _ := startWith(t, p, withProjection(rp, time.Hour), movie("m1", "Heat"))
+	dyn := &dynamicClient{raw}
+	time.Sleep(50 * time.Millisecond)
+	f := mediaFile("a", "/data/media/movies/Heat (1995)/Heat.mkv")
+	dyn.add(t, clustarrwatch.MediaFiles, f)
+	require.Eventually(t, func() bool { return len(rp.Applied()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	moveTo := func(path string) {
+		t.Helper()
+		f = f.DeepCopy()
+		require.NoError(t, unstructured.SetNestedField(f.Object, path, "spec", "path"))
+		dyn.update(t, clustarrwatch.MediaFiles, f)
+	}
+
+	// Inside the library: another name, then its other location.
+	moveTo("/data/media/movies/Heat (1995)/Heat (1995) [Bluray-1080p].mkv")
+	moveTo("/data/media/movies2/Heat (1995)/Heat (1995) [Bluray-1080p].mkv")
+	time.Sleep(300 * time.Millisecond)
+	require.Empty(t, rp.Deleted(), "a file moved inside its library keeps its row")
+
+	// To the other library.
+	moveTo("/data/media/tv/Heat (1995)/Heat (1995) [Bluray-1080p].mkv")
+	require.Eventually(t, func() bool { return len(rp.Deleted()) == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, deleted{1, "uid-a"}, rp.Deleted()[0], "its row is taken off the library it left")
+}

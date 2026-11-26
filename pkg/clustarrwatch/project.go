@@ -52,11 +52,16 @@ func (s SectionIDs) locationFor(mapped string) int64 {
 	return id
 }
 
-// removal is a deleted MediaFile waiting for the next flush: the stamps
-// of every row it has, one per episode a multi-episode file holds.
+// removal is a MediaFile's rows waiting to be taken off a section at the
+// next flush: the stamps of every row it has, one per episode a
+// multi-episode file holds, and the path that names the section -- a
+// deleted file's own, or the one a moved file left. movedTo is where a
+// moved file is now: its rows go only when that is another section, since
+// inside one the apply re-points the row it has.
 type removal struct {
-	uids []string
-	path string
+	uids    []string
+	path    string
+	movedTo string
 }
 
 // provisioned is the section's ids when the projection owns it.
@@ -93,6 +98,25 @@ func (w *Watcher) enqueueRemoval(o *clustarrobj.Object) {
 	w.removals[o.Name] = removal{uids: plexproject.CoveredUIDs(string(o.UID), o.MediaName, o.MediaKeys), path: o.Path}
 }
 
+// enqueueDeparture queues the rows a MediaFile had at the path it left, was,
+// for removal when it is now under another section's location: clustarr
+// moved it to another library -- a Series stored under the anime root
+// folder is in the Anime library, and its files follow it there (clustarr's
+// anime library design, 2026-11-25) -- and its apply finds a file's row in
+// the section its path is under alone, so nothing else takes the old one
+// off before the section's next whole reconcile, and until then the show
+// stands in both libraries with the one it left unavailable.
+func (w *Watcher) enqueueDeparture(was, now *clustarrobj.Object) {
+	w.projMu.Lock()
+	defer w.projMu.Unlock()
+	if w.removals == nil {
+		w.removals = map[string]removal{}
+	}
+	w.removals[was.Name] = removal{
+		uids: plexproject.CoveredUIDs(string(was.UID), was.MediaName, was.MediaKeys), path: was.Path, movedTo: now.Path,
+	}
+}
+
 // flushRemovals removes every queued deletion from its section.
 func (w *Watcher) flushRemovals(ctx context.Context) {
 	w.projMu.Lock()
@@ -107,6 +131,14 @@ func (w *Watcher) flushRemovals(ctx context.Context) {
 		s, ok, err := w.sectionFor(mapped)
 		if err != nil || !ok {
 			continue
+		}
+		if r.movedTo != "" {
+			// A file moved inside the section keeps its row.
+			if to, ok := w.Mapper.Map(r.movedTo); ok {
+				if t, ok, err := w.sectionFor(to); err != nil || (ok && t.Key == s.Key) {
+					continue
+				}
+			}
 		}
 		ids, ok := w.provisioned(s.Key)
 		if !ok {

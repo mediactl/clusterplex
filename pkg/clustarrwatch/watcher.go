@@ -636,6 +636,12 @@ func (w *Watcher) seedHandler() cache.ResourceEventHandler {
 			if ok1 && ok2 && (o.SeedKey != n.SeedKey || o.Edition != n.Edition) {
 				w.enqueueSeed(n)
 			}
+			// A file moved to another library leaves the one it was in
+			// (enqueueDeparture; the flush tells a move between sections
+			// from a rename inside one).
+			if ok1 && ok2 && w.Projection != nil && o.Path != "" && n.Path != "" && o.Path != n.Path {
+				w.enqueueDeparture(o, n)
+			}
 		},
 		DeleteFunc: func(obj any) {
 			if w.Projection == nil {
