@@ -535,3 +535,55 @@ func TestStartedReachesTheRelayBeforeTheOutput(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, m.GetSegment())
 }
+
+// Idle is the moment the pod holds nothing of a conversion's: the last
+// pipeline has returned, so everything FFmpeg allocated for it is freed.
+// One that ends while another runs is no such moment, and neither is one
+// abandoned and still running, whose slot is free but whose memory is not.
+func TestIdleIsToldWhenTheLastPipelineReturns(t *testing.T) {
+	var idle atomic.Int32
+	ends := map[string]chan struct{}{"A": make(chan struct{}), "B": make(chan struct{}), "C": make(chan struct{})}
+	t.Cleanup(func() {
+		for _, c := range ends {
+			select {
+			case <-c:
+			default:
+				close(c)
+			}
+		}
+	})
+	slots := worker.NewSlots(2)
+	s := &worker.Server{
+		Logger: slog.New(slog.DiscardHandler), Slots: slots, Grace: 50 * time.Millisecond, MaxAbandoned: 4,
+		Idle: func() { idle.Add(1) },
+		Run: func(_ context.Context, j video.Job, _ pipeline.Options, _ pipeline.Sink) error {
+			<-ends[j.Session]
+			return nil
+		},
+	}
+	c := serve(t, s)
+	a, err := open(t, c, job("A", false))
+	require.NoError(t, err)
+	b, err := open(t, c, job("B", false))
+	require.NoError(t, err)
+
+	close(ends["A"])
+	require.NotNil(t, last(t, a))
+	require.Eventually(t, func() bool { return slots.Free() == 1 }, 2*time.Second, 10*time.Millisecond)
+	assert.Zero(t, idle.Load(), "a conversion that ends while another runs leaves the pod busy")
+
+	close(ends["B"])
+	require.NotNil(t, last(t, b))
+	require.Eventually(t, func() bool { return idle.Load() == 1 }, 2*time.Second, 10*time.Millisecond,
+		"the last conversion's end is the pod's idle moment")
+
+	// C's stream ends and its pipeline does not return: abandoned, its slot
+	// freed, and the pod is not idle until the call comes back.
+	ctx, cancel := context.WithCancel(t.Context())
+	require.NoError(t, openCtx(t, ctx, c, job("C", false)))
+	cancel()
+	require.Eventually(t, func() bool { return s.Abandoned() == 1 && slots.Free() == 2 }, 2*time.Second, 10*time.Millisecond)
+	assert.EqualValues(t, 1, idle.Load(), "an abandoned conversion still running holds its memory")
+	close(ends["C"])
+	require.Eventually(t, func() bool { return idle.Load() == 2 }, 2*time.Second, 10*time.Millisecond)
+}

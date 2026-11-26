@@ -616,6 +616,19 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   so generate test media on the host and copy it in. Plex writes a local admin
   token to `.LocalAdminToken` in its state directory, which is the way to call
   the API on a claimed server.
+- **An idle video worker gives FFmpeg's freed memory back itself**
+  (2026-11-25). The CPU pool's worker held 1,030 MiB with nothing to convert,
+  a day after the last of its 27 conversions: 967 MiB in 22 glibc malloc
+  arenas, 23 MiB of Go heap in use. FFmpeg's threads allocate from one arena
+  each, and an arena shrinks only from its top, so what a conversion freed
+  stays resident under whatever small allocation outlives it. When the last
+  running pipeline returns -- an abandoned one included -- the worker calls
+  glibc's `malloc_trim` (`worker.Server.Idle`, `pkg/malloctrim`, through
+  purego since the binary is built without cgo) and logs what the process
+  held before and after. Not measured on a pod yet: the test is the
+  mechanism in small (240 MiB freed in one arena stays until the trim). The
+  remux worker does not trim. A container's usage beyond its working set is
+  page cache of the media it read over NFS, not this.
 
 ## Conventions
 

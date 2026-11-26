@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mediactl/clusterplex/pkg/logging"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mediactl/clusterplex/pkg/malloctrim"
 	"github.com/mediactl/clusterplex/pkg/video/gpu"
 )
 
@@ -86,4 +89,22 @@ func TestItsFirstLineCarriesItsService(t *testing.T) {
 	require.NoError(t, json.Unmarshal(line, &rec), "%s", out.String())
 	assert.Equal(t, "video-worker", rec.Service.Name)
 	assert.Equal(t, "cluster-plex", rec.Service.Namespace)
+}
+
+// The idle hook says what the trim did, and a C library with nothing to
+// trim is reported once, not at every conversion's end.
+func TestTheIdleTrimIsLoggedAndAMissingOneSaidOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	held := int64(900 << 20)
+	idle := trimmer(log, func() (bool, error) { held = 100 << 20; return true, nil }, func() int64 { return held })
+	idle()
+	assert.Contains(t, buf.String(), `"resident_before_bytes":943718400`)
+	assert.Contains(t, buf.String(), `"resident_after_bytes":104857600`)
+
+	buf.Reset()
+	idle = trimmer(log, func() (bool, error) { return false, malloctrim.ErrUnsupported }, func() int64 { return 0 })
+	idle()
+	idle()
+	assert.Equal(t, 1, strings.Count(buf.String(), "\n"), "one line for a library with no malloc_trim: %s", buf.String())
 }

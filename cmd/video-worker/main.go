@@ -15,8 +15,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/obinnaokechukwu/ffgo"
 	"github.com/obinnaokechukwu/ffgo/avcodec"
@@ -28,6 +32,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/mediactl/clusterplex/pkg/logging"
+	"github.com/mediactl/clusterplex/pkg/malloctrim"
 	"github.com/mediactl/clusterplex/pkg/video"
 	"github.com/mediactl/clusterplex/pkg/video/gpu"
 	"github.com/mediactl/clusterplex/pkg/video/pipeline"
@@ -175,14 +180,16 @@ func run() error {
 		Buckets: []float64{0.5, 1, 1.5, 2, 3, 5, 8, 12, 20, 40},
 	})
 	var measured atomic.Bool
+	wlog := logging.SubsystemLogger(log, "video.worker")
 	srv := &worker.Server{
-		Slots: worker.NewSlots(*maxJobs), Run: pipeline.Run, Logger: logging.SubsystemLogger(log, "video.worker"), Measured: measured.Load,
+		Slots: worker.NewSlots(*maxJobs), Run: pipeline.Run, Logger: wlog, Measured: measured.Load,
 		Options: pipeline.Options{
 			Encoder: *encoder, RenderNode: *node, InputsDir: *inputsDir, FontsDir: *fontsDir,
 			Eligible: eligibility(*sources, *maxPixels, *noHDR), Threads: *threads,
 		},
 		Active: func(k video.OutputKind, d int) { active.WithLabelValues(string(k)).Add(float64(d)) },
 		Speed:  speed.Observe,
+		Idle:   trimmer(wlog, malloctrim.Trim, resident),
 	}
 	hs := &http.Server{Addr: *probe, Handler: probes(srv.Ready, srv.Wedged)}
 	go func() { _ = hs.ListenAndServe() }()
@@ -214,6 +221,44 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// trimmer is the pod's idle moment: its last conversion has returned, and
+// the memory FFmpeg freed is given back to the system (pkg/malloctrim),
+// logged with what the process held before and after. A C library with
+// nothing to trim is said once, at the first idle.
+func trimmer(log *slog.Logger, trim func() (bool, error), resident func() int64) func() {
+	var unsupported sync.Once
+	return func() {
+		began, before := time.Now(), resident()
+		_, err := trim()
+		switch {
+		case errors.Is(err, malloctrim.ErrUnsupported):
+			unsupported.Do(func() { log.Warn("freed memory is not returned to the system", "err", err) })
+		case err != nil:
+			log.Warn("returning freed memory to the system failed", "err", err)
+		default:
+			log.Info("freed memory returned to the system", "resident_before_bytes", before,
+				"resident_after_bytes", resident(), "took", time.Since(began))
+		}
+	}
+}
+
+// resident is the process's resident memory in bytes, 0 when unread.
+func resident() int64 {
+	b, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0
+	}
+	f := strings.Fields(string(b))
+	if len(f) < 2 {
+		return 0
+	}
+	pages, err := strconv.ParseInt(f[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return pages * int64(os.Getpagesize())
 }
 
 // measureDevice proves the GPU before the pod takes work; the CPU encoder

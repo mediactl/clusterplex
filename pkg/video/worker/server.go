@@ -69,7 +69,12 @@ type Server struct {
 	Active func(kind video.OutputKind, delta int)
 	// Speed is told each finished conversion's speed: the media time its
 	// segments cover per second it ran.
-	Speed  func(x float64)
+	Speed func(x float64)
+	// Idle is told each time a pipeline returns and none is left running,
+	// an abandoned one included: the moment everything FFmpeg allocated
+	// for the pod's conversions has been freed. It runs on the returning
+	// conversion's goroutine, after its result is handed over.
+	Idle   func()
 	Logger *slog.Logger
 	// Grace is how long a conversion may run on once its context ends
 	// before it is abandoned: its slot freed, the call left running and
@@ -83,6 +88,9 @@ type Server struct {
 	abandonMu sync.Mutex
 	abandoned int
 	wedged    bool
+
+	runMu   sync.Mutex
+	running int
 }
 
 // DefaultGrace and DefaultMaxAbandoned bound ffgo's calls as clustarr's
@@ -210,7 +218,13 @@ func (s *Server) Convert(stream videopb.Video_ConvertServer) error {
 // counted until it returns.
 func (s *Server) run(ctx context.Context, job video.Job, o pipeline.Options, out *sink) error {
 	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx, job, o, out) }()
+	s.runMu.Lock()
+	s.running++
+	s.runMu.Unlock()
+	go func() {
+		done <- s.Run(ctx, job, o, out)
+		s.returned()
+	}()
 	select {
 	case err := <-done:
 		return err
@@ -237,6 +251,18 @@ func (s *Server) run(ctx context.Context, job video.Job, o pipeline.Options, out
 		s.abandonMu.Unlock()
 	}()
 	return fmt.Errorf("%w: %w", errAbandoned, context.Cause(ctx))
+}
+
+// returned counts a pipeline that returned and tells Idle when it was the
+// last one running.
+func (s *Server) returned() {
+	s.runMu.Lock()
+	s.running--
+	idle := s.running == 0
+	s.runMu.Unlock()
+	if idle && s.Idle != nil {
+		s.Idle()
+	}
 }
 
 func (s *Server) grace() time.Duration {
