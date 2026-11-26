@@ -68,7 +68,7 @@ func (m *Manager) collectionsLoop(ctx context.Context) {
 		Dynamic: m.Dynamic, Discovery: m.K8sClient.Discovery(), Namespace: m.Config.Clustarr.Namespace,
 		Syncer: &plexcollections.Syncer{
 			PMS: pms, MachineID: machine,
-			Members: plexcollections.DynamicMembers{Dynamic: m.Dynamic},
+			Members: plexcollections.DynamicMembers{Dynamic: m.Dynamic, Shared: m.plexIDShared},
 			Catalog: plexcollections.ProviderCatalog{Providers: collectionProviders(m.Config.Provision)},
 			Fetch:   plexcollections.NewImageFetcher(collectionArtBase(m.Config.Clustarr.UIURL)),
 			Now:     time.Now,
@@ -226,4 +226,13 @@ func recordCollectionEvent(recorder events.EventRecorder, obj *unstructured.Unst
 		action = "Sync"
 	}
 	recorder.Eventf(ref, nil, kind, reason, action, "%s", msg)
+}
+
+// plexIDShared reports a Plex id two of clustarr's items record, as the
+// clustarr watch reads them; false before the watch runs.
+func (m *Manager) plexIDShared(id string) bool {
+	if w := m.watcher; w != nil {
+		return w.PlexIDShared(id)
+	}
+	return false
 }

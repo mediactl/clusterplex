@@ -273,3 +273,50 @@ func TestAnItemsChainFieldsAreRead(t *testing.T) {
 	assert.NotEmpty(t, e.SeriesRef)
 	assert.NotEqual(t, clustarrobj.Of(load(t, "episode.yaml")).ChainKey, e.ChainKey, "the Plex id arriving moves the chain key")
 }
+
+// A Plex id two items record names neither, as clustarr's provider reads
+// it: the view moves it off PlexID and marks a season's Shared, and an item
+// none of whose ids is shared is returned as it is, not copied. A Series
+// whose two seasons record one id records it twice.
+func TestAPlexIDTwoItemsRecordNamesNeither(t *testing.T) {
+	series := func(name, show string, seasons map[int64]string) *clustarrobj.Object {
+		var ps []any
+		for _, n := range []int64{1, 2, 3} {
+			if id, ok := seasons[n]; ok {
+				ps = append(ps, map[string]any{"number": n, "id": id})
+			}
+		}
+		return clustarrobj.Of(&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Series",
+			"metadata": map[string]any{"name": name, "namespace": "media", "uid": "uid-" + name},
+			"status": map[string]any{"metadata": map[string]any{
+				"externalIDs": map[string]any{"plex": show}, "plexSeasons": ps,
+			}},
+		}})
+	}
+	const show, s1, s2 = "aaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccccc"
+	o := series("show", show, map[int64]string{1: s1, 2: s2})
+	require.Equal(t, map[string]int{show: 1, s1: 1, s2: 1}, o.PlexIDClaims())
+	ids, err := clustarrobj.PlexIDIndex(o)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{show, s1, s2}, ids)
+
+	require.Same(t, o, o.WithoutSharedPlexIDs(func(string) bool { return false }), "nothing shared: the cached item itself")
+	require.Same(t, o, o.WithoutSharedPlexIDs(nil))
+
+	v := o.WithoutSharedPlexIDs(func(id string) bool { return id == show || id == s2 })
+	require.NotSame(t, o, v)
+	require.Empty(t, v.PlexID)
+	require.Equal(t, show, v.SharedPlexID)
+	require.Equal(t, s1, v.PlexSeasonID(1))
+	require.Empty(t, v.SharedPlexSeasonID(1))
+	require.Empty(t, v.PlexSeasonID(2), "a shared season id is not one Plex knows the season by")
+	require.Equal(t, s2, v.SharedPlexSeasonID(2))
+	require.Equal(t, map[string]int{show: 1, s1: 1, s2: 1}, v.PlexIDClaims(), "the view records what the item does")
+	require.Equal(t, show, o.PlexID, "the cached item is not written")
+	require.Equal(t, s2, o.PlexSeasonID(2))
+
+	twice := series("split", show, map[int64]string{1: s1, 2: s1})
+	require.Equal(t, 2, twice.PlexIDClaims()[s1])
+	require.Nil(t, (*clustarrobj.Object)(nil).PlexIDClaims())
+}

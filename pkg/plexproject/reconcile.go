@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // errNoLogger is what a type nobody handed a Logger answers where its work
@@ -102,16 +103,25 @@ func (p *Projector) Reconcile(ctx context.Context, section, location int64, fold
 // projection wrote and none of what only a refresh brings -- its extras
 // (talos, 2026-11-17: 275 movies made at 07:34Z had no trailers while the
 // provider held them, until each was refreshed by hand). A whole-section
-// reconcile runs when the watch has synced and every SeedResync, so a row
-// Plex cannot refresh is asked again at that pace. A failed read is
-// logged: the reconcile itself is done.
+// reconcile runs when the watch has synced, every SeedResync and at each
+// scan of the section.
+//
+// A row is asked for once under the guid it carries: one still unrefreshed
+// at a later reconcile is one Plex could not refresh -- the provider does
+// not answer for it -- and asking again changes nothing until the row is
+// re-keyed or the provider's answer does, so it waits RefreshAgain (talos,
+// 2026-11-26: a show and its two seasons keyed by Plex ids two Series
+// recorded were asked for at every reconcile, and Plex's refreshes of the
+// seasons never ended). What was asked is held in memory, so a restart
+// asks once more. A failed read is logged: the reconcile itself is done.
 func (p *Projector) refreshNeverRefreshed(ctx context.Context, section int64) {
 	if p.Refresh == nil {
 		return
 	}
-	rows, err := p.DB.Query(ctx, `SELECT DISTINCT CASE WHEN metadata_type = $2 AND parent_id IS NOT NULL THEN parent_id ELSE id END
-		FROM metadata_items
-		WHERE library_section_id = $1 AND deleted_at IS NULL AND refreshed_at IS NULL AND metadata_type = ANY($3)
+	rows, err := p.DB.Query(ctx, `SELECT t.id, t.guid::text FROM metadata_items t WHERE t.id IN (
+			SELECT CASE WHEN metadata_type = $2 AND parent_id IS NOT NULL THEN parent_id ELSE id END
+			FROM metadata_items
+			WHERE library_section_id = $1 AND deleted_at IS NULL AND refreshed_at IS NULL AND metadata_type = ANY($3))
 		ORDER BY 1`,
 		section, int(TypeEpisode), []int{int(TypeMovie), int(TypeShow), int(TypeSeason), int(TypeEpisode)})
 	if err != nil {
@@ -119,24 +129,59 @@ func (p *Projector) refreshNeverRefreshed(ctx context.Context, section int64) {
 		return
 	}
 	defer rows.Close()
-	var ids []int64
+	type row struct {
+		id   int64
+		guid string
+	}
+	var never []row
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var r row
+		if err := rows.Scan(&r.id, &r.guid); err != nil {
 			p.Logger.WarnContext(ctx, "plexproject: list the items Plex never refreshed", "section", section, "err", err)
 			return
 		}
-		ids = append(ids, id)
+		never = append(never, r)
 	}
 	if err := rows.Err(); err != nil {
 		p.Logger.WarnContext(ctx, "plexproject: list the items Plex never refreshed", "section", section, "err", err)
 		return
 	}
+	again := p.RefreshAgain
+	if again <= 0 {
+		again = 24 * time.Hour
+	}
+	now := p.now()
+	var ids []int64
+	p.askedMu.Lock()
+	was := p.asked[section]
+	asked := make(map[int64]askedRefresh, len(never))
+	for _, r := range never {
+		if a, ok := was[r.id]; ok && a.guid == r.guid && now.Sub(a.at) < again {
+			asked[r.id] = a
+			continue
+		}
+		asked[r.id] = askedRefresh{guid: r.guid, at: now}
+		ids = append(ids, r.id)
+	}
+	if p.asked == nil {
+		p.asked, p.held = map[int64]map[int64]askedRefresh{}, map[int64]int{}
+	}
+	// A row no longer listed was refreshed, trashed or deleted: forgotten.
+	p.asked[section] = asked
+	held := len(never) - len(ids)
+	heldBefore := p.held[section]
+	p.held[section] = held
+	p.askedMu.Unlock()
+
 	for _, id := range ids {
 		p.Refresh.NeedsRefresh(id)
 	}
 	if len(ids) > 0 {
 		p.Logger.InfoContext(ctx, "plexproject: asked for the refresh of items Plex never refreshed", "section", section, "items", len(ids))
+	}
+	if held != heldBefore && held > 0 {
+		p.Logger.InfoContext(ctx, "plexproject: items Plex was asked to refresh and left unrefreshed are not asked for again yet",
+			"section", section, "items", held, "again", again.String())
 	}
 }
 

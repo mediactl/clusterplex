@@ -539,3 +539,68 @@ func TestAFileMovedToAnotherLibraryLeavesTheOneItWasIn(t *testing.T) {
 	require.Eventually(t, func() bool { return len(rp.Deleted()) == 1 }, 5*time.Second, 10*time.Millisecond)
 	require.Equal(t, deleted{1, "uid-a"}, rp.Deleted()[0], "its row is taken off the library it left")
 }
+
+// A Plex id two items record keys neither (clustarr's provider answers
+// both by their own guids, and PMS could read neither by the id). A second
+// Series recording a show's and its season's ids -- talos, 2026-11-26: a
+// scan made one for Panty & Stocking with Garterbelt -- re-applies the
+// first one's file under the custom guids, each row still found by the id
+// it was keyed by, though nothing of the first Series changed; an episode
+// recording the first's id does the same; and as each twin goes, the file
+// is applied under the ids again.
+func TestAPlexIDTwoItemsRecordKeysNeitherUntilOneIsGone(t *testing.T) {
+	const show, season, ep = "aaaaaaaaaaaaaaaaaaaaaaaa", "cccccccccccccccccccccccc", "bbbbbbbbbbbbbbbbbbbbbbbb"
+	const custom = "tv.plex.agents.custom.clustarr.tv://"
+	rp := &recordingProjector{}
+	p := &pms{}
+	p.tv.Store(true)
+	sections := &sectionsOf{m: map[string]clustarrwatch.SectionIDs{"2": {Section: 2, Location: 20, Locations: []clustarrwatch.SectionLocation{{ID: 20, Root: "/media/tv"}}}}}
+	raw, _, _ := startWith(t, p, withProjectionOf(rp, time.Hour, sections), episode("ep", "show", 1, 1, ep))
+	dyn := &dynamicClient{raw}
+	dyn.add(t, clustarrwatch.Series, series("show", show, map[int]string{1: season}))
+	time.Sleep(50 * time.Millisecond)
+	dyn.add(t, clustarrwatch.MediaFiles, episodeFile("a", "/data/media/tv/Show/Season 01/E01.mkv", "ep"))
+	applied := func(n int) []plexproject.Node {
+		t.Helper()
+		require.Eventually(t, func() bool { return len(rp.Applied()) >= n }, 5*time.Second, 10*time.Millisecond, "events: %v", rp.Events())
+		time.Sleep(100 * time.Millisecond) // nothing further is queued behind it
+		require.Len(t, rp.Applied(), n, "events: %v", rp.Events())
+		return rp.Applied()[n-1].change.Item.Chain
+	}
+	guids := func(chain []plexproject.Node) (out [3][2]string) {
+		for i, n := range chain {
+			out[i] = [2]string{n.GUID, n.PriorGUID}
+		}
+		return out
+	}
+	alone := [3][2]string{
+		{"plex://show/" + show, custom + "show/uid-show"},
+		{"plex://season/" + season, custom + "season/uid-show-s01"},
+		{"plex://episode/" + ep, custom + "episode/uid-ep"},
+	}
+	require.Equal(t, alone, guids(applied(1)))
+
+	twin := series("twin", show, map[int]string{1: season})
+	dyn.add(t, clustarrwatch.Series, twin)
+	require.Equal(t, [3][2]string{
+		{custom + "show/uid-show", "plex://show/" + show},
+		{custom + "season/uid-show-s01", "plex://season/" + season},
+		// Under a season Plex does not know by its id, the custom guid, as
+		// before a season id arrives (plexproject.EpisodePlexID).
+		{custom + "episode/uid-ep", ""},
+	}, guids(applied(2)), "the second Series changed nothing of the first, whose file is applied again")
+
+	twinEp := episode("twin-ep", "twin", 1, 1, ep)
+	dyn.add(t, clustarrwatch.Episodes, twinEp)
+	require.Equal(t, [2]string{custom + "episode/uid-ep", "plex://episode/" + ep}, guids(applied(3))[2],
+		"the episode's own id is recorded twice now: the row it may be keyed by is still found")
+
+	dyn.del(t, clustarrwatch.Series, twin)
+	withoutTwin := guids(applied(4))
+	require.Equal(t, alone[0], withoutTwin[0])
+	require.Equal(t, alone[1], withoutTwin[1])
+	require.Equal(t, [2]string{custom + "episode/uid-ep", "plex://episode/" + ep}, withoutTwin[2], "the twin's episode still records the id")
+
+	dyn.del(t, clustarrwatch.Episodes, twinEp)
+	require.Equal(t, alone, guids(applied(5)))
+}

@@ -629,6 +629,26 @@ hermetic. The nftables blocklist is only covered by `make test-netns`.
   mechanism in small (240 MiB freed in one arena stays until the trim). The
   remux worker does not trim. A container's usage beyond its working set is
   page cache of the media it read over NFS, not this.
+- **A Plex id two of clustarr's items record keys no row** (2026-11-26).
+  clustarr's provider answers an item under `plex://<type>/<id>` only when
+  the id names that one item ("an id two items claim names neither",
+  `ui/projection`), and PMS reads a row it holds under a `plex://` guid from
+  the provider by that id. The projection keyed by the id regardless: a scan
+  made a second Series for Panty & Stocking with Garterbelt, both recorded
+  the show's, the seasons' and the episodes' Plex ids, the provider answered
+  404 for each, and Plex's "Updating Metadata" for both seasons never ended
+  (it held every later refresh of the show too; only a Plex restart clears
+  it). Now the watcher serves an item with such an id moved off `PlexID`
+  (`clustarrobj.Object.WithoutSharedPlexIDs`, `Watcher.PlexIDShared` over an
+  index of the item caches), the row is keyed by the provider's own guid and
+  still found by the id it was keyed by (`plexproject`'s `keys`), the other
+  items recording an id are applied again when one arrives or goes
+  (`rekeySharers`), and a collection member is keyed the same way. With it,
+  `refreshNeverRefreshed` asks for a row once under the guid it carries and
+  again after a day (`Projector.RefreshAgain`), where it asked at every
+  whole-section reconcile; what it asked is in memory, so a restart asks
+  once more. Not seen on a cluster: the tests are the watcher's, over a fake
+  client, and the projector's against PostgreSQL.
 
 ## Conventions
 

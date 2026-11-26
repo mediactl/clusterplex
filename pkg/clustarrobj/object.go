@@ -150,7 +150,10 @@ type Object struct {
 	EpisodeNumber int64
 
 	// An item's: a Movie's, a Series' or an Episode's.
-	PlexID           string // status.plexID of an Episode; status.metadata.externalIDs.plex of a Movie or Series
+	PlexID string // status.plexID of an Episode; status.metadata.externalIDs.plex of a Movie or Series
+	// SharedPlexID is the Plex id the item records when another item
+	// records it too; PlexID is then "" ([Object.WithoutSharedPlexIDs]).
+	SharedPlexID     string
 	Title            string // status.metadata.title, else status.title
 	Year             int64
 	OriginalLanguage string
@@ -170,17 +173,118 @@ type Object struct {
 type PlexSeason struct {
 	Number int64
 	ID     string
+	// Shared marks an id another item, or another season, records too
+	// ([Object.WithoutSharedPlexIDs]).
+	Shared bool
 }
 
 // PlexSeasonID is the Plex season id a Series records for a season number,
-// "" when none.
+// "" when none, and when the id is one two items record.
 func (o *Object) PlexSeasonID(number int64) string {
 	for _, s := range o.PlexSeasons {
-		if s.Number == number {
+		if s.Number == number && !s.Shared {
 			return s.ID
 		}
 	}
 	return ""
+}
+
+// SharedPlexSeasonID is the Plex season id a Series records for a season
+// number when two items record it, "" otherwise: the id a row of the
+// season may still be keyed by from before the second item recorded it.
+func (o *Object) SharedPlexSeasonID(number int64) string {
+	for _, s := range o.PlexSeasons {
+		if s.Number == number && s.Shared {
+			return s.ID
+		}
+	}
+	return ""
+}
+
+// PlexIDClaims counts, by Plex id, how many things of the item record it:
+// the item itself (a Movie's, a Series' or an Episode's id) and each of a
+// Series' seasons. A Series whose two seasons record one id claims it
+// twice.
+func (o *Object) PlexIDClaims() map[string]int {
+	if o == nil {
+		return nil
+	}
+	id := o.PlexID
+	if id == "" {
+		id = o.SharedPlexID
+	}
+	if id == "" && len(o.PlexSeasons) == 0 {
+		return nil
+	}
+	out := map[string]int{}
+	if id != "" {
+		out[id]++
+	}
+	seen := map[PlexSeason]bool{}
+	for _, s := range o.PlexSeasons {
+		k := PlexSeason{Number: s.Number, ID: s.ID}
+		if s.ID == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out[s.ID]++
+	}
+	return out
+}
+
+// PlexIDIndex is an informer index over the Plex ids an item records
+// ([Object.PlexIDClaims]), so the items recording one id are found without
+// reading the cache through.
+func PlexIDIndex(obj any) ([]string, error) {
+	o, ok := AsObject(obj)
+	if !ok {
+		return nil, nil
+	}
+	claims := o.PlexIDClaims()
+	out := make([]string, 0, len(claims))
+	for id := range claims {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// WithoutSharedPlexIDs is the item as the projection keys it: a Plex id
+// shared reports as recorded twice names no item, so it is moved from
+// PlexID to SharedPlexID, and a season's is marked Shared. clustarr's
+// provider answers by the same rule (ui/projection: "an id two items claim
+// names neither"; ui/plex urls.guid), and PMS reads an item it holds under
+// a plex:// guid from the provider by that id: a row keyed by an id two
+// items record is one Plex can never refresh (talos, 2026-11-26: a scan
+// made a second Series for Panty & Stocking with Garterbelt, both recorded
+// the show's and the seasons' Plex ids, the provider answered 404 for
+// each, and Plex's refreshes of both seasons never ended). The item is
+// returned as it is when none of its ids is shared, a copy otherwise.
+func (o *Object) WithoutSharedPlexIDs(shared func(id string) bool) *Object {
+	if o == nil || shared == nil {
+		return o
+	}
+	itemShared := o.PlexID != "" && shared(o.PlexID)
+	var seasons []PlexSeason
+	for i, s := range o.PlexSeasons {
+		if s.ID == "" || s.Shared || !shared(s.ID) {
+			continue
+		}
+		if seasons == nil {
+			seasons = append([]PlexSeason(nil), o.PlexSeasons...)
+		}
+		seasons[i].Shared = true
+	}
+	if !itemShared && seasons == nil {
+		return o
+	}
+	c := *o
+	if itemShared {
+		c.PlexID, c.SharedPlexID = "", o.PlexID
+	}
+	if seasons != nil {
+		c.PlexSeasons = seasons
+	}
+	return &c
 }
 
 // File is what the watcher's folder scans read of a MediaFile.

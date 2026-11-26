@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,21 @@ type Projector struct {
 	// Files is the disk the sweep asks whether a file is gone; nil
 	// sweeps nothing.
 	Files Files
+	// RefreshAgain is how long a row Plex was asked to refresh and left
+	// unrefreshed waits before a whole-section reconcile asks for it again
+	// (refreshNeverRefreshed); zero is a day.
+	RefreshAgain time.Duration
+
+	askedMu sync.Mutex
+	asked   map[int64]map[int64]askedRefresh // section -> row -> what it was asked as
+	held    map[int64]int                    // section -> rows last left unasked
+}
+
+// askedRefresh is a row's refresh as refreshNeverRefreshed asked for it:
+// the guid the row carried, and when.
+type askedRefresh struct {
+	guid string
+	at   time.Time
 }
 
 // Change is one MediaFile as the projection needs it.

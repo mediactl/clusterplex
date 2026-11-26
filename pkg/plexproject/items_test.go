@@ -8,13 +8,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 )
 
 var now0 = time.Unix(1790800000, 0)
 
 func movieItem(uid, plexID, title string) Item {
+	guid, prior := keys(MoviesProvider, TypeMovie, uid, plexID, "")
 	return Item{Provider: MoviesProvider, Chain: []Node{{
-		Type: TypeMovie, UID: uid, GUID: GUID(MoviesProvider, TypeMovie, uid, plexID), PriorGUID: prior(MoviesProvider, TypeMovie, uid, plexID),
+		Type: TypeMovie, UID: uid, GUID: guid, PriorGUID: prior,
 		Title: title, TitleSort: strings.ToLower(title), Year: 1995, AddedAt: now0,
 	}}}
 }
@@ -134,4 +139,70 @@ func TestAnItemThatGainsAPlexIDIsReKeyed(t *testing.T) {
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_items WHERE id = $1 AND guid = 'plex://movie/5d7768b7880197001ec967c6'", id))
 	require.Equal(t, 1, count(t, conn, "SELECT count(*) FROM metadata_item_settings WHERE guid = 'plex://movie/5d7768b7880197001ec967c6' AND view_count = 2"))
 	require.Len(t, r.ids, 1, "a re-key is not a new row: no refresh")
+}
+
+// A Plex id two items record keys neither's row: clustarr's provider
+// answers both under their own guids, and PMS could read neither by the id
+// (talos, 2026-11-26). The row keyed by the id from before the second item
+// recorded it is found by it and re-keyed to the first item applied, the
+// second gets its own, and with the second gone the row is keyed by the id
+// again. The chains are Resolve's, over the items as the watcher serves
+// them (clustarrobj.Object.WithoutSharedPlexIDs).
+func TestARowKeyedByAPlexIDTwoItemsRecordIsReKeyedAndTheSecondGetsItsOwn(t *testing.T) {
+	conn := plexDB(t)
+	section, _ := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	const plexID = "5d9c08232192ba001f308746"
+	movie := func(name string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Movie",
+			"metadata": map[string]any{"name": name, "namespace": "media", "uid": "uid-" + name, "creationTimestamp": "2026-10-28T09:51:56Z"},
+			"status":   map[string]any{"metadata": map[string]any{"title": "Heat", "year": int64(1995), "externalIDs": map[string]any{"plex": plexID}}},
+		}}
+	}
+	file := func(of string) *clustarrobj.Object {
+		return clustarrobj.Of(&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "MediaFile",
+			"metadata": map[string]any{"name": "f-" + of, "namespace": "media", "uid": "uid-f-" + of},
+			"spec":     map[string]any{"path": "/data/media/movies/Heat (1995)/" + of + ".mkv", "mediaRef": map[string]any{"kind": "movie", "name": of}},
+		}})
+	}
+	// look serves the movies named as the watcher does: an id more than
+	// one of them records is shared.
+	look := func(names ...string) Lookup {
+		base := make([]*unstructured.Unstructured, 0, len(names))
+		for _, n := range names {
+			base = append(base, movie(n))
+		}
+		inner := lookupOf(base...)
+		shared := func(id string) bool { return id == plexID && len(names) > 1 }
+		return func(gvr schema.GroupVersionResource, namespace, name string) (*clustarrobj.Object, bool) {
+			o, ok := inner(gvr, namespace, name)
+			return o.WithoutSharedPlexIDs(shared), ok
+		}
+	}
+	chain := func(of string, l Lookup) Item {
+		it, ok := Resolve(file(of), l)
+		require.True(t, ok)
+		return it
+	}
+	guidOf := func(id int64) string {
+		var g string
+		require.NoError(t, conn.QueryRow(context.Background(), `SELECT guid FROM metadata_items WHERE id = $1`, id).Scan(&g))
+		return g
+	}
+	custom := func(of string) string { return GUID(MoviesProvider, TypeMovie, "uid-"+of, "") }
+
+	first := ensure(t, conn, section, chain("heat", look("heat")), nil)
+	require.Equal(t, "plex://movie/"+plexID, guidOf(first))
+
+	both := look("heat", "heat-twin")
+	require.Equal(t, first, ensure(t, conn, section, chain("heat", both), nil), "the row it had, found by the id it was keyed by")
+	require.Equal(t, custom("heat"), guidOf(first))
+	second := ensure(t, conn, section, chain("heat-twin", both), nil)
+	require.NotEqual(t, first, second, "the second item is another row")
+	require.Equal(t, custom("heat-twin"), guidOf(second))
+	require.Equal(t, first, ensure(t, conn, section, chain("heat", both), nil), "and the first keeps its own")
+
+	require.Equal(t, first, ensure(t, conn, section, chain("heat", look("heat")), nil))
+	require.Equal(t, "plex://movie/"+plexID, guidOf(first), "alone again, it is keyed by the id")
 }

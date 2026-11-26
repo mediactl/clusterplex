@@ -18,9 +18,13 @@ type Node struct {
 	Type ItemType
 	// UID is the clustarr item the node is: a movie's or a series' uid, a
 	// season's key, an episode's uid.
-	UID       string
-	GUID      string
-	PriorGUID string // the custom-form guid a plex:// row may still carry; "" when GUID is the custom form
+	UID  string
+	GUID string
+	// PriorGUID is the other form a row of the node may still carry: the
+	// custom form under a plex:// GUID, from before the Plex id was known,
+	// and the plex:// form under a custom GUID whose Plex id two items
+	// record ([keys]); "" when the row has had one form only.
+	PriorGUID string
 	// Edition is a movie's edition (its MediaFile's spec.edition), which
 	// GUID and PriorGUID carry as PMS does ([EditionGUID]); "" for none.
 	Edition   string
@@ -167,21 +171,19 @@ func resolveEpisode(ns, name string, look Lookup) (Item, bool) {
 	seasonNumber, episodeNumber := ep.SeasonNumber, ep.EpisodeNumber
 	seriesUID := string(series.UID)
 	seasonKey := fmt.Sprintf("%s-s%02d", seriesUID, seasonNumber)
-	seasonPlexID := series.PlexSeasonID(seasonNumber)
-	episodePlexID := EpisodePlexID(ep, series)
+	seasonGUID, seasonPrior := keys(TVProvider, TypeSeason, seasonKey, series.PlexSeasonID(seasonNumber), series.SharedPlexSeasonID(seasonNumber))
+	episodeGUID, episodePrior := keys(TVProvider, TypeEpisode, string(ep.UID), EpisodePlexID(ep, series), ep.SharedPlexID)
 	return Item{
 		Provider: TVProvider,
 		Chain: []Node{
 			itemNode(series, TypeShow, TVProvider, seriesUID),
 			{
-				Type: TypeSeason, UID: seasonKey, GUID: GUID(TVProvider, TypeSeason, seasonKey, seasonPlexID),
-				PriorGUID: prior(TVProvider, TypeSeason, seasonKey, seasonPlexID),
-				Title:     fmt.Sprintf("Season %d", seasonNumber), TitleSort: fmt.Sprintf("season %d", seasonNumber),
+				Type: TypeSeason, UID: seasonKey, GUID: seasonGUID, PriorGUID: seasonPrior,
+				Title: fmt.Sprintf("Season %d", seasonNumber), TitleSort: fmt.Sprintf("season %d", seasonNumber),
 				Index: int32(seasonNumber), AddedAt: ep.CreationTimestamp.Time,
 			},
 			{
-				Type: TypeEpisode, UID: string(ep.UID), GUID: GUID(TVProvider, TypeEpisode, string(ep.UID), episodePlexID),
-				PriorGUID: prior(TVProvider, TypeEpisode, string(ep.UID), episodePlexID),
+				Type: TypeEpisode, UID: string(ep.UID), GUID: episodeGUID, PriorGUID: episodePrior,
 				Title:     firstOf(ep.Title, fmt.Sprintf("Episode %d", episodeNumber)),
 				TitleSort: strings.ToLower(firstOf(ep.Title, fmt.Sprintf("episode %d", episodeNumber))),
 				Index:     int32(episodeNumber), AddedAt: ep.CreationTimestamp.Time,
@@ -199,7 +201,10 @@ func resolveEpisode(ns, name string, look Lookup) (Item, bool) {
 // re-keyed such a row to plex:// and Plex's next refresh wrote the
 // provider's custom guid back, so the episode's next file found no row
 // under its guid and got a second one beside the first (talos,
-// 2026-10-27: My Happy Marriage and The Dangers in My Heart season 2).
+// 2026-10-27: My Happy Marriage and The Dangers in My Heart season 2). A
+// season id two items record is one Plex does not know the season by
+// ([clustarrobj.Object.WithoutSharedPlexIDs]), and neither is the
+// episode's own.
 func EpisodePlexID(ep, series *clustarrobj.Object) string {
 	if series.PlexSeasonID(ep.SeasonNumber) == "" {
 		return ""
@@ -211,8 +216,9 @@ func EpisodePlexID(ep, series *clustarrobj.Object) string {
 // status.metadata, keyed by its Plex id when it has one.
 func itemNode(o *clustarrobj.Object, t ItemType, provider, uid string) Node {
 	title := firstOf(o.Title, o.Name)
+	guid, priorGUID := keys(provider, t, uid, o.PlexID, o.SharedPlexID)
 	return Node{
-		Type: t, UID: uid, GUID: GUID(provider, t, uid, o.PlexID), PriorGUID: prior(provider, t, uid, o.PlexID),
+		Type: t, UID: uid, GUID: guid, PriorGUID: priorGUID,
 		Title: title, TitleSort: TitleSort(title), Year: int32(o.Year), AddedAt: o.CreationTimestamp.Time,
 		Labels: labelsOf(o),
 	}
@@ -239,13 +245,24 @@ func labelsOf(o *clustarrobj.Object) []string {
 	return out
 }
 
-// prior is the custom-form guid a row keyed by a Plex id may still carry
-// from before the id was known; "" when the guid already is the custom form.
-func prior(provider string, t ItemType, ratingKey, plexID string) string {
-	if plexID == "" {
-		return ""
+// keys are the guid a node's row is keyed by and the other form the row
+// may still carry. With a Plex id the row is keyed plex://, and may carry
+// the custom form from before the id was known. With none it is keyed by
+// the custom form, and carries no other -- unless the item records a Plex
+// id another item records too (sharedID): then the row may still be keyed
+// by that id from before the second item recorded it, and is found by it
+// and re-keyed to the custom form, the one the provider answers for it.
+// Whichever of the items is applied first takes the row; the other finds
+// none and gets its own.
+func keys(provider string, t ItemType, ratingKey, plexID, sharedID string) (guid, prior string) {
+	custom := GUID(provider, t, ratingKey, "")
+	switch {
+	case plexID != "":
+		return GUID(provider, t, ratingKey, plexID), custom
+	case sharedID != "":
+		return custom, GUID(provider, t, ratingKey, sharedID)
 	}
-	return GUID(provider, t, ratingKey, "")
+	return custom, ""
 }
 
 // TitleSort is how Plex sorts a title: lower-cased, a leading article

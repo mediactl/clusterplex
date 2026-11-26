@@ -141,7 +141,7 @@ type Watcher struct {
 	seedAttempts map[string]int
 	// items are the Movie, Series and Episode caches a seed reads its
 	// item's original language from; set before the informers start.
-	items map[schema.GroupVersionResource]cache.Store
+	items map[schema.GroupVersionResource]cache.Indexer
 }
 
 type seedRetry struct {
@@ -173,6 +173,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 		inf := f.ForResource(gvr).Informer()
 		if err := inf.SetTransform(clustarrobj.Transform); err != nil {
 			return nil, err
+		}
+		if gvr != MediaFiles {
+			// The items recording one Plex id are found by it (plexIDShared).
+			if err := inf.AddIndexers(cache.Indexers{plexIDIndex: clustarrobj.PlexIDIndex}); err != nil {
+				return nil, err
+			}
 		}
 		for _, h := range hs {
 			if _, err := inf.AddEventHandler(h); err != nil {
@@ -215,9 +221,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 			return err
 		}
 		if w.items == nil {
-			w.items = map[schema.GroupVersionResource]cache.Store{}
+			w.items = map[schema.GroupVersionResource]cache.Indexer{}
 		}
-		w.items[it.gvr] = inf.GetStore()
+		w.items[it.gvr] = inf.GetIndexer()
 	}
 	w.Logger.Info("the clustarr watch has synced", "namespace", w.Namespace)
 	report(w.Counters.Synced, true)
@@ -386,6 +392,7 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 				for _, f := range w.filesOfItem(plexType, n.Name) {
 					w.enqueueSeed(f)
 				}
+				w.rekeySharers(nil, n)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
@@ -394,6 +401,7 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 			if !ok1 || !ok2 || (o.MetadataHash == n.MetadataHash && o.ChainKey == n.ChainKey) {
 				return
 			}
+			w.rekeySharers(o, n)
 			if w.Projection != nil && o.ChainKey != n.ChainKey {
 				// The chain's guids changed -- the Plex id arriving, the
 				// series' season ids -- so every file of the item is
@@ -403,6 +411,14 @@ func (w *Watcher) itemHandler(plexType, provider string) cache.ResourceEventHand
 				}
 			}
 			w.sched.EnqueueRefresh(w.itemGUID(provider, plexType, n))
+		},
+		DeleteFunc: func(obj any) {
+			if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = t.Obj
+			}
+			if o, ok := clustarrobj.AsObject(obj); ok {
+				w.rekeySharers(o, nil)
+			}
 		},
 	}
 }
@@ -739,7 +755,8 @@ func (w *Watcher) item(gvr schema.GroupVersionResource, namespace, name string) 
 	if err != nil || !ok {
 		return nil, false
 	}
-	return clustarrobj.AsObject(obj)
+	o, ok := clustarrobj.AsObject(obj)
+	return o.WithoutSharedPlexIDs(w.PlexIDShared), ok
 }
 
 // flushSeeds seeds up to SeedBatch queued files. A file Plex has no part

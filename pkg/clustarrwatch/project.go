@@ -420,10 +420,11 @@ func (w *Watcher) filesOfItem(plexType, name string) []*clustarrobj.Object {
 // once clustarr knows it, the provider's custom form before -- an
 // episode's Plex id only inside a season Plex knows too, as the projection
 // keys it (plexproject.EpisodePlexID). A movie's edition is its file's,
-// which the refresh's lookup matches past (the manager's plexItemID).
+// which the refresh's lookup matches past (the manager's plexItemID). A
+// Plex id two items record keys neither (PlexIDShared).
 func (w *Watcher) itemGUID(provider, plexType string, o *clustarrobj.Object) string {
 	t := map[string]plexproject.ItemType{"movie": plexproject.TypeMovie, "show": plexproject.TypeShow, "episode": plexproject.TypeEpisode}[plexType]
-	plexID := o.PlexID
+	plexID := o.WithoutSharedPlexIDs(w.PlexIDShared).PlexID
 	if t == plexproject.TypeEpisode {
 		s, ok := w.item(Series, o.Namespace, o.SeriesRef)
 		if !ok {
@@ -433,4 +434,84 @@ func (w *Watcher) itemGUID(provider, plexType string, o *clustarrobj.Object) str
 		}
 	}
 	return plexproject.GUID(provider, t, string(o.UID), plexID)
+}
+
+// plexIDIndex names the item caches' index over the Plex ids their items
+// record (clustarrobj.PlexIDIndex).
+const plexIDIndex = "plexID"
+
+// PlexIDShared reports whether id is recorded more than once among the
+// Movies, Series -- their seasons included -- and Episodes the watcher
+// reads: such an id names no item, and no row is keyed by it
+// (clustarrobj.Object.WithoutSharedPlexIDs). It is false until the watch
+// has synced: the first resync, which applies every file, runs after.
+func (w *Watcher) PlexIDShared(id string) bool {
+	if id == "" || !w.synced.Load() {
+		return false
+	}
+	n := 0
+	for _, o := range w.recording(id) {
+		n += o.PlexIDClaims()[id]
+	}
+	return n > 1
+}
+
+// recording lists the cached items that record the Plex id.
+func (w *Watcher) recording(id string) []*clustarrobj.Object {
+	var out []*clustarrobj.Object
+	for _, st := range w.items {
+		objs, err := st.ByIndex(plexIDIndex, id)
+		if err != nil {
+			continue
+		}
+		for _, obj := range objs {
+			if o, ok := clustarrobj.AsObject(obj); ok {
+				out = append(out, o)
+			}
+		}
+	}
+	return out
+}
+
+// rekeySharers applies again the files of every other item that records a
+// Plex id was or now records and the other of the two does not: an id
+// that became shared, or stopped being, changes how those items' rows are
+// keyed (plexproject's keys), and nothing of theirs changed to say so.
+// was is nil for an item that arrived, now for one that is gone.
+func (w *Watcher) rekeySharers(was, now *clustarrobj.Object) {
+	if w.Projection == nil || !w.synced.Load() {
+		return
+	}
+	before, after := was.PlexIDClaims(), now.PlexIDClaims()
+	self := now
+	if self == nil {
+		self = was
+	}
+	seen := map[string]bool{}
+	rekey := func(id string) {
+		for _, o := range w.recording(id) {
+			key := o.Kind + "/" + o.Namespace + "/" + o.Name
+			if o.UID == self.UID || seen[key] {
+				continue
+			}
+			seen[key] = true
+			plexType, ok := map[string]string{"Movie": "movie", "Series": "show", "Episode": "episode"}[o.Kind]
+			if !ok {
+				continue
+			}
+			for _, f := range w.filesOfItem(plexType, o.Name) {
+				w.enqueueSeed(f)
+			}
+		}
+	}
+	for id, n := range before {
+		if after[id] != n {
+			rekey(id)
+		}
+	}
+	for id, n := range after {
+		if before[id] != n {
+			rekey(id)
+		}
+	}
 }

@@ -3,6 +3,7 @@ package plexproject
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
@@ -180,4 +181,51 @@ func TestAWholeSectionReconcileAsksForTheRefreshOfRowsPlexNeverRefreshed(t *test
 	_, err = p.Reconcile(ctx, section, loc, "", want)
 	require.NoError(t, err)
 	require.Equal(t, []int64{never}, asked.ids)
+}
+
+// A row Plex was asked to refresh and left unrefreshed is one it could not
+// refresh: a whole-section reconcile asks for it once under the guid it
+// carries, again when the row is re-keyed or a day has passed, and forgets
+// it once Plex has refreshed it (talos, 2026-11-26: a show and two seasons
+// the provider answered 404 for were asked for at every reconcile).
+func TestARowPlexLeftUnrefreshedIsNotAskedForAgainUnderTheSameGuid(t *testing.T) {
+	conn := plexDB(t)
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	asked := &refreshes{}
+	clock := now0
+	p := projector(conn, asked)
+	p.Now = func() time.Time { return clock }
+	ctx := context.Background()
+	want := []Change{change("stuck", "/media/movies/Stuck (2000)/Stuck.mkv", "k1", movieItem("u-stuck", "", "Stuck"))}
+	require.NoError(t, p.Apply(ctx, section, loc, want[0]))
+	var id int64
+	require.NoError(t, conn.QueryRow(ctx, `SELECT metadata_item_id FROM media_items WHERE id = $1`, mediaID(t, conn, section, "stuck")).Scan(&id))
+	reconcile := func() []int64 {
+		t.Helper()
+		asked.ids = nil
+		_, err := p.Reconcile(ctx, section, loc, "", want)
+		require.NoError(t, err)
+		return asked.ids
+	}
+
+	require.Equal(t, []int64{id}, reconcile(), "asked once")
+	require.Empty(t, reconcile(), "Plex left it unrefreshed: not asked again")
+	clock = clock.Add(23 * time.Hour)
+	require.Empty(t, reconcile())
+
+	_, err := conn.Exec(ctx, `UPDATE metadata_items SET guid = guid || '-rekeyed' WHERE id = $1`, id)
+	require.NoError(t, err)
+	require.Equal(t, []int64{id}, reconcile(), "re-keyed: the provider may answer for it now")
+	require.Empty(t, reconcile())
+
+	clock = clock.Add(25 * time.Hour)
+	require.Equal(t, []int64{id}, reconcile(), "a day on, once more")
+	require.Empty(t, reconcile())
+
+	_, err = conn.Exec(ctx, `UPDATE metadata_items SET refreshed_at = 1790800000 WHERE id = $1`, id)
+	require.NoError(t, err)
+	require.Empty(t, reconcile(), "refreshed")
+	_, err = conn.Exec(ctx, `UPDATE metadata_items SET refreshed_at = NULL WHERE id = $1`, id)
+	require.NoError(t, err)
+	require.Equal(t, []int64{id}, reconcile(), "a refreshed row was forgotten, so one unrefreshed anew is asked for")
 }

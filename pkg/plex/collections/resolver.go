@@ -31,6 +31,10 @@ var memberKinds = map[string]struct {
 // own, by the object's UID. Each member is read by name.
 type DynamicMembers struct {
 	Dynamic dynamic.Interface
+	// Shared reports a Plex id two items record, which keys no row: such a
+	// member is keyed by the provider's own guid, as the projection keys it
+	// (clustarrwatch.Watcher.PlexIDShared). Nil shares none.
+	Shared func(plexID string) bool
 }
 
 var _ MemberResolver = DynamicMembers{}
@@ -53,6 +57,9 @@ func (d DynamicMembers) GUIDs(ctx context.Context, namespace string, members []M
 			return nil, fmt.Errorf("read %s %s/%s: %w", m.Kind, namespace, m.Name, err)
 		}
 		plexID, _, _ := unstructured.NestedString(u.Object, "status", "metadata", "externalIDs", "plex")
+		if plexID != "" && d.Shared != nil && d.Shared(plexID) {
+			plexID = ""
+		}
 		out[m] = plexproject.GUID(k.provider, k.itemType, string(u.GetUID()), plexID)
 	}
 	return out, nil
