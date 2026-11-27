@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/mediactl/clusterplex/pkg/clustarrobj"
 	plexapi "github.com/mediactl/clusterplex/pkg/plex/api"
 	"github.com/mediactl/clusterplex/pkg/plexproject"
@@ -24,6 +26,9 @@ type Projection interface {
 	// Sweep takes the files that are gone off a section's items (or a
 	// folder's, or one item's and those under it).
 	Sweep(ctx context.Context, section int64, scope plexproject.SweepScope) (plexproject.SweepOutcome, error)
+	// ReconcileRatings writes the ratings Plex sorts by onto a section's
+	// movies and shows, by guid.
+	ReconcileRatings(ctx context.Context, section int64, want map[string]plexproject.Rating) (int64, error)
 }
 
 // SectionIDs are a provisioned section's database ids: library_sections.id
@@ -370,6 +375,57 @@ func (w *Watcher) resyncProjection(ctx context.Context) bool {
 		if _, _, err := w.ReconcileSection(ctx, key, ""); err != nil {
 			inc(w.Counters.SeedErrors)
 			w.Logger.Warn("projection: resync", "section", key, "err", err)
+		}
+	}
+	return true
+}
+
+// resyncRatings writes the ratings Plex sorts by onto every provisioned
+// section's movies and shows, from the cached Movies and Series: the first
+// tick after the informers sync, then every RatingsResync. PMS keeps none
+// of a provider's on an item's row and erases what is there at each refresh
+// of the item (plexproject.Rating), so this runs far more often than the
+// whole-section reconcile; a pass that finds nothing changed writes
+// nothing. Every section is given every item: a row is found by its guid,
+// and a movie's guid names no show. It reports whether there were sections,
+// so an empty set does not count as a pass done.
+func (w *Watcher) resyncRatings(ctx context.Context) bool {
+	if w.Sections == nil || len(w.Sections()) == 0 {
+		return false
+	}
+	want := map[string]plexproject.Rating{}
+	for _, it := range []struct {
+		gvr      schema.GroupVersionResource
+		t        plexproject.ItemType
+		provider string
+	}{
+		{Movies, plexproject.TypeMovie, w.MovieProvider},
+		{Series, plexproject.TypeShow, w.TVProvider},
+	} {
+		st := w.items[it.gvr]
+		if st == nil || it.provider == "" {
+			continue
+		}
+		for _, obj := range st.List() {
+			if o, ok := clustarrobj.AsObject(obj); ok {
+				plexproject.AddRatings(want, o.WithoutSharedPlexIDs(w.PlexIDShared), it.t, it.provider)
+			}
+		}
+	}
+	for key, ids := range w.Sections() {
+		// On the section's lock, as everything the projection writes to
+		// one section is (sectionLock).
+		lock := w.sectionLock(key)
+		lock.Lock()
+		n, err := w.Projection.ReconcileRatings(ctx, ids.Section, want)
+		lock.Unlock()
+		if err != nil {
+			inc(w.Counters.SeedErrors)
+			w.Logger.Warn("projection: ratings", "section", key, "err", err)
+			continue
+		}
+		if n > 0 {
+			w.Logger.Info("projection: ratings written", "section", key, "rows", n)
 		}
 	}
 	return true

@@ -263,6 +263,31 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   ImportList `spec.listed.tags` puts a tag on every Movie and Series the
   list names, so a smart PlexCollection filtering `label is <tag>` gathers
   the list and follows it. Tags join the chain key only when there are any.
+  Since 2026-11-27 it writes a movie's and a show's two **ratings** too
+  (owner, of the route for "Top Rated" collection rows: "cluster-plex
+  writes them"): `metadata_items.rating` and `audience_rating`, the only
+  ratings Plex sorts a library, a smart collection or its own Top Rated hub
+  by. PMS fills neither from a custom provider -- it keeps the provider's
+  `Rating` list as the item's badges (taggings of tag_type 316) and leaves
+  both columns NULL even when the provider also answers `rating` and
+  `audienceRating`, and a library on a custom agent has no ratings-source
+  preference (a stock PMS 1.43.5.11079 fed clustarr's own answers,
+  2026-11-27; talos that day: 1,279 movies and 544 shows, none with
+  either) -- and **every metadata refresh of an item sets the two back to
+  NULL**, so unlike a label they do not stay. They are therefore not
+  written at an apply (which itself asks for the refresh that would erase
+  them) but by a pass of their own, `Watcher.resyncRatings` every
+  `RatingsResync` (10 minutes): `plexproject.ReconcileRatings`, one
+  `UPDATE` a section over the cached Movies and Series, by the guid each
+  row carries (`AddRatings`: the keyed form and the prior one; an
+  edition's row under the movie's guid), writing only rows that differ.
+  The critic rating is Rotten Tomatoes' Tomatometer; the audience rating
+  IMDb's, else TMDB's, else Rotten Tomatoes' audience score
+  (`clustarrobj.ratingsOf`), one source wherever it exists so a sort
+  compares like with like; none is NULL, never zero. Ratings stay out of
+  `MetadataHash` and the chain key: they drift daily. Not written: the
+  two rating images (`at:ratingImage` in `extra_data`); the badges come
+  from the tags as before.
   Configuration stays API-only.
 - **Only `cmd/remux-worker` and `cmd/video-worker` link ffgo.** The
   manager, shim, proxy and maintenance binaries are static and run from a

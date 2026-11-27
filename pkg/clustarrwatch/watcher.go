@@ -89,6 +89,10 @@ type Watcher struct {
 	// whose probe or markers change is seeded again.
 	Seed       func(ctx context.Context, plexPath string, in plexseed.Input) error
 	SeedResync time.Duration
+	// RatingsResync is how often the ratings Plex sorts by are written
+	// onto the provisioned sections' movies and shows again (default 10m):
+	// Plex erases an item's at each metadata refresh (resyncRatings).
+	RatingsResync time.Duration
 	// SeedBatch is how many files one flush seeds (default 50).
 	SeedBatch int
 	// SeedRetry is the backoff for a file Plex has no part for yet or
@@ -266,6 +270,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if resync <= 0 {
 		resync = 6 * time.Hour
 	}
+	var nextRatings time.Time // zero: the first tick
+	ratingsEvery := w.RatingsResync
+	if ratingsEvery <= 0 {
+		ratingsEvery = 10 * time.Minute
+	}
 
 	every := w.FlushEvery
 	if every <= 0 {
@@ -287,6 +296,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 			case w.Projection != nil:
 				if now := time.Now(); !now.Before(nextResync) && w.resyncProjection(ctx) {
 					nextResync = now.Add(resync)
+				}
+				if now := time.Now(); !now.Before(nextRatings) && w.resyncRatings(ctx) {
+					nextRatings = now.Add(ratingsEvery)
 				}
 				if !w.hadSections && !w.sectionsUnknown() {
 					// The sections just became known: everything that

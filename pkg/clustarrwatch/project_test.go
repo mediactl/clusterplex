@@ -2,6 +2,7 @@ package clustarrwatch_test
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,8 @@ type recordingProjector struct {
 	deleted    []deleted
 	reconciled []reconciled
 	swept      []swept
-	events     []string // "apply:<uid>" and "delete:<uid>", in order
+	ratings    map[int64]map[string]plexproject.Rating // by section, as last given
+	events     []string                                // "apply:<uid>" and "delete:<uid>", in order
 	refresher  plexproject.Refresher
 }
 
@@ -90,6 +92,23 @@ func (r *recordingProjector) Sweep(_ context.Context, section int64, scope plexp
 	return plexproject.SweepOutcome{}, nil
 }
 
+func (r *recordingProjector) ReconcileRatings(_ context.Context, section int64, want map[string]plexproject.Rating) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ratings == nil {
+		r.ratings = map[int64]map[string]plexproject.Rating{}
+	}
+	r.ratings[section] = maps.Clone(want)
+	return 0, nil
+}
+
+// Ratings are the ratings last given for the section, nil before any.
+func (r *recordingProjector) Ratings(section int64) map[string]plexproject.Rating {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Clone(r.ratings[section])
+}
+
 func (r *recordingProjector) Swept() []swept {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -151,6 +170,7 @@ func withProjectionOf(rp *recordingProjector, resync time.Duration, sections *se
 		w.Sections = sections.get
 		w.TVProvider = "tv.plex.agents.custom.clustarr.tv"
 		w.SeedResync = resync
+		w.RatingsResync = 20 * time.Millisecond
 		rp.refresher = w
 	}
 }
@@ -291,6 +311,32 @@ func TestTheResyncReconcilesEveryProvisionedSection(t *testing.T) {
 	require.Equal(t, "uid-a", first.want[0].UID)
 	require.False(t, first.want[0].Unresolved)
 	require.Empty(t, rp.Applied(), "the initial list is the reconcile's, not applied file by file")
+}
+
+// The ratings Plex sorts by are given to every provisioned section for
+// every Movie and Series, under the guid its row carries and the one it may
+// still carry, soon after the watch has synced and without any file
+// changing: Plex keeps none of a provider's on an item's row and erases
+// them at each refresh (plexproject.Rating). An item with no rating is
+// given as none, so a row is held there.
+func TestTheRatingsPassGivesEverySectionItsItemsRatings(t *testing.T) {
+	rated := movie("m1", "Heat")
+	require.NoError(t, unstructured.SetNestedSlice(rated.Object, []any{
+		map[string]any{"source": "imdb", "valueCentis": int64(830)},
+		map[string]any{"source": "rottenTomatoesCritic", "valueCentis": int64(8700)},
+	}, "status", "metadata", "ratings"))
+	require.NoError(t, unstructured.SetNestedField(rated.Object, "5d77plex", "status", "metadata", "externalIDs", "plex"))
+	rp, _, _, dyn := startProjecting(t, time.Hour, rated)
+	dyn.add(t, clustarrwatch.Series, series("show", "", nil))
+
+	var got map[string]plexproject.Rating
+	require.Eventually(t, func() bool { got = rp.Ratings(1); return len(got) == 3 }, 5*time.Second, 10*time.Millisecond)
+	want := plexproject.Rating{Critic: 87, Audience: 83}
+	require.Equal(t, want, got["plex://movie/5d77plex"], "the guid its row is keyed by")
+	require.Equal(t, want, got["tv.plex.agents.custom.clustarr.movies://movie/m1"], "and the one it carried before its Plex id was known")
+	unrated, ok := got["tv.plex.agents.custom.clustarr.tv://show/uid-show"]
+	require.True(t, ok, "a series without a rating is given too: %v", got)
+	require.Zero(t, unrated)
 }
 
 // ReconcileSection answers a scan request for a provisioned section, or

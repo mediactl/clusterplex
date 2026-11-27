@@ -59,6 +59,9 @@ var (
 	titleField      = []string{"status", "metadata", "title"}
 	yearField       = []string{"status", "metadata", "year"}
 	keywordsField   = []string{"status", "metadata", "keywords"}
+	// ratingsField is a Movie's or Series' ratings by source, of which the
+	// projection writes two onto the item's own row (ratingsOf).
+	ratingsField = []string{"status", "metadata", "ratings"}
 	// tagsField is a Movie's or Series' spec.tags: its own, and the ones an
 	// ImportList's spec.listed put on it. They are the item's Plex labels
 	// too, so a smart collection filtering on a tag gathers a list.
@@ -104,6 +107,9 @@ func FieldPaths(gvr schema.GroupVersionResource) [][]string {
 		keywordsField,
 		// tags are the item's own and its import lists', labels too.
 		tagsField,
+		// ratings are what Plex sorts a library by; PMS keeps none of a
+		// provider's on the item's row, so the projection writes them.
+		ratingsField,
 		{"status", "overlay"},
 	}
 	switch gvr {
@@ -158,8 +164,13 @@ type Object struct {
 	Year             int64
 	OriginalLanguage string
 	Keywords         []string
-	Tags             []string     // spec.tags
-	PlexSeasons      []PlexSeason // a Series' status.metadata.plexSeasons
+	Tags             []string // spec.tags
+	// CriticRating and AudienceRating are the two ratings Plex keeps on an
+	// item's own row and sorts by, in tenths of a point out of ten; 0 is
+	// none (ratingsOf).
+	CriticRating   int64
+	AudienceRating int64
+	PlexSeasons    []PlexSeason // a Series' status.metadata.plexSeasons
 	// MetadataHash hashes what Plex shows of the item, so a refresh is asked
 	// for only when that moved; ChainKey, what of it the projection's chain
 	// reads (its Plex id, a series' season ids, its keywords), so its files
@@ -372,7 +383,7 @@ func OriginalLanguageOf(file *Object, item ItemLookup) string {
 // file into Plex again, and a moved MetadataHash refresh every item.
 func Of(u *unstructured.Unstructured) *Object {
 	t := trim(u)
-	return &Object{
+	o := &Object{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: u.GetName(), Namespace: u.GetNamespace(), UID: u.GetUID(), ResourceVersion: u.GetResourceVersion(),
 			// The projection's added_at (plexproject.Node.AddedAt). The
@@ -396,6 +407,8 @@ func Of(u *unstructured.Unstructured) *Object {
 		OriginalLanguage: str(t, originalLanguageField...), Keywords: strs(t, keywordsField...), Tags: strs(t, tagsField...), PlexSeasons: plexSeasonsOf(t),
 		MetadataHash: metadataHash(t), ChainKey: chainKey(t),
 	}
+	o.CriticRating, o.AudienceRating = ratingsOf(t)
+	return o
 }
 
 // Transform is the informers' transform: a clustarr object becomes an
@@ -501,6 +514,39 @@ func hashJSON(v any) string {
 	b, _ := json.Marshal(v)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// ratingsOf picks the two ratings Plex keeps on an item's row from the
+// item's ratings by source, in tenths of a point out of ten, 0 for none:
+// the critic rating is Rotten Tomatoes' Tomatometer; the audience rating is
+// IMDb's, else TMDB's, else Rotten Tomatoes' audience score. One audience
+// source wherever it exists, so that a sort compares like with like: every
+// film on talos had an IMDb rating on 2026-11-27, 59 of 1,279 no Rotten
+// Tomatoes audience score. clustarr stores a score out of ten in hundredths
+// and one out of a hundred in hundredths too (valueCentis), and its Plex
+// provider answers the same four to one decimal as the item's badges.
+func ratingsOf(u *unstructured.Unstructured) (critic, audience int64) {
+	v, _, _ := unstructured.NestedFieldNoCopy(u.Object, ratingsField...)
+	list, _ := v.([]any)
+	by := make(map[string]int64, len(list))
+	for _, r := range list {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		source, _ := m["source"].(string)
+		by[source] = asInt(m["valueCentis"])
+	}
+	outOfTen := func(source string) int64 { return (by[source] + 5) / 10 }
+	outOfHundred := func(source string) int64 { return (by[source] + 50) / 100 }
+	critic = outOfHundred("rottenTomatoesCritic")
+	for _, a := range []int64{outOfTen("imdb"), outOfTen("tmdb"), outOfHundred("rottenTomatoesAudience")} {
+		if a > 0 {
+			audience = a
+			break
+		}
+	}
+	return critic, audience
 }
 
 func plexSeasonsOf(u *unstructured.Unstructured) []PlexSeason {

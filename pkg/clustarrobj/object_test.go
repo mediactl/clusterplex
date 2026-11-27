@@ -240,6 +240,50 @@ func TestAMultiEpisodeFileKeepsItsKeys(t *testing.T) {
 	assert.Equal(t, []string{"e1", "e2"}, o.MediaKeys)
 }
 
+// An item's two ratings are picked from its ratings by source, in tenths
+// out of ten: the critic rating is Rotten Tomatoes' Tomatometer, the
+// audience rating IMDb's, else TMDB's, else Rotten Tomatoes' audience
+// score. They move neither hash: ratings drift daily, a moved MetadataHash
+// refreshes the item in Plex and a moved ChainKey applies its files again.
+func TestAnItemsRatingsAreRead(t *testing.T) {
+	item := func(ratings ...any) *unstructured.Unstructured {
+		md := map[string]any{"title": "Heat", "year": int64(1995)}
+		if ratings != nil {
+			md["ratings"] = ratings
+		}
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "catalog.clustarr.io/v1alpha1", "kind": "Movie",
+			"metadata": map[string]any{"name": "heat", "namespace": "media", "uid": "uid-heat"},
+			"status":   map[string]any{"metadata": md},
+		}}
+	}
+	r := func(source string, centis int64) any {
+		return map[string]any{"source": source, "valueCentis": centis, "votes": int64(1000)}
+	}
+	for _, tc := range []struct {
+		name             string
+		ratings          []any
+		critic, audience int64
+	}{
+		{"none", nil, 0, 0},
+		{"all four: IMDb is the audience's", []any{r("tmdb", 790), r("rottenTomatoesAudience", 9400), r("imdb", 830), r("rottenTomatoesCritic", 8700), r("metacritic", 7600)}, 87, 83},
+		{"no IMDb: TMDB's", []any{r("tmdb", 790), r("rottenTomatoesAudience", 9400)}, 0, 79},
+		{"neither: Rotten Tomatoes' audience score", []any{r("rottenTomatoesAudience", 9400), r("letterboxd", 820)}, 0, 94},
+		{"rounded to a tenth, half up", []any{r("imdb", 745), r("rottenTomatoesCritic", 8650)}, 87, 75},
+		{"a source the item was never rated by is none", []any{r("imdb", 0), r("trakt", 800)}, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := clustarrobj.Of(item(tc.ratings...))
+			assert.Equal(t, tc.critic, o.CriticRating)
+			assert.Equal(t, tc.audience, o.AudienceRating)
+		})
+	}
+	a, b := clustarrobj.Of(item(r("imdb", 830))), clustarrobj.Of(item(r("imdb", 840)))
+	assert.NotEqual(t, a.AudienceRating, b.AudienceRating)
+	assert.Equal(t, a.MetadataHash, b.MetadataHash, "a drifting rating asks Plex for no refresh")
+	assert.Equal(t, a.ChainKey, b.ChainKey, "and applies no file again")
+}
+
 // The projection reads an item's Plex id, title, year, keywords and a
 // series' season ids, and an episode's numbers and Plex id.
 func TestAnItemsChainFieldsAreRead(t *testing.T) {
