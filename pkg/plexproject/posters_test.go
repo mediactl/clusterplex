@@ -2,9 +2,12 @@ package plexproject
 
 import (
 	"context"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -120,4 +123,31 @@ func TestARowStuckOnItsMatchThumbTakesTheDownloadedPoster(t *testing.T) {
 	n, err = p.ReconcilePosters(ctx, section)
 	require.NoError(t, err)
 	require.Zero(t, n, "a pass that finds no row stuck writes nothing")
+}
+
+// The manager builds its Projector without a clock (cmd/manager's
+// watchClustarr), so the pass reads the time through now(), which falls
+// back to the wall clock. With the field called directly the manager
+// panicked on its first ratings pass, 76 s after every start (talos,
+// 2026-11-28, image 6966b73).
+func TestThePosterPassRunsOnAProjectorBuiltWithoutAClock(t *testing.T) {
+	conn := plexDB(t)
+	ctx := context.Background()
+	section, loc := newSection(t, conn, "Movies "+t.Name(), 1, "/media/movies")
+	seeded := projector(conn, &refreshes{})
+	it := movieItem("u-poster-noclock", "", "Poster noclock")
+	require.NoError(t, seeded.Apply(ctx, section, loc, change("pf-noclock", "/media/movies/noclock/noclock.mkv", "pk-noclock", it)))
+	row := rowOf(t, conn, section, it.Chain[0].GUID)
+	_, err := conn.Exec(ctx, "UPDATE metadata_items SET user_thumb_url = $2, user_fields = '', updated_at = 100 WHERE id = $1", row, stuckThumb)
+	require.NoError(t, err)
+	downloaded(t, conn, row, "metadata://posters/tv.plex.agents.custom.clustarr.movie_noclock")
+
+	p := &Projector{DB: conn, Logger: slog.New(slog.DiscardHandler)}
+	before := time.Now().Unix()
+	n, err := p.ReconcilePosters(ctx, section)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	var updated int64
+	require.NoError(t, conn.QueryRow(ctx, "SELECT updated_at FROM metadata_items WHERE id = $1", row).Scan(&updated))
+	assert.GreaterOrEqual(t, updated, before, "stamped with the wall clock")
 }

@@ -64,7 +64,7 @@ func (p *Projector) ReconcilePosters(ctx context.Context, section int64) (int64,
 			GROUP BY s.id HAVING count(*) = 1
 		) d
 		WHERE m.id = d.id AND m.user_thumb_url LIKE '`+cloudThumb+`' AND COALESCE(m.user_fields, '') !~ '`+thumbLocked+`'`,
-		section, p.Now().Unix(), int(TypeMovie), int(TypeShow), posterTagType)
+		section, p.now().Unix(), int(TypeMovie), int(TypeShow), posterTagType)
 	if err != nil {
 		return 0, fmt.Errorf("plexproject: posters of section %d: %w", section, err)
 	}
