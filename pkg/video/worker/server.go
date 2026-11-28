@@ -45,8 +45,16 @@ func serverOptions(ka keepalive.ServerParameters) []grpc.ServerOption {
 }
 
 // DefaultInputStall is how long a streamed input may send nothing before
-// its job fails: a Live TV upstream that stalls must not hold a slot.
-const DefaultInputStall = 30 * time.Second
+// its job fails: a Live TV upstream that stalls must not hold a slot for
+// good. It was 30 s, and a Live TV session's input is Plex's own 1 s
+// segments, which stop for as long as the channel's source sends no
+// media: on talos (2026-11-28 07:00Z) BBC World News sent none for a
+// minute and a half, clustarr's relay bridged its 30 s cushion, and the
+// job failed "input stalled" 30 s later. clustarr's relay now pads the
+// recorder's connection (relay.Options.KeepAlive) so Plex's recorder
+// waits, and this wait, past the cushion, is what bounds a source's
+// outage a session survives: about two minutes in all.
+const DefaultInputStall = 90 * time.Second
 
 var errStalled = errors.New("input stalled")
 
