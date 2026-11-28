@@ -317,7 +317,7 @@ func run() int {
 		Logger:    logging.SubsystemLogger(logger, "net.egress"),
 	}
 
-	divert := diverters(scanDiverter(cfg.ScanRoute), onNowDiverter(&cfg, plexNet.PlexAddrPort().String()))
+	divert := diverters(scanDiverter(cfg.ScanRoute), onNowDiverter(&cfg, plexNet.PlexAddrPort().String()), m.postersDiverter(ctx))
 	m.sup = &Supervisor{
 		Binary:    cfg.PMSBinary,
 		Subreaper: cfg.SubreaperBinary,

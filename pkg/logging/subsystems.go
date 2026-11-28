@@ -34,6 +34,7 @@ var Subsystems = []string{
 	"pms.stdout",
 	"pms.transcoder",
 	"pms.tuner",
+	"posters",
 	"projection",
 	"provision",
 	"proxy",

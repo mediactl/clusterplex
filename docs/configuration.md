@@ -785,6 +785,47 @@ and logs once.
 | `clusterplex_clustarr_watch_synced` | 1 once the clustarr watch has synced |
 | `clusterplex_seed_files_total{result}` | Files projected: `seeded`, `unmatched` (the item is not in clustarr's caches yet) or `error` |
 
+### The posters clients ask for
+
+clustarr draws a second, compact rendition of a poster, its rating badges
+and title image larger, for a client that shows the poster small (clustarr's
+design of 2026-11-27). A client asks Plex's photo transcoder for a poster at
+a size (`GET /photo/:/transcode?width=..&height=..&url=/library/metadata/<id>/thumb/<ts>`),
+and the manager's proxy, which is on that request's way, is where a small
+one is to be answered. The first step only watches:
+
+```yaml
+plex:
+  compactPosters:
+    mode: observe     # off (default) | observe | serve (not built: observes)
+```
+
+In `observe` every request goes on to Plex exactly as before. The proxy
+counts each in `clusterplex_poster_requests_total{platform,width,request}`:
+
+- `platform` is the client's `X-Plex-Platform` when it is one of a fixed
+  list, `other` when not, `none` when it sent none;
+- `width` is the upper bound of the bucket the width asked for falls in
+  (100, 150, 200, 250, 300, 400, 450, 500, 600, 800, 1000, `+Inf`; `none`);
+- `request` is what it would have met: `paired` (the row shows a poster
+  Plex downloaded and clustarr lists a compact twin for it, read from
+  `<plex.clustarr.uiURL>/plex/compact-posters` once a minute), `unpaired`
+  (a downloaded poster with no twin), `cloud` (the row is stuck on its
+  match result's thumb, which Plex's cloud photo service serves),
+  `other` (a poster the user picked, or no such row), `unread` (the row
+  could not be read), `dropped` (more requests at once than the observer
+  looks at), and `not-poster-local`, `not-poster-plex-cloud`,
+  `not-poster-public`, `not-poster-none` for a request for any other image,
+  by where that image is.
+
+It also logs one line per distinct kind of request (subsystem `posters`):
+platform, product, the size asked, whether the platform and the token
+travelled in a header or the query, whether the proxy ended the request's
+TLS, and the names of the query's parameters. Never a token, a title or an
+item's key. The setting is read at the manager's start. Only requests the
+proxy reads are seen: plain HTTP, and TLS the proxy ends with Plex's own
+certificate.
+
 ## Live TV: clustarr's IPTVProviders as DVRs
 
 With `plex.liveTV.enabled` the lease holder adds each of clustarr's

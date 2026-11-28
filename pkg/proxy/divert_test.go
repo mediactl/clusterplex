@@ -247,3 +247,23 @@ func TestAnXMLTVKeysOnceEncodedEscapesAreEncodedAgain(t *testing.T) {
 		t.Errorf("PMS's own key was changed:\n got %s", got)
 	}
 }
+
+// A request to Plex's photo transcoder is offered too (pkg/plexposters: a
+// small poster is to be answered with clustarr's compact one), and one the
+// divert declines reaches Plex as it came, its query whole.
+func TestAPhotoTranscodeRequestIsOfferedAndForwardedWhenDeclined(t *testing.T) {
+	var seen []string
+	addr := startDiverting(t, func(_ context.Context, r *http.Request) (*http.Response, bool) {
+		seen = append(seen, r.Method+" "+r.URL.Path+" width="+r.URL.Query().Get("width")+" platform="+r.Header.Get("X-Plex-Platform"))
+		return nil, false
+	})
+	const uri = "/photo/:/transcode?width=300&height=450&minSize=1&upscale=1&url=%2Flibrary%2Fmetadata%2F7%2Fthumb%2F5&X-Plex-Token=t"
+	resp, body := roundTrip(t, addr, "GET "+uri+" HTTP/1.1\r\nHost: plex\r\nX-Plex-Platform: iOS\r\n\r\n")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "upstream GET "+uri, body)
+	require.Equal(t, []string{"GET /photo/:/transcode width=300 platform=iOS"}, seen)
+
+	_, body = roundTrip(t, addr, "GET /photo/:/transcodes HTTP/1.1\r\nHost: plex\r\n\r\n")
+	require.Equal(t, "upstream GET /photo/:/transcodes", body)
+	require.Len(t, seen, 1, "only the transcoder's own path is offered")
+}

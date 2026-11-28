@@ -224,6 +224,17 @@ plex:
   # no decoder for fails as "Could not tune channel". Unset takes the
   # manager's default (aac, ac3, eac3, mp2, mp3); [] turns it off.
   codecPrefetch: null
+  # clustarr's compact posters (clustarr's design of 2026-11-27): a poster a
+  # client asks Plex for at a small size is to be answered with the
+  # rendition whose rating badges and title image are drawn larger.
+  compactPosters:
+    # off: poster requests are not looked at. observe: every request still
+    # goes to Plex, and the manager's proxy counts what clients ask for
+    # (clusterplex_poster_requests_total: platform, width asked, and what
+    # the request would have met) and logs one line per distinct kind of
+    # request (subsystem posters), never a token, a title or an item's key.
+    # serve is not built yet and observes. Read at the manager's start.
+    mode: "off"
   # A Secret holding a plex.tv claim code (https://plex.tv/claim) under
   # claimSecret.key, exchanged for the server's token at the next start when
   # the server has none or, with plex.clustarr.tokenSecret, when the code is

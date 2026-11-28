@@ -77,6 +77,8 @@ data:
           {{- range .Values.plex.clustarr.pathMappings }}
           - {clustarr: {{ .clustarr | quote }}, plex: {{ .plex | quote }}}
           {{- end }}
+      compactPosters:
+        mode: {{ (default dict .Values.plex.compactPosters).mode | default "off" | quote }}
       liveTV:
         enabled: {{ .Values.plex.liveTV.enabled }}
         language: {{ .Values.plex.liveTV.language | default "eng" | quote }}

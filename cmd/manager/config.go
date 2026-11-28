@@ -211,6 +211,9 @@ type Config struct {
 	Clustarr ClustarrConfig
 	// LiveTV adds clustarr's IPTVProviders to Plex as DVRs.
 	LiveTV LiveTVConfig
+	// CompactPosters is the proxy's part in clustarr's compact posters:
+	// off, or observing the posters clients ask for (posters.go).
+	CompactPosters CompactPostersConfig
 	// CodecPrefetch are the audio codecs, as Plex names them, whose
 	// decoders the lease holder has Plex download once it serves
 	// (pkg/plex/codecs). Plex downloads one only for a transcode of a file
@@ -409,6 +412,11 @@ func loadConfig(args []string) (Config, error) {
 	if err := liveTVNeedsOnePod(c.PodName, lt); err != nil {
 		errs = append(errs, err)
 	}
+	cp, err := loadCompactPosters(v)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	c.CompactPosters = cp
 	codecs, err := codecList(v.Get(codecPrefetchKey))
 	if err != nil {
 		errs = append(errs, err)

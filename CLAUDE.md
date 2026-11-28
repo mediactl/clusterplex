@@ -58,6 +58,7 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
 | `pkg/plex/activity/` | What Tautulli reads from Plex, read by the manager: streams, plays, watch time, library counts, as Prometheus series and a span per finished play |
 | `pkg/plex/provision/` | Reconciling configured providers, agents and libraries into Plex |
 | `pkg/clustarrwatch/` | Following clustarr's catalog: folder rescans and item refreshes |
+| `pkg/plexposters/` | The posters clients ask Plex's photo transcoder for, seen by the proxy (clustarr's compact-posters design, 2026-11-27 §5.4). Built so far: `observe` (`plex.compactPosters.mode`), which claims no request and counts what was asked (`clusterplex_poster_requests_total`), and clustarr's pairing list (`Pairs`). Its `Divert` only parses and queues: it is on every poster request's way to Plex |
 | `pkg/plex/collections/` | Reconciling clustarr's PlexCollections into Plex's collections: the filter compiled as Plex Web encodes it, the members, the presentation, the status and finalizer, on the lease holder; and its PlexHubLayouts into each library's managed hubs (`hubs.go`, `hubs_controller.go`) |
 | `pkg/remux/` | Plex Web's DASH streams on the remux pool: classify and parse a shimmed job, the manifest, the fMP4 splitter (`remux`), the cache (`cache`), the ffgo pipeline (`pipeline`), the worker's gRPC server (`worker`), the manager's relay (`relay`) |
 | `cmd/remux-worker/` | The remux pool's binary; links ffgo |
