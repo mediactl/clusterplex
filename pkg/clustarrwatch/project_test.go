@@ -28,6 +28,7 @@ type recordingProjector struct {
 	reconciled []reconciled
 	swept      []swept
 	ratings    map[int64]map[string]plexproject.Rating // by section, as last given
+	posters    map[int64]int                           // by section, poster passes run
 	events     []string                                // "apply:<uid>" and "delete:<uid>", in order
 	refresher  plexproject.Refresher
 }
@@ -100,6 +101,23 @@ func (r *recordingProjector) ReconcileRatings(_ context.Context, section int64, 
 	}
 	r.ratings[section] = maps.Clone(want)
 	return 0, nil
+}
+
+func (r *recordingProjector) ReconcilePosters(_ context.Context, section int64) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.posters == nil {
+		r.posters = map[int64]int{}
+	}
+	r.posters[section]++
+	return 0, nil
+}
+
+// PosterPasses is how many poster passes the section has had.
+func (r *recordingProjector) PosterPasses(section int64) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.posters[section]
 }
 
 // Ratings are the ratings last given for the section, nil before any.
@@ -337,6 +355,15 @@ func TestTheRatingsPassGivesEverySectionItsItemsRatings(t *testing.T) {
 	unrated, ok := got["tv.plex.agents.custom.clustarr.tv://show/uid-show"]
 	require.True(t, ok, "a series without a rating is given too: %v", got)
 	require.Zero(t, unrated)
+}
+
+// Each provisioned section's rows stuck on a match result's thumb are put
+// right with the ratings, soon after the watch has synced and without any
+// file changing (plexproject.ReconcilePosters): nothing Plex does later
+// frees such a row.
+func TestThePosterPassRunsForEverySectionWithTheRatings(t *testing.T) {
+	rp, _, _, _ := startProjecting(t, time.Hour, movie("m1", "Heat"))
+	require.Eventually(t, func() bool { return rp.PosterPasses(1) > 0 }, 5*time.Second, 10*time.Millisecond)
 }
 
 // ReconcileSection answers a scan request for a provisioned section, or

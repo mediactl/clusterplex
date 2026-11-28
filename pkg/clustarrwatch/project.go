@@ -29,6 +29,9 @@ type Projection interface {
 	// ReconcileRatings writes the ratings Plex sorts by onto a section's
 	// movies and shows, by guid.
 	ReconcileRatings(ctx context.Context, section int64, want map[string]plexproject.Rating) (int64, error)
+	// ReconcilePosters has a section's movies and shows that Plex left on
+	// their match result's thumb take the poster they have downloaded.
+	ReconcilePosters(ctx context.Context, section int64) (int64, error)
 }
 
 // SectionIDs are a provisioned section's database ids: library_sections.id
@@ -428,7 +431,30 @@ func (w *Watcher) resyncRatings(ctx context.Context) bool {
 			w.Logger.Info("projection: ratings written", "section", key, "rows", n)
 		}
 	}
+	w.resyncPosters(ctx)
 	return true
+}
+
+// resyncPosters has every provisioned section's rows that Plex left on
+// their match result's thumb take the poster they have downloaded
+// (plexproject.ReconcilePosters). It rides the ratings pass: a row is stuck
+// from its match on and nothing Plex does later frees it, so the next pass
+// after a match is when it is put right.
+func (w *Watcher) resyncPosters(ctx context.Context) {
+	for key, ids := range w.Sections() {
+		lock := w.sectionLock(key)
+		lock.Lock()
+		n, err := w.Projection.ReconcilePosters(ctx, ids.Section)
+		lock.Unlock()
+		if err != nil {
+			inc(w.Counters.SeedErrors)
+			w.Logger.Warn("projection: posters", "section", key, "err", err)
+			continue
+		}
+		if n > 0 {
+			w.Logger.Info("projection: rows on their match thumb given their downloaded poster", "section", key, "rows", n)
+		}
+	}
 }
 
 // NeedsRefresh is plexproject.Refresher: a row the projection inserted is

@@ -288,6 +288,20 @@ Go module `github.com/mediactl/clusterplex`. One image, four binaries.
   `MetadataHash` and the chain key: they drift daily. Not written: the
   two rating images (`at:ratingImage` in `extra_data`); the badges come
   from the tags as before.
+  The same pass frees a row **stuck on its match result's thumb**
+  (owner, 2026-11-28: "Yes, fix the 70 posters stuck on the cloud
+  thumbnail"): PMS keeps a match's thumb as the item's and a refresh's
+  download replaces it only when that is a new file, so such a row shows
+  the provider's source poster through `images.plex.tv` (225 x 336, no
+  badge, fetched from Plex's cloud by every client) while holding the
+  poster it downloaded, unselected, as its one tagging of tag_type 312.
+  `plexproject.ReconcilePosters` writes that tagging's `thumb_url` into
+  `user_thumb_url` and stamps `updated_at`: exactly what selecting the
+  poster through PMS's API (`PUT /library/metadata/<id>/poster?url=`)
+  left once the lock it sets on the thumb field was taken off again
+  (`thumb.locked=0`), which is how talos's 70 were repaired by hand that
+  day. A row whose thumb the user locked, or with no or several downloaded
+  posters, is left alone.
   Configuration stays API-only.
 - **Only `cmd/remux-worker` and `cmd/video-worker` link ffgo.** The
   manager, shim, proxy and maintenance binaries are static and run from a
