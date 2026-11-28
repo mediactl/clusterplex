@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -224,6 +226,56 @@ func TestABurstIsDroppedNotWaitedFor(t *testing.T) {
 	}
 	assert.Less(t, time.Since(start), 2*time.Second)
 	assert.EqualValues(t, 50, counted(t, reg, "none", "300", "dropped"))
+}
+
+// lockedBuffer is a log sink a test may read while the observer writes.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// What a client says of itself is the client's to choose, so each such
+// string is cut before it is kept or logged: a request head may be 64 KiB,
+// and 256 kinds of it would be megabytes of memory and log. When the kinds
+// run out the log says so once, since a kind seen later is not logged.
+func TestAClientsStringsAreCutAndTheKindsAreCapped(t *testing.T) {
+	logs := &lockedBuffer{}
+	reg := prometheus.NewRegistry()
+	o := &plexposters.Observer{Metrics: plexposters.NewMetrics(reg), Logger: slog.New(slog.NewTextHandler(logs, nil))}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- o.Run(ctx) }()
+
+	long := strings.Repeat("é", 5000)
+	_, _ = o.Divert(ctx, get(t, "/photo/:/transcode?width=10&minSize="+long+"&upscale="+long, map[string]string{
+		"X-Plex-Platform": long, "X-Plex-Product": long,
+	}))
+	require.Eventually(t, func() bool { return counted(t, reg, "other", "100", "not-poster-none") == 1 }, 5*time.Second, 5*time.Millisecond)
+	assert.Less(t, len(logs.String()), 2000, "four strings of 10 kB each are cut")
+	assert.NotContains(t, logs.String(), "\\x", "cut between runes, not inside one")
+	assert.NotContains(t, logs.String(), "\ufffd")
+
+	// More kinds than are kept: the cap is said once.
+	for i := range 300 {
+		_, _ = o.Divert(ctx, get(t, "/photo/:/transcode?width=10&height="+strconv.Itoa(i+1), nil))
+		require.Eventually(t, func() bool { return counted(t, reg, "none", "100", "not-poster-none") == float64(i+1) }, 5*time.Second, time.Millisecond)
+	}
+	cancel()
+	require.NoError(t, <-done)
+	assert.Equal(t, 1, strings.Count(logs.String(), "no further kinds of poster request are logged"))
+	assert.LessOrEqual(t, strings.Count(logs.String(), "poster request seen"), 256)
 }
 
 func TestANilLoggerIsRefused(t *testing.T) {

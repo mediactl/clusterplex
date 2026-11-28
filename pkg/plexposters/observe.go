@@ -40,8 +40,10 @@ const (
 	lookupTimeout = 2 * time.Second
 	// maxSamples is how many distinct kinds of request are logged.
 	maxSamples = 256
-	// maxProduct bounds a client's product name in a log line.
-	maxProduct = 48
+	// maxClientString bounds, in runes, each string a client says of
+	// itself (its platform, its product, minSize, upscale) where it is
+	// kept or logged: a request head may be 64 KiB of one of them.
+	maxClientString = 48
 
 	downloadedPoster = "metadata://posters/"
 	cloudThumb       = "https://" + plexCloudHost + "/"
@@ -68,6 +70,7 @@ type Observer struct {
 
 	seenMu sync.Mutex
 	seen   map[sample]struct{}
+	capped bool // the kinds ran out, and the log said so
 }
 
 // sample is what makes two requests the same kind in the log.
@@ -145,29 +148,56 @@ func (o *Observer) met(ctx context.Context, r Request) string {
 }
 
 // log writes one line for each distinct kind of request, up to maxSamples:
-// what a client sends, never its token, a title or an item's key.
+// what a client sends, never its token, a title or an item's key. When the
+// kinds run out it says so once: a kind first seen after that is counted
+// and not logged.
 func (o *Observer) log(r Request, met string) {
-	product := r.Product
-	if len(product) > maxProduct {
-		product = product[:maxProduct]
-	}
 	s := sample{
-		platform: r.Platform, product: product, platformIn: r.PlatformIn, tokenIn: r.TokenIn,
-		minSize: r.MinSize, upscale: r.Upscale, met: met, width: r.Width, height: r.Height, tls: r.TLS,
+		platform: cut(r.Platform), product: cut(r.Product), platformIn: r.PlatformIn, tokenIn: r.TokenIn,
+		minSize: cut(r.MinSize), upscale: cut(r.Upscale), met: met, width: r.Width, height: r.Height, tls: r.TLS,
 	}
 	o.seenMu.Lock()
 	_, seen := o.seen[s]
-	if !seen && len(o.seen) < maxSamples {
-		o.seen[s] = struct{}{}
-	} else {
-		seen = true
+	full := false
+	if !seen {
+		if len(o.seen) < maxSamples {
+			o.seen[s] = struct{}{}
+		} else {
+			seen, full = true, !o.capped
+			o.capped = true
+		}
 	}
 	o.seenMu.Unlock()
+	if full {
+		o.Logger.Warn("no further kinds of poster request are logged; the counter still counts them", "kinds", maxSamples)
+	}
 	if seen {
 		return
 	}
+	// Parameter names are the client's too: the list is cut as a whole.
 	o.Logger.Info("poster request seen",
-		"platform", r.Platform, "product", product, "platform_in", r.PlatformIn, "token_in", r.TokenIn,
-		"width", r.Width, "height", r.Height, "min_size", r.MinSize, "upscale", r.Upscale,
-		"tls", r.TLS, "request", met, "params", strings.Join(r.Params, ","))
+		"platform", s.platform, "product", s.product, "platform_in", r.PlatformIn, "token_in", r.TokenIn,
+		"width", r.Width, "height", r.Height, "min_size", s.minSize, "upscale", s.upscale,
+		"tls", r.TLS, "request", met, "params", cutTo(strings.Join(r.Params, ","), maxParams))
+}
+
+// maxParams bounds, in runes, the list of parameter names in a log line.
+const maxParams = 400
+
+// cut is s at most maxClientString runes long.
+func cut(s string) string { return cutTo(s, maxClientString) }
+
+// cutTo is s at most n runes long, cut between runes.
+func cutTo(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := 0
+	for j := range s {
+		if i == n {
+			return s[:j]
+		}
+		i++
+	}
+	return s
 }

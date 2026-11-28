@@ -47,18 +47,24 @@ func (p *Projector) ReconcilePosters(ctx context.Context, section int64) (int64,
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// The two prefixes and the lock pattern are written into the statement,
+	// not passed: with a parameter the planner, once pgx's prepared
+	// statement moves to a generic plan, guesses how many rows a LIKE keeps
+	// and may read all of taggings for a handful of rows. The lock is asked
+	// again of the row as it is updated, so one locked since the inner read
+	// is left alone.
 	tag, err := tx.Exec(ctx, `UPDATE metadata_items m SET user_thumb_url = d.thumb_url, updated_at = $2
 		FROM (
 			SELECT s.id, min(g.thumb_url) AS thumb_url
 			FROM metadata_items s
-			JOIN taggings g ON g.metadata_item_id = s.id AND g.thumb_url LIKE $6
-			JOIN tags t ON t.id = g.tag_id AND t.tag_type = $7
+			JOIN taggings g ON g.metadata_item_id = s.id AND g.thumb_url LIKE '`+downloadedPoster+`'
+			JOIN tags t ON t.id = g.tag_id AND t.tag_type = $5
 			WHERE s.library_section_id = $1 AND s.metadata_type IN ($3, $4) AND s.deleted_at IS NULL
-			AND s.user_thumb_url LIKE $5 AND COALESCE(s.user_fields, '') !~ $8
+			AND s.user_thumb_url LIKE '`+cloudThumb+`' AND COALESCE(s.user_fields, '') !~ '`+thumbLocked+`'
 			GROUP BY s.id HAVING count(*) = 1
 		) d
-		WHERE m.id = d.id AND m.user_thumb_url LIKE $5`,
-		section, p.Now().Unix(), int(TypeMovie), int(TypeShow), cloudThumb, downloadedPoster, posterTagType, thumbLocked)
+		WHERE m.id = d.id AND m.user_thumb_url LIKE '`+cloudThumb+`' AND COALESCE(m.user_fields, '') !~ '`+thumbLocked+`'`,
+		section, p.Now().Unix(), int(TypeMovie), int(TypeShow), posterTagType)
 	if err != nil {
 		return 0, fmt.Errorf("plexproject: posters of section %d: %w", section, err)
 	}
